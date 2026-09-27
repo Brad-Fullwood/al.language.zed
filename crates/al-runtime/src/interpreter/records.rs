@@ -36,7 +36,7 @@ use crate::interpreter::dispatch::DispatchMode;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::eval_stmt::arg_expr_nodes;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::{RecordValue, Value};
+use crate::interpreter::value::{Collection, RecordValue, Value};
 use crate::mock::calcformula_parser::{self, CalcFormula, FormulaType, WhereValue};
 use crate::mock::filter;
 use crate::mock::record::{FieldNo, FlowAgg, FlowFilter, MockRecord, RecordView};
@@ -2425,13 +2425,19 @@ pub fn supports_list_method(method: &str) -> bool {
     )
 }
 
-/// Execute a `List of [T]` method call on the list bound to `recv`.
+/// Execute a `List of [T]` method call on the list bound to `recv`. The
+/// element or old value of the `var` forms of `Get` and `Set` goes to
+/// `ctx.var_writebacks`. `statement` says the call is a statement, where an
+/// index out of range raises instead of returning false.
 pub(crate) fn dispatch_list_method(
     recv: &str,
     method: &str,
     args: Vec<Value>,
+    statement: bool,
     stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
 ) -> Eval {
+    ctx.var_writebacks.clear();
     let lower = method.to_ascii_lowercase();
     let Some(slot) = stack.lookup_mut(recv) else {
         return eval_error(format!("list variable '{recv}' is not bound"));
@@ -2440,10 +2446,10 @@ pub(crate) fn dispatch_list_method(
         return eval_error(format!("'{recv}' is not a List"));
     };
     let list = list.clone();
-    // `AddRange(Other)` adds Other's elements. Read them before the list is
-    // locked: `L.AddRange(L)` doubles L.
+    // `AddRange(Other)` for a `List of [T]` adds Other's elements. Read them
+    // before the list is locked: `L.AddRange(L)` doubles L.
     let args = match (lower.as_str(), args.as_slice()) {
-        ("addrange", [Value::List(other)]) => other.snapshot(),
+        ("addrange", [Value::List(other)]) if adds_elements(&list, other) => other.snapshot(),
         _ => args,
     };
     // Comparing with the list itself would lock it twice.
@@ -2463,7 +2469,10 @@ pub(crate) fn dispatch_list_method(
         }
         "addrange" => eval_error("List.AddRange expects at least one value or a List"),
         "getrange" => match list_range("List.GetRange", &args, items.len()) {
-            Ok(range) => Eval::Normal(Value::list(items[range].to_vec())),
+            Ok(range) => Eval::Normal(Value::List(Collection::new(
+                items[range].to_vec(),
+                list.member_type(),
+            ))),
             Err(error) => eval_error(error),
         },
         "removerange" => match list_range("List.RemoveRange", &args, items.len()) {
@@ -2471,6 +2480,7 @@ pub(crate) fn dispatch_list_method(
                 items.drain(range);
                 Eval::Normal(Value::Boolean(true))
             }
+            Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
             Err(error) => eval_error(error),
         },
         "reverse" if args.is_empty() => {
@@ -2501,6 +2511,14 @@ pub(crate) fn dispatch_list_method(
             Err(_) => eval_error("List.Count exceeds the supported Integer range"),
         },
         "count" => eval_error("List.Count expects no arguments"),
+        "get" if args.len() == 2 => match list_index("List.Get", &args[..1], items.len()) {
+            Ok(index) => {
+                ctx.var_writebacks.push((1, items[index].clone()));
+                Eval::Normal(Value::Boolean(true))
+            }
+            Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
+            Err(error) => eval_error(error),
+        },
         "get" => match list_index("List.Get", &args, items.len()) {
             Ok(index) => Eval::Normal(items[index].clone()),
             Err(error) => eval_error(error),
@@ -2549,7 +2567,18 @@ pub(crate) fn dispatch_list_method(
             }
             Err(error) => eval_error(error),
         },
-        "set" => eval_error("List.Set expects exactly an Integer index and one value"),
+        "set" if args.len() == 3 => match list_index("List.Set", &args[..1], items.len()) {
+            Ok(index) => {
+                let old = std::mem::replace(&mut items[index], args[1].clone());
+                ctx.var_writebacks.push((2, old));
+                Eval::Normal(Value::Boolean(true))
+            }
+            Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
+            Err(error) => eval_error(error),
+        },
+        "set" => eval_error(
+            "List.Set expects an Integer index, a value and an optional var for the old value",
+        ),
         // `Insert(index, value)`: 1-based, up to one past the end.
         "insert" => match args.as_slice() {
             [Value::Integer(index), value] => {
@@ -2571,6 +2600,35 @@ pub(crate) fn dispatch_list_method(
             _ => eval_error("List.Insert expects an Integer index and one value"),
         },
         other => eval_error(format!("unsupported List method: {other}")),
+    }
+}
+
+/// Whether `list.AddRange(other)` is the `AddRange(List of [T])` overload,
+/// which adds the elements of `other`, or `AddRange(T)` for a list whose
+/// elements are lists, which adds `other` as one element. A list with no
+/// declared element type takes the first, and an argument with none is judged
+/// by its elements.
+fn adds_elements(list: &Collection<Vec<Value>>, other: &Collection<Vec<Value>>) -> bool {
+    let is_list_type = |type_text: &str| {
+        type_text
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with("list of")
+    };
+    let normalised = |type_text: &str| {
+        type_text
+            .split_whitespace()
+            .collect::<String>()
+            .to_ascii_lowercase()
+    };
+    match (list.member_type(), other.member_type()) {
+        (Some(element), _) if !is_list_type(element) => true,
+        (Some(element), Some(other_element)) => normalised(element) == normalised(other_element),
+        (Some(_), None) => other
+            .lock()
+            .iter()
+            .any(|item| matches!(item, Value::List(_))),
+        (None, _) => true,
     }
 }
 
@@ -2865,11 +2923,23 @@ pub(crate) fn dispatch_textbuilder_method(
     args: Vec<Value>,
     stack: &mut ScopeStack,
 ) -> Eval {
-    let Some(Value::TextBuilder(text)) = stack.lookup_mut(recv) else {
+    let Some(Value::TextBuilder(builder)) = stack.lookup(recv) else {
         return eval_error(format!("'{recv}' is not a TextBuilder"));
     };
+    let builder = builder.clone();
+    // A builder argument is read before the receiver is locked, since it may
+    // be the receiver.
+    let args: Vec<Value> = args
+        .into_iter()
+        .map(|arg| match arg {
+            Value::TextBuilder(other) => Value::Text(other.snapshot()),
+            other => other,
+        })
+        .collect();
+    let mut guard = builder.lock();
+    let text: &mut String = &mut guard;
     let as_text = |value: &Value| match value {
-        Value::Text(t) | Value::Code(t) | Value::TextBuilder(t) => t.clone(),
+        Value::Text(t) | Value::Code(t) => t.clone(),
         Value::Char(c) => c.to_string(),
         other => crate::interpreter::dispatch::render_value(other),
     };
@@ -2969,13 +3039,39 @@ pub(crate) fn dict_lookup(
     key: &Value,
     stack: &ScopeStack,
 ) -> Result<Option<Value>, String> {
-    let Some(Value::Dict(entries)) = stack.lookup(recv) else {
+    let Some(Value::Dict(dict)) = stack.lookup(recv) else {
         return Err(format!("'{recv}' is not a Dictionary"));
     };
-    Ok(entries
+    let key = declared_key(key, dict.member_type())?;
+    Ok(dict
         .lock()
-        .get(&dict_key(key)?)
+        .get(&dict_key(&key)?)
         .map(|(_, value)| value.clone()))
+}
+
+/// `key` converted to the dictionary's declared key type, as BC converts an
+/// argument to a typed parameter: a Code key is trimmed and upper-cased, one
+/// character of Text becomes a Char, a Char becomes Text or Code, and an
+/// Integer becomes a Decimal.
+fn declared_key(key: &Value, key_type: Option<&str>) -> Result<Value, String> {
+    let Some(key_type) = key_type else {
+        return Ok(key.clone());
+    };
+    let base = key_type.split('[').next().unwrap_or_default().trim();
+    let Some(slot) = Value::default_for(base) else {
+        return Ok(key.clone());
+    };
+    let capacity = crate::interpreter::dispatch::declared_text_length(key_type);
+    match (&slot, key) {
+        (Value::Char(_), Value::Text(text) | Value::Code(text)) => {
+            crate::interpreter::value::check_string_capacity(text, Some(1))?;
+            Ok(Value::Char(text.chars().next().unwrap_or('\0')))
+        }
+        (Value::Text(_) | Value::Code(_), Value::Char(c)) => {
+            Value::coerce_into_slot(&slot, Value::Text(c.to_string()), capacity)
+        }
+        _ => Value::coerce_into_slot(&slot, key.clone(), capacity),
+    }
 }
 
 /// Serialise a dictionary key value into the `Dict` map's string key space.
@@ -3005,13 +3101,16 @@ fn dict_key(value: &Value) -> Result<String, String> {
 }
 
 /// Execute a `Dictionary of [K, V]` method call on the dictionary bound to
-/// `recv`.
+/// `recv`. The old value of `Set(key, value, var old)` goes to
+/// `ctx.var_writebacks`.
 pub(crate) fn dispatch_dict_method(
     recv: &str,
     method: &str,
     args: Vec<Value>,
     stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
 ) -> Eval {
+    ctx.var_writebacks.clear();
     let lower = method.to_ascii_lowercase();
     let Some(slot) = stack.lookup_mut(recv) else {
         return eval_error(format!("dictionary variable '{recv}' is not bound"));
@@ -3020,6 +3119,18 @@ pub(crate) fn dispatch_dict_method(
         return eval_error(format!("'{recv}' is not a Dictionary"));
     };
     let dict = dict.clone();
+    let mut args = args;
+    if matches!(
+        lower.as_str(),
+        "add" | "set" | "get" | "containskey" | "remove"
+    ) {
+        if let Some(key) = args.first_mut() {
+            match declared_key(key, dict.member_type()) {
+                Ok(converted) => *key = converted,
+                Err(error) => return eval_error(error),
+            }
+        }
+    }
     let mut entries = dict.lock();
     match lower.as_str() {
         "add" => match args.as_slice() {
@@ -3045,7 +3156,21 @@ pub(crate) fn dispatch_dict_method(
                 }
                 Err(error) => eval_error(error),
             },
-            _ => eval_error("Dictionary.Set expects exactly a key and a value"),
+            // True and the old value when the key was there, false when the
+            // value was added.
+            [key, value, _] => match dict_key(key) {
+                Ok(key_text) => match entries.insert(key_text, (key.clone(), value.clone())) {
+                    Some((_, old)) => {
+                        ctx.var_writebacks.push((2, old));
+                        Eval::Normal(Value::Boolean(true))
+                    }
+                    None => Eval::Normal(Value::Boolean(false)),
+                },
+                Err(error) => eval_error(error),
+            },
+            _ => eval_error(
+                "Dictionary.Set expects a key, a value and an optional var for the old value",
+            ),
         },
         "get" => match args.as_slice() {
             [key] => match dict_key(key) {
@@ -3138,10 +3263,18 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
         }
     }
     if lower.starts_with("list of") {
-        return Some(Value::list(Vec::new()));
+        let arguments = type_arguments(&trimmed["list of".len()..]);
+        return Some(Value::List(Collection::new(
+            Vec::new(),
+            arguments.first().copied(),
+        )));
     }
     if lower.starts_with("dictionary of") {
-        return Some(Value::dict(Default::default()));
+        let arguments = type_arguments(&trimmed["dictionary of".len()..]);
+        return Some(Value::Dict(Collection::new(
+            Default::default(),
+            arguments.first().copied(),
+        )));
     }
     if lower == "variant" {
         return Some(Value::Variant(Box::new(Value::Null)));
@@ -3161,8 +3294,38 @@ fn default_for_array(type_text: &str) -> Option<Value> {
     let length: usize = rest[..close].trim().parse().ok()?;
     let element = strip_keyword(rest[close + 1..].trim_start(), "of")?.trim();
     let base = element.split('[').next()?.trim();
-    let default = Value::default_for(base)?;
-    Some(Value::Array(vec![default; length]))
+    // Each element on its own: clones of one JSON default share its node.
+    let elements = (0..length).map(|_| Value::default_for(base));
+    Some(Value::Array(elements.collect::<Option<_>>()?))
+}
+
+/// The types between the brackets of `List of [T]` or `Dictionary of [K, V]`,
+/// given the text after `of`, split at the commas outside nested brackets and
+/// quotes.
+fn type_arguments(after_of: &str) -> Vec<&str> {
+    let inner = after_of
+        .trim()
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'));
+    let Some(inner) = inner else {
+        return Vec::new();
+    };
+    let mut arguments = Vec::new();
+    let (mut depth, mut quoted, mut start) = (0usize, false, 0);
+    for (at, c) in inner.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' if !quoted => depth += 1,
+            ']' if !quoted => depth = depth.saturating_sub(1),
+            ',' if !quoted && depth == 0 => {
+                arguments.push(inner[start..at].trim());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    arguments.push(inner[start..].trim());
+    arguments
 }
 
 /// `text` after a leading `keyword`, compared without case.

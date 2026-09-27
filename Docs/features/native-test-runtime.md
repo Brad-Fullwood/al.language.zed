@@ -47,16 +47,14 @@ declaration capacity. Array variables (`array[N] of T`) are bound with N default
 or Code. A call chain such as `S.Trim().ToUpper()` or `S.Split(',').Count()` runs every step, each
 on the value the previous step returned.
 
-**Dispatch (`interpreter/dispatch/`):** a call on an object tries the object's native stub, then
-the workspace procedures found through the file index. A bare call tries the built-in globals, then
-the running object's procedures, and does not reach a stub library. Calls work in statement and
-expression position, through explicit object receivers and `Codeunit <Subtype>` variables, with
-`var` scalar parameter write-back to a variable or to a record field such as `Rec.Name`. A codeunit
-variable keeps its own globals between calls made on it, a `SingleInstance` codeunit has one
-instance for the test's whole lifecycle (initialize through cleanup), and an event subscriber runs
-on a fresh instance of its codeunit each time it fires, unless that codeunit is `SingleInstance`. A
-label is a constant, not state, so a table or helper codeunit whose only globals are labels runs the
-same as one with none. The global builtin catalog covers `Error`/`Message`-class dialogs,
+**Dispatch (`interpreter/dispatch/`):** receiver-specific stubs → catalog stubs → built-in globals
+→ real workspace procedures found through the file index. Calls work in statement and expression
+position, through explicit object receivers and `Codeunit <Subtype>` variables, with `var` scalar
+parameter write-back. A codeunit variable keeps its own globals between calls made on it, a
+`SingleInstance` codeunit has one instance for the test's whole lifecycle (initialize through
+cleanup), and an event subscriber's codeunit runs on a fresh instance each time it fires. A label is
+a constant, not state, so a table or helper codeunit whose only globals are labels runs the same as
+one with none. The global builtin catalog covers `Error`/`Message`-class dialogs,
 `StrSubstNo`/`Format` (the default rendering, XML format 9, numbered standard formats 1 to 4 and
 picture strings such as `<Precision,2:2><Standard Format,0>` or `<Year4>-<Month,2>-<Day,2>`, with
 the length argument; numbers group thousands as BC's standard format does, so `Format(1234567)` is
@@ -68,24 +66,25 @@ directions, where `'='` takes a midpoint away from zero as BC does, `Power`, `Ma
 `Date2DMY`, `Date2DWY` with ISO week and year, `DMY2Date`, `DT2Date`, `DT2Time`, `CalcDate` with
 D/W/M/Q/Y terms, C periods and month-end clamping, `WorkDate` with the session default of today),
 `Evaluate` (writes back to its `var` argument, returns false in an expression and raises as a
-statement), deterministic `Random`/`Randomize`, `Clear`, and `GetLastErrorText`/`ClearLastError`
-wired to `asserterror` capture. `Clear` sets a variable to its type's default. A codeunit variable
-gets a new instance, a JSON variable refers to a new empty node, and a record gets a new view with
-its fields, filters and table globals reset. The table's rows stay, and a temporary record's rows go
-with its old view. `supports_global_builtin` is the shared safe list: the test router sends bare
-global calls outside it to live BC.
+statement), deterministic `Random`/`Randomize`, and `GetLastErrorText`/`ClearLastError` wired to
+`asserterror` capture. `supports_global_builtin` is the shared safe list: the test router sends
+bare global calls outside it to live BC.
 
 Instance methods that run locally:
 
 - `Text`: `Contains`, `StartsWith`, `EndsWith`, `IndexOf`, `LastIndexOf`, `Replace`, `Split`,
   `Substring`, `Trim`/`TrimStart`/`TrimEnd`, `ToLower`/`ToUpper`, `PadLeft`/`PadRight`, `Remove`.
-- `List`: `Add`, `AddRange`, `Get`, `GetRange`, `Set`, `Insert`, `Remove`, `RemoveAt`,
-  `RemoveRange`, `Reverse`, `Count`, `Contains`, `IndexOf`, `LastIndexOf`. A test that calls
-  `GetRange(Index, Count, var Result)` routes to live BC.
-- `Dictionary`: `Add`, `Get` (including `Get(key, var value)`), `Set`, `Remove`, `ContainsKey`,
-  `Count`, `Keys`, `Values`. `Keys` keeps the keys' type and insertion order.
-- `List` and `Dictionary` are references, as in AL: assigning one, or passing it without `var`,
-  shares it. `GetRange(1, L.Count())` makes a copy.
+- `List`: `Add`, `AddRange`, `Get` (including `Get(index, var value)`), `GetRange`, `Set`
+  (including `Set(index, value, var old)`), `Insert`, `Remove`, `RemoveAt`, `RemoveRange`,
+  `Reverse`, `Count`, `Contains`, `IndexOf`, `LastIndexOf`. The `var` form of `GetRange` runs on
+  live BC.
+- `Dictionary`: `Add`, `Get` (including `Get(key, var value)`), `Set` (including
+  `Set(key, value, var old)`), `Remove`, `ContainsKey`, `Count`, `Keys`, `Values`. A key argument
+  is converted to the declared key type, so `'abc'` is the key `ABC` of a
+  `Dictionary of [Code[20], Integer]`, and `Keys` returns keys of that type. The local runtime
+  keeps the keys in insertion order. BC documents no order.
+- `List`, `Dictionary` and `TextBuilder` are references, as in AL: assigning one, or passing it
+  without `var`, shares it. `GetRange(1, L.Count())` makes a copy of a list.
 - `TextBuilder`: `Append`, `AppendLine` (CRLF), `Length`, `ToText`, `Clear`, `Insert`, `Remove`,
   `Replace`, changing the builder in place.
 - JSON: `JsonObject`, `JsonArray`, `JsonToken` and `JsonValue` are references, as in AL. `B := A`
@@ -135,9 +134,7 @@ Supported behavior:
   DeleteAll and ModifyAll (the value is coerced to the field's type, and a primary-key field is
   refused). Each row runs through the same OnBefore/OnAfter events as Delete or Modify, and its
   trigger when `RunTrigger` is true, whenever the table has a subscriber to that event or a trigger
-  RunTrigger would run. Otherwise both write every matching row in one pass. The rows' triggers
-  share one copy of the table's globals, which starts from their defaults, and the record's own
-  globals come back when DeleteAll or ModifyAll returns.
+  RunTrigger would run. Otherwise both write every matching row in one pass.
 - BC-style comparisons, ranges, union/intersection, wildcards, and BC filter case rules:
   unprefixed Text patterns match case-sensitively, the `@` prefix makes a pattern
   case-insensitive, and Code cells always compare caselessly.
@@ -154,14 +151,10 @@ Supported behavior:
   OnDelete first, and `Rename` runs OnRename, which like the rename events gets the new key in
   `Rec` and the row as stored as `xRec`. `Member.Deposit(7)` runs the table's procedure on
   `Member`'s buffer. Inside table code a bare field name reads and writes `Rec`, and a bare record
-  method (`TestField(Name)`) acts on it. A record variable keeps its table's globals between the
-  table code calls made on it, so a setter such as `SetHideValidationDialog` reaches the trigger
-  that reads the flag, and `Reset` sets those globals back to their defaults.
+  method (`TestField(Name)`) acts on it.
 - Events: calling an `[IntegrationEvent]`, `[BusinessEvent]` or `[InternalEvent]` publisher runs
   every workspace subscriber bound to it (by object name or ID), binding arguments by parameter
-  name with `var` values flowing back. A publisher whose `IncludeSender` argument is true passes
-  its codeunit as `Sender`, or for a table procedure the record the procedure runs on, so a write
-  to a `var Sender` changes that record. Insert, Modify, Delete and Rename raise the table's
+  name with `var` values flowing back. Insert, Modify, Delete and Rename raise the table's
   OnBefore/OnAfter events and Validate its OnBefore/OnAfterValidateEvent, whatever `RunTrigger`
   says, and DeleteAll and ModifyAll raise the same Delete or Modify events for every row they
   touch. Subscribers in an `EventSubscriberInstance = Manual` codeunit are skipped; a test that

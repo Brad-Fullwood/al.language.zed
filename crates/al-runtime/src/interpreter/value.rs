@@ -21,8 +21,9 @@ pub use rust_decimal::Decimal;
 /// key text maps to the key as given and its value.
 pub type DictEntries = indexmap::IndexMap<String, (Value, Value)>;
 
-/// The contents of an AL reference type (`List`, `Dictionary`): cloning the
-/// handle shares the contents, as assigning the AL variable does.
+/// The contents of an AL reference type (`List`, `Dictionary`,
+/// `TextBuilder`): cloning the handle shares the contents, as assigning the
+/// AL variable does.
 ///
 /// Values cross to the test runner's thread, hence `Arc<Mutex>`. Hold one
 /// guard at a time: locking the same contents twice deadlocks.
@@ -42,7 +43,7 @@ impl<T> Shared<T> {
 
     /// The contents, locked until the guard drops.
     pub fn lock(&self) -> MutexGuard<'_, T> {
-        // A panic while locked leaves the contents as they were. Use them.
+        // A panic while locked leaves the contents as they were; use them.
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -56,6 +57,67 @@ impl<T: Clone> Shared<T> {
     /// A copy of the contents, detached from the handle.
     pub fn snapshot(&self) -> T {
         self.lock().clone()
+    }
+}
+
+/// A `List` or `Dictionary` value: its shared contents and the member type
+/// its declaration gives it, written as in source (`Code[20]`). The member
+/// type is the element type of a List and the key type of a Dictionary.
+/// `None` when no declaration made the value.
+#[derive(Debug)]
+pub struct Collection<T> {
+    contents: Shared<T>,
+    member_type: Option<Arc<str>>,
+}
+
+impl<T> Clone for Collection<T> {
+    fn clone(&self) -> Self {
+        Self {
+            contents: self.contents.clone(),
+            member_type: self.member_type.clone(),
+        }
+    }
+}
+
+impl<T> Collection<T> {
+    pub fn new(contents: T, member_type: Option<&str>) -> Self {
+        Self {
+            contents: Shared::new(contents),
+            member_type: member_type.map(Arc::from),
+        }
+    }
+
+    /// The contents, locked until the guard drops.
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        self.contents.lock()
+    }
+
+    /// Whether both values name the same contents.
+    pub fn same(&self, other: &Self) -> bool {
+        self.contents.same(&other.contents)
+    }
+
+    /// The declared element type of a List, or key type of a Dictionary.
+    pub fn member_type(&self) -> Option<&str> {
+        self.member_type.as_deref()
+    }
+
+    /// New empty contents with the same member type, as `Clear` leaves.
+    pub fn emptied(&self) -> Self
+    where
+        T: Default,
+    {
+        Self {
+            contents: Shared::new(T::default()),
+            member_type: self.member_type.clone(),
+        }
+    }
+}
+
+impl<T: Clone> Collection<T> {
+    /// A copy of the contents, detached from the value.
+    pub fn snapshot(&self) -> T {
+        self.contents.snapshot()
     }
 }
 
@@ -142,8 +204,9 @@ pub enum Value {
     Text(String),
     /// AL `Code[N]` — uppercase string, length cap not enforced here.
     Code(String),
-    /// AL `TextBuilder` — a string its methods change in place.
-    TextBuilder(String),
+    /// AL `TextBuilder`, a string its methods change in place. A reference
+    /// type like `List`.
+    TextBuilder(Shared<String>),
     /// `JsonObject`, `JsonArray`, `JsonToken` or `JsonValue`: a reference
     /// into the dispatch context's JSON arena.
     Json(crate::interpreter::json::JsonRef),
@@ -174,10 +237,10 @@ pub enum Value {
     Array(Vec<Value>),
     /// AL `List of [T]`. A reference type: copies of the value, and a
     /// parameter passed without `var`, share one list.
-    List(Shared<Vec<Value>>),
-    /// AL `Dictionary of [K, V]`, keyed by the serialised K. A reference type
-    /// like `List`.
-    Dict(Shared<DictEntries>),
+    List(Collection<Vec<Value>>),
+    /// AL `Dictionary of [K, V]`, keyed by the serialised K after it is
+    /// converted to the declared key type. A reference type like `List`.
+    Dict(Collection<DictEntries>),
     /// AL `Blob` / `InStream` / `OutStream` — raw bytes.
     Blob(Vec<u8>),
     /// AL `ErrorInfo` — structured error captured by `asserterror` / `Error`.
@@ -285,7 +348,9 @@ impl Ord for Value {
             (Decimal(a), Decimal(b)) => a.cmp(b),
             (Boolean(a), Boolean(b)) => a.cmp(b),
             (Char(a), Char(b)) => a.cmp(b),
-            (Text(a), Text(b)) | (Code(a), Code(b)) | (TextBuilder(a), TextBuilder(b)) => a.cmp(b),
+            (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
+            (TextBuilder(a), TextBuilder(b)) if a.same(b) => Ordering::Equal,
+            (TextBuilder(a), TextBuilder(b)) => a.snapshot().cmp(&b.snapshot()),
             (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
             (Duration(a), Duration(b)) => a.cmp(b),
             (Guid(a), Guid(b)) => a.cmp(b),
@@ -473,19 +538,24 @@ impl Value {
             // Braced, as Format shows a Guid and CreateGuid returns one.
             "guid" => Some(Value::Guid("{00000000-0000-0000-0000-000000000000}".into())),
             "char" => Some(Value::Char('\0')),
-            "textbuilder" => Some(Value::TextBuilder(String::new())),
+            "textbuilder" => Some(Value::text_builder(String::new())),
             other => crate::interpreter::json::default_for(other),
         }
     }
 
-    /// A new `List` holding `items`.
+    /// A new `List` holding `items`, with no declared element type.
     pub fn list(items: Vec<Value>) -> Value {
-        Value::List(Shared::new(items))
+        Value::List(Collection::new(items, None))
     }
 
-    /// A new `Dictionary` holding `entries`.
+    /// A new `TextBuilder` holding `text`.
+    pub fn text_builder(text: String) -> Value {
+        Value::TextBuilder(Shared::new(text))
+    }
+
+    /// A new `Dictionary` holding `entries`, with no declared key type.
     pub fn dict(entries: DictEntries) -> Value {
-        Value::Dict(Shared::new(entries))
+        Value::Dict(Collection::new(entries, None))
     }
 
     /// Short type-name for diagnostic output. Stable identifiers; do not

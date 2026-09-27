@@ -170,13 +170,15 @@ fn bind_structured_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &m
     let Some(type_text) = type_text else {
         return;
     };
-    let Some(default) = records::default_for_structured(&type_text) else {
-        return; // scalar / unknown type — leave for lazy auto-bind on assignment.
-    };
 
+    // A default per name: a List, Dictionary or JSON default is a reference,
+    // so names bound to clones of one default would share it.
     for name in names {
+        let Some(default) = records::default_for_structured(&type_text) else {
+            return; // scalar or unknown type, left for lazy auto-bind on assignment.
+        };
         if frame.get(&name).is_none() {
-            frame.bind(&name, default.clone());
+            frame.bind(&name, default);
         }
     }
 }
@@ -339,16 +341,16 @@ fn bind_regular_var_decl(reg: tree_sitter::Node<'_>, source: &[u8], frame: &mut 
         .next()
         .unwrap_or(&type_text)
         .trim();
-    let Some(default) = Value::default_for(base) else {
-        return; // complex/unknown type — leave for lazy auto-bind on assignment.
-    };
-
+    // A default per name, as in `bind_structured_var_decl`.
     for name in names {
+        let Some(default) = Value::default_for(base) else {
+            return; // complex or unknown type, left for lazy auto-bind on assignment.
+        };
         if let Some(length) = declared_text_length(&type_text) {
             frame.bind_declared_text_length(&name, length);
         }
         if frame.get(&name).is_none() {
-            frame.bind(&name, default.clone());
+            frame.bind(&name, default);
         }
     }
 }

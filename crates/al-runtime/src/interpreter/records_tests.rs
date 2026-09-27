@@ -1459,6 +1459,419 @@ fn list_range_methods_and_typed_dictionary_keys() {
     assert_eq!(probe("KeysKeepTypeAndOrder"), Value::Integer(100702));
 }
 
+const SEPARATE_DEFAULTS: &str = r#"codeunit 50305 "Separate Defaults"
+{
+    var
+        GA, GB: List of [Integer];
+
+    procedure MultiNameLocalLists(): Integer
+    var
+        A, B: List of [Integer];
+    begin
+        A.Add(1);
+        exit(B.Count());
+    end;
+
+    procedure MultiNameLocalDicts(): Integer
+    var
+        A, B: Dictionary of [Integer, Integer];
+    begin
+        A.Add(1, 1);
+        exit(B.Count());
+    end;
+
+    procedure MultiNameGlobalLists(): Integer
+    begin
+        GA.Add(1);
+        exit(GB.Count());
+    end;
+
+    procedure MultiNameJson(): Text
+    var
+        A, B: JsonObject;
+        T: Text;
+    begin
+        A.Add('x', 1);
+        B.WriteTo(T);
+        exit(T);
+    end;
+
+    procedure ArrayOfJson(): Text
+    var
+        A: array[2] of JsonObject;
+        T: Text;
+    begin
+        A[1].Add('x', 1);
+        A[2].WriteTo(T);
+        exit(T);
+    end;
+}
+"#;
+
+#[test]
+fn each_declared_name_and_array_element_gets_its_own_list_dictionary_or_json_value() {
+    let probe = |proc: &str| {
+        ok(run(
+            &[("/ws/SeparateDefaults.al", SEPARATE_DEFAULTS)],
+            "Separate Defaults",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(probe("MultiNameLocalLists"), Value::Integer(0));
+    assert_eq!(probe("MultiNameLocalDicts"), Value::Integer(0));
+    assert_eq!(probe("MultiNameGlobalLists"), Value::Integer(0));
+    assert_eq!(probe("MultiNameJson"), Value::Text("{}".into()));
+    assert_eq!(probe("ArrayOfJson"), Value::Text("{}".into()));
+}
+
+const SHARED_TEXTBUILDERS: &str = r#"codeunit 50306 "Shared TextBuilders"
+{
+    procedure TextBuilderAssigned(): Text
+    var
+        A: TextBuilder;
+        B: TextBuilder;
+    begin
+        A.Append('x');
+        B := A;
+        B.Append('y');
+        exit(A.ToText());
+    end;
+
+    procedure TextBuilderByValue(): Text
+    var
+        A: TextBuilder;
+    begin
+        A.Append('x');
+        AppendY(A);
+        exit(A.ToText());
+    end;
+
+    local procedure AppendY(B: TextBuilder)
+    begin
+        B.Append('y');
+    end;
+
+    procedure TextBuilderMultiName(): Text
+    var
+        A, B: TextBuilder;
+    begin
+        A.Append('x');
+        exit(B.ToText());
+    end;
+}
+"#;
+
+/// A TextBuilder is a reference type: assigning it, or passing it without
+/// `var`, shares one builder. Each declared name still gets its own.
+#[test]
+fn textbuilders_are_shared_by_assignment_and_by_value_parameters() {
+    let probe = |proc: &str| {
+        ok(run(
+            &[("/ws/SharedTextBuilders.al", SHARED_TEXTBUILDERS)],
+            "Shared TextBuilders",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(probe("TextBuilderAssigned"), Value::Text("xy".into()));
+    assert_eq!(probe("TextBuilderByValue"), Value::Text("xy".into()));
+    assert_eq!(probe("TextBuilderMultiName"), Value::Text(String::new()));
+}
+
+const TYPED_DICTIONARY_KEYS: &str = r#"codeunit 50307 "Typed Dictionary Keys"
+{
+    procedure CodeKeyFromText(): Text
+    var
+        D: Dictionary of [Code[20], Integer];
+        K: Code[20];
+    begin
+        D.Add('abc', 1);
+        if not D.ContainsKey('ABC') then
+            exit('missing');
+        foreach K in D.Keys() do
+            exit(K);
+    end;
+
+    procedure CodeKeyFromCodeThenText(): Text
+    var
+        D: Dictionary of [Code[20], Integer];
+        C: Code[20];
+    begin
+        C := 'xyz';
+        D.Add(C, 1);
+        if not D.ContainsKey('xyz') then
+            exit('missing');
+        exit('found');
+    end;
+
+    procedure ClearedKeepsKeyType(): Text
+    var
+        D: Dictionary of [Code[20], Integer];
+    begin
+        D.Add('x', 1);
+        Clear(D);
+        D.Add('abc', 1);
+        if not D.ContainsKey('ABC') then
+            exit('missing');
+        exit('found');
+    end;
+
+    procedure LearnCharCounter(): Integer
+    var
+        counter: Dictionary of [Char, Integer];
+    begin
+        CountCharactersInCustomerName('abca', counter);
+        exit(counter.Get('a'));
+    end;
+
+    procedure LearnCharCounterCount(): Text
+    var
+        counter: Dictionary of [Char, Integer];
+        k: Char;
+        r: Text;
+    begin
+        CountCharactersInCustomerName('abca', counter);
+        foreach k in counter.Keys() do
+            r += Format(k) + '=' + Format(counter.Get(k)) + ';';
+        exit(Format(counter.Count()) + ':' + r);
+    end;
+
+    procedure CountCharactersInCustomerName(customerName: Text; counter: Dictionary of [Char, Integer])
+    var
+        i: Integer;
+        c: Integer;
+    begin
+        for i := 1 to StrLen(customerName) do
+            if counter.Get(customerName[i], c) then
+                counter.Set(customerName[i], c + 1)
+            else
+                counter.Add(customerName[i], 1);
+    end;
+
+    procedure CharKeyFromIndex(): Text
+    var
+        counter: Dictionary of [Char, Integer];
+        s: Text;
+    begin
+        s := 'abc';
+        counter.Add(s[1], 1);
+        if counter.ContainsKey('a') then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure TextKeyFromChar(): Text
+    var
+        D: Dictionary of [Text, Integer];
+        s: Text;
+    begin
+        s := 'abc';
+        D.Add(s[2], 1);
+        if D.ContainsKey('b') then
+            exit('found');
+        exit('missing');
+    end;
+}
+"#;
+
+/// A key argument takes the dictionary's declared key type, as BC converts
+/// any argument to its parameter type: Text to Code, one character of Text to
+/// Char, and Char to Text.
+#[test]
+fn dictionary_keys_are_converted_to_the_declared_key_type() {
+    let probe = |proc: &str| {
+        ok(run(
+            &[("/ws/TypedDictionaryKeys.al", TYPED_DICTIONARY_KEYS)],
+            "Typed Dictionary Keys",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(probe("CodeKeyFromText"), Value::Code("ABC".into()));
+    assert_eq!(
+        probe("CodeKeyFromCodeThenText"),
+        Value::Text("found".into())
+    );
+    assert_eq!(probe("ClearedKeepsKeyType"), Value::Text("found".into()));
+    assert_eq!(probe("LearnCharCounter"), Value::Integer(2));
+    assert_eq!(
+        probe("LearnCharCounterCount"),
+        Value::Text("3:a=2;b=1;c=1;".into())
+    );
+    assert_eq!(probe("CharKeyFromIndex"), Value::Text("found".into()));
+    assert_eq!(probe("TextKeyFromChar"), Value::Text("found".into()));
+}
+
+const VAR_RESULT_FORMS: &str = r#"codeunit 50308 "Var Result Forms"
+{
+    procedure ListGetVar(): Text
+    var
+        L: List of [Integer];
+        V: Integer;
+    begin
+        L.AddRange(4, 5);
+        if not L.Get(2, V) then
+            exit('false');
+        if L.Get(9, V) then
+            exit('found 9');
+        exit(Format(V));
+    end;
+
+    procedure ListGetVarStatement()
+    var
+        L: List of [Integer];
+        V: Integer;
+    begin
+        L.Add(4);
+        L.Get(2, V);
+    end;
+
+    procedure ListSetVar(): Text
+    var
+        L: List of [Integer];
+        Old: Integer;
+    begin
+        L.AddRange(4, 5);
+        L.Set(1, 7, Old);
+        exit(Format(Old) + '/' + Format(L.Get(1)));
+    end;
+
+    procedure ListSetVarOutOfRange(): Text
+    var
+        L: List of [Integer];
+        Old: Integer;
+    begin
+        L.Add(4);
+        Old := 1;
+        if L.Set(3, 7, Old) then
+            exit('set');
+        exit(Format(Old) + '/' + Format(L.Count()));
+    end;
+
+    procedure DictSetVar(): Text
+    var
+        D: Dictionary of [Integer, Integer];
+        Old: Integer;
+        Other: Integer;
+        Replaced: Boolean;
+    begin
+        D.Add(1, 10);
+        D.Set(1, 20, Old);
+        Replaced := D.Set(2, 30, Other);
+        exit(Format(Old) + '/' + Format(D.Get(1)) + '/' + Format(Replaced) + '/' + Format(D.Get(2)));
+    end;
+}
+"#;
+
+/// `List.Get(Index, var Result)`, `List.Set(Index, Value, var OldValue)` and
+/// `Dictionary.Set(Key, Value, var OldValue)` write the element or the old
+/// value to the variable and return whether it was there. A List index out
+/// of range returns false, or raises when the call is a statement.
+#[test]
+fn var_forms_of_list_get_list_set_and_dictionary_set_run_locally() {
+    let files = [("/ws/VarResultForms.al", VAR_RESULT_FORMS)];
+    let probe = |proc: &str| ok(run(&files, "Var Result Forms", proc, vec![]));
+    assert_eq!(probe("ListGetVar"), Value::Text("5".into()));
+    assert_eq!(probe("ListSetVar"), Value::Text("4/7".into()));
+    assert_eq!(probe("ListSetVarOutOfRange"), Value::Text("1/1".into()));
+    assert_eq!(probe("DictSetVar"), Value::Text("10/20/No/30".into()));
+    let message = error_message(run(
+        &files,
+        "Var Result Forms",
+        "ListGetVarStatement",
+        vec![],
+    ));
+    assert!(message.contains("index 2 out of range"), "got: {message}");
+}
+
+const LIST_RANGE_OVERLOADS: &str = r#"codeunit 50309 "List Range Overloads"
+{
+    procedure RemoveRangeUsed(): Text
+    var
+        L: List of [Integer];
+    begin
+        L.AddRange(1, 2);
+        if not L.RemoveRange(5, 10) then
+            exit('false/' + Format(L.Count()));
+        exit('true');
+    end;
+
+    procedure RemoveRangeStatement()
+    var
+        L: List of [Integer];
+    begin
+        L.AddRange(1, 2);
+        L.RemoveRange(5, 10);
+    end;
+
+    procedure AddRangeNested(): Text
+    var
+        Outer: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Inner.AddRange(1, 2, 3);
+        Outer.AddRange(Inner);
+        exit(Format(Outer.Count()) + '/' + Format(Outer.Get(1).Count()));
+    end;
+
+    procedure AddRangeNestedEmpty(): Integer
+    var
+        Outer: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Outer.AddRange(Inner);
+        exit(Outer.Count());
+    end;
+
+    procedure AddRangeListOfLists(): Integer
+    var
+        Outer: List of [List of [Integer]];
+        Other: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Other.Add(Inner);
+        Other.Add(Inner);
+        Outer.AddRange(Other);
+        exit(Outer.Count());
+    end;
+
+    procedure AddRangeAfterClear(): Integer
+    var
+        Outer: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Outer.Add(Inner);
+        Clear(Outer);
+        Inner.AddRange(1, 2);
+        Outer.AddRange(Inner);
+        exit(Outer.Count());
+    end;
+}
+"#;
+
+/// `RemoveRange` returns false for a range out of bounds when its result is
+/// used and raises as a statement. `AddRange` with one List argument adds its
+/// elements for `AddRange(List of [T])`, and adds the list as one element
+/// when the declared element type is a List, for `AddRange(T)`.
+#[test]
+fn removerange_result_and_addrange_overloads_follow_the_declared_types() {
+    let files = [("/ws/ListRangeOverloads.al", LIST_RANGE_OVERLOADS)];
+    let probe = |proc: &str| ok(run(&files, "List Range Overloads", proc, vec![]));
+    assert_eq!(probe("RemoveRangeUsed"), Value::Text("false/2".into()));
+    assert_eq!(probe("AddRangeNested"), Value::Text("1/3".into()));
+    assert_eq!(probe("AddRangeNestedEmpty"), Value::Integer(1));
+    assert_eq!(probe("AddRangeListOfLists"), Value::Integer(2));
+    assert_eq!(probe("AddRangeAfterClear"), Value::Integer(1));
+    let message = error_message(run(
+        &files,
+        "List Range Overloads",
+        "RemoveRangeStatement",
+        vec![],
+    ));
+    assert!(message.contains("out of range"), "got: {message}");
+}
+
 #[test]
 fn compound_assignment_to_record_field_accumulates() {
     // Regression: `Rec.Amount += 5` must store Amount + 5, not the raw RHS.

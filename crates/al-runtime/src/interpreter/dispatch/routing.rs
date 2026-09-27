@@ -331,7 +331,7 @@ fn cleared(value: &Value, ctx: &mut DispatchCtx) -> Result<Value, String> {
         Value::Char(_) => Value::Char('\0'),
         Value::Text(_) => Value::Text(String::new()),
         Value::Code(_) => Value::Code(String::new()),
-        Value::TextBuilder(_) => Value::TextBuilder(String::new()),
+        Value::TextBuilder(_) => Value::text_builder(String::new()),
         Value::Date(_) => Value::Date(0),
         Value::Time(_) => Value::Time(0),
         Value::DateTime(_) => Value::DateTime(0),
@@ -360,8 +360,8 @@ fn cleared(value: &Value, ctx: &mut DispatchCtx) -> Result<Value, String> {
         Value::Variant(_) => Value::Variant(Box::new(Value::Null)),
         // List and Dictionary are references: the variable gets new empty
         // contents, and copies keep the old ones.
-        Value::List(_) => Value::list(Vec::new()),
-        Value::Dict(_) => Value::dict(Default::default()),
+        Value::List(list) => Value::List(list.emptied()),
+        Value::Dict(dict) => Value::Dict(dict.emptied()),
         Value::Blob(_) => Value::Blob(Vec::new()),
         Value::Array(items) => Value::Array(
             items
