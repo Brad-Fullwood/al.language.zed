@@ -45,11 +45,19 @@ pub(super) fn dispatch_workspace_procedure(
         ));
     }
 
+    let instance = ctx.pending_instance.take();
     let target_object = receiver
         .map(str::to_string)
         .or_else(|| stack.top().map(|frame| frame.object.clone()));
     let candidate_paths: Vec<std::path::PathBuf> = if let Some(target_object) = &target_object {
-        match ctx.source.find_by_object_name(target_object) {
+        // A codeunit can share its name with a page or a table. The target
+        // here is a codeunit in all but odd cases (table procedures are
+        // dispatched before this), so a codeunit of that name comes first.
+        let path = ctx
+            .source
+            .find_object_of_kind(target_object, &["codeunit"])
+            .or_else(|| ctx.source.find_by_object_name(target_object));
+        match path {
             Some(path) => vec![path],
             None => {
                 return eval_error(format!("object '{}' not found in workspace", target_object));
@@ -86,16 +94,7 @@ pub(super) fn dispatch_workspace_procedure(
                 path.display()
             ));
         };
-        let needs_object_globals = object_has_global_declarations(root);
-        let install_root_globals = needs_object_globals && !stack.has_object_globals(&object_name);
-        // Labels are constants: an object whose only globals are labels gets a
-        // fresh globals frame at any depth.
-        if install_root_globals && stack.depth() != 0 && object_has_global_variables(root) {
-            return eval_error(format!(
-                "stateful codeunit '{}' requires live BC execution",
-                object_name
-            ));
-        }
+        let globals = globals_for_call(root, source, &object_name, instance, stack, ctx);
 
         // Walk the tree to find a procedure_declaration with the matching name.
         // Iterative traversal (rule: no recursion).
@@ -128,24 +127,37 @@ pub(super) fn dispatch_workspace_procedure(
         let Some((proc_node, params, return_decl)) = found_proc else {
             continue;
         };
-        return run_declaration(
-            Declaration {
-                node: proc_node,
-                name: procedure,
-                params,
-                return_decl,
-            },
-            DeclarationSite {
-                path,
-                source,
-                object_name: &object_name,
-                globals_root: install_root_globals.then_some(root),
-                implicit_record: None,
-            },
-            args,
-            stack,
-            ctx,
-        );
+        let declaration = Declaration {
+            node: proc_node,
+            name: procedure,
+            params,
+            return_decl,
+        };
+        let site = |globals_root| DeclarationSite {
+            path,
+            source,
+            object_name: &object_name,
+            globals_root,
+            implicit_record: None,
+        };
+        return match globals {
+            Globals::None | Globals::OnStack => {
+                run_declaration(declaration, site(None), args, stack, ctx)
+            }
+            Globals::Fresh => run_declaration(declaration, site(Some(root)), args, stack, ctx),
+            // The instance's globals sit under the call and are kept for its
+            // next call.
+            Globals::Instance(id, frame) => {
+                stack.push(frame);
+                ctx.active_instances.insert(id);
+                let result = run_declaration(declaration, site(None), args, stack, ctx);
+                ctx.active_instances.remove(&id);
+                if let Some(frame) = stack.pop() {
+                    ctx.codeunit_instances.insert(id, frame);
+                }
+                result
+            }
+        };
     }
 
     eval_error(format!(
@@ -370,6 +382,79 @@ pub(super) fn run_declaration(
     }
 }
 
+/// Where a call finds its object's globals.
+enum Globals {
+    /// The object declares none.
+    None,
+    /// Already on the stack: a call within the running instance.
+    OnStack,
+    /// A new instance for this call alone: an event subscriber, or the
+    /// first object of a run.
+    Fresh,
+    /// The stored globals of instance `id` (a codeunit variable's, or a
+    /// `SingleInstance` codeunit's).
+    Instance(u64, CallFrame),
+}
+
+fn globals_for_call(
+    object: tree_sitter::Node<'_>,
+    source: &[u8],
+    object_name: &str,
+    instance: Option<u64>,
+    stack: &ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Globals {
+    if !object_has_global_declarations(object) {
+        return Globals::None;
+    }
+    // A SingleInstance codeunit has one instance for the whole run.
+    let instance = if single_instance(object, source) {
+        let next = &mut ctx.next_codeunit_instance;
+        Some(
+            *ctx.single_instances
+                .entry(object_name.to_ascii_lowercase())
+                .or_insert_with(|| {
+                    *next += 1;
+                    *next
+                }),
+        )
+    } else {
+        instance
+    };
+    match instance {
+        Some(id) if ctx.active_instances.contains(&id) => Globals::OnStack,
+        Some(id) => {
+            let frame = ctx.codeunit_instances.remove(&id).unwrap_or_else(|| {
+                let mut frame = CallFrame::new(object_name, "<globals>");
+                bind_object_globals(object, source, &mut frame);
+                frame
+            });
+            Globals::Instance(id, frame)
+        }
+        None if stack.has_object_globals(object_name) => Globals::OnStack,
+        None => Globals::Fresh,
+    }
+}
+
+/// `SingleInstance = true;` on the object.
+fn single_instance(object: tree_sitter::Node<'_>, source: &[u8]) -> bool {
+    let Some(body) = object.child_by_field_name("body") else {
+        return false;
+    };
+    let mut cursor = body.walk();
+    let single = body.named_children(&mut cursor).any(|child| {
+        child.kind() == "property_assignment"
+            && child
+                .utf8_text(source)
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .split_whitespace()
+                .collect::<String>()
+                .starts_with("singleinstance=true")
+    });
+    single
+}
+
 /// The `object_declaration` named `name` among `root`'s objects.
 pub fn object_declaration_named<'t>(
     root: tree_sitter::Node<'t>,
@@ -453,12 +538,6 @@ fn raise_published_event(
 /// Whether the object declares any global, a label included.
 pub(super) fn object_has_global_declarations(root: tree_sitter::Node<'_>) -> bool {
     object_globals_match(root, |_| true)
-}
-
-/// Whether the object declares a global variable, which holds state between
-/// calls. Labels do not count.
-fn object_has_global_variables(root: tree_sitter::Node<'_>) -> bool {
-    object_globals_match(root, |kind| kind == "regular_variable_declaration")
 }
 
 /// Whether a declaration in the object's `var` section has a child whose kind

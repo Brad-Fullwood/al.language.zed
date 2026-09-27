@@ -33,7 +33,7 @@ pub(crate) enum TableCode<'a> {
 
 /// Whether table `table_name` declares `code`.
 pub(crate) fn declares(ctx: &DispatchCtx, table_name: &str, code: TableCode<'_>) -> bool {
-    let Some(path) = ctx.source.find_by_object_name(table_name) else {
+    let Some(path) = ctx.source.find_object_of_kind(table_name, &["table"]) else {
         return false;
     };
     let Some((text, tree)) = ctx.source.get_cached_parse(&path) else {
@@ -59,7 +59,9 @@ pub(crate) fn run_table_code(
     let Value::Record(record) = &rec else {
         return None;
     };
-    let path = ctx.source.find_by_object_name(&record.table_name)?;
+    let path = ctx
+        .source
+        .find_object_of_kind(&record.table_name, &["table"])?;
     let (text, tree) = ctx.source.get_cached_parse(&path)?;
     let source = text.as_bytes();
     let object = find_table_object(tree.root_node(), source, &record.table_name)?;

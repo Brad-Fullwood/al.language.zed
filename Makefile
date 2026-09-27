@@ -35,7 +35,7 @@ endif
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip2/release/zed_al.wasm
 
-.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate clean
+.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate plugin-evals clean
 
 # Crates that are NOT published to crates.io (publish = false): the root wasm
 # extension plus the binary/harness crates. Everything else under crates/* is a
@@ -261,6 +261,7 @@ shellcheck:
 		shellcheck \
 			scripts/*.sh \
 			plugin/scripts/*.sh \
+			plugin/evals/*.sh \
 			crates/al-test-harness/editor-e2e/*.sh \
 			crates/al-test-harness/editor-e2e/container/*.sh \
 			tree-sitter-al/tests/*.sh \
@@ -413,6 +414,14 @@ crates-publish-dryrun:
 # description in the frontmatter of every skill and agent.
 plugin-validate:
 	@bash scripts/check-plugin.sh
+
+# Ground-truth checks for the plugin's skills, against al-explorer directly:
+# no LLM involved. Needs a built al-explorer on PATH or at
+# target/release/al-explorer (build it first with `make rust` or `cargo build
+# --release -p al-explorer`); a case reports itself skipped, not failed, when
+# neither is found.
+plugin-evals:
+	@bash plugin/evals/run.sh
 
 # ── Clean ────────────────────────────────────────────────────────
 clean:

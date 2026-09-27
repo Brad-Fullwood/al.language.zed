@@ -145,6 +145,9 @@ pub enum Value {
     Codeunit {
         /// The declared subtype object name (e.g. `"Library - Sales"`).
         object_name: String,
+        /// The instance whose globals this variable's calls see, given on
+        /// its first call. Copies of the variable share it.
+        instance: Option<u64>,
     },
     /// AL `BigInteger` — 64-bit signed. Appended to the enum to preserve the
     /// variant-ordering stability contract; it is treated as the same numeric
@@ -265,7 +268,16 @@ impl Ord for Value {
                 .cmp(&b.iter().collect::<Vec<_>>()),
             (Blob(a), Blob(b)) => a.cmp(b),
             (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
-            (Codeunit { object_name: a }, Codeunit { object_name: b }) => a.cmp(b),
+            (
+                Codeunit {
+                    object_name: a,
+                    instance: a_instance,
+                },
+                Codeunit {
+                    object_name: b,
+                    instance: b_instance,
+                },
+            ) => (a, a_instance).cmp(&(b, b_instance)),
             (
                 Range {
                     start: a_start,

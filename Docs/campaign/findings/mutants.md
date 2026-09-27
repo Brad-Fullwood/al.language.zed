@@ -54,6 +54,7 @@ None found so far.
 | `al-syntax/src/sort.rs` | 107 | 78 | 20 | 1 | 8 |
 | `al-source/src/documents.rs` | 147 | 76 | 29 | 42 | 0 |
 | `al-runtime/src/mock/filter.rs` | 112 | 97 | 1 | 9 | 5 |
+| `al-syntax/src/lint.rs` | 152 | 128 | 15 | 7 | 2 |
 
 ## Runs
 
@@ -287,3 +288,93 @@ and `crates/al-runtime/tests/property_filter.proptest-regressions`. Both pass on
 source (`cargo test -p al-runtime --lib mock::filter` and
 `cargo test -p al-runtime --test property_filter`), so they were mutant artifacts and were
 deleted.
+
+### al-syntax: `crates/al-syntax/src/lint.rs`
+
+```bash
+cargo mutants --in-place -p al-syntax --file crates/al-syntax/src/lint.rs
+```
+
+152 mutants in about 5 minutes: 128 caught, 15 missed, 7 unviable, 2 timeout. The 7
+unviable mutants replace a function that returns `&'static [LintRuleInfo]`,
+`Vec<LintDiagnostic>`, `Range`, `Vec<MethodCall>`, `Option<tree_sitter::Node<'_>>` or
+`Vec<ObjectSection<'tree>>` with a `Default`-built value. None of those types implement
+`Default`, so the replacement does not compile. The 2 timeouts are `drain_awaiting_bodies`'s
+loop turning `==` into `!=` (pops forever once the stack is empty, since `None != Some(_)`
+never becomes false) and an underflow in `method_calls`'s identifier-start scan. A timeout
+fails the test run, so both count as detected.
+
+`missed.txt`:
+
+```text
+crates/al-syntax/src/lint.rs:38:9: replace <impl std::fmt::Display for LintSeverity>::fmt -> std::fmt::Result with Ok(Default::default())
+crates/al-syntax/src/lint.rs:192:63: replace && with || in mask_non_code_keep_quoted_identifiers
+crates/al-syntax/src/lint.rs:199:9: replace || with && in is_loop_start
+crates/al-syntax/src/lint.rs:216:40: replace && with || in opens_block
+crates/al-syntax/src/lint.rs:312:34: replace || with && in scan_procedure_for_find_in_loop
+crates/al-syntax/src/lint.rs:316:46: replace || with && in scan_procedure_for_find_in_loop
+crates/al-syntax/src/lint.rs:327:28: delete ! in scan_procedure_for_find_in_loop
+crates/al-syntax/src/lint.rs:341:28: replace -= with += in scan_procedure_for_find_in_loop
+crates/al-syntax/src/lint.rs:341:28: replace -= with /= in scan_procedure_for_find_in_loop
+crates/al-syntax/src/lint.rs:358:56: replace == with != in scan_procedure_for_find_in_loop
+crates/al-syntax/src/lint.rs:359:28: delete ! in scan_procedure_for_find_in_loop
+crates/al-syntax/src/lint.rs:467:20: replace < with <= in method_calls
+crates/al-syntax/src/lint.rs:473:44: replace + with - in method_calls
+crates/al-syntax/src/lint.rs:491:31: replace - with + in span_range
+crates/al-syntax/src/lint.rs:537:72: delete ! in lint_missing_set_load_fields
+```
+
+- `lint.rs:38`, the `Display` impl for `LintSeverity` returns `Ok(Default::default())`:
+  equivalent by project policy. `.cargo/mutants.toml` excludes `fn fmt` and `impl Display`
+  as not a meaningful red-green signal. This one only slips through because it is written
+  as `impl std::fmt::Display` rather than `impl Display`, which the exclusion regex does
+  not match. Nothing in the workspace calls this impl (severities are matched directly,
+  never formatted), so it is left alone rather than adding a test against the project's own
+  stated policy.
+- `lint.rs:192`, `&&` to `||` in `mask_non_code_keep_quoted_identifiers`: test added
+  152a9aa6. The one caller, the label scanner in `symbols/labels.rs`, never has a
+  single-quoted string whose masking changes its result, so a direct test calls the
+  function with both quote forms on one line.
+- `lint.rs:199`, `||` to `&&` in `is_loop_start`: test added 152a9aa6. Every find-in-loop
+  test drove the outer loop with `for`. The mutant needs `foreach` and `while` to both
+  match to detect either one, so a `while` loop test was needed to catch it.
+- `lint.rs:216`, `&&` to `||` in `opens_block`: test added 152a9aa6, a direct test of the
+  helper. A line ending in `of` with no `case` prefix must not open a block on its own.
+- `lint.rs:312`, `||` to `&&` on the `repeat` push: test added 152a9aa6. A bare `repeat`
+  line fell through to the same `AwaitingBody` frame a single-statement loop body uses, so
+  the next statement's terminating `;` popped it after just one body line.
+- `lint.rs:316`, `||` to `&&` on the `do`/`\tdo` check: equivalent. A line ending in `do`
+  never also terminates with `;`, so skipping this branch falls through to the same
+  `AwaitingBody` push in the final `else`.
+- `lint.rs:327`, `!` deleted before `frames.is_empty()` in the `opens_block` branch: test
+  added 152a9aa6. `in_loop` is `line_in_loop || !frames.is_empty()`. Inverting
+  `line_in_loop` makes that OR always true, so `if Item.FindFirst() then begin` gets
+  flagged even with no loop open at all.
+- `lint.rs:341`, `-=` to `+=` and to `/=` on the nested-`begin` depth counter: test added
+  152a9aa6. A matched inner `if … then begin … end;` inside a `do begin` loop has to
+  decrement the shared depth back to 1 so the loop's own closing `end;` still recognises
+  it. Neither mutant does, so the outer loop frame never closes and a call after it stays
+  flagged.
+- `lint.rs:358`, `==` to `!=` on the `until` line check: killed by the same test as line
+  312. Under the mutant, every non-`until` line inside the repeat body also matches the
+  `until` branch and pops the `Repeat` frame early, so the second find call in the body
+  goes unflagged.
+- `lint.rs:359`, `!` deleted before `frames.is_empty()` in the `until` branch: test added
+  152a9aa6. Same always-true `in_loop` bug as line 327, reached through a stray `until`
+  with no matching `repeat`, the kind of mid-edit or malformed source the LSP still has to
+  lint without a false positive.
+- `lint.rs:467`, `<` to `<=` in `method_calls`'s receiver-start guard: test added 152a9aa6,
+  a direct test. The guard excludes a call with nothing before the dot, as with a chained
+  call whose receiver is on the previous line. `<=` accepts that boundary case instead.
+- `lint.rs:473`, `+` to `-` computing the call's end offset: test added 152a9aa6, a direct
+  test. `FindFirst()`'s own empty parentheses give a zero offset either way, so only a call
+  with a gap before `)` (`FindFirst( )`) tells the two formulas apart.
+- `lint.rs:491`, `-` to `+` computing `span_range`'s line width: test added 152a9aa6, a
+  direct test. On a file's first line `start_byte` is 0 and the two operators agree. A
+  later line's nonzero `start_byte` is needed to see the clamp stop working.
+- `lint.rs:537`, `!` deleted in the scan events' sort key: equivalent. The secondary sort
+  key only matters when two events share the same `call.dot`, and `dot` is the byte offset
+  of one specific `.` in the line, so two events can never tie on it.
+
+Re-run after 152a9aa6: 152 mutants, 140 caught, 7 unviable, 2 timeout, 3 missed (the three
+equivalents above).

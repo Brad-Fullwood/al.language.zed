@@ -148,6 +148,81 @@ recorded in the table above. Nothing about triggering changed: every run
 loaded the right skill on its first turn. What changed is how many calls each
 answer took and how much of the result reached the context.
 
+## Downloading al-lsp and al-explorer
+
+`plugin/scripts/al-fetch-release.sh`, called from the `SessionStart` hook
+(`al-session-context.sh`) right after it confirms the working directory is an
+AL project. It runs when `al-bin.sh`'s first three lookups all miss: not
+`$AL_BIN_DIR`, not a `target/release` or `target/debug` next to this
+repository, not `PATH`, and not already in `$CLAUDE_PLUGIN_DATA/bin` from an
+earlier session.
+
+What it does, in order:
+
+1. Resolves the platform triple (`linux`/`macos` and `x86_64`/`aarch64`) and
+   refuses on anything else, naming the manual install instead.
+2. Refuses immediately, before any network request, if the URL it would fetch
+   from is not `https://`.
+3. Fetches `binary-checksums.txt` from the pinned release
+   (`AL_PIN_RELEASE_TAG` in the script). No such asset, or an empty one,
+   refuses before the archive is ever requested.
+4. Fetches the platform archive and extracts it into a private staging
+   directory, not yet the plugin's cache directory.
+5. Hashes every extracted file and compares it against
+   `binary-checksums.txt`. A file the listing does not name, or a digest that
+   does not match, deletes the staging directory and refuses; nothing is made
+   executable and nothing is added to `$CLAUDE_PLUGIN_DATA/bin`.
+6. Only once every file matches does it `chmod +x` the two binaries and move
+   the staging directory into place.
+
+One line always goes to stderr. When there is something worth telling the
+session (installed, or refused for an actionable reason), the same line also
+goes to stdout, which `al-session-context.sh` folds into the `SessionStart`
+context; the steady-state case, both binaries already available, stays on
+stderr only, so a normal session adds nothing to the model's context. The
+script always exits 0: a session starting must not fail because a download
+did or did not happen, and `al-bin.sh` still refuses clearly, with
+installation instructions, if a skill or the MCP server ends up trying to run
+a binary that was never installed.
+
+It cannot add the install directory to the session's actual `PATH`: a
+`SessionStart` hook has no such mechanism (its output is context text, not
+environment). On a successful install it says so in its message and gives the
+`export PATH=...` line for calling the binaries directly; every al-bc skill
+and the MCP server already find them in `$CLAUDE_PLUGIN_DATA/bin` through
+`al-bin.sh` regardless.
+
+### What has been tested
+
+- **The download path, forced.** An empty `PATH` and a temporary `$HOME` /
+  `$CLAUDE_PLUGIN_DATA` (so no binary is found anywhere `al-bin.sh` or this
+  script would look), run against the real repository's latest tagged
+  release (`v0.2.2`). Result: a real network request, followed by a correct
+  refusal, because `v0.2.2` predates `binary-checksums.txt` (that asset and
+  the `.github/workflows/release.yml` step that produces it were added after
+  the tag). This is the honest current state: until a release is cut that
+  publishes it, the script refuses every real download rather than
+  installing an unverified binary. See the `binary-checksums.txt` item in
+  `plugin/ROADMAP.md`.
+- **A full successful install**, against `v0.2.2`'s real `al-linux-x86_64.tar.gz`
+  served from a local `python3 -m http.server`, with a `binary-checksums.txt`
+  built by hand from that archive's real digests (standing in for the asset
+  that release does not publish). Verified the extracted `al-explorer` runs
+  and reports its version, and that a second run finds it in
+  `$CLAUDE_PLUGIN_DATA/bin` and makes no network request.
+- **A checksum mismatch**, same local server, one digest in
+  `binary-checksums.txt` changed. Refused with the expected-vs-actual digest
+  in the message; nothing extracted was made executable or installed.
+- **An https-only refusal**, pointing `AL_RELEASE_BASE_URL` at the same local
+  server without `AL_ALLOW_INSECURE_RELEASE_URL=1`. Refused before any
+  request, citing the non-https URL.
+
+Not tested: a real download succeeding against this repository's own release
+process end to end, because no tagged release publishes
+`binary-checksums.txt` yet. Once one does, the "forced download path" run
+above should be repeated against it without `AL_RELEASE_BASE_URL` or
+`AL_ALLOW_INSECURE_RELEASE_URL` set.
+
 ## Validation
 
 ```

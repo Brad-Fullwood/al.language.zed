@@ -22,7 +22,7 @@ impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
-    R: Fn(&str) -> Option<ResolvedObject> + Send + Sync + 'static,
+    R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
@@ -627,7 +627,7 @@ mod tests {
                 token_read_by_hook.store(true, Ordering::SeqCst);
                 std::future::ready(Ok("test-token".to_string()))
             },
-            resolve_object: |_: &str| -> Option<ResolvedObject> { None },
+            resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
             compile: move |_: PathBuf| {
                 compiled_by_hook.store(true, Ordering::SeqCst);
@@ -714,7 +714,7 @@ mod tests {
             project_root: "/test/project".to_string(),
             authorize_target: allow_every_target(),
             acquire_token: |_: String| std::future::ready(Ok("test-token".to_string())),
-            resolve_object: |_: &str| -> Option<ResolvedObject> { None },
+            resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
             compile: move |_: PathBuf| {
                 compiled_by_hook.store(true, std::sync::atomic::Ordering::SeqCst);

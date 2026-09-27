@@ -1683,4 +1683,188 @@ mod tests {
             "an incomplete body must not create unused-variable false positives: {diags:?}"
         );
     }
+
+    #[test]
+    fn mask_keep_quoted_identifiers_masks_single_quoted_strings_only() {
+        // The function keeps `"…"` quoted identifiers visible and masks
+        // `'…'` string literals, even when both appear on the same line.
+        let (masked, _) =
+            mask_non_code_keep_quoted_identifiers(r#""My Lbl": Label 'disabled text';"#, false);
+        assert_eq!(
+            masked, r#""My Lbl": Label                ;"#,
+            "the quoted identifier stays, the string literal is blanked"
+        );
+    }
+
+    #[test]
+    fn findfirst_in_while_loop_is_flagged() {
+        // Every other find-in-loop test drives the outer loop with `for`.
+        // `while` and `foreach` share the same detection branch as `for`,
+        // and only `for` was ever exercised.
+        let src = "codeunit 50100 Test
+{
+    procedure DoIt()
+    var
+        Item: Record Item;
+    begin
+        while not Item.IsEmpty() do begin
+            Item.FindFirst();
+        end;
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "AL-NL001").count(),
+            1,
+            "FindFirst inside a while loop must be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn opens_block_requires_case_prefix_and_of_suffix_together() {
+        assert!(
+            !opens_block("something of"),
+            "an `of` suffix alone is not a case header"
+        );
+        assert!(
+            !opens_block("case x"),
+            "a case header without its `of` is not a block opener"
+        );
+        assert!(opens_block("case x of"), "a real case header opens a block");
+    }
+
+    #[test]
+    fn repeat_keeps_its_frame_open_across_multiple_body_statements() {
+        // A bare `repeat` line used to fall back to the same `AwaitingBody`
+        // frame a single-statement loop body uses, which a later statement's
+        // terminating `;` drains after just one body line, closing the loop
+        // early.
+        let src = "codeunit 50100 Test
+{
+    procedure DoIt()
+    var
+        Item: Record Item;
+    begin
+        repeat
+            Item.FindFirst();
+            Item.FindLast();
+        until Item.Next() = 0;
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert_eq!(
+            diags.iter().filter(|d| d.code == "AL-NL001").count(),
+            2,
+            "both calls inside the repeat body stay in the loop: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn findfirst_on_a_compound_condition_line_outside_a_loop_is_not_flagged() {
+        // `if Item.FindFirst() then begin` opens a block on the same line as
+        // the call. Outside any loop this must stay unflagged.
+        let src = "codeunit 50100 Test
+{
+    procedure GetItem()
+    var
+        Item: Record Item;
+    begin
+        if Item.FindFirst() then begin
+            Message(Item.\"No.\");
+        end;
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert!(
+            !diags.iter().any(|d| d.code == "AL-NL001"),
+            "did not expect AL-NL001 outside a loop, got {diags:?}"
+        );
+    }
+
+    #[test]
+    fn a_matched_nested_begin_end_pair_lets_the_outer_do_begin_loop_close() {
+        // The nested if-begin's `end;` must decrement the shared depth
+        // counter so the do-begin loop's own `end;` still sees depth 1 and
+        // closes, instead of growing (or staying put) and leaving the loop
+        // frame open for the rest of the procedure.
+        let src = "codeunit 50100 Test
+{
+    procedure DoIt()
+    var
+        i: Integer;
+        x: Boolean;
+        y: Integer;
+        Item: Record Item;
+    begin
+        for i := 1 to 3 do begin
+            if x then begin
+                y := 1;
+            end;
+        end;
+        Item.FindFirst();
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert!(
+            !diags.iter().any(|d| d.code == "AL-NL001"),
+            "FindFirst after the loop closes must not be flagged: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn a_stray_until_line_outside_any_loop_does_not_flag_a_call_on_it() {
+        // The scan does not verify that an `until` pairs with an open
+        // `repeat`; a stray `until` (mid-edit source, or a copy-paste
+        // mistake) must not itself count as loop context.
+        let src = "codeunit 50100 Test
+{
+    procedure DoIt()
+    var
+        Item: Record Item;
+    begin
+        until Item.FindFirst() = 0;
+    end;
+}";
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert!(
+            !diags.iter().any(|d| d.code == "AL-NL001"),
+            "a stray until must not be treated as loop context: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn method_calls_skips_a_call_with_no_receiver_before_the_dot() {
+        // Only whitespace precedes the dot, as with a chained call whose
+        // receiver is on the previous line: there is no receiver identifier
+        // to report a span for.
+        assert!(method_calls("    .FindFirst();", "findfirst").is_empty());
+    }
+
+    #[test]
+    fn method_calls_end_accounts_for_the_offset_to_the_closing_paren() {
+        // With a gap before `)` the arithmetic has to add the offset, not
+        // subtract it; `FindFirst()` alone never exercises this because its
+        // gap is zero either way.
+        let calls = method_calls("Rec.FindFirst( )", "findfirst");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].end, 16, "end must land one past the closing paren");
+    }
+
+    #[test]
+    fn span_range_clamps_columns_to_the_lines_actual_width() {
+        // `width` is `end_byte - start_byte`. On a line past the first,
+        // `start_byte` is nonzero, so a wrong sign inflates the clamp
+        // instead of shrinking it to the line's real length.
+        let text = "abc\ndefgh\n";
+        let range = span_range(text, 1, 1, 100);
+        assert_eq!(
+            range.end_point.column, 5,
+            "end clamps to the line's own width"
+        );
+    }
 }

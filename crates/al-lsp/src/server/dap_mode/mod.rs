@@ -619,9 +619,79 @@ pub fn native_dap_object_path(
         .map(|(path, _)| path)
 }
 
+/// The object a breakpoint on 1-based `line` of `path` belongs to.
+///
+/// A file can declare several objects, and BC routes a breakpoint by object
+/// type and ID, so a breakpoint inside a file's second object set on the
+/// first never hit. The object is the last one declared at or above the
+/// line. A line above every declaration belongs to the first.
+pub fn object_at_line(
+    file_index: &al_source::file_index::FileIndex,
+    path: &Path,
+    line: u32,
+) -> Option<al_source::file_index::CachedObjectInfo> {
+    let row = usize::try_from(line.saturating_sub(1)).ok()?;
+    let mut objects = file_index.object_infos_in(path).into_iter();
+    let first = objects.next()?;
+    Some(
+        objects
+            .rfind(|info| info.range.start_point.row <= row)
+            .unwrap_or(first),
+    )
+}
+
+/// The BC object type and ID a native DAP breakpoint on 1-based `line` of
+/// `path` is set on: the object [`object_at_line`] finds.
+pub fn native_dap_object_at_line(
+    file_index: &al_source::file_index::FileIndex,
+    path: &Path,
+    line: i64,
+) -> Option<al_dap::dap::native_dap::ResolvedObject> {
+    let line = u32::try_from(line.max(1)).unwrap_or(u32::MAX);
+    let info = object_at_line(file_index, path, line)?;
+    let kind = info.kind.parse::<al_symbols::ObjectKind>().ok()?;
+    let object_id = kind.normalize_declaration_id(info.id).ok()?;
+    let object_type = al_dap::dap::native_dap::kind_to_object_type(&info.kind);
+    (object_type != al_dap::dap::native_dap::bc_object_type::UNKNOWN).then_some(
+        al_dap::dap::native_dap::ResolvedObject {
+            object_type,
+            object_id,
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--dap` set every breakpoint of a file on the file's first object, so
+    /// a breakpoint inside a codeunit declared after a table went to the
+    /// table.
+    #[test]
+    fn native_dap_breakpoints_resolve_to_the_object_around_the_line() {
+        let file_index = al_source::file_index::FileIndex::new();
+        let path = std::path::PathBuf::from("/proj/Posting.al");
+        file_index.add_file(
+            path.clone(),
+            "table 50200 \"Posting Buffer\"\n{\n}\n\ncodeunit 50100 \"Poster\"\n{\n    procedure Post()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        let at = |line| {
+            native_dap_object_at_line(&file_index, &path, line)
+                .map(|object| (object.object_type, object.object_id))
+        };
+        let table = al_dap::dap::native_dap::bc_object_type::TABLE;
+        let codeunit = al_dap::dap::native_dap::bc_object_type::CODEUNIT;
+        assert_eq!(at(2), Some((table, 50200)));
+        assert_eq!(at(4), Some((table, 50200)), "between the objects");
+        assert_eq!(at(5), Some((codeunit, 50100)));
+        assert_eq!(at(8), Some((codeunit, 50100)), "inside Poster.Post");
+        assert_eq!(
+            native_dap_object_at_line(&file_index, Path::new("/proj/None.al"), 1)
+                .map(|o| o.object_id),
+            None
+        );
+    }
 
     /// The frame's codeunit is the second object of its file; only each
     /// file's first object was searched, so the frame had no source.

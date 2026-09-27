@@ -18,10 +18,6 @@ pub struct SourceFileSummary {
     pub archive_path: String,
     /// Every object the file declares, in document order.
     pub objects: Vec<ObjectSummary>,
-    /// The effects of every procedure and trigger in the file, in the order
-    /// [`file_effect_sites`] finds them. Transaction lint attributes them to
-    /// the file's first object, as it does for a parsed file.
-    pub effects: Vec<ProcedureEffectSites>,
 }
 
 /// One object declaration of a summarized file.
@@ -43,6 +39,10 @@ pub struct ObjectSummary {
     /// Lowercase procedure name to the calls of the declaration the tree path
     /// resolves for that name.
     pub calls: BTreeMap<String, ProcedureCalls>,
+    /// The effects of every procedure and trigger of this object, in the
+    /// order [`node_effect_sites`] finds them. Transaction lint credits them
+    /// to this object.
+    pub effects: Vec<ProcedureEffectSites>,
 }
 
 impl SourceFileSummary {
@@ -80,13 +80,13 @@ impl SourceFileSummary {
                     call_suffixes,
                     procedures,
                     calls,
+                    effects: node_effect_sites(node, tree, source),
                 }
             })
             .collect();
         Self {
             archive_path: archive_path.into(),
             objects,
-            effects: file_effect_sites(tree, source),
         }
     }
 
@@ -119,6 +119,13 @@ impl SourceFileSummary {
         fn effect(effect: &EffectSite) -> usize {
             std::mem::size_of::<EffectSite>() + effect.label.capacity()
         }
+        fn procedure_effects(sites: &ProcedureEffectSites) -> usize {
+            std::mem::size_of::<ProcedureEffectSites>()
+                + sites.name.capacity()
+                + pairs(&sites.attributes)
+                + sites.writes.iter().map(effect).sum::<usize>()
+                + sites.commits.iter().map(effect).sum::<usize>()
+        }
         let objects: usize = self
             .objects
             .iter()
@@ -146,20 +153,10 @@ impl SourceFileSummary {
                                 + map(&calls.object_vars)
                         })
                         .sum::<usize>()
+                    + object.effects.iter().map(procedure_effects).sum::<usize>()
             })
             .sum();
-        let effects: usize = self
-            .effects
-            .iter()
-            .map(|sites| {
-                std::mem::size_of::<ProcedureEffectSites>()
-                    + sites.name.capacity()
-                    + pairs(&sites.attributes)
-                    + sites.writes.iter().map(effect).sum::<usize>()
-                    + sites.commits.iter().map(effect).sum::<usize>()
-            })
-            .sum();
-        std::mem::size_of::<Self>() + self.archive_path.capacity() + objects + effects
+        std::mem::size_of::<Self>() + self.archive_path.capacity() + objects
     }
 }
 

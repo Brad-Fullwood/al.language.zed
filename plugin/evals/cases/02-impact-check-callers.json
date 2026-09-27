@@ -1,0 +1,16 @@
+{
+  "id": "02-impact-check-callers",
+  "question": "Who calls the SchedulePost procedure on the Work Order Helper codeunit?",
+  "skill": "al-bc:bc-impact-check",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/TESTING.md question 2",
+  "checks": [
+    {
+      "args": ["--compact", "impact", "SchedulePost", "--scope", "workspace"],
+      "jq": ".impacted | length",
+      "expect_exact": "2",
+      "expect_contains": ["\"n\":\"Work Order Process Staging\"", "\"k\":\"Report\""]
+    }
+  ]
+}

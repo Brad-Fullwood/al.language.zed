@@ -217,6 +217,12 @@ impl RecordView {
         self.current = other.current.clone();
         self.x_rec = other.x_rec.clone();
     }
+
+    /// Drop the iteration set and position, as `DeleteAll` does.
+    pub fn clear_cursor(&mut self) {
+        self.iter_set.clear();
+        self.iter_pos = None;
+    }
 }
 
 /// A rename between [`MockRecord::start_rename_in`] and its finish or
@@ -708,6 +714,12 @@ impl MockRecord {
     }
 
     fn build_iter_set(&self, view: &mut RecordView) {
+        view.iter_set = self.matching_keys_in(view);
+    }
+
+    /// The keys of the rows the view's filters select, in the order of its
+    /// current key.
+    pub fn matching_keys_in(&self, view: &RecordView) -> Vec<PrimaryKey> {
         let mut keys: Vec<PrimaryKey> = self
             .rows
             .iter()
@@ -720,7 +732,7 @@ impl MockRecord {
             })
             .collect();
 
-        let sort_key = view.sort_key.clone();
+        let sort_key = &view.sort_key;
         keys.sort_by(|a, b| {
             let row_a = self.rows.get(a).unwrap();
             let row_b = self.rows.get(b).unwrap();
@@ -731,8 +743,7 @@ impl MockRecord {
         if sort_key.descending {
             keys.reverse();
         }
-
-        view.iter_set = keys;
+        keys
     }
 
     fn load_row_at(&self, view: &mut RecordView, pos: usize) -> Result<(), RecordError> {
@@ -2125,5 +2136,160 @@ mod tests {
         rec.reset();
         rec.set_range(2, Value::Integer(1), Value::Integer(9));
         assert_eq!(rec.count(), 0);
+    }
+
+    #[test]
+    fn zero_like_covers_every_scalar_type() {
+        // `unset_cell_matches_typed_zero_filters` above only exercises the
+        // Integer arm. Each other arm needs its own check, since deleting
+        // one falls through to the catch-all `_ => return None`.
+        assert_eq!(
+            zero_like(&Value::Decimal(dec!(5))),
+            Some(Value::Decimal(Decimal::ZERO))
+        );
+        assert_eq!(
+            zero_like(&Value::Boolean(true)),
+            Some(Value::Boolean(false))
+        );
+        assert_eq!(
+            zero_like(&Value::Text("x".to_string())),
+            Some(Value::Text(String::new()))
+        );
+        assert_eq!(
+            zero_like(&Value::Code("X".to_string())),
+            Some(Value::Code(String::new()))
+        );
+        assert_eq!(zero_like(&Value::Date(100)), Some(Value::Date(0)));
+        assert_eq!(zero_like(&Value::Time(100)), Some(Value::Time(0)));
+        assert_eq!(zero_like(&Value::DateTime(100)), Some(Value::DateTime(0)));
+        assert_eq!(zero_like(&Value::Duration(100)), Some(Value::Duration(0)));
+        assert_eq!(zero_like(&Value::Char('x')), Some(Value::Char('\0')));
+    }
+
+    #[test]
+    fn primary_key_len_matches_the_declared_key_field_count() {
+        let composite = MockRecord::new(40, "Composite", vec![1, 2, 3]);
+        assert_eq!(composite.primary_key_len(), 3);
+        let single = make_table();
+        assert_eq!(single.primary_key_len(), 1);
+    }
+
+    #[test]
+    fn is_ascending_in_reports_the_current_direction() {
+        let rec = make_table();
+        let mut view = rec.new_view();
+        assert!(
+            rec.is_ascending_in(&view),
+            "a fresh view iterates ascending"
+        );
+        rec.set_ascending_in(&mut view, false);
+        assert!(
+            !rec.is_ascending_in(&view),
+            "ASCENDING(false) flips the direction"
+        );
+    }
+
+    #[test]
+    fn next_on_a_stale_empty_iter_set_returns_zero_without_panicking() {
+        // `next_in`'s early return guards `target.clamp(0, iter_set.len() - 1)`,
+        // which panics on an empty set (`clamp(0, -1)`). A view's cursor can go
+        // stale like this if the set is cleared without a fresh Find; Next must
+        // still report "no move" instead of panicking.
+        let mut rec = make_table();
+        insert_row(&mut rec, 1, "x");
+        let mut view = rec.new_view();
+        rec.find_first_in(&mut view).unwrap();
+        view.iter_set.clear();
+        assert_eq!(rec.next_in(&mut view, 5).unwrap(), 0);
+    }
+
+    #[test]
+    fn modify_all_reports_the_number_of_rows_changed() {
+        let mut rec = make_table();
+        for i in 1i64..=3 {
+            insert_row(&mut rec, i, "old");
+        }
+        let view = rec.new_view();
+        let changed = rec
+            .modify_all_in(&view, 2, Value::Text("new".to_string()), false)
+            .unwrap();
+        assert_eq!(changed, 3, "all three rows matched the unfiltered view");
+    }
+
+    #[test]
+    fn calc_sum_keeps_an_integer_total_when_the_field_is_not_declared_decimal() {
+        let mut rec = make_table();
+        insert_row(&mut rec, 2, "x");
+        insert_row(&mut rec, 3, "y");
+        let view = rec.new_view();
+        let total = rec.calc_sum_in(&view, 1).unwrap();
+        assert_eq!(
+            total,
+            Value::Integer(5),
+            "a field with no declared Decimal default sums as Integer"
+        );
+    }
+
+    #[test]
+    fn x_rec_returns_the_full_pre_modify_snapshot() {
+        let mut rec = make_table();
+        insert_row(&mut rec, 100, "OriginalName");
+        rec.get(vec![Value::Integer(100)]).unwrap();
+        rec.field_set(2, Value::Text("NewName".to_string()));
+        rec.modify(false).unwrap();
+        assert_eq!(
+            rec.x_rec().get(&2),
+            Some(&Value::Text("OriginalName".to_string()))
+        );
+    }
+
+    #[test]
+    fn calc_flow_min_max_keep_the_first_row_seen_on_a_numeric_tie() {
+        // Two rows tie numerically (10 and 10.0) but store different `Value`
+        // variants. `<`/`>` (not `<=`/`>=`) must keep the first-seen row, so
+        // the aggregate's own `Value` type stays deterministic instead of
+        // flipping to the later row on every tie.
+        let mut rec = MockRecord::new(50200, "Ties", vec![1]);
+        rec.field_set(1, Value::Integer(1));
+        rec.field_set(2, Value::Integer(10));
+        rec.insert(false).unwrap();
+        rec.init();
+        rec.field_set(1, Value::Integer(2));
+        rec.field_set(2, Value::Decimal(dec!(10.0)));
+        rec.insert(false).unwrap();
+
+        assert_eq!(
+            rec.calc_flow(&[], Some(2), FlowAgg::Min),
+            Ok(Value::Integer(10)),
+            "Min keeps the first-seen row on a tie"
+        );
+        assert_eq!(
+            rec.calc_flow(&[], Some(2), FlowAgg::Max),
+            Ok(Value::Integer(10)),
+            "Max keeps the first-seen row on a tie too"
+        );
+    }
+
+    #[test]
+    fn flow_value_eq_rejects_unequal_booleans() {
+        assert!(
+            !flow_value_eq(&Value::Boolean(true), &Value::Boolean(false)),
+            "true and false are not equal even by the caseless text fallback"
+        );
+        assert!(flow_value_eq(&Value::Boolean(true), &Value::Boolean(true)));
+    }
+
+    #[test]
+    fn flow_text_covers_option_members_and_booleans() {
+        assert_eq!(
+            flow_text(&Value::Option {
+                type_name: "Status".to_string(),
+                member: "Open".to_string(),
+                ordinal: 0,
+            }),
+            Some("Open".to_string())
+        );
+        assert_eq!(flow_text(&Value::Boolean(true)), Some("true".to_string()));
+        assert_eq!(flow_text(&Value::Boolean(false)), Some("false".to_string()));
     }
 }

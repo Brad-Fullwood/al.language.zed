@@ -359,8 +359,8 @@ pub(super) fn find_interface_implementors(
 pub(super) fn record_op_event_names(op: RecordOp) -> (String, String) {
     let op_str = match op {
         RecordOp::Insert => "Insert",
-        RecordOp::Modify => "Modify",
-        RecordOp::Delete => "Delete",
+        RecordOp::Modify | RecordOp::ModifyAll => "Modify",
+        RecordOp::Delete | RecordOp::DeleteAll => "Delete",
         RecordOp::Validate => "Validate",
         RecordOp::Rename => "Rename",
     };
