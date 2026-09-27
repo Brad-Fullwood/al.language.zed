@@ -93,7 +93,7 @@ then trying to reach the same outcome by another route. The result per finding i
 - severity: low
 - scenario: 31 example lines in `--help` output start with `al `, and 7 (`location`, `package-diff`, `trust`) start with `al-explorer `. A user or an agent that copies `al free-ids --kind table` from `al-explorer free-ids --help` gets `command not found`. `al generate-completions fish > ~/.config/fish/completions/al.fish` writes a script that completes `al-explorer`, since clap takes the command name from `name = "al-explorer"`, but fish loads a completion file by the command it completes, so `al.fish` is never read for `al-explorer`.
 - fix: spell every example `al-explorer`, and the fish path `~/.config/fish/completions/al-explorer.fish`. A test that parses each `after_help` and runs the first word through `Cli::command().get_name()` keeps them in step.
-- status: open
+- status: fixed 72f2d654. The 31 example lines start with `al-explorer`, and the fish example writes `~/.config/fish/completions/al-explorer.fish`. Tests `every_help_example_starts_with_the_binary_name` and `the_fish_completion_example_writes_the_file_fish_loads` (al-explorer) walk every subcommand's `after_help`.
 
 ### [R7-BUG-1] `${CodeCop}` is not recognised as a built-in analyzer by the compile and semantic paths
 - where: crates/al-project/src/analyzers.rs:47-63 (`is_builtin_analyzer` and `analyzer_name` strip `.dll` and nothing else), crates/al-compile/src/lib.rs:384 (the built-in match), crates/al-lsp/src/server/diagnostics.rs:700, against crates/al-project/src/trust.rs:553-560 (`is_builtin_analyzer_token`, the only place that strips `${ }`) and crates/al-project/src/scaffold.rs:879-882 (the scaffold writes `${AppSourceCop}`, `${PerTenantExtensionCop}`, `${UICop}`)
