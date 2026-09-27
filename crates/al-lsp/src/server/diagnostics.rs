@@ -189,22 +189,29 @@ pub(crate) async fn compute_workspace_diagnostics(
     Ok(reports)
 }
 
-/// What the project pass read for one URI while staging its report: the file
-/// index entry and, when the document is open, its text and client version.
+/// What the project pass read for one URI while staging its report or its
+/// clear: the file index entry and, when the document is open, its text and
+/// client version.
 ///
 /// Every write to either one stores a new `Arc`, and this input holds the
 /// staged `Arc`s, so pointer equality tells whether either was replaced.
 struct StagedInput {
-    /// The file index key the report was computed from.
-    path: std::path::PathBuf,
+    /// The file index key of `uri`, `None` when `uri` is not a file URI.
+    path: Option<std::path::PathBuf>,
     source: Option<Arc<(String, tree_sitter::Tree)>>,
     document: Option<(Arc<String>, i32)>,
 }
 
 impl StagedInput {
-    fn read(workspace: &al_workspace::Workspace, path: std::path::PathBuf, uri: &Url) -> Self {
+    fn read(
+        workspace: &al_workspace::Workspace,
+        path: Option<std::path::PathBuf>,
+        uri: &Url,
+    ) -> Self {
         Self {
-            source: workspace.file_index.cached_parse_entry(&path),
+            source: path
+                .as_deref()
+                .and_then(|path| workspace.file_index.cached_parse_entry(path)),
             document: workspace.documents.get_text_and_client_version(uri),
             path,
         }
@@ -217,7 +224,10 @@ impl StagedInput {
     /// Whether the file index entry and the document text and version for
     /// `uri` are still the ones this input was read from.
     fn is_current(&self, workspace: &al_workspace::Workspace, uri: &Url) -> bool {
-        let source = workspace.file_index.cached_parse_entry(&self.path);
+        let source = self
+            .path
+            .as_deref()
+            .and_then(|path| workspace.file_index.cached_parse_entry(path));
         let same_source = match (&self.source, &source) {
             (Some(staged), Some(current)) => Arc::ptr_eq(staged, current),
             (None, None) => true,
@@ -235,13 +245,24 @@ impl StagedInput {
     }
 }
 
+/// One staging attempt of the project pass.
+struct StagedPass {
+    /// Every URI with diagnostics, with the input they were computed from.
+    reports: Vec<(Url, StagedInput, Vec<Diagnostic>)>,
+    /// The input of every URI the publish step may clear: each one in the
+    /// published set, or the forced clear, that has no report.
+    clears: std::collections::HashMap<Url, StagedInput>,
+}
+
 /// Compute the bridge-free project diagnostic generation used by push
 /// diagnostics. Cached semantic diagnostics are merged only when they belong
 /// to the exact current open-document `Arc` and client version.
 async fn compute_workspace_push_diagnostics(
     workspace: std::sync::Arc<al_workspace::Workspace>,
     semantic_cache: &tokio::sync::Mutex<std::collections::HashMap<Url, CachedSemanticDiagnostics>>,
-) -> Result<Vec<(Url, StagedInput, Vec<Diagnostic>)>, WorkspaceDiagnosticError> {
+    published_uris: &tokio::sync::Mutex<std::collections::HashSet<Url>>,
+    force_clear_uri: Option<&Url>,
+) -> Result<StagedPass, WorkspaceDiagnosticError> {
     let config = workspace.config.read().await.clone();
     let project_root = workspace
         .project
@@ -271,7 +292,7 @@ async fn compute_workspace_push_diagnostics(
             continue;
         }
         let mut diagnostics: Vec<Diagnostic> = diagnostics.iter().map(syntax_diag_to_lsp).collect();
-        let input = StagedInput::read(&workspace, path, &uri);
+        let input = StagedInput::read(&workspace, Some(path), &uri);
         if let (Some((text, version)), Some(cached)) =
             (input.document.as_ref(), semantic_cache.get(&uri))
         {
@@ -283,7 +304,25 @@ async fn compute_workspace_push_diagnostics(
             reports.push((uri, input, diagnostics));
         }
     }
-    Ok(reports)
+    drop(semantic_cache);
+
+    let reported: std::collections::HashSet<&Url> = reports.iter().map(|(uri, _, _)| uri).collect();
+    let candidates: Vec<Url> = published_uris
+        .lock()
+        .await
+        .iter()
+        .chain(force_clear_uri)
+        .filter(|uri| !reported.contains(uri))
+        .cloned()
+        .collect();
+    let clears = candidates
+        .into_iter()
+        .map(|uri| {
+            let input = StagedInput::read(&workspace, uri.to_file_path().ok(), &uri);
+            (uri, input)
+        })
+        .collect();
+    Ok(StagedPass { reports, clears })
 }
 
 /// Re-publish the complete workspace diagnostic generation, including empty
@@ -345,13 +384,15 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         let generation = workspace.generation_lock.read().await;
         let revision = workspace.generation_revision();
 
-        let reports = match compute_workspace_push_diagnostics(
+        let staged = match compute_workspace_push_diagnostics(
             std::sync::Arc::clone(&workspace),
             &semantic_cache,
+            &published_uris,
+            force_clear_uri.as_ref(),
         )
         .await
         {
-            Ok(reports) => reports,
+            Ok(staged) => staged,
             Err(error) => {
                 if session.is_cancelled() {
                     return false;
@@ -379,7 +420,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         }
 
         let mut current = std::collections::BTreeMap::new();
-        for (uri, input, diagnostics) in reports {
+        for (uri, input, diagnostics) in staged.reports {
             current.insert(uri, (input, diagnostics));
         }
         let mut published = published_uris.lock().await;
@@ -387,16 +428,32 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
             .difference(&current.keys().cloned().collect())
             .cloned()
             .collect();
-        if let Some(uri) = force_clear_uri {
-            if !current.contains_key(&uri) && !stale.contains(&uri) {
-                stale.push(uri);
+        if let Some(uri) = &force_clear_uri {
+            if !current.contains_key(uri) && !stale.contains(uri) {
+                stale.push(uri.clone());
             }
         }
         stale.sort();
 
+        let mut kept = Vec::new();
         for uri in stale {
             if session.is_cancelled() {
                 return false;
+            }
+            // A clear is sent only while the URI's input is the one this pass
+            // staged. An edit since staging may already have published the
+            // document's new errors, which the clear would remove. A URI with
+            // no staged input was added to `published` by another publish
+            // after staging. A skipped URI stays in `published`, so a later
+            // pass clears it if it has no diagnostics by then.
+            if !staged
+                .clears
+                .get(&uri)
+                .is_some_and(|input| input.is_current(&workspace, &uri))
+            {
+                tracing::debug!(uri = %uri, "project diagnostics: input changed after staging, clear skipped");
+                kept.push(uri);
+                continue;
             }
             let version = workspace.documents.get_client_version(&uri);
             client.publish_diagnostics(uri, Vec::new(), version).await;
@@ -419,7 +476,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
                 .publish_diagnostics(uri.clone(), diagnostics.clone(), input.client_version())
                 .await;
         }
-        *published = current.into_keys().collect();
+        *published = current.into_keys().chain(kept).collect();
         drop(published);
         drop(generation);
         return true;
