@@ -2575,7 +2575,7 @@ pub(crate) fn dispatch_list_method(
 }
 
 /// The 0-based range `(index, count)` names in a list of `len` elements, for
-/// `GetRange` and `RemoveRange`. The var-parameter form of `GetRange` runs
+/// `GetRange` and `RemoveRange`. `GetRange`'s form with a `var` result runs
 /// live only.
 fn list_range(method: &str, args: &[Value], len: usize) -> Result<std::ops::Range<usize>, String> {
     let (index, count) = match args {

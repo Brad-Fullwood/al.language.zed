@@ -53,17 +53,18 @@ Rules:
 - Do not run a full compile to check your work. `lint`, `native-check` and
   `arch-lint` are the loop.
 - A `Commit()` inside a `[TryFunction]` procedure can carry two separate
-  diagnostics on the same lines: one on the `Commit()` call and one on the
-  database write that comes before it. Removing the `Commit()` clears only
-  the first. The write itself is still inside a `[TryFunction]` and still not
-  rolled back on failure, so it keeps its own diagnostic until the write
-  moves outside the try scope, the `[TryFunction]` attribute comes off, or the
-  write is removed too. Re-run `lint` on the file after the edit and check for
-  both codes by name, not just the one you were aiming at.
+  diagnostics on the same lines: AL-NL003 on the `Commit()` line (a commit
+  after a database write, in any procedure) and AL-NL004 on the write's line
+  (a write reachable from a `[TryFunction]`). Removing the `Commit()` clears
+  only AL-NL003. The write itself is still inside a `[TryFunction]` and still
+  not rolled back on failure, so AL-NL004 stays until the write moves outside
+  the try scope, the `[TryFunction]` attribute comes off, or the write is
+  removed too. Re-run `lint` on the file after the edit and check for both
+  codes by name.
 
 Report: the count before and after, the files you edited, the fixes applied
 mechanically versus by hand, and any diagnostic you left with the reason. Take
 the "left with the reason" list from the diagnostics your last `lint` /
-`native-check` / `arch-lint` re-run actually printed, not from what you
-remember attempting. If that re-run's count does not match the count in your
-report, find the missing diagnostic before you write the report.
+`native-check` / `arch-lint` re-run actually printed. If that re-run's count
+does not match the count in your report, find the missing diagnostic before
+you write the report.
