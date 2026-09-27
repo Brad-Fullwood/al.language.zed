@@ -3865,6 +3865,72 @@ fn subscriber_codeunits_with_globals_run_on_a_fresh_instance() {
     assert_eq!(ok(result), Value::Integer(11));
 }
 
+/// "Each event subscriber will be run in its own codeunit instance"
+/// (EventSubscriberInstance on Learn), also when an instance of the
+/// subscriber's codeunit is the one raising the event. The subscriber found
+/// the running instance's globals on the stack and wrote into them.
+#[test]
+fn a_subscriber_gets_its_own_instance_while_its_codeunit_runs() {
+    let publisher = r#"codeunit 50430 "Self Ticker"
+{
+    procedure Tick()
+    begin
+        OnTick();
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnTick()
+    begin
+    end;
+}
+"#;
+    let subscriber = r#"codeunit 50431 "Self Sub"
+{
+    procedure Run(): Integer
+    var
+        T: Codeunit "Self Ticker";
+    begin
+        T.Tick();
+        T.Tick();
+        exit(Calls);
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Self Ticker", 'OnTick', '', false, false)]
+    local procedure CountTick()
+    begin
+        Calls += 1;
+    end;
+
+    var
+        Calls: Integer;
+}
+"#;
+    let probe = r#"codeunit 50432 "Self Sub Probe"
+{
+    procedure Run(): Integer
+    var
+        S: Codeunit "Self Sub";
+    begin
+        exit(S.Run());
+    end;
+}
+"#;
+    let files = [
+        ("/ws/SelfTicker.al", publisher),
+        ("/ws/SelfSub.al", subscriber),
+        ("/ws/SelfSubProbe.al", probe),
+    ];
+    assert_eq!(
+        ok(run(&files, "Self Sub Probe", "Run", vec![])),
+        Value::Integer(0)
+    );
+    // Run as the first object of the run, with no variable.
+    assert_eq!(
+        ok(run(&files, "Self Sub", "Run", vec![])),
+        Value::Integer(0)
+    );
+}
+
 const SAME_NAME_SETUP_PAGE: &str = r#"page 50300 "My Setup"
 {
     SourceTable = "My Setup";
