@@ -1839,6 +1839,134 @@ mod project_diagnostics_close_tests {
             );
         }
     }
+
+    /// A project pass that staged while a document was clean must not clear
+    /// the error an edit gave that document before the pass published.
+    ///
+    /// The document starts clean and in the pass's published set, as after a
+    /// pass that reported a cross-file diagnostic on it which another file's
+    /// edit has since removed. The test hands the generation write guard over
+    /// one acquisition at a time, as the close tests do, and each write
+    /// replaces the document's text: clean, broken, clean, and so on. So every
+    /// staging attempt reads it clean and every publish step runs with it
+    /// broken. A write that breaks it also sends the document's own publish,
+    /// as the debounced per document task does in project scope. Whatever
+    /// the pass sends between two writes must agree with the text the first
+    /// of them left.
+    #[tokio::test]
+    async fn a_project_pass_never_clears_a_document_edited_after_staging() {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            edit_during_a_project_pass(),
+        )
+        .await
+        .expect("the pass and the writes finish instead of waiting on each other");
+    }
+
+    async fn edit_during_a_project_pass() {
+        let (mut service, socket) = LspService::new(AlServer::new);
+        let uri = Url::parse("file:///proj/Ghost.Codeunit.al").unwrap();
+        let publishes = record_publishes(socket, uri.clone());
+        let take_publishes = || std::mem::take(&mut *publishes.lock().unwrap());
+        initialize(&mut service).await;
+        let server = service.inner();
+        let edit = |text: &str, version: i32| {
+            server
+                .workspace
+                .documents
+                .open_with_client_version(uri.clone(), text.to_string(), version)
+                .unwrap();
+            al_workspace::on_document_change(&server.workspace, &uri, text);
+        };
+        let mut version = 1;
+        edit(SAVED, version);
+        server
+            .workspace_diagnostic_uris
+            .lock()
+            .await
+            .insert(uri.clone());
+
+        let lock = &server.workspace.generation_lock;
+        let mut writer = lock.write().await;
+        let pass = tokio::spawn({
+            let workspace = Arc::clone(&server.workspace);
+            let client = server.client.clone();
+            let cache = Arc::clone(&server.semantic_diagnostic_cache);
+            let published = Arc::clone(&server.workspace_diagnostic_uris);
+            let session = server.session.clone();
+            async move {
+                diagnostics::publish_workspace_diagnostics_parts(
+                    workspace, client, cache, published, None, &session,
+                )
+                .await
+            }
+        });
+
+        let mut is_broken = false;
+        let mut sequence = Vec::new();
+        for _ in 0..32 {
+            settle().await;
+            drop(writer);
+            writer = lock.write().await;
+            settle().await;
+            for diagnostics in take_publishes() {
+                assert_eq!(
+                    is_broken,
+                    !diagnostics.is_empty(),
+                    "the project pass published {diagnostics:?} for {uri} while its text was \
+                     {state}; publishes so far: {sequence:?}",
+                    state = if is_broken { "broken" } else { "clean" },
+                );
+                sequence.push(diagnostics.len());
+            }
+            if pass.is_finished() {
+                break;
+            }
+            version += 1;
+            is_broken = !is_broken;
+            if is_broken {
+                edit(BROKEN, version);
+                server
+                    .workspace_diagnostic_uris
+                    .lock()
+                    .await
+                    .insert(uri.clone());
+                let own = Diagnostic {
+                    range: Range::default(),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    message: "syntax error".to_string(),
+                    ..Diagnostic::default()
+                };
+                server
+                    .client
+                    .publish_diagnostics(uri.clone(), vec![own], Some(version))
+                    .await;
+                settle().await;
+                sequence.extend(take_publishes().iter().map(Vec::len));
+            } else {
+                edit(SAVED, version);
+            }
+        }
+        drop(writer);
+
+        assert!(
+            pass.await.expect("the pass does not panic"),
+            "the pass must publish"
+        );
+        settle().await;
+        for diagnostics in take_publishes() {
+            assert_eq!(
+                is_broken,
+                !diagnostics.is_empty(),
+                "the project pass published {diagnostics:?} for {uri} after the last write; \
+                 publishes so far: {sequence:?}"
+            );
+        }
+        assert!(
+            server.workspace_diagnostic_uris.lock().await.contains(&uri),
+            "a skipped clear keeps {uri} in the published set so a later pass clears it"
+        );
+    }
 }
 
 mod did_change_offload_tests {

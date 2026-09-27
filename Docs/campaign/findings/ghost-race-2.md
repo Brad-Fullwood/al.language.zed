@@ -197,4 +197,6 @@ runs where the race happened and the check stopped the ghost.
   workspace does not expose today.
 - The clears at the top of the publish step, for URIs in `published_uris` with no staged report,
   have no currency check. A clear for a document edited after staging could land after that
-  document's own publish. It was not seen in these traces.
+  document's own publish. It was not seen in these traces. Fixed later: the pass stages an input
+  for every URI it may clear and skips a clear whose input changed, and
+  `a_project_pass_never_clears_a_document_edited_after_staging` fails without that check.
