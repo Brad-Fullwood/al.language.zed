@@ -295,6 +295,15 @@ async fn run() {
             altool = %altool.display(),
             "delegating LSP session to the official AL language server"
         );
+        // Zed starts the language server in the worktree, and this process
+        // execs `dotnet` before any configuration arrives, so the dotnet host
+        // is decided against the working directory here.
+        if let Ok(project_root) = std::env::current_dir() {
+            if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+                tracing::warn!("{advisory}");
+                eprintln!("al-lsp: {advisory}");
+            }
+        }
         let mut cmd = al_lsp::toolchain::official_lsp_command(&altool, &forward);
         #[cfg(unix)]
         {

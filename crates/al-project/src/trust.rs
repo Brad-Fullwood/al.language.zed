@@ -1644,13 +1644,43 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
     }
 
     std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
+    let reason = match decision.state {
+        TrustState::Stale => {
+            "this project's privileged settings, or the files they name, changed since it was \
+             trusted"
+        }
+        _ => "the project is not trusted",
+    };
     Some(format!(
-        "Ignoring the dotnet host '{}': it comes from this repository and the project is not \
-         trusted. Falling back to 'dotnet' from PATH. To use it, the user runs this in a \
-         terminal: {TRUST_COMMAND} --show {}",
+        "Ignoring the dotnet host '{}': it comes from this repository and {reason}. Falling \
+         back to 'dotnet' from PATH. To use it, the user runs this in a terminal: \
+         {TRUST_COMMAND} --show {}",
         one_line(&configured),
         one_line(&decision.root.display().to_string())
     ))
+}
+
+/// [`enforce_dotnet_path`] before a spawn of `dotnet`, when `AL_DOTNET_PATH`
+/// names a file inside `project_root`.
+///
+/// The record hashes a `dotnet` in the tree with the runtime beside it, and a
+/// running daemon or language server decides again only when
+/// [`inputs_fingerprint`] moves, which stamps the muxer alone. A `git pull`
+/// that replaced `host/fxr/<version>/libhostfxr.so` made the project stale
+/// while the process kept `AL_DOTNET_PATH`, and the next build ran the new
+/// library. Deciding before each spawn hashes the runtime again, as analyzer
+/// resolution decides before each load. A host outside the project costs a
+/// path check and no decision.
+pub fn enforce_dotnet_path_before_spawn(project_root: &Path) -> Option<String> {
+    let configured = std::env::var_os(crate::toolchain::DOTNET_PATH_ENV)?;
+    let configured = configured.to_string_lossy();
+    let configured = configured.trim();
+    let path = Path::new(configured);
+    let is_path = path.is_absolute() || configured.contains(['/', '\\']);
+    if !is_path || !stays_inside_project(path, project_root) {
+        return None;
+    }
+    enforce_dotnet_path(project_root)
 }
 
 /// The Business Central servers the repository's own launch file names.
@@ -3445,6 +3475,63 @@ mod tests {
         std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
 
         assert_ne!(before, after);
+    }
+
+    /// A running daemon or language server decides again only when
+    /// `inputs_fingerprint` moves, and the fingerprint stamps the muxer alone.
+    /// A `git pull` that replaced the runtime beside a trusted `dotnet` left
+    /// `AL_DOTNET_PATH` set, and the next build ran the new `libhostfxr.so`.
+    #[test]
+    fn a_replaced_runtime_beside_a_project_dotnet_is_dropped_before_the_next_spawn() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#);
+        let root = project.path();
+        write_file(root, "tools/dotnet/dotnet", b"reviewed muxer");
+        write_file(
+            root,
+            "tools/dotnet/host/fxr/8.0.0/libhostfxr.so",
+            b"reviewed hostfxr",
+        );
+        let dotnet = root.join("tools/dotnet/dotnet");
+        let _dotnet = EnvVar::set(crate::toolchain::DOTNET_PATH_ENV, &dotnet);
+        grant(root).unwrap();
+        assert_eq!(enforce_dotnet_path_before_spawn(root), None);
+        assert_eq!(
+            std::env::var_os(crate::toolchain::DOTNET_PATH_ENV),
+            Some(dotnet.clone().into_os_string())
+        );
+
+        write_file(
+            root,
+            "tools/dotnet/host/fxr/8.0.0/libhostfxr.so",
+            b"replaced by git pull",
+        );
+
+        let advisory = enforce_dotnet_path_before_spawn(root)
+            .expect("a runtime the record no longer matches is dropped");
+        assert!(advisory.contains("changed since"), "{advisory}");
+        assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+        assert_eq!(
+            crate::toolchain::dotnet_command(Path::new("alc.dll")).get_program(),
+            "dotnet"
+        );
+    }
+
+    /// A host outside the project is not re-decided, so a build pays one path
+    /// check for it.
+    #[test]
+    fn a_dotnet_outside_the_project_is_not_decided_before_a_spawn() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+        let _dotnet = EnvVar::set(
+            crate::toolchain::DOTNET_PATH_ENV,
+            Path::new("/usr/share/dotnet/dotnet"),
+        );
+        let reads = || REPOSITORY_READS.with(std::cell::Cell::get);
+        let before = reads();
+
+        assert_eq!(enforce_dotnet_path_before_spawn(project.path()), None);
+        assert_eq!(reads(), before);
     }
 
     /// A path outside the project is the user's machine, so only its text is

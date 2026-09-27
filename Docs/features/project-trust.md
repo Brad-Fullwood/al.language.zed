@@ -148,6 +148,15 @@ editor's settings again when it moved. Gating only removes values, so a project 
 while the language server runs takes effect at the next settings change or restart. The
 debug adapter is a new process for each session and decides at launch.
 
+The fingerprint stamps the `dotnet` muxer and not the runtime beside it, which the record
+hashes. So a `dotnet` inside the project is decided again before each spawn: every alc build
+(the daemon's, the language server's, the debug adapter's launch compile, publish and
+`al-explorer build`) and the `--official-lsp` start. A `git pull` that replaces
+`host/fxr/<version>/libhostfxr.so` makes the project stale, `AL_DOTNET_PATH` is dropped, and
+the build runs `dotnet` from `PATH`. Before, the process kept the variable until the
+fingerprint moved, and the next build ran the new library. A `dotnet` outside the project
+costs one path check.
+
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
 holds the canonical project root and a SHA-256 of the privileged values. Change one of those
