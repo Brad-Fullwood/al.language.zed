@@ -676,3 +676,23 @@ Append-only. Newest entry last.
   and error text print `app.json` and object names with control characters intact (OSC title, CSI
   clear). Held: the DAP host's key binding, the summary store, the plugin hooks and fetch script,
   JSON and LSP output, the trust messages.
+
+## 2026-09-27 23:10 BST: checkpoint, campaign paused
+
+- Brad paused the campaign at 22:41. The 17:50 session's six agents were dead. Recovered and merged:
+  `campaign/fix-r6sec-rt` (SEC6-3 to SEC6-5, three commits, a5be8edb), `campaign/fix-daemon-appjson`
+  (the whole fix was uncommitted, committed 5ab31df4, merged 18a1905f),
+  `campaign/fix-queued-3` (one commit plus the uncommitted double notice fix, committed ea69d4ed,
+  merged 0f19a5a7), `campaign/r12-review` (six documentation commits, review incomplete, merged
+  3c303a94). Scratch tests saved as `.campaign/r6rt-scratch-tests.patch` and
+  `.campaign/r12-scratch-tests.patch`. `campaign/test-mutants` held only a half-applied mutant and
+  `campaign/fix-r6sec-b` had no commits: discarded.
+- Gates on a075b62c: fmt, release, clippy, clippy semantic, rustdoc clean, 96 suites, 5417 passed,
+  0 failed, 10 ignored.
+- Cleanup: 80 local and 27 remote merged branches deleted, four agent worktrees and two grammar
+  worktrees removed, `.campaign/STOP` created. Grammar `campaign/2026-09-21` merged into the
+  grammar's `dev` (82e89f8, 119 corpus tests pass) and pushed, its four other remote branches
+  deleted, pointer left at 142aba6. Blog `campaign/2026-09-rewrite` fast-forwarded into `main`
+  (5af7849), pushed, branch deleted, drafts stay drafts.
+- Pull request 32 merged into `dev` after CI on the checkpoint commit. `CHECKPOINT-2026-09-27.md`
+  has the full picture and the resume steps.

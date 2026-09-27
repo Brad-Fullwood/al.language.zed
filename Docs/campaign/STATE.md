@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 18:25 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 23:10 BST. Paused, see `CHECKPOINT-2026-09-27.md`. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,68 +8,23 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Session 2026-09-27 17:44 BST (headless, Fable orchestrator). The 12:48 session ended after its
-13:46 push with six agents out. Recovered at 17:50: `campaign/fix-r11-text` was complete (R11-PLUGIN-1
-fixed, R11-TEXT-1 fixed for its files) and is merged (6532618e), so round 11 is 7 of 7 fixed.
-Security round 6 had coverage items 1 to 4 ticked and five findings (SEC6-1 to SEC6-5) committed, with
-its scratch tests uncommitted: saved as `.campaign/r6-scratch-tests.patch`, branch merged (a4d45426).
-The mutants agent had committed tests for `indent.rs`, `text.rs` and `range.rs` and left the
-`passes.rs` tests uncommitted: they pass (35 in the module), committed (e7466885), the six proptest
-seeds its mutant runs left in `property_formatting.proptest-regressions` pass on the real code and
-were discarded, branch merged (7b607e40). `campaign/slop-splits-4` had no commits and an empty
-worktree: branch deleted, the split is re-queued. Three merged worktrees removed (34 GB free).
+Nothing. Brad paused the campaign at 22:41 BST on 2026-09-27 (`CHECKPOINT-2026-09-27.md`).
+`.campaign/STOP` is in place. The six agents of the 17:50 session were dead; their work was
+recovered, merged or saved as patches (details in the checkpoint), gates on a075b62c green
+(96 suites, 5417 passed, 0 failed), pull request 32 merged into `dev`, every other campaign branch
+deleted locally and on origin. The grammar's campaign branch is merged into its `dev` (82e89f8),
+the superproject pointer stays at 142aba6. The blog rewrite is on the blog's `main` (5af7849),
+all nine articles still `draft: true`.
 
-Gates on 7b607e40 green (68 suites with tests, 5387 passed, 0 failed), pushed 18:00.
+To resume: `rm .campaign/STOP`, then the resume protocol in `README.md`. First units: the ten
+round 12 findings (`findings/r12-session-review.md`, coverage item 1a still unticked) and
+SEC6-6 to SEC6-8 (`findings/r6-security.md`) to fix agents, then the grammar pointer move to
+82e89f8 with the full gates. The campaign window ends 2026-09-28; after that
+`systemctl --user disable --now al-campaign-watchdog.timer`.
 
-Merged 18:22: `campaign/fix-r6sec-trust` (283b8415, SEC6-1 and SEC6-2: a file found under a relative
-probing path, `.netpackages` or `packages` counts as the project's whatever its canonical path, those
-folders and each probing path that resolves outside join `linked_package_folders`, a path spelled inside
-the project is recorded and hashed where its link resolves, and the `dotnet` check before each spawn uses
-the same rule) and `campaign/r6-security-b` (204d44ee, review complete: SEC6-6 ten dispatchers judge a
-caller path the registry says they do not take, SEC6-7 the skills hand the agent a single-quoted shell
-shape an object name can break, SEC6-8 `al-explorer` text output passes terminal escapes from a clone's
-names). Scratch tests saved as `.campaign/r6b-scratch-tests.patch`. Gates on 204d44ee in progress.
-
-Agents in flight (dispatched 17:50):
-
-- Security round 6 fixes, second batch (SEC6-6 registry declarations and one path resolver, SEC6-7 the
-  quoting rule in the skills, SEC6-8 control characters escaped in text output), Opus, dispatched
-  18:30: `.claude/worktrees/agent-fix-r6sec-trust`, `campaign/fix-r6sec-b`. Ends with `## Fix pass complete`.
-- Security round 6 fixes, runtime (SEC6-3, SEC6-4, SEC6-5), Opus: `.claude/worktrees/agent-fix-r6sec-rt`,
-  `campaign/fix-r6sec-rt`. Ends with `## Fix pass complete`.
-- Round 12 review over `4c429ac5..7b607e40` (round 10 and 11 fixes, docs re-check 3, splits, plugin
-  round 6, mutants), Fable: `.claude/worktrees/agent-r12`, `campaign/r12-review`,
-  `findings/r12-session-review.md`. Ends with `## Review complete`.
-- Daemon reloads `app.json` when it changes on disk (the plugin round 6 defect), Opus:
-  `.claude/worktrees/agent-r11`, `campaign/fix-daemon-appjson`. Ends with `## Fix pass complete`.
-- `cargo mutants` (E), Sonnet, continuation on the formatting module: `.claude/worktrees/agent-a34708a3121ce8ac2`,
-  `campaign/test-mutants` (fast-forwarded to 7b607e40). Ends with `## Mutation pass complete`.
-- Queued batch 3 (the workspace pass clear without a currency check from `ghost-race-2.md`, the
-  doubled "not trusted" notice from `pack-native --validate`, the `DotNetPackages` decision), Opus,
-  dispatched 17:53: `.claude/worktrees/agent-queued-3`, `campaign/fix-queued-3`. Ends with
-  `## Fix pass complete`.
-
-Merge order when they finish: the two security fix branches, the app.json fix, mutants, then the
-two reviews' findings to fix agents. Gates on each merge, `cargo test -p al-test-harness
---no-fail-fast` after the runtime and daemon merges. After `campaign/fix-r6sec-rt` merges: the
-`records.rs`, `eval_expr.rs` and `records_tests.rs` splits (C). After the fixes merge: docs re-check 4 (H).
-
-A second session (interactive, not the watchdog's) has pushed straight to this branch before
-(`LOG.md`, 18:45 entry on 2026-09-26). The orchestrator fetches and merges
-`origin/campaign/2026-09-21` before every push and runs the gates on the merge.
-
-A review or triage file in the main checkout without its `## ... complete` line means the agent died:
-commit what it wrote and re-dispatch from the last entry. A fix branch on origin or in
-`.claude/worktrees/` with commits not in this branch and no live agent means the agent died:
-re-dispatch onto that branch.
-
-PR 30 was merged into `dev` on 2026-09-25 (afec75d1). CI runs on pushes to `main` and `dev` and on
-pull requests, so draft PR 32 (https://github.com/Brad-Fullwood/al.language.zed/pull/32, base `dev`)
-runs CI on every push of this branch.
-
-Remote branch cleanup: every `campaign/*` branch except this one is merged into it. Cloud
-sessions can push only to `campaign/2026-09-21`, so deleting them is left to Brad (the list is in
-`LOG.md`, 2026-09-24).
+PR 30 was merged into `dev` on 2026-09-25 (afec75d1) and PR 32 on 2026-09-27. CI runs on pushes
+to `main` and `dev` and on pull requests, so the next campaign push needs a new draft pull request
+against `dev` for CI to run on it.
 
 Queued:
 
@@ -82,7 +37,6 @@ Queued:
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
 - From the SEC6-1 fix: a file found under a relative probing path with `..` (`../shared`) counts as the project's, so a name set only in Zed user settings that is found there is refused unless the record lists it. A linked outside tree is hashed up to the 50,000 entry cap with no byte limit. The daemon and language server re-decide trust only when `inputs_fingerprint` moves, so a probing path stays in their configuration after the record goes stale (older than the fix, analyzer lookup and the `dotnet` check decide afresh). For security round 7.
 - Blog: done for now (length pass 18:05). Before publishing: timings on a quiet machine, article 9's final re-read when the campaign ends. Merge to `main` is Brad's call.
-- `pack-native --validate` on a new untrusted project prints the "not trusted" notice twice.
 - Plugin: `package-diff` with two versions in `.alpackages`, five skills untested against `.alpackages`, a tagged release that publishes `binary-checksums.txt` so the download hook's success path runs for real.
 - Windows named pipe owner check (documented, no Windows machine in the campaign).
 - A wedged daemon request can hold a daemon past its idle window (warns every 60 s).
@@ -98,10 +52,6 @@ Queued:
   missing field (R10-KW-1 status). `'x' + Letter` with a Char variable fails with "binary operator
   `+` not supported on (Text, Char)". `Dictionary.Set(k, v, var Old)` for a missing key leaves
   `Old` unchanged, which Learn does not settle.
-- From plugin round 6: `download-symbols` kept a stale in-memory `app.json` after `application`
-  was edited on disk, so Base Application 25 satisfied a requested 26 minimum until
-  `daemon-shutdown` (recorded with the command and output in `plugin/TESTING.md`). The daemon's
-  incremental scan should reload `app.json` when its mtime moves.
 - Round 10 review's unverified notes: `TARGET_KEYS` compared with `eq_ignore_ascii_case` (a `ſerver` key) for the proxy's next adversarial review, and whether BC's `foreach` over a List raises when the list changes.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to
