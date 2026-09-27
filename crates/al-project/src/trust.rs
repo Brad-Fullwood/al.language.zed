@@ -80,8 +80,9 @@ const UNREADABLE_LAUNCH_KEY: &str = "unreadable launch file";
 /// [`TrustDecision::grant_refusal`] refuses a new record until the tree changes.
 const UNHASHABLE_PATH_KEY: &str = "path the record cannot hash";
 
-/// The key of a symbol package folder written inside the project that
-/// resolves outside it, recorded with the directory it resolves to.
+/// The key of a package folder written inside the project that resolves
+/// outside it, recorded with the directory it resolves to: a symbol folder, or
+/// a folder the analyzer search walks.
 const LINKED_PACKAGE_FOLDER_KEY: &str = "linked package folder";
 
 /// The key of an `al.compilationOptions` entry that names a file or directory
@@ -489,23 +490,35 @@ fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), Con
     Ok((config, ask))
 }
 
-/// Each symbol package folder written inside the project that resolves
-/// outside it, with the directory it resolves to.
+/// Each package folder written inside the project that resolves outside it,
+/// with the directory it resolves to.
 ///
-/// A trusted project's package folders are containment roots in the daemon
+/// A trusted project's symbol folders are containment roots in the daemon
 /// and where symbol downloads write. `.alpackages` needs no setting, and a
 /// clone can commit it as a link to any directory, so a link a later commit
 /// added made its target a root while the record still matched. The folders
 /// come from the merged configuration, so a user's `./symbols` that a
 /// repository link carries out is recorded too, and `.alpackages` is always
 /// checked, since the language server may use it when the daemon's
-/// configuration names another cache. Recording where each resolves makes a
-/// link that is added or retargeted stale the record, and `trust --show`
-/// lists it.
+/// configuration names another cache.
+///
+/// The folders the analyzer search walks in a trusted project, `.netpackages`,
+/// `packages` and each probing path, are checked the same way. A copy found
+/// under one of them loads as the project's, and a link a later commit added
+/// there used to lead the search to a directory another user fills.
+///
+/// Recording where each folder resolves makes a link that is added or
+/// retargeted stale the record, and `trust --show` lists it.
 fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<PrivilegedSetting> {
     let mut folders = vec![PathBuf::from(".alpackages")];
     folders.extend(config.package_cache_path.clone());
     folders.extend(config.app_local_folder_paths.iter().cloned());
+    folders.extend(
+        crate::analyzers::PROJECT_PACKAGE_FOLDERS
+            .iter()
+            .map(PathBuf::from),
+    );
+    folders.extend(config.assembly_probing_paths.iter().cloned());
     let mut seen = Vec::new();
     let mut settings = Vec::new();
     for folder in folders {
@@ -531,12 +544,14 @@ fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<Privile
     settings
 }
 
-/// The DLL inside the project each configured analyzer entry resolves to when
-/// the project is trusted, with its hash.
+/// The DLL the project supplies for each configured analyzer entry when the
+/// project is trusted, with its hash.
 ///
 /// Trust is what lets an entry, the user's or the repository's, resolve to a
 /// file the repository ships: a name finds a copy under `.netpackages`,
 /// `packages` or a relative probing path, and a path names the file itself.
+/// A link in the project can carry either outside it, and the file is hashed
+/// where it resolves.
 /// Recording the file's hash means a commit that replaces it makes the record
 /// stale, rather than loading new code under the old record. `config` holds
 /// the entries of `~/.config/al-lsp/settings.json` too, which
@@ -571,8 +586,8 @@ fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<Privil
     settings
 }
 
-/// Whether `decision` lists `found`, the file inside the project an analyzer
-/// entry resolved to, with the hash it has now.
+/// Whether `decision` lists `found`, the file the project supplied for an
+/// analyzer entry, with the hash it has now.
 ///
 /// [`project_analyzer_copies`] records a copy under the relative path it sits
 /// at, so only that entry can match: a settings value has a settings file as
@@ -836,6 +851,24 @@ fn fold_dots(path: &Path) -> Option<PathBuf> {
         }
     }
     Some(normalised)
+}
+
+/// Whether `path`, resolved against `project_root` with `.` and `..` folded
+/// and no link followed, names a place inside the project.
+///
+/// The repository chose such a path, and a link it ships decides where the
+/// path leads, so what the path names is the project's wherever it resolves.
+pub(crate) fn spelled_inside_project(project_root: &Path, path: &Path) -> bool {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    };
+    let Some(folded) = fold_dots(&absolute) else {
+        return false;
+    };
+    let root = fold_dots(project_root).unwrap_or_else(|| project_root.to_path_buf());
+    folded.starts_with(&root) || folded.starts_with(canonical_root(project_root))
 }
 
 /// The canonical project root, or the root as given when it does not resolve.

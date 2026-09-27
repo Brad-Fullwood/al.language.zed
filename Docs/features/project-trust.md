@@ -63,6 +63,13 @@ else makes the record stale, which takes the target out of the containment roots
 link added after the grant used to leave the record trusted, and the daemon then accepted a
 path anywhere under its target.
 
+The folders the analyzer search walks in a trusted project are listed the same way:
+`.netpackages`, `packages` and each `al.assemblyProbingPaths` entry written inside the project.
+A commit that turns `.netpackages` into a link to a directory another user fills makes the
+record stale, so the search skips the project's folders until the project is trusted again.
+Before, the record did not change, and the search followed the link and loaded that user's
+file.
+
 Everything else in a repository's settings applies without trust: formatting, inlay hints,
 `al.diagnosticsScope`, `al.enableNativeLint` and its per-rule overrides, `al.incrementalBuild`,
 `al.useOfficialCompiler`, `al.maxDocumentSizeBytes`, a ruleset or package folder inside the
@@ -228,7 +235,14 @@ not in the record. So a copy of a name that a later commit adds under `.netpacka
 file it adds at a path such as `./tools/TeamCop.dll`, is refused with a message naming the
 file. Before, the copy was found ahead of the NuGet cache and the file at the path was loaded.
 To use a file in the project, write the entry in the project's settings or in
-`~/.config/al-lsp/settings.json`. The rule sits in
+`~/.config/al-lsp/settings.json`.
+
+A link in the project does not change this. A copy found under `.netpackages`, `packages` or a
+relative probing path, and the file a path such as `./tools/TeamCop.dll` names, belong to the
+project even when a link carries them outside it. The record hashes such a file where it
+resolves, and the search loads it only when the record lists it. Before, such a file loaded at
+once when its resolved path was outside the project, and a path through such a link loaded even
+in an untrusted project. The rule sits in
 `al_project::analyzers::CustomAnalyzerSearch`, which every build, publish, debug launch and
 semantic analysis goes through.
 

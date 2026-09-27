@@ -1822,3 +1822,214 @@ fn builtin_analyzer_tokens_are_recognised_in_both_spellings() {
     assert!(!is_builtin_analyzer_token("./tools/CodeCop.dll"));
     assert!(!is_builtin_analyzer_token("${../evil}"));
 }
+
+const NUGET_LINTER_COP: &str =
+    "businesscentral.lintercop/0.30.0/lib/net8.0/BusinessCentral.LinterCop.dll";
+
+/// A NuGet cache holding LinterCop, and a directory outside the project that
+/// holds another copy, as a directory another local user fills would.
+fn lintercop_in_nuget_and_outside() -> (tempfile::TempDir, EnvVar, tempfile::TempDir) {
+    let nuget = tempfile::tempdir().unwrap();
+    write_file(nuget.path(), NUGET_LINTER_COP, b"the real LinterCop");
+    let nuget_var = EnvVar::set("NUGET_PACKAGES", nuget.path());
+    let outside = tempfile::tempdir().unwrap();
+    write_file(
+        outside.path(),
+        "someone/else/BusinessCentral.LinterCop.dll",
+        b"another user's file",
+    );
+    (nuget, nuget_var, outside)
+}
+
+fn linked_folder<'a>(decision: &'a TrustDecision, written: &str) -> Option<&'a PrivilegedSetting> {
+    decision
+        .privileged
+        .iter()
+        .find(|setting| setting.key == LINKED_PACKAGE_FOLDER_KEY && setting.source == written)
+}
+
+/// A later commit added `.netpackages` as a link to a directory outside the
+/// project. The walk followed the link at its root, and `resolve` returned
+/// the copy under it at once because its canonical path is outside the
+/// project, so the record was never asked and the state stayed trusted.
+#[cfg(unix)]
+#[test]
+fn a_netpackages_link_added_after_the_grant_makes_the_record_stale() {
+    let _config = ScratchConfig::new();
+    let (nuget, _nuget, outside) = lintercop_in_nuget_and_outside();
+    let project = project_trusted_for_a_launch_server();
+    let root = project.path();
+
+    link(root, ".netpackages", outside.path().to_str().unwrap());
+
+    let decision = decide(root).unwrap();
+    assert_eq!(decision.state, TrustState::Stale);
+    let linked = linked_folder(&decision, ".netpackages").expect("the link is recorded");
+    assert!(
+        linked
+            .value
+            .contains(&outside.path().canonicalize().unwrap().display().to_string()),
+        "trust --show prints where the folder leads: {}",
+        linked.value
+    );
+    let found = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+        .resolve("BusinessCentral.LinterCop")
+        .unwrap()
+        .unwrap();
+    assert!(
+        found.starts_with(nuget.path().canonicalize().unwrap()),
+        "{found:?}"
+    );
+}
+
+/// With the link in place at the grant, a copy found under `.netpackages` is
+/// the project's copy wherever it resolves, so a name the record does not
+/// list is refused rather than loaded from the other directory.
+#[cfg(unix)]
+#[test]
+fn a_copy_found_through_a_linked_netpackages_is_judged_as_the_project_s() {
+    let _config = ScratchConfig::new();
+    let (_nuget_dir, _nuget, outside) = lintercop_in_nuget_and_outside();
+    let project = project_with_launch(
+        r#"[{"name":"dev","type":"al","request":"launch","environmentType":"OnPrem",
+             "server":"https://bc.corp.example","serverInstance":"BC"}]"#,
+    );
+    let root = project.path();
+    link(root, "packages", outside.path().to_str().unwrap());
+
+    let granted = grant(root).unwrap();
+    assert!(linked_folder(&granted, "packages").is_some());
+
+    let error = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+        .resolve("BusinessCentral.LinterCop")
+        .expect_err("the record does not list the copy under the linked folder");
+    assert!(
+        matches!(
+            error,
+            crate::analyzers::AnalyzerDiscoveryError::UnrecordedProjectAnalyzer { .. }
+        ),
+        "{error}"
+    );
+}
+
+/// A name the record learns resolves through the link to a file the record
+/// hashes where it resolves, so the file loads while it is unchanged and a
+/// replaced file makes the record stale.
+#[cfg(unix)]
+#[test]
+fn a_recorded_name_found_through_a_linked_netpackages_is_hashed_where_it_resolves() {
+    let _config = ScratchConfig::new();
+    let user = AlConfig::default_settings_path().unwrap();
+    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+    std::fs::write(&user, r#"{"codeAnalyzers": ["BusinessCentral.LinterCop"]}"#).unwrap();
+    let (_nuget_dir, _nuget, outside) = lintercop_in_nuget_and_outside();
+    let project = project_with_settings("{}");
+    let root = project.path();
+    link(root, ".netpackages", outside.path().to_str().unwrap());
+    let copy = outside
+        .path()
+        .join("someone/else/BusinessCentral.LinterCop.dll")
+        .canonicalize()
+        .unwrap();
+
+    grant(root).unwrap();
+    let found = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+        .resolve("BusinessCentral.LinterCop")
+        .unwrap()
+        .unwrap();
+    assert_eq!(found, copy);
+
+    write_file(
+        outside.path(),
+        "someone/else/BusinessCentral.LinterCop.dll",
+        b"replaced by the other user",
+    );
+    assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+}
+
+/// A relative probing path from Zed user settings, which the record does not
+/// read, that a later commit turns into a link out of the project.
+#[cfg(unix)]
+#[test]
+fn a_copy_found_through_a_linked_probing_path_is_judged_as_the_project_s() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    write_file(outside.path(), "net8.0/TeamCop.dll", b"another user's file");
+    let project = project_trusted_for_a_launch_server();
+    let root = project.path();
+    link(root, "tools", outside.path().to_str().unwrap());
+
+    let error = crate::analyzers::CustomAnalyzerSearch::new(root, &[PathBuf::from("tools")])
+        .resolve("TeamCop")
+        .expect_err("the record does not list the copy under the linked probing path");
+    assert!(
+        matches!(
+            error,
+            crate::analyzers::AnalyzerDiscoveryError::UnrecordedProjectAnalyzer { .. }
+        ),
+        "{error}"
+    );
+}
+
+/// A path spelled inside the project names the repository's file, and a link
+/// the repository ships decides where it leads. It was loaded at once when
+/// the link led outside, even in a project that is not trusted.
+#[cfg(unix)]
+#[test]
+fn a_path_through_a_link_out_of_the_project_is_judged_as_the_project_s() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    write_file(outside.path(), "TeamCop.dll", b"another user's file");
+    let project = project_with_settings("{}");
+    let root = project.path();
+    link(root, "tools", outside.path().to_str().unwrap());
+
+    let error = crate::analyzers::discover_custom_analyzer(TEAM_COP, root, &[])
+        .expect_err("an untrusted project does not supply the file");
+    assert!(
+        matches!(
+            error,
+            crate::analyzers::AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. }
+        ),
+        "{error}"
+    );
+
+    grant(root).unwrap();
+    let error = crate::analyzers::discover_custom_analyzer(TEAM_COP, root, &[])
+        .expect_err("the record does not list the file the path leads to");
+    assert!(
+        matches!(
+            error,
+            crate::analyzers::AnalyzerDiscoveryError::UnrecordedProjectAnalyzer { .. }
+        ),
+        "{error}"
+    );
+}
+
+/// A relative probing path the project's settings write, through a link out
+/// of the project, is listed with where it resolves, so a commit that points
+/// the link somewhere else makes the record stale.
+#[cfg(unix)]
+#[test]
+fn a_linked_probing_path_is_listed_with_where_it_resolves() {
+    let _config = ScratchConfig::new();
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let project = project_with_settings(r#"{"al.assemblyProbingPaths": ["./tools"]}"#);
+    let root = project.path();
+    link(root, "tools", first.path().to_str().unwrap());
+
+    let granted = grant(root).unwrap();
+    let linked = linked_folder(&granted, "./tools").expect("the link is recorded");
+    assert!(
+        linked
+            .value
+            .contains(&first.path().canonicalize().unwrap().display().to_string()),
+        "{}",
+        linked.value
+    );
+
+    std::fs::remove_file(root.join("tools")).unwrap();
+    link(root, "tools", second.path().to_str().unwrap());
+    assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+}
