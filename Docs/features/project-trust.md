@@ -56,7 +56,8 @@ into it, the editor shows why the symbols are missing in place of the download p
 daemon does not count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
 check. The record lists each such folder as `linked package folder` with the directory it
 resolves to. That covers `.alpackages` and every `al.packageCachePath` or
-`al.appLocalFolderPaths` entry written inside the project, from any settings file. `trust
+`al.appLocalFolderPaths` entry written inside the project, in the project's settings files or in
+`~/.config/al-lsp/settings.json`. `trust
 --show` shows where the folder leads, and a commit that adds the link or points it somewhere
 else makes the record stale, which takes the target out of the containment roots again. A
 link added after the grant used to leave the record trusted, and the daemon then accepted a
@@ -137,9 +138,9 @@ reaches (the daemon, the MCP tools, a refusal, a skill) grants trust or tells it
 
 A revoke takes effect on the next request, in every process that applies these settings.
 The daemon, and the MCP server through it, fingerprint the trust store, the user settings
-file, both repository settings files, the launch file and the `dotnet` host they run before
-each request, six `stat` calls, and re-evaluate when any of them moved. They used to decide
-once at startup and keep that configuration until they exited, which is up to
+file, both repository settings files, both launch files and the `dotnet` host they run
+before each request, up to seven `stat` calls, and re-evaluate when any of them moved. They
+used to decide once at startup and keep that configuration until they exited, which is up to
 `AL_DAEMON_IDLE_SECS` after the last request and never while an editor keeps them busy.
 
 The language server Zed runs takes the same fingerprint before every command (build, Run
