@@ -1181,6 +1181,143 @@ mod workspace_lifecycle_tests {
         assert!(workspace.file_index.is_empty());
         assert!(workspace.project.read().await.is_none());
     }
+
+    fn write_manifest(dir: &std::path::Path, application: &str) {
+        std::fs::write(
+            dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "RefreshTest",
+                "publisher": "Tester",
+                "version": "1.0.0.0",
+                "application": application
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    async fn base_application(workspace: &Workspace) -> Option<String> {
+        workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .expect("a project is loaded")
+            .all_dependencies()
+            .into_iter()
+            .find(|dependency| dependency.name == "Base Application")
+            .map(|dependency| dependency.version)
+    }
+
+    /// A workspace holding the project in a fresh directory whose `app.json`
+    /// asks for application 25, after its first refresh.
+    async fn refreshed_project(tag: &str) -> (Workspace, std::path::PathBuf) {
+        let workspace = make_workspace();
+        let dir = unique_tempdir(tag);
+        write_manifest(&dir, "25.0.0.0");
+        *workspace.project.write().await =
+            Some(al_project::project::find_project(&dir).expect("project loads"));
+        refresh_project_files(&workspace).await;
+        (workspace, dir)
+    }
+
+    /// The daemon read `app.json` once at startup, so `download-symbols` after
+    /// an edit to `application` asked for the old minimum versions.
+    #[tokio::test]
+    async fn an_edited_manifest_is_read_into_the_project() {
+        let (workspace, dir) = refreshed_project("manifestedit").await;
+        assert_eq!(
+            base_application(&workspace).await.as_deref(),
+            Some("25.0.0.0")
+        );
+
+        write_manifest(&dir, "26.0.0.0");
+        refresh_project_files(&workspace).await;
+
+        assert_eq!(
+            base_application(&workspace).await.as_deref(),
+            Some("26.0.0.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_manifest_that_stops_parsing_leaves_the_one_read_before() {
+        let (workspace, dir) = refreshed_project("manifestbroken").await;
+
+        std::fs::write(dir.join("app.json"), "{ not json").unwrap();
+        refresh_project_files(&workspace).await;
+        assert_eq!(
+            base_application(&workspace).await.as_deref(),
+            Some("25.0.0.0")
+        );
+
+        write_manifest(&dir, "27.0.0.0");
+        refresh_project_files(&workspace).await;
+        assert_eq!(
+            base_application(&workspace).await.as_deref(),
+            Some("27.0.0.0")
+        );
+    }
+
+    #[tokio::test]
+    async fn unchanged_project_files_are_not_read_again() {
+        let (workspace, _dir) = refreshed_project("manifestsame").await;
+        workspace
+            .project
+            .write()
+            .await
+            .as_mut()
+            .expect("a project is loaded")
+            .app_json
+            .name = "In memory".to_string();
+
+        refresh_project_files(&workspace).await;
+
+        let project = workspace.project.read().await;
+        assert_eq!(project.as_ref().unwrap().app_json.name, "In memory");
+    }
+
+    #[tokio::test]
+    async fn a_launch_file_written_after_loading_is_read_into_the_project() {
+        let (workspace, dir) = refreshed_project("launchedit").await;
+        let launch = dir.join(".vscode").join("launch.json");
+        std::fs::create_dir_all(launch.parent().unwrap()).unwrap();
+
+        std::fs::write(
+            &launch,
+            serde_json::json!({
+                "version": "0.2.0",
+                "configurations": [{
+                    "type": "al",
+                    "name": "Local",
+                    "environmentType": "OnPrem",
+                    "server": "http://localhost",
+                    "serverInstance": "BC"
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        refresh_project_files(&workspace).await;
+        {
+            let project = workspace.project.read().await;
+            let project = project.as_ref().unwrap();
+            assert_eq!(project.server_configs.len(), 1);
+            assert_eq!(project.launch_config_error, None);
+        }
+
+        std::fs::write(&launch, "{ not json").unwrap();
+        refresh_project_files(&workspace).await;
+        let project = workspace.project.read().await;
+        let project = project.as_ref().unwrap();
+        assert!(project.server_configs.is_empty());
+        let error = project
+            .launch_config_error
+            .as_deref()
+            .expect("the parse failure is recorded");
+        assert!(error.contains("launch.json"), "{error}");
+    }
 }
 
 mod call_graph_progress_tests {

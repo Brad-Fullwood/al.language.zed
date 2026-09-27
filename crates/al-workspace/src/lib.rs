@@ -413,6 +413,10 @@ pub struct Workspace {
     pub toolchain: RwLock<Option<AlToolchain>>,
     /// Discovered AL project (app.json manifest, packages).
     pub project: RwLock<Option<AlProject>>,
+    /// The [`project_files_fingerprint`](al_project::project::project_files_fingerprint)
+    /// of the files [`refresh_project_files`] last read into `project`. `None`
+    /// until the first refresh, which reads them whatever they hold.
+    project_files_fingerprint: tokio::sync::Mutex<Option<u64>>,
     /// .NET semantic bridge for CodeAnalysis features.
     pub semantic: RwLock<Option<al_semantic::SemanticBridge>>,
     /// Serializes lazy initialization and restart so concurrent requests cannot
@@ -572,6 +576,7 @@ impl Workspace {
             symbols: Arc::new(SymbolIndex::new()),
             toolchain: RwLock::new(None),
             project: RwLock::new(None),
+            project_files_fingerprint: tokio::sync::Mutex::new(None),
             semantic: RwLock::new(None),
             semantic_lifecycle_lock: tokio::sync::Mutex::new(()),
             file_index: Arc::new(FileIndex::new()),
@@ -1664,6 +1669,59 @@ pub fn refresh_workspace_files(
     }
     workspace.mark_generation_changed();
     Ok(delta)
+}
+
+/// Read `app.json` and the debug configuration files into the loaded project
+/// again when their content changed since the last call.
+///
+/// For callers that hold no editor overlays, like [`refresh_workspace_files`].
+/// The daemon loaded the project once at startup, so after `application` was
+/// edited `download-symbols` kept asking for the old minimum versions until
+/// the daemon exited. A manifest that no longer loads leaves the one read
+/// before in place. Calls run one at a time, so every request after an edit
+/// sees it.
+pub async fn refresh_project_files(workspace: &Workspace) {
+    let Some(root) = workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone())
+    else {
+        return;
+    };
+    let mut last = workspace.project_files_fingerprint.lock().await;
+    // Taken before the files are read, so an edit that lands during the read
+    // moves the fingerprint again and is read on the next call.
+    let fingerprint = al_project::project::project_files_fingerprint(&root);
+    if *last == Some(fingerprint) {
+        return;
+    }
+    // Read before the write guard is taken: most dispatchers take the read
+    // guard with `try_read` and refuse the request while a writer holds it.
+    let manifest = al_project::project::load_app_manifest(&root);
+    let (server_configs, launch_config_error) = al_project::project::load_launch_configs(&root);
+    let mut guard = workspace.project.write().await;
+    let Some(project) = guard.as_mut().filter(|project| project.root == root) else {
+        return;
+    };
+    match manifest {
+        Ok(manifest) => project.app_json = manifest,
+        Err(error) => tracing::warn!(
+            %error,
+            "workspace: app.json does not load, the manifest read before stays in use"
+        ),
+    }
+    project.server_configs = server_configs;
+    project.launch_config_error = launch_config_error;
+    if last.is_some() {
+        tracing::info!(
+            root = %root.display(),
+            "workspace: app.json or a debug configuration file changed on disk and was read again"
+        );
+    }
+    *last = Some(fingerprint);
+    workspace.mark_generation_changed();
 }
 
 /// Apply files the editor reported changed on disk and does not have open:

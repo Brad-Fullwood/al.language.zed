@@ -355,6 +355,54 @@ pub fn load_app_manifest(project_root: &Path) -> Result<AppManifest, DiscoveryEr
     })
 }
 
+/// Read the debug configuration of the project at `project_root` into the
+/// pair [`AlProject::server_configs`] and [`AlProject::launch_config_error`]
+/// hold: its AL server configurations, or none and the reason the file could
+/// not be read.
+pub fn load_launch_configs(
+    project_root: &Path,
+) -> (Vec<al_bc::launch::BcServerConfig>, Option<String>) {
+    match al_bc::launch::find_launch_config(project_root) {
+        Ok(found) => (found.map(|file| file.configs).unwrap_or_default(), None),
+        Err(error) => {
+            tracing::warn!(%error, "AL project loaded without its debug configuration");
+            (Vec::new(), Some(error.to_string()))
+        }
+    }
+}
+
+/// A hash of the files an [`AlProject`] keeps in memory besides its packages:
+/// `app.json`, `.zed/debug.json` and `.vscode/launch.json` under
+/// `project_root`. A process that keeps one project loaded compares it to
+/// know when to read them again.
+///
+/// Hashed by content, up to the 1 MiB both loaders accept. An edit such as
+/// `25.0.0.0` to `26.0.0.0` keeps the file's length, and inside one tick of the
+/// filesystem clock it keeps the mtime too.
+pub fn project_files_fingerprint(project_root: &Path) -> u64 {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+
+    let mut hasher = Sha256::new();
+    hasher.update(project_root.as_os_str().as_encoded_bytes());
+    let [zed_debug, vscode_launch] = al_bc::launch::launch_file_paths(project_root);
+    for path in [project_root.join("app.json"), zed_debug, vscode_launch] {
+        let mut content = Vec::new();
+        let read = std::fs::File::open(&path)
+            .and_then(|file| file.take(MAX_APP_JSON_BYTES + 1).read_to_end(&mut content));
+        match read {
+            Ok(length) => {
+                hasher.update([1u8]);
+                hasher.update((length as u64).to_le_bytes());
+                hasher.update(&content);
+            }
+            Err(_) => hasher.update([0u8]),
+        }
+    }
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("sha256 is 32 bytes"))
+}
+
 fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
     let app_json_path = dir.join("app.json");
     if !app_json_path.is_file() {
@@ -374,13 +422,7 @@ fn try_load_project(dir: &Path) -> Result<Option<AlProject>, DiscoveryError> {
     } else {
         scan_packages(&packages_dir)?
     };
-    let (server_configs, launch_config_error) = match al_bc::launch::find_launch_config(dir) {
-        Ok(found) => (found.map(|lf| lf.configs).unwrap_or_default(), None),
-        Err(error) => {
-            tracing::warn!(%error, "AL project loaded without its debug configuration");
-            (Vec::new(), Some(error.to_string()))
-        }
-    };
+    let (server_configs, launch_config_error) = load_launch_configs(dir);
 
     Ok(Some(AlProject {
         root: dir.to_path_buf(),
@@ -1092,6 +1134,33 @@ mod tests {
         assert!(
             reported.contains("debug.json"),
             "the message must name the file: {reported}"
+        );
+    }
+
+    #[test]
+    fn project_files_fingerprint_moves_with_the_manifest_and_debug_files() {
+        let root = tempdir();
+        let manifest = root.join("app.json");
+        std::fs::write(&manifest, r#"{"application":"25.0.0.0"}"#).unwrap();
+        let first = project_files_fingerprint(&root);
+        assert_eq!(project_files_fingerprint(&root), first, "nothing changed");
+
+        // Same length, so only the content tells the two apart.
+        std::fs::write(&manifest, r#"{"application":"26.0.0.0"}"#).unwrap();
+        let edited = project_files_fingerprint(&root);
+        assert_ne!(edited, first, "a same-length app.json edit");
+
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::write(root.join(".vscode/launch.json"), "{}").unwrap();
+        let launch_added = project_files_fingerprint(&root);
+        assert_ne!(launch_added, edited, "a launch.json written");
+
+        std::fs::create_dir_all(root.join(".zed")).unwrap();
+        std::fs::write(root.join(".zed/debug.json"), "[]").unwrap();
+        assert_ne!(
+            project_files_fingerprint(&root),
+            launch_added,
+            "a debug.json written"
         );
     }
 
