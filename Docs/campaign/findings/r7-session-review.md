@@ -86,7 +86,7 @@ then trying to reach the same outcome by another route. The result per finding i
 - severity: low
 - scenario: a reader who sizes a recursive AL test against the module doc expects the interpreter to stop at 100 calls. It stops at 512, with the error `call depth of 512 exceeded`. The doc comment is the first thing in the module and states a number the code does not use.
 - fix: "Recursion depth is capped at `MAX_RECURSION_DEPTH` (512)", or name the constant only, so the doc does not go stale again.
-- status: open
+- status: fixed 0143a9e2. The module doc says recursion is capped at `MAX_RECURSION_DEPTH` and gives no number. Test `the_module_doc_names_the_call_cap_by_its_constant` (al-runtime) reads the module doc.
 
 ### [R7-DOC-2] help examples call the binary `al`, and one installs fish completions that never load
 - where: crates/al-explorer/src/cli/args.rs:99-108 (`search`, `object`), :197-199 (`compile`), :228-230 (`lint`), :265-278 (`hover`, `definition`), :318-320 (`rename`), :345-349 (`generate-completions`), :743-744 (`native-check`), :755-759 (`free-ids`). The binary is `al-explorer` (crates/al-explorer/Cargo.toml:17, args.rs:39).
