@@ -445,3 +445,20 @@ Append-only. Newest entry last.
   now has the two test names (`snapshot_start_posts_and_parses_id`,
   `snapshot_start_server_error_maps_to_internal_error`, al-lsp) and the wrong value (-32602 for
   -32603 at load), which the first two attempts lacked.
+
+## 2026-09-27 08:15 BST: the snapshot flake was already fixed, four interactive commits merged
+
+- The flake agent reproduced `snapshot_start_server_error_maps_to_internal_error` 11 times in 40
+  runs of `cargo test -p al-lsp --lib daemon -- --test-threads=12`: the containment tests set
+  `XDG_CONFIG_HOME` behind their own mutex, not the `serial_test` lock the other trust tests use,
+  so a containment test could repoint the trust store while a snapshot test awaited its mocked
+  server, and the authorisation then failed with -32602. Its fix was the change 17bd4758 already
+  made on 2026-09-26 17:45 (the agent's worktree branched from 58781aa7, which lacks it), so the
+  merge conflicted on the same lines and the branch was dropped. The two earlier flake dispatches
+  after 17bd4758 were unnecessary. `campaign/fix-snapshot-flake` deleted, its worktree removed.
+- CI on 5abcfd5c: all six jobs green.
+- The interactive session pushed four commits (af3a36cd, 404f2fb4, 8cf97b56, b2577ceb) between
+  07:56 and 08:10: List and Dictionary as reference types with List range methods, the subscriber
+  test's var section moved back above the subscriber (the queued GR2-1 item), a `pack-native`
+  refusal test that compares the folder as the user named it, and a `clippy.toml`. Fast-forwarded
+  onto them. They go through the next gate run and the round 10 review.
