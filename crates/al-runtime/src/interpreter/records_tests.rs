@@ -3822,20 +3822,17 @@ fn subscriber_codeunits_with_globals_run_on_a_fresh_instance() {
     end;
 }
 "#;
-    // The var section follows the subscriber: an attributed `local
-    // procedure` straight after a var section loses its attribute in the
-    // current grammar (Docs/campaign/findings/grammar-attribute-after-var.md).
     let subscriber = r#"codeunit 50199 "Tick Counter"
 {
+    var
+        Calls: Integer;
+
     [EventSubscriber(ObjectType::Codeunit, Codeunit::Ticker, 'OnTick', '', false, false)]
     local procedure Count(var Seen: Integer)
     begin
         Calls += 1;
         Seen := Seen * 10 + Calls;
     end;
-
-    var
-        Calls: Integer;
 }
 "#;
     let probe = r#"codeunit 50200 "Tick Probe"
