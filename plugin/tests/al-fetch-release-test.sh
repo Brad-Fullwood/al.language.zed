@@ -1,14 +1,13 @@
 #!/usr/bin/env bash
 #
-# Regression tests for the plugin findings in round 9 of the improvement
-# campaign (Docs/campaign/findings/r9-session-review.md):
+# Regression tests for al-fetch-release.sh and plugin/evals/run.sh:
 #
-#   R9-PLUGIN-1: al-fetch-release.sh installed a symlink or a directory
-#                named al-lsp or al-explorer as if it were the verified file.
-#   R9-PLUGIN-2: al-fetch-release.sh reported "installed" when a step of the
-#                install (mkdir/mv/rm) failed, and nothing was installed.
-#   R9-PLUGIN-3: plugin/evals/run.sh turned a missing or unrelated al-lsp
-#                into twelve reports of a wrong answer, with no reason shown.
+#   A symlink or a directory named al-lsp or al-explorer in the release
+#   archive is refused before install.
+#   A failed install step (mkdir, mv or rm) is named in the refusal. The
+#   report does not claim anything was installed.
+#   A missing or mismatched al-lsp skips an eval case by name, with the
+#   reason al-explorer gave.
 #
 # Serves small archives over a local python3 -m http.server: curl in
 # al-fetch-release.sh restricts --proto to https/http, so a file:// URL
@@ -53,8 +52,8 @@ sha256_of() {
 # This machine has a real al-explorer/al-lsp installed for development, which
 # would otherwise short-circuit both scripts under test ("already on PATH;
 # nothing to download", or a real daemon answering every eval check). Strip
-# any PATH entry that holds either binary; curl/tar/sha256sum/python3/jq live
-# elsewhere and are unaffected.
+# any PATH entry that holds either binary. curl, tar, sha256sum, python3 and
+# jq live elsewhere and are unaffected.
 path_without_binaries() {
 	local dir filtered="" dirs
 	IFS=':' read -ra dirs <<<"$PATH"
@@ -114,7 +113,7 @@ run_fetch() {
 		bash "$fetch_script"
 }
 
-# ── R9-PLUGIN-1a: a symlinked al-lsp is refused ─────────────────────
+# ── a symlinked al-lsp is refused ───────────────────────────────────
 scenario_symlink_member() {
 	local stage="$work/stage-symlink" data="$work/data-symlink" out rc
 	rm -rf "$stage" "$data"
@@ -135,7 +134,7 @@ scenario_symlink_member() {
 	pass "a symlinked al-lsp is refused, not installed"
 }
 
-# ── R9-PLUGIN-1b: a directory named al-lsp is refused ───────────────
+# ── a directory named al-lsp is refused ─────────────────────────────
 scenario_directory_member() {
 	local stage="$work/stage-dir" data="$work/data-dir" out rc
 	rm -rf "$stage" "$data"
@@ -158,7 +157,7 @@ scenario_directory_member() {
 	pass "a directory named al-lsp is refused, not installed"
 }
 
-# ── R9-PLUGIN-2: a failed install step is named, not reported installed ──
+# ── a failed install step is named and nothing is reported installed ─
 scenario_failed_install_step() {
 	local stage="$work/stage-good" blocker="$work/blocker-file" data out rc
 	rm -rf "$stage"
@@ -188,13 +187,46 @@ scenario_failed_install_step() {
 	pass "a failed install step is named and nothing is reported installed"
 }
 
-# ── R9-PLUGIN-3: a missing al-lsp skips the eval case by name ───────────
+# run.sh now asks al-explorer itself whether al-lsp is usable (a preflight
+# call before any case runs) instead of guessing from the filesystem, so
+# these two scenarios need an al-explorer that behaves like the real one for
+# that one question. This fake implements only that: it looks for al-lsp on
+# PATH, the way find_al_lsp_binary does (crates/al-protocol/src/client/mod.rs)
+# once no sibling binary exists, and reports the same refusal shape al-explorer
+# reports on stdout when none is found or the one found answers the wrong
+# version to --version. $1 is the path to write the fake binary to.
+write_fake_al_explorer() {
+	cat >"$1" <<'SH'
+#!/bin/sh
+found=""
+old_ifs="$IFS"
+IFS=:
+for dir in $PATH; do
+	if [ -x "$dir/al-lsp" ]; then
+		found="$dir/al-lsp"
+		break
+	fi
+done
+IFS="$old_ifs"
+
+if [ -z "$found" ]; then
+	printf '{"error":"Cannot find al-lsp. It is normally installed beside al-explorer; this executable has no al-lsp next to it and there is none on PATH."}\n'
+	exit 1
+fi
+
+version="$("$found" --version 2>/dev/null)"
+printf '{"error":"The only al-lsp available is %s (%s), and this client is version 0.4.0. It is on PATH rather than beside this executable."}\n' "$found" "$version"
+exit 1
+SH
+	chmod +x "$1"
+}
+
+# ── a missing al-lsp skips the eval case by name ────────────────────
 scenario_missing_al_lsp_eval() {
 	local fake_bin="$work/fake-bin" case_file="$work/scratch-case.json" out rc
 	rm -rf "$fake_bin"
 	mkdir -p "$fake_bin"
-	printf '#!/bin/sh\nexit 1\n' >"$fake_bin/al-explorer"
-	chmod +x "$fake_bin/al-explorer"
+	write_fake_al_explorer "$fake_bin/al-explorer"
 
 	cat >"$case_file" <<'JSON'
 {
@@ -215,7 +247,7 @@ JSON
 
 	out="$(PATH="$test_path" AL_EXPLORER_BIN="$fake_bin/al-explorer" \
 		bash "$eval_runner" "$case_file" 2>&1)" && rc=0 || rc=$?
-	printf '%s\n' "$out" | grep -qE '^SKIP  scratch-missing-al-lsp -- no al-lsp binary' ||
+	printf '%s\n' "$out" | grep -qE '^SKIP  scratch-missing-al-lsp -- Cannot find al-lsp' ||
 		fail "missing al-lsp: expected an upfront SKIP naming al-lsp (exit $rc). Output: $out"
 	if printf '%s\n' "$out" | grep -q '^FAIL'; then
 		fail "missing al-lsp: a case reported FAIL instead of SKIP. Output: $out"
@@ -223,9 +255,55 @@ JSON
 	pass "a missing al-lsp skips the eval case instead of reporting a wrong answer"
 }
 
+# ── a mismatched al-lsp on PATH skips the eval case by name ─────────
+scenario_mismatched_al_lsp_eval() {
+	local fake_bin="$work/fake-bin-mismatch" fake_lsp_dir="$work/fake-lsp-path" \
+		case_file="$work/scratch-mismatch-case.json" out rc
+	rm -rf "$fake_bin" "$fake_lsp_dir"
+	mkdir -p "$fake_bin" "$fake_lsp_dir"
+	write_fake_al_explorer "$fake_bin/al-explorer"
+
+	cat >"$fake_lsp_dir/al-lsp" <<'SH'
+#!/bin/sh
+if [ "${1-}" = "--version" ]; then
+	printf 'al-lsp 0.0.1\n'
+	exit 0
+fi
+exit 1
+SH
+	chmod +x "$fake_lsp_dir/al-lsp"
+
+	cat >"$case_file" <<'JSON'
+{
+  "id": "scratch-mismatched-al-lsp",
+  "question": "scratch case for the mismatched al-lsp regression test",
+  "skill": "al-bc:bc-object-id-allocator",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "checks": [
+    {
+      "args": ["--compact", "free-ids", "--kind", "table"],
+      "jq": ".nextFree",
+      "expect_exact": "50101"
+    }
+  ]
+}
+JSON
+
+	out="$(PATH="$fake_lsp_dir:$test_path" AL_EXPLORER_BIN="$fake_bin/al-explorer" \
+		bash "$eval_runner" "$case_file" 2>&1)" && rc=0 || rc=$?
+	printf '%s\n' "$out" | grep -qE '^SKIP  scratch-mismatched-al-lsp -- The only al-lsp available is .*0\.0\.1' ||
+		fail "mismatched al-lsp: expected an upfront SKIP naming the version mismatch (exit $rc). Output: $out"
+	if printf '%s\n' "$out" | grep -q '^FAIL'; then
+		fail "mismatched al-lsp: a case reported FAIL instead of SKIP. Output: $out"
+	fi
+	pass "a mismatched al-lsp on PATH skips the eval case instead of reporting a wrong answer"
+}
+
 scenario_symlink_member
 scenario_directory_member
 scenario_failed_install_step
 scenario_missing_al_lsp_eval
+scenario_mismatched_al_lsp_eval
 
 printf 'al-fetch-release-test: all scenarios passed\n'

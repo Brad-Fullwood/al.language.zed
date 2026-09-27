@@ -960,7 +960,7 @@ impl Workspace {
             Ok(_) => {
                 tracing::debug!(
                     package = %app_path.display(),
-                    "source summary cache: the package changed while it was summarized; not saving"
+                    "source summary cache: the package changed while it was summarized. Not saving"
                 );
                 return Ok(LoadedPackageSummary::built(summary));
             }
@@ -968,7 +968,7 @@ impl Workspace {
                 tracing::debug!(
                     package = %app_path.display(),
                     %error,
-                    "source summary cache: cannot hash the package again; not saving"
+                    "source summary cache: cannot hash the package again. Not saving"
                 );
                 return Ok(LoadedPackageSummary::built(summary));
             }
