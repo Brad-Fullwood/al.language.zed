@@ -30,24 +30,31 @@ fixture's `OnAfterProcess` and `OnBeforeProcess` events. The fixture ships no
 without it.
 
 The fixture has no `.alpackages`, so it cannot exercise a base-app lookup.
-Question 4 reads a workspace procedure instead. The package-side numbers quoted
-in the skills come from a separate project whose `.alpackages` holds Base
-Application 28.1, measured directly rather than through an agent:
+Question 4 reads a workspace procedure instead. The package-side numbers below
+are measured directly against the project Round 6 built for that (see its
+entry under Results): `al-explorer new` plus `download-symbols --source
+nuget`, Base Application 28.0.46665.48632 from the public feed.
 
 | Call | Bytes | The flag that replaced the `jq` projection |
 | --- | --- | --- |
-| `by-id codeunit 80` | 552,710 | `--fields kind,id,name,package` |
-| `by-id table 18` | 194,951 | `--fields fields` |
-| `composed table Item` | 450,532 | `--limit 20 --fields name,package,fields` |
-| `suggest-event --table Item` | 484,680 | `--limit 8` |
-| `impact Item` | 342,252 | `--scope workspace` |
-| `source "Sales-Post"` | 837,509 | `--list-procedures`, then `--procedure` |
-| `source "Sales-Post" --procedure RunWithCheck` | 4,758 | read whole |
-| `trace OnAfterPostSalesDoc` | 842 | read whole |
+| `by-id codeunit 80` | 547,004 | `--fields kind,id,name,package` |
+| `by-id table 18` | 193,721 | `--fields fields` |
+| `composed table Item` | 519,307 | `--limit 20 --fields name,package,fields` |
+| `suggest-event --table Item` | 480,859 | `--limit 8` |
+| `impact Item` | 332,767 | `--scope workspace` |
+| `source "Sales-Post"` | 154,789 | `--list-procedures`, then `--procedure` |
+| `source "Sales-Post" --procedure RunWithCheck` | 424 | read whole |
+| `trace OnAfterPostSalesDoc` | 310 | read whole |
 
-Those figures have not been re-measured since the daemon changes, because this
-machine has no such project. Re-running them is the "agent run against a
-project with `.alpackages`" item in `ROADMAP.md`.
+The last three rows are far smaller than the numbers this section used to
+carry (837,509, 4,758 and 842 bytes), because those older figures came from a
+project with real AL source behind it. The public NuGet feed does not ship
+source for Base Application: every object comes back `generated_outline`,
+signature only, no procedure bodies. `source "Sales-Post"` and `trace` still
+return every signature and every graph edge the package can supply, so the
+three affected rows measure the true ceiling for a package built this way.
+A project built by downloading symbols from a licensed BC tenant
+(`--source server`) would carry embedded source and larger numbers here.
 
 ## Results
 
@@ -201,6 +208,70 @@ recipe to lead with `composed | jq` (a 106-byte projection carrying
 had claimed `--limit`/`--fields` shrink `composed`'s output. Second try: 172
 fields, Base Application, correct.
 
+**Round 6: the five skills Round 5 left untested against `.alpackages`, plus
+`bc-upgrade-impact`'s `package-diff` with two real versions of the same
+Microsoft package.** Two projects, both `al-explorer new` in a temp directory
+followed by `download-symbols --source nuget`, against
+`target/release/al-explorer` and `al-lsp` built beside it.
+
+The five-skill project (`app.json` `application: 28.0.0.0`) downloaded Base
+Application 28.0.46665.48632 plus Application, Business Foundation, System
+Application and System. Two files were added so the questions had a real
+answer to find: `src/SalesPostSubscribers.Codeunit.al` subscribes to
+Sales-Post's `OnAfterPostSalesDoc`, and `src/CustomerBlockHelper.Codeunit.al`
+reads the Customer table's `Blocked` field.
+
+The upgrade project downloaded Base Application 25.0.23364.36035 with
+`application: 25.0.0.0`, then `application` was edited to `26.0.0.0` and
+downloaded again, landing 26.0.30643.38226 alongside it in the same
+`.alpackages` (see the recorded defect below: this needed a `daemon-shutdown`
+in between). `src/GLAccountHelper.Codeunit.al` reads the G/L Account table's
+`Income/Balance` field, an `Option` in 25 that became `Enum "G/L Account
+Report Type"` in 26, so `package-diff` and `obsolete --used` had a real,
+workspace-side hit to find.
+
+| # | Skill | Question | Answer | Right? | Tool calls | Bytes | Wall time |
+| - | - | - | - | - | - | -: | -: |
+| 1 | `bc-base-app-source` | How does Business Central calculate a customer's available credit? Show me the source of `CalcAvailableCredit` on the Customer table. | Signature only, `procedure CalcAvailableCredit(): Decimal`, no body: the package shipped without source | right, first try | Skill, Bash x3 | 4,446 | 23.0 s |
+| 2 | `bc-event-map` | Who subscribes to the `OnAfterPostSalesDoc` event published by the Sales-Post codeunit? | 1 subscriber, `Sales Post Subscribers.OnAfterPostSalesDocHandler`, workspace, resolved | right, first try | Skill, Bash | 503 | 13.2 s |
+| 3 | `bc-impact-check` | What would changing the Blocked field on the Customer table affect in this extension? | 1 workspace consumer (`Customer Block Helper`, read, high confidence), 1 out-of-scope low-confidence row (`Serv. Customer` table extension, extends) | right, first try | Skill, Bash x2 | 684 | 23.1 s |
+| 4 | `bc-workspace-health` | Audit this extension before I deploy it. What problems does it have? | One dead-code finding (`IsFullyBlocked`, zero references, medium confidence) and three codeunits with no permission set coverage; native-check, sql-scan, arch-lint, audit-data, metrics and duplicates all clean | right, first try | Skill, Bash x9 | 645 | 27.3 s |
+| 5 | `bc-object-id-allocator` | I want to add a new table to this extension. What is the next free table object ID? | 50100 (`idRanges` 50100-50149, none used yet for tables) | right, first try | Skill, ToolSearch, Bash | 276 | 15.1 s |
+| 6 | `bc-upgrade-impact` (`package-diff`) | I'm upgrading this app's Base Application dependency from version 25 to version 26. What changed that this extension actually uses, and is it a breaking change? | One breaking change, `G/L Account.Income/Balance` changed `Option` to `Enum`, used by `GL Account Helper` (read); no orphaned subscribers, no obsolete calls in use | right, first try | Skill, Bash x7 | 1,161 | 36.1 s |
+
+Bytes are the tool results the session pulled into its context, summed across
+the run, the same measure Round 4 used. All six right on the first try: no
+skill failed to trigger, and no answer needed a second attempt.
+
+Question 6's session drifted from the skill's own examples partway through:
+after the first two calls it ran `al-explorer` bare instead of through
+`al-bin.sh` (a real binary happened to be on this machine's `PATH`), tried two
+subcommands that do not exist (`call`, `symbol-search`), and closed the gap
+with `grep` and a file read rather than a documented command. The final
+answer was still right, so nothing in the skill needed a fix: every one of
+its bash blocks already prefixes `al-explorer` with `al-bin.sh`, and Haiku
+just did not follow that consistently once it went looking for where the
+field was used.
+
+One binary defect, recorded here rather than fixed (fixes to `al-explorer`
+itself are out of scope for this plugin round): `download-symbols` answered
+from a stale in-memory `app.json`. After editing `application` from
+`25.0.0.0` to `26.0.0.0` on disk, re-running `download-symbols --source
+nuget` against the same live daemon reported all five packages "already
+present" at the old 25.0.23364.36035 build:
+
+```
+$ al-explorer download-symbols --project . --source nuget
+[--] Base Application — already in .alpackages (.../Microsoft_Base Application_25.0.23364.36035.app)
+```
+
+Expected: a refusal to skip, since `25.0.23364.36035` does not satisfy a
+requested minimum of `26.0.0.0`. Only after `al-explorer daemon-shutdown` and
+a fresh daemon did the next `download-symbols` call read the edited
+`app.json` and fetch 26.0.30643.38226. `al-explorer --json packages` before
+the restart still reported every package at version 25, straight from the
+daemon's live state, the same manifest `download-symbols` had used.
+
 ## Downloading al-lsp and al-explorer
 
 `plugin/scripts/al-fetch-release.sh`, called from the `SessionStart` hook
@@ -292,19 +363,10 @@ agent carries a `name` and a `description`.
 
 ## Not covered
 
-- `bc-upgrade-impact`'s `package-diff`. Round 5's `.alpackages` project has one
-  version of each Microsoft package, not two, so nothing exercised the diff
-  path or `obsolete --used` against a real deprecation timeline. Needs a
-  project with two versions of the same app in `.alpackages`.
-- `bc-base-app-source`, `bc-event-map`, `bc-impact-check`, `bc-workspace-health`
-  and `bc-object-id-allocator` against a project with `.alpackages`. Round 5
-  ran only `bc-symbol-lookup`'s question about the field count there. The
-  byte counts for packages in the "Fixture" section above are still the
-  numbers from before the daemon changes, not a measured agent run.
-- The `.alpackages` project Round 5 used is scaffolded fresh in a temp
-  directory each time (`al-explorer new` plus `download-symbols --source
-  nuget`), not checked into this repository, because a downloaded Base
-  Application `.app` is several megabytes of Microsoft's own binary. A
+- The `.alpackages` projects Round 5 and Round 6 used are scaffolded fresh in
+  a temp directory each time (`al-explorer new` plus `download-symbols
+  --source nuget`), not checked into this repository, because a downloaded
+  Base Application `.app` is several megabytes of Microsoft's own binary. A
   repeatable fixture for `plugin/evals/` still needs a different strategy (see
   `plugin/ROADMAP.md`).
 - No tagged release publishes `binary-checksums.txt` yet, so the download

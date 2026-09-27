@@ -39,11 +39,12 @@ Left for the next agent:
       Their commands are verified by hand and now have a ground-truth eval
       case each, but none has been through a Haiku session. The other five
       skills have one each, recorded in `TESTING.md`.
-- [ ] An agent run against a project with `.alpackages`, which is the only way
-      to exercise the base-app lookups and the dependency source index. The
-      same gap applies to `plugin/evals/`: the bundled fixture declares no
-      dependencies, so there is no ground-truth case for `package-diff` or a
-      base-app `source` lookup either.
+- [x] An agent run against a project with `.alpackages`, the only way to
+      exercise the base-app lookups, `package-diff` and the dependency source
+      index. Round 6 in `TESTING.md`.
+- [ ] The same gap in `plugin/evals/`: the bundled fixture declares no
+      dependencies, so there is still no ground-truth case for `package-diff`
+      or a base-app `source` lookup there.
 - [ ] `claude plugin eval` cases (LLM-scored, not ground-truth) for the twenty
       questions in section 2 of `Docs/campaign/findings/ai-tooling-ideas.md`.
       Those were measured against a real workspace with Base Application
