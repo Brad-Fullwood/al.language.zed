@@ -37,6 +37,13 @@ Agents in flight (dispatched 17:58):
   `.claude/worktrees/agent-r11`, `campaign/fix-daemon-appjson`. Ends with `## Fix pass complete`.
 - `cargo mutants` (E), Sonnet, continuation on the formatting module: `.claude/worktrees/agent-a34708a3121ce8ac2`,
   `campaign/test-mutants` (fast-forwarded to 7b607e40). Ends with `## Mutation pass complete`.
+- Queued batch 3 (the workspace pass clear without a currency check from `ghost-race-2.md`, the
+  doubled "not trusted" notice from `pack-native --validate`, the `DotNetPackages` decision), Opus,
+  dispatched 18:10: `.claude/worktrees/agent-queued-3`, `campaign/fix-queued-3`. Ends with
+  `## Fix pass complete`.
+- Blog length pass (articles 3, 7, 8, 9 to their planned ranges, `readTime` for all nine), Opus,
+  dispatched 18:05 on the blog branch `campaign/2026-09-rewrite`, appends `### Length pass 2026-09-27`
+  to `findings/blog-progress.md` in this checkout (uncommitted). Ends with `## Length pass complete`.
 
 Merge order when they finish: the two security fix branches, the app.json fix, mutants, then the
 two reviews' findings to fix agents. Gates on each merge, `cargo test -p al-test-harness
