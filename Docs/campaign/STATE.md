@@ -32,6 +32,9 @@ names). Scratch tests saved as `.campaign/r6b-scratch-tests.patch`. Gates on 204
 
 Agents in flight (dispatched 17:50):
 
+- Security round 6 fixes, second batch (SEC6-6 registry declarations and one path resolver, SEC6-7 the
+  quoting rule in the skills, SEC6-8 control characters escaped in text output), Opus, dispatched
+  18:30: `.claude/worktrees/agent-fix-r6sec-trust`, `campaign/fix-r6sec-b`. Ends with `## Fix pass complete`.
 - Security round 6 fixes, runtime (SEC6-3, SEC6-4, SEC6-5), Opus: `.claude/worktrees/agent-fix-r6sec-rt`,
   `campaign/fix-r6sec-rt`. Ends with `## Fix pass complete`.
 - Round 12 review over `4c429ac5..7b607e40` (round 10 and 11 fixes, docs re-check 3, splits, plugin
