@@ -40,6 +40,23 @@ pub enum AnalyzerDiscoveryError {
         found: String,
         root: String,
     },
+    /// The entry is a bare name that resolves to a file inside a trusted
+    /// project, and the trust record does not list that file with its current
+    /// hash. The fields are already put through [`crate::trust::one_line`].
+    #[error(
+        "analyzer '{entry}' resolves to '{found}' inside this project, and the project's trust \
+         record does not list that file, so it is not loaded. The record lists the project copy \
+         of an analyzer name written in the project's settings or in \
+         ~/.config/al-lsp/settings.json. Name the analyzer there, or install it in the NuGet \
+         cache. To read the project's settings and decide, the user runs this in a terminal: \
+         {} --show {root}",
+        crate::trust::TRUST_COMMAND
+    )]
+    UnrecordedProjectAnalyzer {
+        entry: String,
+        found: String,
+        root: String,
+    },
 }
 
 /// Whether `name` denotes one of Microsoft's analyzer assemblies shipped with
@@ -144,7 +161,8 @@ pub fn discover_custom_analyzer(
 pub struct CustomAnalyzerSearch<'a> {
     project_root: &'a Path,
     assembly_probing_paths: &'a [PathBuf],
-    trusted: std::cell::OnceCell<bool>,
+    /// The trust decision when the project is trusted, `None` when it is not.
+    trusted: std::cell::OnceCell<Option<crate::trust::TrustDecision>>,
 }
 
 impl<'a> CustomAnalyzerSearch<'a> {
@@ -158,20 +176,56 @@ impl<'a> CustomAnalyzerSearch<'a> {
     }
 
     /// [`discover_custom_analyzer`] for `entry`.
+    ///
+    /// A bare name that resolves to a file inside the project loads only when
+    /// the trust decision lists that file with the hash it has now. The record
+    /// learns names from the project's settings and
+    /// `~/.config/al-lsp/settings.json`, and a name can also come from Zed's
+    /// user settings, which the record does not read. Such a name used to
+    /// resolve to a copy a later commit added under `.netpackages`, ahead of
+    /// the NuGet cache, while the record still matched.
     pub fn resolve(&self, entry: &str) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
         let entry = entry.trim();
         if entry.is_empty() || is_builtin_analyzer(entry) {
             return Ok(None);
         }
-        let trusted = *self.trusted.get_or_init(|| {
-            crate::trust::decide(self.project_root).is_ok_and(|decision| decision.is_trusted())
+        let trusted = self.trusted.get_or_init(|| {
+            crate::trust::decide(self.project_root)
+                .ok()
+                .filter(crate::trust::TrustDecision::is_trusted)
         });
-        discover(
+        let found = discover(
             entry,
             self.project_root,
             self.assembly_probing_paths,
-            trusted,
-        )
+            trusted.is_some(),
+        )?;
+        let Some(found) = found else {
+            return Ok(None);
+        };
+        let bare_name = !Path::new(entry).is_absolute() && !entry.contains(['/', '\\']);
+        if !bare_name || !is_inside(&found, self.project_root) {
+            return Ok(Some(found));
+        }
+        let shown = |text: &str| crate::trust::one_line(text);
+        let (entry, found_text, root) = (
+            shown(entry),
+            shown(&found.display().to_string()),
+            shown(&self.project_root.display().to_string()),
+        );
+        match trusted {
+            Some(decision) if crate::trust::lists_project_copy(decision, &found) => Ok(Some(found)),
+            Some(_) => Err(AnalyzerDiscoveryError::UnrecordedProjectAnalyzer {
+                entry,
+                found: found_text,
+                root,
+            }),
+            None => Err(AnalyzerDiscoveryError::UntrustedProjectAnalyzer {
+                entry,
+                found: found_text,
+                root,
+            }),
+        }
     }
 }
 

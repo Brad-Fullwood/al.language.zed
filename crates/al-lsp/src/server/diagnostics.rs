@@ -1100,6 +1100,14 @@ mod tests {
             .join(".netpackages/businesscentral.lintercop/1.0.0/BusinessCentral.LinterCop.dll");
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
+        // The project's settings name the analyzer, so the trust record lists
+        // the copy. A copy the record does not list is refused.
+        std::fs::create_dir_all(project.path().join(".vscode")).unwrap();
+        std::fs::write(
+            project.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["BusinessCentral.LinterCop"]}"#,
+        )
+        .unwrap();
         let requested = [
             "CodeCop".to_string(),
             "BusinessCentral.LinterCop".to_string(),

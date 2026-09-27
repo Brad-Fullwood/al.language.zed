@@ -225,6 +225,11 @@ pub async fn compile_project_with_analyzers(
         .tempdir_in(project_root)?;
     let out_dir = tmp_guard.path();
 
+    // A `dotnet` inside the project runs with the runtime beside it, which a
+    // running process does not stamp, so trust is decided again here.
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path_before_spawn(project_root) {
+        tracing::warn!("{advisory}");
+    }
     let mut cmd = al_project::toolchain::dotnet_command_async(&toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
     let out_file_name = manifest_app_filename(project_root)?;
@@ -848,10 +853,15 @@ mod tests {
     /// only once the project is trusted. Before, a clone that shipped a DLL of
     /// that name had it passed to alc as `/analyzer:` on every build.
     ///
-    /// The only test in this crate that points `XDG_CONFIG_HOME` somewhere
-    /// else, and every other one reads an untrusted store either way.
+    /// Held by the tests that point `XDG_CONFIG_HOME` somewhere else. Every
+    /// other test reads an untrusted store either way.
+    static TRUST_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn named_custom_analyzer_in_the_project_needs_trust() {
+        let _lock = TRUST_STORE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         let config = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", config.path());
@@ -862,6 +872,14 @@ mod tests {
         );
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"analyzer").unwrap();
+        // The project's settings name the analyzer, so the trust record lists
+        // the copy. A copy the record does not list is refused.
+        std::fs::create_dir_all(root.path().join(".vscode")).unwrap();
+        std::fs::write(
+            root.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["BusinessCentral.LinterCop"]}"#,
+        )
+        .unwrap();
         let toolchain = analyzer_test_toolchain(root.path());
         let requested = ["BusinessCentral.LinterCop".to_string()];
 
@@ -879,6 +897,83 @@ mod tests {
         assert_eq!(
             trusted.unwrap(),
             [dll.canonicalize().unwrap().display().to_string()]
+        );
+    }
+
+    /// A `dotnet` shipped in a trusted project is recorded with the runtime
+    /// beside it. A running daemon decides again only when its fingerprint
+    /// moves, which stamps the muxer alone, so a runtime file a `git pull`
+    /// replaced ran on the next build. The build now decides before it spawns.
+    #[cfg(unix)]
+    #[test]
+    fn a_build_does_not_run_a_project_dotnet_whose_runtime_changed() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = TRUST_STORE_LOCK
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let config = tempfile::tempdir().unwrap();
+        let previous_config = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config.path());
+
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"id":"00000000-0000-0000-0000-000000000001","publisher":"P","name":"A","version":"1.0.0.0"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::write(
+            root.join(".vscode/settings.json"),
+            r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#,
+        )
+        .unwrap();
+        let fxr = root.join("tools/dotnet/host/fxr/8.0.0/libhostfxr.so");
+        std::fs::create_dir_all(fxr.parent().unwrap()).unwrap();
+        std::fs::write(&fxr, b"reviewed hostfxr").unwrap();
+        // The muxer marks that it ran for this project, and only this one,
+        // since other tests in this crate spawn `dotnet` concurrently.
+        let marker = root.join("ran");
+        let dotnet = root.join("tools/dotnet/dotnet");
+        std::fs::write(
+            &dotnet,
+            format!(
+                "#!/bin/sh\ncase \"$*\" in *'/project:{}'*) touch '{}' ;; esac\n",
+                root.display(),
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&dotnet, std::fs::Permissions::from_mode(0o755)).unwrap();
+        al_project::trust::grant(&root).unwrap();
+        let previous_dotnet = std::env::var_os(al_project::toolchain::DOTNET_PATH_ENV);
+        std::env::set_var(al_project::toolchain::DOTNET_PATH_ENV, &dotnet);
+        let toolchain = analyzer_test_toolchain(&root);
+        // A runtime of its own, so the lock above is not held across an await.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let _ = runtime.block_on(compile_project(&toolchain, &root, None));
+        let ran_while_trusted = marker.exists();
+        std::fs::remove_file(&marker).ok();
+        std::fs::write(&fxr, b"replaced by git pull").unwrap();
+        let _ = runtime.block_on(compile_project(&toolchain, &root, None));
+        let ran_after_the_change = marker.exists();
+
+        match previous_dotnet {
+            Some(value) => std::env::set_var(al_project::toolchain::DOTNET_PATH_ENV, value),
+            None => std::env::remove_var(al_project::toolchain::DOTNET_PATH_ENV),
+        }
+        match previous_config {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        assert!(ran_while_trusted, "the trusted project's dotnet runs");
+        assert!(
+            !ran_after_the_change,
+            "a dotnet whose runtime changed after the grant must not run"
         );
     }
 

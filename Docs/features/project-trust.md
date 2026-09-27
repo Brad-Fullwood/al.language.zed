@@ -18,7 +18,7 @@ else applies as it always has.
 | Setting | Why it is privileged |
 | --- | --- |
 | `al.codeAnalyzers` entries that are not built-in tokens | A path entry becomes `/analyzer:<path>`; Roslyn loads the assembly and runs its type initialisers |
-| `al.compilationOptions` | Appended verbatim to the `alc` command line, including `/analyzer:` and `/ruleset:` |
+| `al.compilationOptions` | Appended verbatim to the `alc` command line. An entry that names a file alc loads from is refused (see below) |
 | `al.ruleSetPath` outside the project | Reads a file from anywhere as `/ruleset:` |
 | `al.assemblyProbingPaths` | Directories the analyzer search walks and `/assemblyprobingpaths:` names |
 | `al.packageCachePath` outside the project | Chooses where `.app` symbol packages are read from, and reaches `/packagecachepath:` |
@@ -54,7 +54,13 @@ treated like `al.packageCachePath` outside the project: until the project is tru
 packages are not read, `downloadSymbols` and the editor's symbol download refuse to write
 into it, the editor shows why the symbols are missing in place of the download prompt, and the
 daemon does not count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
-check.
+check. The record lists each such folder as `linked package folder` with the directory it
+resolves to. That covers `.alpackages` and every `al.packageCachePath` or
+`al.appLocalFolderPaths` entry written inside the project, from any settings file. `trust
+--show` shows where the folder leads, and a commit that adds the link or points it somewhere
+else makes the record stale, which takes the target out of the containment roots again. A
+link added after the grant used to leave the record trusted, and the daemon then accepted a
+path anywhere under its target.
 
 Everything else in a repository's settings applies without trust: formatting, inlay hints,
 `al.diagnosticsScope`, `al.enableNativeLint` and its per-rule overrides, `al.incrementalBuild`,
@@ -142,6 +148,15 @@ editor's settings again when it moved. Gating only removes values, so a project 
 while the language server runs takes effect at the next settings change or restart. The
 debug adapter is a new process for each session and decides at launch.
 
+The fingerprint stamps the `dotnet` muxer and not the runtime beside it, which the record
+hashes. So a `dotnet` inside the project is decided again before each spawn: every alc build
+(the daemon's, the language server's, the debug adapter's launch compile, publish and
+`al-explorer build`) and the `--official-lsp` start. A `git pull` that replaces
+`host/fxr/<version>/libhostfxr.so` makes the project stale, `AL_DOTNET_PATH` is dropped, and
+the build runs `dotnet` from `PATH`. Before, the process kept the variable until the
+fingerprint moved, and the next build ran the new library. A `dotnet` outside the project
+costs one path check.
+
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
 holds the canonical project root and a SHA-256 of the privileged values. Change one of those
@@ -151,14 +166,37 @@ until you run `trust` a second time. `al-explorer trust --show` reports that as 
 A privileged value that is a path into the project names a file the repository ships, and
 the file is what runs. For an analyzer path, `al.dotnetPath`, `binary.path` and each
 analyzer name that resolves to a DLL under `.netpackages`, `packages` or a relative probing
-path, the recorded value carries the file's SHA-256, and for a probing directory inside the
-project one hash over every `.dll` below it. The record also covers what the file loads from
-beside it: for an analyzer, one hash over every `.dll` in its directory and below, since .NET
-resolves an analyzer's references from its own directory, and for `al.dotnetPath`, one hash
-over every file beside the muxer and every file under its `host` and `shared` directories,
-where it finds `hostfxr` and the framework. `trust --show` prints those hashes. A commit
-that replaces one of those files, or adds one where the record saw none, makes the record
-`stale`. A path outside the project is the user's machine and is recorded as written.
+path, the path is first resolved through any symbolic link, since the loader opens the target
+and reads its neighbours beside the target. The recorded value carries the resolved file's
+SHA-256 and, when the path is a link, where it resolves. For a probing directory inside the
+project it carries one hash over every file below it. The record also covers what the file
+loads from beside it: for an analyzer, one hash over every file in its directory and below,
+since .NET resolves an analyzer's references and its native libraries (`.so`, `.dylib`) from
+its own directory, and for `al.dotnetPath`, one hash over every file beside the muxer and
+every file under its `host` and `shared` directories, where it finds `hostfxr` and the
+framework. `trust --show` prints the resolved paths and the hashes. A commit that replaces one
+of those files, adds one where the record saw none, or points a link somewhere else makes the
+record `stale`. An analyzer at the project root puts every file in the project into its
+record, so keep an analyzer in a directory of its own. A path outside the project is the
+user's machine and is recorded as written.
+
+`al.compilationOptions` is recorded as text, so it cannot vouch for a file an entry names.
+An entry that names a file or directory alc loads from is refused: `/analyzer:` and its
+short form `/a:`, `/assemblyprobingpaths:`, `/ruleset:` and `/packagecachepath:`, with `/`
+or `-` and in any case, as alc reads them, and an `@` response file, which alc reads as more
+switches. Such an entry is recorded as `compilation option that names a file`, so an existing
+record goes stale, and `al-explorer trust` refuses to record the project and names the
+dedicated key to use instead: `al.codeAnalyzers`, `al.assemblyProbingPaths`, `al.ruleSetPath`
+or `al.packageCachePath`, which record what they name. Switches that name no input, such as
+`/nowarn:` or `/target:`, are recorded as text as before.
+
+A tree the record cannot hash is not recorded. The walk does not follow a symbolic link
+inside the tree, because the loader does and a commit could change the target without
+changing any file the walk reads. It also stops after 50,000 entries. A path whose tree holds
+a link or more entries than that is recorded as `path the record cannot hash`, with the path
+and the reason, so an existing record goes stale, and `al-explorer trust` refuses to record
+the project until the link is replaced by the file it names or the file moves to a directory
+of its own.
 
 ## Settings you wrote yourself
 
@@ -177,8 +215,18 @@ absolute probing path or the editor extension folders, and a name found only ins
 project is refused with a message saying so. A relative analyzer path names a file the
 repository ships and is refused the same way. The name was the user's, but the repository
 chose which file answered to it, and that file is loaded into alc and into the language
-server's semantic bridge. The rule sits in `al_project::analyzers::discover_custom_analyzer`,
-which every build, publish, debug launch and semantic analysis goes through.
+server's semantic bridge.
+
+In a trusted project, a copy found inside the project for a name loads only when the trust
+record lists that file with the hash it has now. The record learns names from the project's
+settings files and `~/.config/al-lsp/settings.json`, and lists the copy each of them resolves
+to. A name written only in Zed or VS Code user settings, or passed to `al-explorer build` as a
+flag, is not in the record, so a copy of it that a later commit adds under `.netpackages` is
+refused, with a message naming the file, where it used to be found ahead of the NuGet cache
+and loaded. To use a project copy, name the analyzer in the project's settings or in
+`~/.config/al-lsp/settings.json`. The rule sits in
+`al_project::analyzers::CustomAnalyzerSearch`, which every build, publish, debug launch and
+semantic analysis goes through.
 
 A credential you supply yourself is the same: `BC_USERNAME`, `BC_PASSWORD` and
 `BC_ACCESS_TOKEN` apply without trust. What still needs trust is the *server* those
@@ -216,8 +264,12 @@ through one authorisation function: `debug` (the `start` command), `publish`,
 dispatch table declares which methods those are, and a test holds this list and that
 declaration together.
 
-- Microsoft's Business Central online endpoints are always allowed. The endpoint is fixed, so
-  a repository cannot redirect the token.
+- A Business Central online target needs no trust. The native adapter and the daemon build its
+  URL on Microsoft's host, `api.businesscentral.dynamics.com`, with the tenant and environment
+  URL-encoded. Microsoft's own deployment library, which the EditorServices proxy hands the
+  scenario to, builds it as `https://{applicationFamily}.api.bc.dynamics.com/...` without
+  checking `applicationFamily`, so `collector.example/` would send the token to
+  `collector.example`. The proxy refuses an `applicationFamily` that is not one DNS label.
 - An on-premises target is compared on scheme, host and port together. A launch configuration
   naming `https://erp.example.com` does not authorise `http://erp.example.com`.
 - `http://` is refused for bearer and basic credentials unless the host is loopback. Set
@@ -242,11 +294,16 @@ the repository carries: an on-premises server needs a trusted project, and
 server. A refused launch fails with the reason in the debug console.
 
 The EditorServices proxy forwards the scenario to Microsoft's host as Zed sent it, so it
-judges the scenario the way that host might read it. A scenario that names a `server` and no
-`environmentType` is judged as on-premises, since Microsoft's template for your own server
-has none. The proxy refuses a scenario with an `environmentType` other than `OnPrem`,
-`Sandbox` or `Production` (in any case), a target key such as `server` or `environmentType`
-spelled in another case, and a field it cannot read, such as a `port` written as a string.
+judges the scenario the way that host might read it. It judges a scenario as on-premises, the
+rule Microsoft's deployment library applies, when `environmentType` is `OnPrem`, when
+`environmentType` is missing and a `server` is named (Microsoft's template for your own server
+has none), or when `authentication` is `Windows` or `UserPassword` in any case. With either of
+those authentication values the library connects to `server` even for `Sandbox` or
+`Production`. The trust record lists the servers of launch entries under the same rule. The
+proxy refuses a scenario with an `environmentType` other than `OnPrem`, `Sandbox` or
+`Production` (in any case), an `applicationFamily` that is not one DNS label (letters, digits
+and `-`), a target key such as `server`, `environmentType` or `applicationFamily` spelled in
+another case, and a field it cannot read, such as a `port` written as a string.
 
 `publish` and `tests.run*` are in that list although they never read the OAuth cache: they
 send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The
