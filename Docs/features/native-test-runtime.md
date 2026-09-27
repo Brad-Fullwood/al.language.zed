@@ -50,7 +50,11 @@ on the value the previous step returned.
 **Dispatch (`interpreter/dispatch/`):** receiver-specific stubs → catalog stubs → built-in globals
 → real workspace procedures found through the file index. Calls work in statement and expression
 position, through explicit object receivers and `Codeunit <Subtype>` variables, with `var` scalar
-parameter write-back. The global builtin catalog covers `Error`/`Message`-class dialogs,
+parameter write-back. A codeunit variable keeps its own globals between calls made on it, a
+`SingleInstance` codeunit has one instance for the test's whole lifecycle (initialize through
+cleanup), and an event subscriber's codeunit runs on a fresh instance each time it fires. A label is
+a constant, not state, so a table or helper codeunit whose only globals are labels runs the same as
+one with none. The global builtin catalog covers `Error`/`Message`-class dialogs,
 `StrSubstNo`/`Format` (the default rendering, XML format 9, numbered standard formats 1 to 4 and
 picture strings such as `<Precision,2:2><Standard Format,0>` or `<Year4>-<Month,2>-<Day,2>`, with
 the length argument; numbers group thousands as BC's standard format does, so `Format(1234567)` is
@@ -75,12 +79,20 @@ Instance methods that run locally:
   `Count`, `Keys`, `Values`.
 - `TextBuilder`: `Append`, `AppendLine` (CRLF), `Length`, `ToText`, `Clear`, `Insert`, `Remove`,
   `Replace`, changing the builder in place.
-- JSON: `JsonObject`, `JsonArray`, `JsonToken` and `JsonValue` are references, as in AL (assigning
-  shares the object, and a token from `Get` changes its parent). Objects support `Add`, `Get`,
-  `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the typed getters; arrays `Add`, `Get`
-  (0-based), `Count`, `Insert`, `Set`, `RemoveAt`, `IndexOf`; tokens `IsObject`/`AsObject` and the
-  like; values `AsText`, `AsInteger`, `AsDecimal`, `AsBoolean`, `IsNull`, `SetValue`. All four read
-  and write text (`ReadFrom`, compact `WriteTo`) and take `SelectToken` paths (`$.a.b[0]`).
+- JSON: `JsonObject`, `JsonArray`, `JsonToken` and `JsonValue` are references, as in AL. `B := A`
+  shares one node, a token from `Get` changes its parent, and `ReadFrom` gives the variable a new
+  node and leaves the old one where it was, so an alias made before the `ReadFrom` still sees the
+  old value. Objects support `Add`, `Get`, `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the
+  typed getters, where `GetText`, `GetInteger` and the rest honour a second `DefaultIfNotFound`
+  argument. Arrays support `Add`, `Get` (0-based), `Count`, `Insert`, `Set`, `RemoveAt`, `IndexOf`.
+  Tokens support `IsObject`/`AsObject` and the like. Values support `AsText`, `AsInteger`,
+  `AsDecimal`, `AsBoolean`, `IsNull`, `SetValue`. All four read and write text (`ReadFrom`, compact
+  `WriteTo`). `SelectToken` follows `$.a.b[0]` paths, `[?(...)]` filters (comparisons, existence,
+  `&&`, `||`, `@` and `$` paths), `..` and `*`, and fails unless exactly one token matches. A slice,
+  a union, a regular expression or a grouped filter is not supported, and a literal path that uses
+  one routes the test to live BC. A failed `Get`, `ReadFrom`, `SelectToken`, `Add`, `Replace`,
+  `Insert`, `Set` or `RemoveAt` raises an error where the call is a statement and returns false
+  where its result is read, as BC's own JSON methods do.
 - Enums: an `Enum "Type"` variable starts at ordinal 0 and formats as that ordinal's member name.
   `AsInteger`, `Names` and `Ordinals` run on a value, and `FromInteger`, `Names` and `Ordinals` on
   the type (`Enum::Colour.FromInteger(3)`). The router keeps these calls local for workspace enums
@@ -111,8 +123,10 @@ Supported behavior:
 - Code primary keys are caseless and Integer/Decimal key values unify.
 - SetRange/SetFilter (descending `%N` substitution so `%10` is safe), Count/CountApprox/IsEmpty,
   Reset/SetCurrentKey, Ascending (reverse iteration over the current key, restored by Reset),
-  single-pass DeleteAll, and ModifyAll (the value is coerced to the field's type, and primary-key
-  fields and `RunTrigger` are refused).
+  DeleteAll and ModifyAll (the value is coerced to the field's type, and a primary-key field is
+  refused). Each row runs through the same OnBefore/OnAfter events as Delete or Modify, and its
+  trigger when `RunTrigger` is true, whenever the table has a subscriber to that event or a trigger
+  RunTrigger would run. Otherwise both write every matching row in one pass.
 - BC-style comparisons, ranges, union/intersection, wildcards, and BC filter case rules:
   unprefixed Text patterns match case-sensitively, the `@` prefix makes a pattern
   case-insensitive, and Code cells always compare caselessly.
@@ -134,7 +148,8 @@ Supported behavior:
   every workspace subscriber bound to it (by object name or ID), binding arguments by parameter
   name with `var` values flowing back. Insert, Modify, Delete and Rename raise the table's
   OnBefore/OnAfter events and Validate its OnBefore/OnAfterValidateEvent, whatever `RunTrigger`
-  says. Subscribers in an `EventSubscriberInstance = Manual` codeunit are skipped; a test that
+  says, and DeleteAll and ModifyAll raise the same Delete or Modify events for every row they
+  touch. Subscribers in an `EventSubscriberInstance = Manual` codeunit are skipped; a test that
   calls `BindSubscription` routes to live BC.
 
 PureLogic and WithRecords are runtime modes the interpreter enforces. If routing misses a record
@@ -146,9 +161,13 @@ access, PureLogic fails with a capability error instead of running it against th
   `[TestInitialize]`, `[TestCleanup]`, and each test's `[HandlerFunctions(...)]` are retained as
   execution metadata rather than listed as independent tests.
 - **Routing:** syntax-aware classification follows the fully resolved transitive workspace call,
-  trigger, interface, and event graph. Typed collection calls are not mistaken for record calls.
-  Supported workspace records select InterpRecord. Dependency bodies without native stubs and all
-  platform-bound behavior select LiveBc with file/line reasons.
+  trigger, interface, and event graph, including `Rename`, `DeleteAll`, `ModifyAll`, and the record
+  calls table code makes through `Rec`, `xRec` or a bare method, so a reachable event subscriber on
+  any of them is classified like any other reachable code. Typed collection calls are not mistaken
+  for record calls. Supported workspace records select InterpRecord. A reachable `SingleInstance`
+  codeunit with variable globals still selects LiveBc unless it is the test's own codeunit, because
+  its state outlives one test on BC while the local run starts each test afresh. Dependency bodies
+  without native stubs and all other platform-bound behavior select LiveBc with file/line reasons.
 - **Whole codeunits:** a codeunit runs locally only when every discovered test is local. Mixed
   Interp/InterpRecord codeunits use WithRecords. Any LiveBc method keeps the whole codeunit on BC.
 - **Entry points:** single-codeunit, batch, automatic/MCP, and TUI runs use the same router.
