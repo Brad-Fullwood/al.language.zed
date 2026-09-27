@@ -905,8 +905,8 @@ mod tests {
     /// moves, which stamps the muxer alone, so a runtime file a `git pull`
     /// replaced ran on the next build. The build now decides before it spawns.
     #[cfg(unix)]
-    #[tokio::test]
-    async fn a_build_does_not_run_a_project_dotnet_whose_runtime_changed() {
+    #[test]
+    fn a_build_does_not_run_a_project_dotnet_whose_runtime_changed() {
         use std::os::unix::fs::PermissionsExt;
         let _lock = TRUST_STORE_LOCK
             .lock()
@@ -949,12 +949,17 @@ mod tests {
         let previous_dotnet = std::env::var_os(al_project::toolchain::DOTNET_PATH_ENV);
         std::env::set_var(al_project::toolchain::DOTNET_PATH_ENV, &dotnet);
         let toolchain = analyzer_test_toolchain(&root);
+        // A runtime of its own, so the lock above is not held across an await.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
 
-        let _ = compile_project(&toolchain, &root, None).await;
+        let _ = runtime.block_on(compile_project(&toolchain, &root, None));
         let ran_while_trusted = marker.exists();
         std::fs::remove_file(&marker).ok();
         std::fs::write(&fxr, b"replaced by git pull").unwrap();
-        let _ = compile_project(&toolchain, &root, None).await;
+        let _ = runtime.block_on(compile_project(&toolchain, &root, None));
         let ran_after_the_change = marker.exists();
 
         match previous_dotnet {
