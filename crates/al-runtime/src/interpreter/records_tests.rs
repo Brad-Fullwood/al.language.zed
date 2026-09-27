@@ -4613,3 +4613,69 @@ fn selecttoken_follows_filters_and_recursive_descent() {
         "{unsupported}"
     );
 }
+
+const TABLE_PUBLISHER: &str = r#"table 50280 "Table Pub"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Note; Text[50]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    procedure Stamp()
+    begin
+        OnStamp(5);
+    end;
+
+    [IntegrationEvent(true, false)]
+    local procedure OnStamp(Times: Integer)
+    begin
+    end;
+}
+"#;
+
+const TABLE_PUBLISHER_SUBSCRIBER: &str = r#"codeunit 50281 "Table Pub Sub"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Table Pub", 'OnStamp', '', false, false)]
+    local procedure OnStampSub(var Sender: Record "Table Pub"; Times: Integer)
+    begin
+        Sender.Note := 'stamped ' + Sender."No." + ' ' + Format(Times);
+    end;
+}
+"#;
+
+const TABLE_PUBLISHER_PROBE: &str = r#"codeunit 50282 "Table Pub Probe"
+{
+    procedure StampRunsTheSubscriber(): Text
+    var
+        Pub: Record "Table Pub";
+    begin
+        Pub."No." := 'P1';
+        Pub.Insert();
+        Pub.Stamp();
+        exit(Pub.Note);
+    end;
+}
+"#;
+
+/// An event a table procedure publishes with IncludeSender passes the
+/// record as `Sender`. The subscriber failed as declaring a parameter the
+/// event does not publish.
+#[test]
+fn table_publisher_passes_its_record_as_sender() {
+    let result = run(
+        &[
+            ("/ws/TablePub.al", TABLE_PUBLISHER),
+            ("/ws/TablePubSub.al", TABLE_PUBLISHER_SUBSCRIBER),
+            ("/ws/TablePubProbe.al", TABLE_PUBLISHER_PROBE),
+        ],
+        "Table Pub Probe",
+        "StampRunsTheSubscriber",
+        vec![],
+    );
+    assert_eq!(ok(result), Value::Text("stamped P1 5".into()));
+}

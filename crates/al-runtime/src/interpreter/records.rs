@@ -1432,6 +1432,7 @@ fn raise_table_event(
         "",
         &["Rec", "xRec", "RunTrigger"],
         &mut values,
+        None,
         stack,
         ctx,
     )
@@ -1815,6 +1816,7 @@ fn dispatch_validate(
             &field_name,
             &["Rec", "xRec", "CurrFieldNo"],
             &mut values,
+            None,
             stack,
             ctx,
         )

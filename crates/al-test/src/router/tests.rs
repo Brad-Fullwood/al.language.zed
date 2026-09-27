@@ -1296,6 +1296,75 @@ end;
     );
 }
 
+/// A table procedure's event with IncludeSender passes the record to a
+/// subscriber's `Sender` parameter, which the local runtime does, so the
+/// test stays local.
+#[test]
+fn table_publisher_with_a_sender_subscriber_runs_locally() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/TablePub.Table.al"),
+        r#"table 50280 "Table Pub"
+{
+fields
+{
+    field(1; "No."; Code[20]) { }
+    field(2; Note; Text[50]) { }
+}
+keys { key(PK; "No.") { } }
+
+procedure Stamp()
+begin
+    OnStamp(5);
+end;
+
+[IntegrationEvent(true, false)]
+local procedure OnStamp(Times: Integer)
+begin
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/TablePubSub.Codeunit.al"),
+        r#"codeunit 50281 "Table Pub Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"Table Pub", 'OnStamp', '', false, false)]
+local procedure OnStampSub(var Sender: Record "Table Pub"; Times: Integer)
+begin
+    Sender.Note := 'stamped';
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/TablePubTests.Codeunit.al"),
+        r#"codeunit 50282 "Table Pub Tests"
+{
+Subtype = Test;
+[Test]
+procedure StampRunsTheSubscriber()
+var
+    Pub: Record "Table Pub";
+begin
+    Pub."No." := 'P1';
+    Pub.Insert();
+    Pub.Stamp();
+    if Pub.Note <> 'stamped' then
+        Error('subscriber did not run');
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(
+        result.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        result.reasons
+    );
+}
+
 /// Validate checks the field's TableRelation, which the local runtime can
 /// do only for a plain relation to a workspace table.
 #[test]
