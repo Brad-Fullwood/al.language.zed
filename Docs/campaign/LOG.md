@@ -623,5 +623,5 @@ Append-only. Newest entry last.
   bytes of tool context per question), the fixture byte counts measured, `## Not covered` down to
   the release with `binary-checksums.txt` and a repeatable eval fixture. One binary defect queued:
   the daemon kept a stale `app.json` in memory after an edit on disk.
-- Gates on b2c38e6a in progress. Still out: mutants (formatting module), security round 6, the
+- Gates on b2c38e6a: 93 suites, 5352 passed, 0 failed. Pushed. Still out: mutants (formatting module), security round 6, the
   round 11 plugin and text fixes.
