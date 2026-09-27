@@ -21,7 +21,7 @@ pub(super) fn builtin_error(args: &[Value]) -> Eval {
         None => return eval_error("Error() called with no arguments"),
     };
     let formatted = if args.len() > 1 {
-        substitute_placeholders(&msg, &args[1..])
+        substitute_placeholders(&msg, &args[1..]).unwrap_or_else(|error| error)
     } else {
         msg
     };
@@ -32,7 +32,7 @@ pub(super) fn builtin_error(args: &[Value]) -> Eval {
     })
 }
 
-pub(super) fn formatted_dialog_text(args: &[Value]) -> String {
+pub(super) fn formatted_dialog_text(args: &[Value]) -> Result<String, String> {
     let message = match args.first() {
         Some(Value::Text(text)) | Some(Value::Code(text)) => text.clone(),
         Some(value) => render_value(value),
@@ -41,7 +41,7 @@ pub(super) fn formatted_dialog_text(args: &[Value]) -> String {
     if args.len() > 1 {
         substitute_placeholders(&message, &args[1..])
     } else {
-        message
+        Ok(message)
     }
 }
 

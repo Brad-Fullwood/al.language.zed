@@ -51,6 +51,11 @@ impl<T> Shared<T> {
     pub fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
+
+    /// The address of the contents, the same for every handle to them.
+    fn address(&self) -> usize {
+        Arc::as_ptr(&self.0).cast::<()>() as usize
+    }
 }
 
 impl<T: Clone> Shared<T> {
@@ -95,6 +100,11 @@ impl<T> Collection<T> {
     /// Whether both values name the same contents.
     pub fn same(&self, other: &Self) -> bool {
         self.contents.same(&other.contents)
+    }
+
+    /// The address of the contents, the same for every copy of the value.
+    fn address(&self) -> usize {
+        self.contents.address()
     }
 
     /// The declared element type of a List, or key type of a Dictionary.
@@ -303,108 +313,152 @@ impl Eq for Value {}
 
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        use std::cmp::Ordering;
-        use Value::*;
-        fn variant_index(v: &Value) -> u8 {
-            match v {
-                Null => 0,
-                Empty => 1,
-                // Integer and BigInteger are one numeric class: same index so
-                // they order by value, and `5 = 5L` holds.
-                Integer(_) | BigInteger(_) => 2,
-                Decimal(_) => 3,
-                Boolean(_) => 4,
-                Char(_) => 5,
-                Text(_) => 6,
-                Code(_) => 7,
-                Date(_) => 8,
-                Time(_) => 9,
-                DateTime(_) => 10,
-                Duration(_) => 11,
-                Guid(_) => 12,
-                Option { .. } => 13,
-                Record(_) => 14,
-                RecordRef(_) => 15,
-                Variant(_) => 16,
-                Array(_) => 17,
-                List(_) => 18,
-                Dict(_) => 19,
-                Blob(_) => 20,
-                ErrorInfo(_) => 21,
-                Codeunit { .. } => 22,
-                Range { .. } => 23,
-                TextBuilder(_) => 24,
-                Json(_) => 25,
-            }
+        compare(self, other, &mut MetPairs::new())
+    }
+}
+
+/// The pairs of List or Dictionary contents one comparison has started on,
+/// by address. A list can hold a list that holds it (`A.Add(B); B.Add(A)`),
+/// so a pair met again counts as equal, and the walk ends. A pair that
+/// differs ends the whole comparison, so every pair in the set is still being
+/// compared or was equal, and a pair is walked at most once.
+type MetPairs = std::collections::HashSet<(usize, usize)>;
+
+fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    use Value::*;
+    fn variant_index(v: &Value) -> u8 {
+        match v {
+            Null => 0,
+            Empty => 1,
+            // Integer and BigInteger are one numeric class: same index so
+            // they order by value, and `5 = 5L` holds.
+            Integer(_) | BigInteger(_) => 2,
+            Decimal(_) => 3,
+            Boolean(_) => 4,
+            Char(_) => 5,
+            Text(_) => 6,
+            Code(_) => 7,
+            Date(_) => 8,
+            Time(_) => 9,
+            DateTime(_) => 10,
+            Duration(_) => 11,
+            Guid(_) => 12,
+            Option { .. } => 13,
+            Record(_) => 14,
+            RecordRef(_) => 15,
+            Variant(_) => 16,
+            Array(_) => 17,
+            List(_) => 18,
+            Dict(_) => 19,
+            Blob(_) => 20,
+            ErrorInfo(_) => 21,
+            Codeunit { .. } => 22,
+            Range { .. } => 23,
+            TextBuilder(_) => 24,
+            Json(_) => 25,
         }
-        let mine = variant_index(self);
-        let theirs = variant_index(other);
-        if mine != theirs {
-            return mine.cmp(&theirs);
+    }
+    let mine = variant_index(left);
+    let theirs = variant_index(right);
+    if mine != theirs {
+        return mine.cmp(&theirs);
+    }
+    match (left, right) {
+        (Null, Null) | (Empty, Empty) => Ordering::Equal,
+        (Integer(a) | BigInteger(a), Integer(b) | BigInteger(b)) => a.cmp(b),
+        (Decimal(a), Decimal(b)) => a.cmp(b),
+        (Boolean(a), Boolean(b)) => a.cmp(b),
+        (Char(a), Char(b)) => a.cmp(b),
+        (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
+        (TextBuilder(a), TextBuilder(b)) if a.same(b) => Ordering::Equal,
+        (TextBuilder(a), TextBuilder(b)) => a.snapshot().cmp(&b.snapshot()),
+        (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
+        (Duration(a), Duration(b)) => a.cmp(b),
+        (Guid(a), Guid(b)) => a.cmp(b),
+        (Json(a), Json(b)) => a.cmp(b),
+        (
+            Option {
+                type_name: at,
+                member: am,
+                ordinal: ao,
+            },
+            Option {
+                type_name: bt,
+                member: bm,
+                ordinal: bo,
+            },
+        ) => (ao, at, am).cmp(&(bo, bt, bm)),
+        (Record(a), Record(b)) | (RecordRef(a), RecordRef(b)) => {
+            (a.table_id, &a.table_name, a.handle).cmp(&(b.table_id, &b.table_name, b.handle))
         }
-        match (self, other) {
-            (Null, Null) | (Empty, Empty) => Ordering::Equal,
-            (Integer(a) | BigInteger(a), Integer(b) | BigInteger(b)) => a.cmp(b),
-            (Decimal(a), Decimal(b)) => a.cmp(b),
-            (Boolean(a), Boolean(b)) => a.cmp(b),
-            (Char(a), Char(b)) => a.cmp(b),
-            (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
-            (TextBuilder(a), TextBuilder(b)) if a.same(b) => Ordering::Equal,
-            (TextBuilder(a), TextBuilder(b)) => a.snapshot().cmp(&b.snapshot()),
-            (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
-            (Duration(a), Duration(b)) => a.cmp(b),
-            (Guid(a), Guid(b)) => a.cmp(b),
-            (Json(a), Json(b)) => a.cmp(b),
-            (
-                Option {
-                    type_name: at,
-                    member: am,
-                    ordinal: ao,
-                },
-                Option {
-                    type_name: bt,
-                    member: bm,
-                    ordinal: bo,
-                },
-            ) => (ao, at, am).cmp(&(bo, bt, bm)),
-            (Record(a), Record(b)) | (RecordRef(a), RecordRef(b)) => {
-                (a.table_id, &a.table_name, a.handle).cmp(&(b.table_id, &b.table_name, b.handle))
+        (Variant(a), Variant(b)) => compare(a, b, met),
+        (Array(a), Array(b)) => compare_in_order(a.iter(), b.iter(), met),
+        (List(a), List(b)) if a.same(b) => Ordering::Equal,
+        (List(a), List(b)) => {
+            if !met.insert((a.address(), b.address())) {
+                return Ordering::Equal;
             }
-            (Variant(a), Variant(b)) => a.cmp(b),
-            (Array(a), Array(b)) => a.cmp(b),
-            (List(a), List(b)) if a.same(b) => Ordering::Equal,
-            (List(a), List(b)) => a.snapshot().cmp(&b.snapshot()),
-            (Dict(a), Dict(b)) if a.same(b) => Ordering::Equal,
-            (Dict(a), Dict(b)) => {
-                let (a, b) = (a.snapshot(), b.snapshot());
-                a.values()
-                    .collect::<Vec<_>>()
-                    .cmp(&b.values().collect::<Vec<_>>())
+            let (a, b) = (a.snapshot(), b.snapshot());
+            compare_in_order(a.iter(), b.iter(), met)
+        }
+        (Dict(a), Dict(b)) if a.same(b) => Ordering::Equal,
+        (Dict(a), Dict(b)) => {
+            if !met.insert((a.address(), b.address())) {
+                return Ordering::Equal;
             }
-            (Blob(a), Blob(b)) => a.cmp(b),
-            (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
-            (
-                Codeunit {
-                    object_name: a,
-                    instance: a_instance,
-                },
-                Codeunit {
-                    object_name: b,
-                    instance: b_instance,
-                },
-            ) => (a, a_instance).cmp(&(b, b_instance)),
-            (
-                Range {
-                    start: a_start,
-                    end: a_end,
-                },
-                Range {
-                    start: b_start,
-                    end: b_end,
-                },
-            ) => (a_start, a_end).cmp(&(b_start, b_end)),
-            // Different variants handled by the index check above.
-            _ => Ordering::Equal,
+            let (a, b) = (a.snapshot(), b.snapshot());
+            // Entry by entry, the key and then the value.
+            compare_in_order(
+                a.values().flat_map(|(key, value)| [key, value]),
+                b.values().flat_map(|(key, value)| [key, value]),
+                met,
+            )
+        }
+        (Blob(a), Blob(b)) => a.cmp(b),
+        (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
+        (
+            Codeunit {
+                object_name: a,
+                instance: a_instance,
+            },
+            Codeunit {
+                object_name: b,
+                instance: b_instance,
+            },
+        ) => (a, a_instance).cmp(&(b, b_instance)),
+        (
+            Range {
+                start: a_start,
+                end: a_end,
+            },
+            Range {
+                start: b_start,
+                end: b_end,
+            },
+        ) => compare(a_start, b_start, met).then_with(|| compare(a_end, b_end, met)),
+        // Different variants handled by the index check above.
+        _ => Ordering::Equal,
+    }
+}
+
+/// Compare two sequences of values element by element, and a shorter
+/// sequence that matches so far first.
+fn compare_in_order<'a>(
+    mut left: impl Iterator<Item = &'a Value>,
+    mut right: impl Iterator<Item = &'a Value>,
+    met: &mut MetPairs,
+) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    loop {
+        match (left.next(), right.next()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(a), Some(b)) => match compare(a, b, met) {
+                Ordering::Equal => {}
+                different => return different,
+            },
         }
     }
 }
@@ -413,6 +467,49 @@ impl PartialOrd for Value {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
+}
+
+/// The longest Text, Code or TextBuilder value the local test runtime builds,
+/// in bytes of UTF-8.
+///
+/// Business Central's Text is a .NET string, which holds about a billion
+/// characters. The local runtime runs tests inside the language server's
+/// daemon, and the deadline is checked only between loop iterations, so a
+/// test that doubles a text used to exhaust memory before the deadline
+/// stopped it. 64 MiB is far more text than a test fixture needs, and a
+/// doubling loop reaches it in 26 steps.
+pub const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
+
+/// The most elements a List, Dictionary or array holds in the local test
+/// runtime. Business Central refuses an array of more than 1,000,000
+/// elements when it compiles it (AL0146), and does not cap a List or
+/// Dictionary. The runtime uses the array limit for all three: a value takes
+/// 56 bytes before any text it holds, so a full list of numbers takes 53 MiB.
+pub const MAX_COLLECTION_LEN: usize = 1_000_000;
+
+/// Refuse a text of `bytes` bytes that is longer than [`MAX_TEXT_BYTES`].
+/// `operation` names what would build it, for the message.
+pub(crate) fn check_text_size(operation: &str, bytes: usize) -> Result<(), String> {
+    if bytes <= MAX_TEXT_BYTES {
+        return Ok(());
+    }
+    Err(format!(
+        "{operation} would make a text of {bytes} bytes, over the local test runtime's \
+         limit of {} MiB for one text",
+        MAX_TEXT_BYTES / (1024 * 1024)
+    ))
+}
+
+/// Refuse a List, Dictionary or array of `len` elements that is longer than
+/// [`MAX_COLLECTION_LEN`]. `operation` names what would build it.
+pub(crate) fn check_collection_len(operation: &str, len: usize) -> Result<(), String> {
+    if len <= MAX_COLLECTION_LEN {
+        return Ok(());
+    }
+    Err(format!(
+        "{operation} would make {len} elements, over the local test runtime's limit of \
+         {MAX_COLLECTION_LEN} elements for one List, Dictionary or array"
+    ))
 }
 
 /// Reject a string that does not fit a declared `Text[N]`/`Code[N]` capacity.

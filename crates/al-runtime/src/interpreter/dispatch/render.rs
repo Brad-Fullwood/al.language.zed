@@ -6,7 +6,7 @@
 
 use crate::interpreter::eval_error;
 use crate::interpreter::scope::Eval;
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{check_text_size, Value};
 
 /// `StrSubstNo(fmt, arg1, …)` — substitute %1, %2, … in `fmt`.
 pub(super) fn builtin_strsubstno(args: &[Value]) -> Eval {
@@ -15,8 +15,10 @@ pub(super) fn builtin_strsubstno(args: &[Value]) -> Eval {
         Some(v) => render_value(v),
         None => return eval_error("StrSubstNo requires at least 1 argument"),
     };
-    let result = substitute_placeholders(&fmt, &args[1..]);
-    Eval::Normal(Value::Text(result))
+    match substitute_placeholders(&fmt, &args[1..]) {
+        Ok(result) => Eval::Normal(Value::Text(result)),
+        Err(error) => eval_error(format!("StrSubstNo: {error}")),
+    }
 }
 
 /// `Format(value[, length[, format]])` — convert a value to Text.
@@ -68,7 +70,11 @@ pub(super) fn builtin_format(args: &[Value]) -> Eval {
     if length == 0 {
         return Eval::Normal(Value::Text(rendered));
     }
-    let width = length.unsigned_abs() as usize;
+    let width = usize::try_from(length.unsigned_abs()).unwrap_or(usize::MAX);
+    let missing = width.saturating_sub(rendered.chars().count());
+    if let Err(message) = check_text_size("Format", rendered.len().saturating_add(missing)) {
+        return eval_error(message);
+    }
     let mut chars: Vec<char> = rendered.chars().collect();
     if chars.len() > width {
         chars.truncate(width);
@@ -224,12 +230,13 @@ pub(crate) fn render_duration(milliseconds: i64) -> String {
 /// re-scanned, so an argument whose value contains `%1` stays literal (BC
 /// behaviour). Digit runs are read maximally (`%10` targets the 10th
 /// argument); a placeholder with no matching argument is left verbatim. A
-/// `render` error aborts the substitution.
-pub(crate) fn substitute_placeholders_with<E>(
+/// `render` error aborts the substitution, as does a result that grows past
+/// [`crate::interpreter::value::MAX_TEXT_BYTES`]: `%1%1` doubles a text.
+pub(crate) fn substitute_placeholders_with(
     fmt: &str,
     arg_count: usize,
-    mut render: impl FnMut(usize) -> Result<String, E>,
-) -> Result<String, E> {
+    mut render: impl FnMut(usize) -> Result<String, String>,
+) -> Result<String, String> {
     let mut result = String::with_capacity(fmt.len());
     let mut chars = fmt.chars().peekable();
     while let Some(c) = chars.next() {
@@ -244,7 +251,9 @@ pub(crate) fn substitute_placeholders_with<E>(
         }
         match digits.parse::<usize>() {
             Ok(n) if n >= 1 && n <= arg_count => {
-                result.push_str(&render(n)?);
+                let value = render(n)?;
+                check_text_size("Substituting placeholders", result.len() + value.len())?;
+                result.push_str(&value);
             }
             _ => {
                 result.push('%');
@@ -252,18 +261,14 @@ pub(crate) fn substitute_placeholders_with<E>(
             }
         }
     }
+    check_text_size("Substituting placeholders", result.len())?;
     Ok(result)
 }
 
 /// Substitute %1, %2, … placeholders in `fmt` with rendered arg values
 /// (see [`substitute_placeholders_with`] for the scanning rules).
-pub(super) fn substitute_placeholders(fmt: &str, args: &[Value]) -> String {
-    match substitute_placeholders_with(fmt, args.len(), |n| {
-        Ok::<_, std::convert::Infallible>(render_value(&args[n - 1]))
-    }) {
-        Ok(result) => result,
-        Err(infallible) => match infallible {},
-    }
+pub(super) fn substitute_placeholders(fmt: &str, args: &[Value]) -> Result<String, String> {
+    substitute_placeholders_with(fmt, args.len(), |n| Ok(render_value(&args[n - 1])))
 }
 
 #[cfg(test)]

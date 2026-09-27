@@ -6530,3 +6530,351 @@ fn a_record_called_back_from_another_records_table_code_keeps_its_own_globals() 
     );
     assert_eq!(ok(call("AskOtherReadsBack")), Value::Boolean(true));
 }
+
+/// Lists and dictionaries that hold each other, the shapes of the round 6
+/// security findings SEC6-3 and SEC6-4.
+const CYCLIC_COLLECTIONS: &str = r#"codeunit 50390 "Cyclic Collections"
+{
+    procedure ListsInACycle(): Boolean
+    var
+        A: List of [Integer];
+        B: List of [Integer];
+        C: List of [Integer];
+        D: List of [Integer];
+    begin
+        A.Add(B);
+        B.Add(A);
+        C.Add(D);
+        D.Add(C);
+        exit(A = C);
+    end;
+
+    procedure ListsInACycleThatDiffer(): Boolean
+    var
+        A: List of [Integer];
+        B: List of [Integer];
+        C: List of [Integer];
+        D: List of [Integer];
+    begin
+        A.Add(B);
+        B.Add(A);
+        B.Add(1);
+        C.Add(D);
+        D.Add(C);
+        D.Add(2);
+        exit(A <> C);
+    end;
+
+    procedure DictionariesHoldingThemselves(): Boolean
+    var
+        D1: Dictionary of [Integer, Integer];
+        D2: Dictionary of [Integer, Integer];
+    begin
+        D1.Set(1, D1);
+        D2.Set(1, D2);
+        exit(D1 = D2);
+    end;
+
+    procedure SearchListInACycle(): Text
+    var
+        A: List of [Integer];
+        B: List of [Integer];
+        N: List of [Integer];
+        E: List of [Integer];
+    begin
+        A.Add(B);
+        B.Add(A);
+        N.Add(E);
+        exit(Format(B.Contains(N)) + '/' + Format(B.IndexOf(N)) + '/' + Format(B.LastIndexOf(N)) + '/' + Format(B.Remove(N)) + '/' + Format(B.Count()));
+    end;
+
+    procedure FindListInACycle(): Text
+    var
+        A: List of [Integer];
+        B: List of [Integer];
+        N: List of [Integer];
+        E: List of [Integer];
+    begin
+        A.Add(B);
+        B.Add(A);
+        N.Add(E);
+        E.Add(N);
+        exit(Format(B.Contains(N)) + '/' + Format(B.IndexOf(N)) + '/' + Format(B.LastIndexOf(N)) + '/' + Format(B.Remove(N)) + '/' + Format(B.Count()));
+    end;
+}
+"#;
+
+/// Run `proc` of [`CYCLIC_COLLECTIONS`] on a thread with the interpreter's
+/// stack, as the test backend does, so a test measures the runtime's own
+/// guards and not the 2 MiB stack of a test thread. A procedure that has not
+/// returned after 60 seconds fails the test, and its thread is left behind.
+fn run_cyclic(proc: &'static str) -> Eval {
+    let (done, result) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+        .spawn(move || {
+            let _ = done.send(run(
+                &[("/ws/Cyclic.al", CYCLIC_COLLECTIONS)],
+                "Cyclic Collections",
+                proc,
+                vec![],
+            ));
+        })
+        .expect("spawn the interpreter thread");
+    result
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .unwrap_or_else(|error| panic!("{proc} did not return: {error}"))
+}
+
+/// Comparing two lists that hold each other walked the cycle in `Value::cmp`
+/// until the stack overflowed and the process aborted. A pair of lists met
+/// again in one comparison now counts as equal.
+#[test]
+fn comparing_lists_in_a_cycle_ends() {
+    assert_eq!(ok(run_cyclic("ListsInACycle")), Value::Boolean(true));
+    assert_eq!(
+        ok(run_cyclic("ListsInACycleThatDiffer")),
+        Value::Boolean(true)
+    );
+}
+
+/// A dictionary that holds itself, compared with another that holds itself.
+#[test]
+fn comparing_dictionaries_that_hold_themselves_ends() {
+    assert_eq!(
+        ok(run_cyclic("DictionariesHoldingThemselves")),
+        Value::Boolean(true)
+    );
+}
+
+/// `Contains`, `IndexOf`, `LastIndexOf` and `Remove` compared the elements
+/// while the receiver was locked, and through a cycle the comparison locked
+/// the receiver again, so the thread waited on itself for good. They now
+/// compare a copy of the elements when the value sought holds a list or
+/// dictionary.
+#[test]
+fn searching_a_list_in_a_cycle_returns() {
+    assert_eq!(
+        ok(run_cyclic("SearchListInACycle")),
+        Value::Text("No/0/0/No/1".into())
+    );
+    assert_eq!(
+        ok(run_cyclic("FindListInACycle")),
+        Value::Text("Yes/1/1/Yes/0".into())
+    );
+}
+
+/// Values that double or grow to a length the test gives, the shapes of the
+/// round 6 security finding SEC6-5.
+const GROWING_VALUES: &str = r#"codeunit 50393 "Growing Values"
+{
+    procedure DoubleText(): Integer
+    var
+        T: Text;
+        I: Integer;
+    begin
+        T := 'x';
+        for I := 1 to 40 do
+            T := T + T;
+        exit(StrLen(T));
+    end;
+
+    procedure DoubleTextBuilder(): Integer
+    var
+        TB: TextBuilder;
+        I: Integer;
+    begin
+        TB.Append('x');
+        for I := 1 to 40 do
+            TB.Append(TB);
+        exit(TB.Length());
+    end;
+
+    procedure DoubleTextBySubstitution(): Integer
+    var
+        T: Text;
+        I: Integer;
+    begin
+        T := 'x';
+        for I := 1 to 40 do
+            T := StrSubstNo('%1%1', T);
+        exit(StrLen(T));
+    end;
+
+    procedure GrowTextByReplace(): Integer
+    var
+        T: Text;
+        I: Integer;
+    begin
+        T := 'x';
+        for I := 1 to 40 do
+            T := T.Replace('x', 'xxxxxxxxxxxxxxxx');
+        exit(StrLen(T));
+    end;
+
+    procedure DoubleList(): Integer
+    var
+        L: List of [Integer];
+        I: Integer;
+    begin
+        L.Add(1);
+        for I := 1 to 40 do
+            L.AddRange(L);
+        exit(L.Count());
+    end;
+
+    procedure PadText(): Integer
+    begin
+        exit(StrLen(PadStr('', 2000000000)));
+    end;
+
+    procedure PadTextLeft(): Integer
+    var
+        T: Text;
+    begin
+        T := '';
+        exit(StrLen(T.PadLeft(2000000000)));
+    end;
+
+    procedure FormatToWidth(): Integer
+    begin
+        exit(StrLen(Format(1, 2000000000)));
+    end;
+
+    procedure SplitIntoManyParts(): Integer
+    var
+        T: Text;
+    begin
+        T := PadStr('', 2000000, ',');
+        exit(T.Split(',').Count());
+    end;
+
+    procedure HugeArray(): Integer
+    var
+        A: array[2000000000] of Integer;
+    begin
+        A[1] := 5;
+        exit(A[1]);
+    end;
+
+    procedure ArrayAtTheLimit(): Integer
+    var
+        A: array[1000000] of Integer;
+    begin
+        A[1000000] := 5;
+        exit(ArrayLen(A) + A[1000000]);
+    end;
+
+    procedure LargeTextsStillWork(): Integer
+    var
+        T: Text;
+        TB: TextBuilder;
+        L: List of [Integer];
+        I: Integer;
+    begin
+        T := PadStr('', 1000000, 'x');
+        TB.Append(T);
+        TB.Append(T);
+        for I := 1 to 1000 do
+            L.Add(I);
+        L.AddRange(L);
+        exit(StrLen(T + T) + TB.Length() + L.Count());
+    end;
+}
+"#;
+
+fn run_growing(proc: &str) -> Eval {
+    run(
+        &[("/ws/Growing.al", GROWING_VALUES)],
+        "Growing Values",
+        proc,
+        vec![],
+    )
+}
+
+/// `T := T + T` in a loop asked for 1 TiB well inside the test's deadline.
+/// Each way of growing a text now stops at `MAX_TEXT_BYTES` with an error.
+#[test]
+fn growing_a_text_past_the_limit_fails_the_test() {
+    for proc in [
+        "DoubleText",
+        "DoubleTextBuilder",
+        "DoubleTextBySubstitution",
+        "GrowTextByReplace",
+        "PadText",
+        "PadTextLeft",
+        "FormatToWidth",
+    ] {
+        let start = std::time::Instant::now();
+        let message = error_message(run_growing(proc));
+        assert!(message.contains("64 MiB"), "{proc}: {message}");
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(20),
+            "{proc} took {:?}",
+            start.elapsed()
+        );
+    }
+}
+
+/// `L.AddRange(L)` in a loop doubles a list, and `Split` makes a list of
+/// one element for each separator. Both stop at `MAX_COLLECTION_LEN`.
+#[test]
+fn growing_a_list_past_the_limit_fails_the_test() {
+    for proc in ["DoubleList", "SplitIntoManyParts"] {
+        let message = error_message(run_growing(proc));
+        assert!(message.contains("1000000 elements"), "{proc}: {message}");
+    }
+}
+
+#[test]
+fn texts_and_lists_under_the_limits_still_grow() {
+    assert_eq!(
+        ok(run_growing("LargeTextsStillWork")),
+        Value::Integer(2_000_000 + 2_000_000 + 2_000)
+    );
+}
+
+/// `array[2000000000] of Integer` made two billion values when declared.
+/// Business Central does not compile an array of more than 1,000,000
+/// elements, so the local runtime leaves such an array unbound.
+#[test]
+fn an_array_past_the_limit_is_not_made() {
+    assert_eq!(
+        error_message(run_growing("HugeArray")),
+        "unbound identifier: a"
+    );
+    assert_eq!(
+        ok(run_growing("ArrayAtTheLimit")),
+        Value::Integer(1_000_005)
+    );
+}
+
+/// A Dictionary stops at `MAX_COLLECTION_LEN` entries. Filling one through AL
+/// takes a million statements, so the test starts from a full one.
+#[test]
+fn a_dictionary_past_the_limit_fails_the_test() {
+    use crate::interpreter::scope::{CallFrame, ScopeStack};
+    use crate::interpreter::value::{Collection, DictEntries, MAX_COLLECTION_LEN};
+    let entries: DictEntries = (0..MAX_COLLECTION_LEN)
+        .map(|n| (n.to_string(), (Value::Integer(n as i64), Value::Integer(0))))
+        .collect();
+    let mut frame = CallFrame::new("Test", "Test");
+    frame.bind("D", Value::Dict(Collection::new(entries, Some("Integer"))));
+    let mut stack = ScopeStack::new();
+    stack.push(frame);
+    let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
+    let mut call = |method: &str, key: i64| {
+        crate::interpreter::records::dispatch_dict_method(
+            "D",
+            method,
+            vec![Value::Integer(key), Value::Integer(1)],
+            &mut stack,
+            &mut ctx,
+        )
+    };
+    let limit = MAX_COLLECTION_LEN as i64;
+    assert!(error_message(call("Add", limit)).contains("1000000 elements"));
+    assert!(error_message(call("Set", limit)).contains("1000000 elements"));
+    // Set on a key that is there replaces its value.
+    assert!(!call("Set", 7).is_error());
+}

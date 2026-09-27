@@ -1572,6 +1572,14 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
         }
     }
 
+    if let ("+", Value::Text(a) | Value::Code(a), Value::Text(b) | Value::Code(b)) =
+        (&op[..], &left, &right)
+    {
+        let size = a.len().saturating_add(b.len());
+        if let Err(message) = value::check_text_size("Text concatenation", size) {
+            return Eval::Error(error_info(message));
+        }
+    }
     match (&op[..], left, right) {
         ("+", Value::Text(a), Value::Text(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),
         ("+", Value::Text(a), Value::Code(b)) => Eval::Normal(Value::Text(format!("{a}{b}"))),

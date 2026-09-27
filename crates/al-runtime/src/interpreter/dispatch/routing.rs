@@ -98,7 +98,10 @@ pub(crate) fn dispatch_call_scoped(
                     if args.is_empty() {
                         return eval_error("Message requires a message argument");
                     }
-                    let message = formatted_dialog_text(&args);
+                    let message = match formatted_dialog_text(&args) {
+                        Ok(message) => message,
+                        Err(error) => return eval_error(error),
+                    };
                     let result = dispatch_workspace_procedure(
                         Some(&object),
                         &handler,
@@ -118,7 +121,10 @@ pub(crate) fn dispatch_call_scoped(
                     if args.is_empty() {
                         return eval_error("Confirm requires a question argument");
                     }
-                    let question = formatted_dialog_text(&args);
+                    let question = match formatted_dialog_text(&args) {
+                        Ok(question) => question,
+                        Err(error) => return eval_error(error),
+                    };
                     let result = dispatch_workspace_procedure(
                         Some(&object),
                         &handler,
