@@ -89,3 +89,19 @@ Scratch tests for every scenario below are saved, uncommitted, as
 - fix: end the list items with a full stop or rewrite the list as sentences, split each semicolon sentence in two ("A case whose fixture is missing fails. If no al-explorer is found, ..."), and give the refusals one sentence each ("... is not a regular file. Nothing was installed."), with the older messages in the script changed to match. Say "is not decided again". Head the test sections with what each checks ("a symlinked al-lsp is refused"), describe the file as regression tests for `al-fetch-release.sh` and `evals/run.sh`, and describe the grammar change in the Rust comment without its label.
 - status: open
 
+## Review complete
+
+7 findings.
+
+- high 0
+- medium 2: R11-SEC-1, R11-SEC-3
+- low 5: R11-SEC-2, R11-RT-1, R11-RT-2, R11-PLUGIN-1, R11-TEXT-1
+
+The round 5 security statuses hold for the scenarios each finding named, and three of the fixes
+have a bypass one step away: a path in place of a name (SEC-1), a settings file that stops
+parsing (SEC-2) and another spelling of `authentication` (SEC-3). The round 9 runtime statuses
+hold, with one shape of nested table code (RT-1) and array elements as `var` targets (RT-2) left.
+R9-PLUGIN-3 holds for a missing al-lsp and not for a mismatched one (PLUGIN-1). No merge damage.
+Scratch tests are in `.campaign/r11-scratch-tests.patch` in the main checkout, uncommitted: trust.rs
+(five), dap_mode/mod.rs (one), records_tests.rs (two), router/tests.rs (one) and
+source_cache_tests.rs (one).
