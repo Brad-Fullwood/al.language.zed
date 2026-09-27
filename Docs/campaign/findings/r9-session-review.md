@@ -58,7 +58,7 @@ in the main checkout, beside the round 8 patch. Every cargo command ran one crat
 - severity: low
 - scenario: the two reads of the package are independent, and summarizing the Base Application takes seconds, so a symbol download or a dependency build that replaces a package in `.alpackages` during that window pairs the old hash with the new content. The entry is served whenever the old bytes are seen again, which a branch switch or a restored package does, and the cache test `an_entry_written_for_other_bytes_is_refused` cannot catch it because the entry's recorded key matches the old bytes. Reproduced with a scratch test in source_cache_tests.rs that follows the function's own steps with a rewrite between them: `PackageKey::of` on the package, rewrite it with `procedure Run()` renamed to `Walk`, `PackageSourceSummary::build` and `save` under the first key, restore the old bytes, `load` by their key: the entry says `Walk`. The entry lives until it goes unused for 30 days. Both reviewers who looked at this before read it from the code and did not reproduce it.
 - fix: read the package once into memory and hash the same bytes the summarizer parses, or hash again after `build()` and drop the save when the two keys differ.
-- status: open
+- status: fixed 6280a560 (the key is taken again after the build and the entry is saved only when both keys agree)
 
 ### [R9-PLUGIN-3] the eval runner resolves al-explorer only, so a missing or unrelated al-lsp turns every case into a wrong answer
 - where: plugin/evals/run.sh:34-53 (only `al-explorer` is resolved), :119 (`2>/dev/null` drops the reason), plugin/evals/README.md:79-82 (the documented setup builds al-explorer alone)
