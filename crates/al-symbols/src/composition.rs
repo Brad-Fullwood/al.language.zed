@@ -497,6 +497,142 @@ mod tests {
         assert_eq!(composed.all_enum_values[1].name, "Closed");
     }
 
+    /// Collects everything a `tracing_subscriber::fmt` subscriber writes.
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+        type Writer = CapturedLog;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// Runs `f` under a capturing subscriber and returns everything it wrote.
+    ///
+    /// `tracing`'s per-callsite `Interest` is a global, process-wide cache:
+    /// the first time a given `tracing::warn!` call site is ever hit, the
+    /// result is cached and later calls skip re-checking it. In a parallel
+    /// test binary, another test can hit the same call site with no
+    /// subscriber active at all, permanently caching "never interested"
+    /// before this test runs — dropping the warning even though a real
+    /// subscriber is now listening. `rebuild_interest_cache` forces a fresh
+    /// evaluation against the subscriber this call just installed, so the
+    /// result does not depend on what any other test hit first.
+    fn log_of(f: impl FnOnce()) -> String {
+        let log = CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(log.clone())
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        tracing::callsite::rebuild_interest_cache();
+        f();
+        drop(_guard);
+        let bytes = log.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn compose_warns_only_when_a_field_is_actually_dropped() {
+        let dup = || FieldSymbol {
+            id: 50100,
+            name: "Custom Field".into(),
+            type_name: "Boolean".into(),
+            properties: vec![],
+        };
+        let base = make_table(
+            18,
+            "Customer",
+            vec![FieldSymbol {
+                id: 1,
+                name: "No.".into(),
+                type_name: "Code".into(),
+                properties: vec![],
+            }],
+            Vec::new(),
+        );
+        let ext_a = make_table_ext(50100, "Cust Ext A", "Customer", vec![dup()], Vec::new());
+        let ext_b = make_table_ext(50101, "Cust Ext B", "Customer", vec![dup()], Vec::new());
+
+        let with_dup = log_of(|| {
+            let _ = compose(
+                Arc::new(base.clone()),
+                vec![Arc::new(ext_a.clone()), Arc::new(ext_b)],
+            );
+        });
+        assert!(
+            with_dup.contains("WARN") && with_dup.contains("dropped field"),
+            "a dropped duplicate field must be logged: {with_dup}"
+        );
+
+        let without_dup = log_of(|| {
+            let _ = compose(Arc::new(base), vec![Arc::new(ext_a)]);
+        });
+        assert!(
+            without_dup.is_empty(),
+            "no field was dropped, so nothing should be logged: {without_dup}"
+        );
+    }
+
+    #[test]
+    fn compose_warns_only_when_an_enum_value_is_actually_dropped() {
+        let base = make_enum(
+            50_100,
+            "Status",
+            vec![EnumValueSymbol {
+                ordinal: 0,
+                name: "Open".into(),
+            }],
+        );
+        let dup_ext = make_enum_ext(
+            50_101,
+            "Status Ext",
+            "Status",
+            vec![EnumValueSymbol {
+                ordinal: 0,
+                name: "Duplicate Ordinal".into(),
+            }],
+        );
+        let clean_ext = make_enum_ext(
+            50_102,
+            "Status Ext 2",
+            "Status",
+            vec![EnumValueSymbol {
+                ordinal: 10,
+                name: "Closed".into(),
+            }],
+        );
+
+        let with_dup = log_of(|| {
+            let _ = compose(Arc::new(base.clone()), vec![Arc::new(dup_ext)]);
+        });
+        assert!(
+            with_dup.contains("WARN") && with_dup.contains("dropped enum value"),
+            "a dropped duplicate enum value must be logged: {with_dup}"
+        );
+
+        let without_dup = log_of(|| {
+            let _ = compose(Arc::new(base), vec![Arc::new(clean_ext)]);
+        });
+        assert!(
+            without_dup.is_empty(),
+            "no enum value was dropped, so nothing should be logged: {without_dup}"
+        );
+    }
+
     #[test]
     fn compose_nonexistent_returns_none() {
         let index = SymbolIndex::new();
