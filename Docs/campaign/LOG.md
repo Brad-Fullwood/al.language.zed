@@ -601,3 +601,27 @@ Append-only. Newest entry last.
   round 6 (links in the trust inputs, proxy key folding, the summary store, hostile AL in the local
   runtime, daemon methods since round 4, plugin scripts, terminal escapes), plugin round 6 runs.
   The mutants agent is still on the formatting module.
+
+## 2026-09-27 13:46 BST: round 11 security and runtime fixes merged, plugin round 6 merged
+
+- `campaign/fix-r11-sec` merged (0d851d9d): 3 of 3, each with tests that failed first. `resolve`
+  checks the trust record for every analyzer entry that resolves inside the project, and a path
+  the user's settings name is recorded with its hash like a bare name (a path the project's own
+  settings write is now recorded twice, so one existing record goes stale once). The proxy refuses
+  an `authentication` that is not `Windows`, `UserPassword`, `AAD` or `MicrosoftEntraID` in ASCII
+  case, before the on-premises rule. `enforce_dotnet_path` removes a project `dotnet` from
+  `AL_DOTNET_PATH` when the settings cannot be read and names the file. `project-trust.md` updated.
+  al-project 263, al-lsp lib 725, al-compile 43.
+- `campaign/fix-r11-rt` merged (dab2eb06): 2 of 2. `write_var_argument` writes an array element
+  through the indexed assignment path and errors on any shape it cannot write (a quoted name with a
+  space was also dropped before). A literal passed to a `var` parameter is now an error, as alc
+  17.0.34 reports (AL0130), so `var_param_non_lvalue_arg_is_not_written_back` became
+  `a_literal_passed_to_a_var_parameter_is_an_error`. `run_on_active_globals` moves the active
+  record's globals frame to the top for a callback and back afterwards. al-runtime 650.
+- `campaign/plugin-runs-6` merged (b2c38e6a): the five skills never run against `.alpackages` and
+  `package-diff` with Base Application 25 and 26 all answered right on the first try (276 to 4,446
+  bytes of tool context per question), the fixture byte counts measured, `## Not covered` down to
+  the release with `binary-checksums.txt` and a repeatable eval fixture. One binary defect queued:
+  the daemon kept a stale `app.json` in memory after an edit on disk.
+- Gates on b2c38e6a in progress. Still out: mutants (formatting module), security round 6, the
+  round 11 plugin and text fixes.

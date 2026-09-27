@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 13:40 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 13:46 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -40,8 +40,8 @@ Agents in flight (dispatched 12:58 unless noted):
   `campaign/test-mutants` at b13da4ce. Commits the `indent.rs` tests, then the formatting module.
   Ends with `## Mutation pass complete`.
 
-Merge order when they finish: mutants, then the three round 11 fix branches (sec, rt, text), then
-plugin round 6, then security round 6's findings to a fix agent. Gates on each merge, `cargo test -p al-test-harness
+Merge order when they finish: `campaign/fix-r11-text`, mutants, then security round 6's findings
+to a fix agent. Gates on each merge, `cargo test -p al-test-harness
 --no-fail-fast` after the runtime merges. Then round 11 over `9e3f26a1..HEAD -- crates plugin`.
 
 A second session (interactive, not the watchdog's) has pushed straight to this branch before
@@ -87,6 +87,10 @@ Queued:
   missing field (R10-KW-1 status). `'x' + Letter` with a Char variable fails with "binary operator
   `+` not supported on (Text, Char)". `Dictionary.Set(k, v, var Old)` for a missing key leaves
   `Old` unchanged, which Learn does not settle.
+- From plugin round 6: `download-symbols` kept a stale in-memory `app.json` after `application`
+  was edited on disk, so Base Application 25 satisfied a requested 26 minimum until
+  `daemon-shutdown` (recorded with the command and output in `plugin/TESTING.md`). The daemon's
+  incremental scan should reload `app.json` when its mtime moves.
 - Round 10 review's unverified notes: `TARGET_KEYS` compared with `eq_ignore_ascii_case` (a `ſerver` key) for the proxy's next adversarial review, and whether BC's `foreach` over a List raises when the list changes.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to
