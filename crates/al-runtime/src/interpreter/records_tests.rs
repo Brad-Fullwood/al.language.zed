@@ -5042,6 +5042,55 @@ fn case_labels_with_a_leading_minus_match() {
     );
 }
 
+const SIGNED_CASE_RANGES: &str = r#"codeunit 50434 "Signed Ranges"
+{
+    procedure ByRange(X: Integer): Integer
+    begin
+        case X of
+            -5..-3:
+                exit(1);
+            - 2:
+                exit(2);
+            -10..- 8:
+                exit(3);
+            0..-1:
+                exit(4);
+            else
+                exit(0);
+        end;
+    end;
+}
+"#;
+
+/// Grammar a108400 scans `-5..-3:` as a `signed_case_label`, `..`, a unary
+/// minus and an integer, where it made `-5..` one token before, and accepts
+/// `- 2:` with a space after the minus (GR2-4).
+#[test]
+fn negative_range_labels_and_a_spaced_minus_match() {
+    let call = |x: i64| {
+        ok(run(
+            &[("/ws/SignedRanges.al", SIGNED_CASE_RANGES)],
+            "Signed Ranges",
+            "ByRange",
+            vec![Value::Integer(x)],
+        ))
+    };
+    for (x, arm) in [
+        (-5, 1),
+        (-4, 1),
+        (-3, 1),
+        (-2, 2),
+        (-10, 3),
+        (-8, 3),
+        (-6, 0),
+        (-11, 0),
+        (-1, 0),
+        (0, 0),
+    ] {
+        assert_eq!(call(x), Value::Integer(arm), "case {x}");
+    }
+}
+
 const ID_BOUND_PUBLISHER: &str = r#"codeunit 50287 "Id Publisher"
 {
     procedure Raise(): Integer
