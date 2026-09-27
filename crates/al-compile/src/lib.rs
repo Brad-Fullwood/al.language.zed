@@ -365,26 +365,22 @@ fn resolve_analyzer_paths(
     project_root: &Path,
     assembly_probing_paths: &[PathBuf],
 ) -> Result<Vec<String>, AlError> {
-    let builtins: [(&[&str], &PathBuf); 4] = [
-        (&["CodeCop"], &toolchain.analyzers.code_cop),
-        (&["AppSourceCop"], &toolchain.analyzers.app_source_cop),
-        (&["UICop"], &toolchain.analyzers.ui_cop),
-        (
-            &["PerTenantCop", "PerTenantExtensionCop"],
-            &toolchain.analyzers.per_tenant_cop,
-        ),
+    let builtins = [
+        &toolchain.analyzers.code_cop,
+        &toolchain.analyzers.app_source_cop,
+        &toolchain.analyzers.ui_cop,
+        &toolchain.analyzers.per_tenant_cop,
     ];
     let mut paths = Vec::<PathBuf>::new();
 
     if let Some(filter) = analyzer_filter {
+        let search =
+            al_project::analyzers::CustomAnalyzerSearch::new(project_root, assembly_probing_paths);
         for requested in filter {
             let requested = requested.trim();
-            let builtin = builtins.iter().find(|(names, _)| {
-                names.iter().any(|name| {
-                    al_project::analyzers::analyzer_name(requested).eq_ignore_ascii_case(name)
-                })
-            });
-            let resolved = if let Some((_, path)) = builtin {
+            let builtin =
+                al_project::analyzers::builtin_analyzer_path(&toolchain.analyzers, requested);
+            let resolved = if let Some(path) = builtin {
                 if !path.is_file() {
                     return Err(analyzer_configuration_error(format!(
                         "requested built-in analyzer '{requested}' is not installed at {}",
@@ -407,12 +403,9 @@ fn resolve_analyzer_paths(
                 }
                 path.clone()
             } else {
-                al_project::analyzers::discover_custom_analyzer(
-                    requested,
-                    project_root,
-                    assembly_probing_paths,
-                )
-                .map_err(|error| analyzer_configuration_error(error.to_string()))?
+                search
+                    .resolve(requested)
+                    .map_err(|error| analyzer_configuration_error(error.to_string()))?
                 .ok_or_else(|| {
                     analyzer_configuration_error(format!(
                         "requested analyzer '{requested}' could not be found in the project, probing paths, NuGet cache, or common editor extension locations"
@@ -424,7 +417,7 @@ fn resolve_analyzer_paths(
             }
         }
     } else {
-        for (_, path) in builtins {
+        for path in builtins {
             if path.is_file() && !paths.contains(path) {
                 paths.push(path.clone());
             }

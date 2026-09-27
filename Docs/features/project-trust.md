@@ -26,6 +26,7 @@ else applies as it always has.
 | `al.nugetFeeds` | Every symbol package, including Base Application, comes from these URLs |
 | `al.useOnlyCustomFeeds` | Removes Microsoft's feeds, leaving only the configured ones |
 | `launch.json` / `debug.json` on-premises `server` | Receives the cached Business Central token and, with `acceptInvalidCerts`, decides whether TLS is verified |
+| A `launch.json` or `debug.json` the parser rejects | Zed can still offer its scenarios to the debug adapter, so its servers are unknown to the record |
 | `al.dotnetPath` | Names the `dotnet` host the toolchain spawns |
 | `lsp.al-lsp.binary.path`, `.arguments`, `.env` | Name a program, its command line and its environment |
 | `lsp.al-lsp.initialization_options` | Reaches the language server as configuration |
@@ -35,15 +36,24 @@ ignores `binary.path` and `binary.arguments` outright (see Limits). They are in 
 a record made while `binary.path` said `/bin/sh` goes stale when the arguments change, and so
 a future extension API that exposes `binary.env` does not widen an existing record silently.
 
+The servers of both `.zed/debug.json` and `.vscode/launch.json` are in the record, because
+Zed offers the scenarios of both. `environmentType` and `authentication` are read without
+regard to case, as the debug adapter reads them. A launch file that still fails to parse is
+recorded by its hash, so an existing record goes stale when the file changes, and
+`al-explorer trust` refuses to record trust until the file is fixed: the servers it names
+cannot be listed for review.
+
 `${CodeCop}`, `${AppSourceCop}`, `${UICop}`, `${PerTenantExtensionCop}` and their bare
 spellings are built-in tokens: the toolchain resolves them to Microsoft's own assemblies, so
-they are not gated.
+they are not gated. Every caller passes the toolchain's file for them, never the name, so a
+file of that name in the project is not loaded.
 
 A repository can also point outside itself without a setting, by committing `.alpackages`
 as a symbolic link. A symbol folder written inside the project that resolves outside it is
 treated like `al.packageCachePath` outside the project: until the project is trusted its
-packages are not read, `downloadSymbols` refuses to write into it, and the daemon does not
-count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
+packages are not read, `downloadSymbols` and the editor's symbol download refuse to write
+into it, the editor shows why the symbols are missing in place of the download prompt, and the
+daemon does not count it as a containment root. `al_project::trust::escapes_untrusted_project` is the one
 check.
 
 Everything else in a repository's settings applies without trust: formatting, inlay hints,
@@ -111,7 +121,9 @@ moment.
 The refusal a call with no terminal receives does not name these flags. That call is by
 construction a script or an agent, and the refusal said how to make the same call succeed.
 The flags are a step a person puts into a CI configuration, not an answer to a refusal. Nothing
-in `plugin/` or `scripts/` runs this command, and nothing should.
+in `plugin/` or `scripts/` runs this command, and nothing should. For the same reason the refusal
+for a digest that no longer matches leaves out the current digest: it says nothing was recorded
+and asks for `al-explorer trust --show` in a terminal, where a person reads the new values.
 
 This is not a boundary against a program that already runs as the user: such a program can
 write `trusted-projects.json` itself. What the design controls is that no surface an agent
@@ -140,7 +152,11 @@ A privileged value that is a path into the project names a file the repository s
 the file is what runs. For an analyzer path, `al.dotnetPath`, `binary.path` and each
 analyzer name that resolves to a DLL under `.netpackages`, `packages` or a relative probing
 path, the recorded value carries the file's SHA-256, and for a probing directory inside the
-project one hash over every `.dll` below it. `trust --show` prints those hashes. A commit
+project one hash over every `.dll` below it. The record also covers what the file loads from
+beside it: for an analyzer, one hash over every `.dll` in its directory and below, since .NET
+resolves an analyzer's references from its own directory, and for `al.dotnetPath`, one hash
+over every file beside the muxer and every file under its `host` and `shared` directories,
+where it finds `hostfxr` and the framework. `trust --show` prints those hashes. A commit
 that replaces one of those files, or adds one where the record saw none, makes the record
 `stale`. A path outside the project is the user's machine and is recorded as written.
 
@@ -224,6 +240,13 @@ own debug settings, and the adapter cannot tell which, so the scenario is judged
 the repository carries: an on-premises server needs a trusted project, and
 `acceptInvalidCerts` is honoured only when the project's launch file sets it for the same
 server. A refused launch fails with the reason in the debug console.
+
+The EditorServices proxy forwards the scenario to Microsoft's host as Zed sent it, so it
+judges the scenario the way that host might read it. A scenario that names a `server` and no
+`environmentType` is judged as on-premises, since Microsoft's template for your own server
+has none. The proxy refuses a scenario with an `environmentType` other than `OnPrem`,
+`Sandbox` or `Production` (in any case), a target key such as `server` or `environmentType`
+spelled in another case, and a field it cannot read, such as a `port` written as a string.
 
 `publish` and `tests.run*` are in that list although they never read the OAuth cache: they
 send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The

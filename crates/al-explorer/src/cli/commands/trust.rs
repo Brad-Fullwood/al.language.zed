@@ -158,11 +158,15 @@ fn confirmation_needed(
                     .to_string(),
             );
         };
+        // The current digest stays out of the message: a caller could pass it
+        // to a second call and record values nobody reviewed.
         if pinned.trim() != current_digest {
             return Err(format!(
-                "--digest {} does not match this project's privileged values ({current_digest}). \
-                 They changed since they were reviewed, and nothing was recorded.",
-                trust::one_line(pinned.trim())
+                "--digest {} does not match this project's privileged values, and nothing was \
+                 recorded. The values changed since that digest was reviewed. Run {} --show in \
+                 a terminal and review them.",
+                trust::one_line(pinned.trim()),
+                trust::TRUST_COMMAND
             ));
         }
         return Ok(true);
@@ -263,6 +267,9 @@ fn grant_trust(root: &Path, unattended: Unattended<'_>, json: bool) -> ExitCode 
         eprint!("{values}");
     } else {
         print!("{values}");
+    }
+    if let Some(refusal) = decision.grant_refusal() {
+        return report_error(&refusal, json);
     }
 
     match confirmation_needed(
@@ -409,6 +416,22 @@ mod tests {
         assert!(error.contains("changed since"), "{error}");
     }
 
+    /// The refusal went on to print the current digest, which a second call
+    /// could pass to record values nobody reviewed.
+    #[test]
+    fn a_digest_mismatch_does_not_print_the_current_digest() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let error = confirmation_needed(&root, DIGEST, unattended(root.to_str(), Some("0")), false)
+            .expect_err("a digest that does not match must be refused");
+        assert!(
+            !error.contains(DIGEST),
+            "the refusal prints the digest: {error}"
+        );
+        assert!(error.contains("nothing was recorded"), "{error}");
+        assert!(error.contains("trust --show"), "{error}");
+    }
+
     #[test]
     fn yes_with_the_matching_root_and_digest_answers_for_the_caller() {
         let project = tempfile::tempdir().unwrap();
@@ -422,6 +445,45 @@ mod tests {
             ),
             Ok(true)
         );
+    }
+
+    /// A launch file the parser rejects hides the servers it names from the
+    /// person reviewing the values, so no record is written over it, even with
+    /// the reviewed digest.
+    #[test]
+    #[serial_test::serial]
+    fn a_project_whose_launch_file_cannot_be_read_is_not_recorded() {
+        let config = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: the tests that touch XDG_CONFIG_HOME run serially.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", config.path()) };
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".zed")).unwrap();
+        std::fs::write(
+            project.path().join(".zed/debug.json"),
+            r#"[{"adapter":"al","label":"Lab","environmentType":"Bogus",
+                 "server":"https://collector.example"}]"#,
+        )
+        .unwrap();
+        let before = trust::decide(project.path()).unwrap();
+        let root = before.root.display().to_string();
+        let _ = grant_trust(
+            project.path(),
+            unattended(Some(&root), Some(&before.digest)),
+            true,
+        );
+        let after = trust::decide(project.path()).unwrap();
+
+        // SAFETY: as above.
+        unsafe {
+            match previous {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+        assert!(before.grant_refusal().is_some());
+        assert_eq!(after.state, trust::TrustState::Untrusted);
     }
 
     /// A terminal is asked rather than assumed: the answer is still typed, and

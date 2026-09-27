@@ -817,15 +817,26 @@ internal class CodeAnalysisBridge
             "No compatible CompilationWithAnalyzers constructor succeeded.", lastError);
     }
 
+    // An analyzer is an absolute path, or a built-in cop's name looked up in the
+    // toolchain directory. A relative name is not tried as a path: File.Exists
+    // resolves it against the working directory, which is the project folder.
     private string? ResolveAnalyzerPath(string name)
     {
-        if (File.Exists(name)) return name;
+        if (Path.IsPathFullyQualified(name)) return File.Exists(name) ? name : null;
+        if (name.StartsWith("${", StringComparison.Ordinal) && name.EndsWith('}'))
+            name = name[2..^1];
         var normalized = name.EndsWith(".dll", StringComparison.OrdinalIgnoreCase)
             ? name[..^4]
             : name;
-        var productName = normalized.Equals("PerTenantCop", StringComparison.OrdinalIgnoreCase)
-            ? "PerTenantExtensionCop"
-            : normalized;
+        var productName = normalized.ToLowerInvariant() switch
+        {
+            "codecop" => "CodeCop",
+            "appsourcecop" => "AppSourceCop",
+            "uicop" => "UICop",
+            "pertenantcop" or "pertenantextensioncop" => "PerTenantExtensionCop",
+            _ => null,
+        };
+        if (productName is null) return null;
         var candidates = new[]
         {
             Path.Combine(_alExtDir, $"Microsoft.Dynamics.Nav.{productName}.dll"),

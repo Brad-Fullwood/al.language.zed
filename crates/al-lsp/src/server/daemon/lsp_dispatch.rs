@@ -1954,6 +1954,56 @@ mod tests {
         assert!(method_names(&result).is_empty(), "{result}");
     }
 
+    /// A file may declare several objects. The lookups used to read only each file's
+    /// first object, so the page after the table answered "not found" until
+    /// the call graph put it in the symbol index, and again after an edit.
+    #[test]
+    fn every_object_of_a_multi_object_file_is_found_without_the_call_graph() {
+        let ws = al_workspace::Workspace::new();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/proj/src/Loyalty.al"),
+            "table 50100 \"Loyalty Tier\"\n{\n    fields\n    {\n        field(1; Code; Code[20]) { }\n    }\n}\n\
+             page 50101 \"Loyalty Tiers\"\n{\n    procedure Refresh()\n    begin\n    end;\n}\n"
+                .to_string(),
+        );
+        let lookups: [(&str, serde_json::Value); 3] = [
+            ("byId", serde_json::json!({"kind": "page", "id": 50101})),
+            (
+                "object",
+                serde_json::json!({"kind": "page", "name": "Loyalty Tiers"}),
+            ),
+            ("object", serde_json::json!({"name": "Loyalty Tiers"})),
+        ];
+        let lookup = |method: &str, params: &serde_json::Value| {
+            let response = match method {
+                "byId" => dispatch_by_id(&ws, 1, params),
+                _ => dispatch_object(&ws, 1, params),
+            };
+            response
+                .result
+                .unwrap_or_else(|| panic!("{method} {params}: {:?}", response.error))
+        };
+
+        for (method, params) in &lookups {
+            let result = lookup(method, params);
+            assert_eq!(result.as_array().map(Vec::len), Some(1), "{result}");
+            assert_eq!(result[0]["name"], "Loyalty Tiers", "{method}: {result}");
+            assert_eq!(result[0]["partial"], true, "{method}: {result}");
+        }
+
+        let mut waiting = lookups[0].1.clone();
+        waiting["waitForMembers"] = serde_json::json!(true);
+        let result = lookup("byId", &waiting);
+        assert_eq!(method_names(&result), ["Refresh"], "{result}");
+
+        ws.invalidate_insight_graph();
+        for (method, params) in &lookups {
+            let result = lookup(method, params);
+            assert_eq!(result[0]["name"], "Loyalty Tiers", "{method}: {result}");
+            assert_eq!(result[0]["partial"], true, "{method}: {result}");
+        }
+    }
+
     #[test]
     fn dispatch_by_id_unknown_id_still_errors() {
         let ws = al_workspace::Workspace::new();

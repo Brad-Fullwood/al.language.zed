@@ -437,22 +437,10 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
         )
     };
 
-    // Packages are renamed into `dest`. A `.alpackages` the repository ships
-    // as a link out of the project makes that a write outside it, which
-    // containment and the trust gate already refuse in their own spellings.
-    if al_project::trust::escapes_untrusted_project(&project_root, &dest) {
-        return rpc_error(
-            id,
-            error_codes::INVALID_PARAMS,
-            &format!(
-                "Refusing to download symbols into {}: it is inside this project but resolves \
-                 outside it through a symbolic link, and the project is not trusted. To read the \
-                 configuration and decide, the user runs this in a terminal: {} --show {}",
-                al_project::trust::one_line(&dest.display().to_string()),
-                al_project::trust::TRUST_COMMAND,
-                al_project::trust::one_line(&project_root.display().to_string())
-            ),
-        );
+    if let Some(refusal) =
+        crate::server::workspace::refuse_symbol_download_into(&project_root, &dest)
+    {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &refusal);
     }
 
     if all_deps.is_empty() {

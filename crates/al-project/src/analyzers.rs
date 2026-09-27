@@ -47,10 +47,44 @@ pub enum AnalyzerDiscoveryError {
 /// spelling AL settings use (`al.codeAnalyzers`, `app.json` `ruleSets`).
 #[must_use]
 pub fn is_builtin_analyzer(name: &str) -> bool {
-    matches!(
-        analyzer_name(name).to_ascii_lowercase().as_str(),
-        "codecop" | "appsourcecop" | "uicop" | "pertenantcop" | "pertenantextensioncop"
-    )
+    builtin_analyzer(name).is_some()
+}
+
+/// The toolchain's own file for a built-in analyzer entry, in any spelling
+/// [`is_builtin_analyzer`] accepts, or `None` for any other entry.
+///
+/// A caller that loads a built-in cop takes its path from here. Passed on by
+/// name, a loader that tries the name as a relative path first finds a file
+/// of that name in its working directory, which is the project.
+#[must_use]
+pub fn builtin_analyzer_path<'a>(
+    toolchain: &'a crate::toolchain::AnalyzerPaths,
+    name: &str,
+) -> Option<&'a Path> {
+    let path = match builtin_analyzer(name)? {
+        BuiltinCop::Code => &toolchain.code_cop,
+        BuiltinCop::AppSource => &toolchain.app_source_cop,
+        BuiltinCop::Ui => &toolchain.ui_cop,
+        BuiltinCop::PerTenant => &toolchain.per_tenant_cop,
+    };
+    Some(path)
+}
+
+enum BuiltinCop {
+    Code,
+    AppSource,
+    Ui,
+    PerTenant,
+}
+
+fn builtin_analyzer(name: &str) -> Option<BuiltinCop> {
+    match analyzer_name(name.trim()).to_ascii_lowercase().as_str() {
+        "codecop" => Some(BuiltinCop::Code),
+        "appsourcecop" => Some(BuiltinCop::AppSource),
+        "uicop" => Some(BuiltinCop::Ui),
+        "pertenantcop" | "pertenantextensioncop" => Some(BuiltinCop::PerTenant),
+        _ => None,
+    }
 }
 
 /// Return an analyzer entry in its bare form: unwrapped from a `${Name}`
@@ -88,19 +122,57 @@ pub fn analyzer_name(name: &str) -> &str {
 /// name the user writes, such as `BusinessCentral.LinterCop` in user
 /// settings, was still looked up in `<project>/packages` before the NuGet
 /// cache, so a clone that shipped a DLL of that name had it loaded into alc and
-/// into the language server. Every caller goes through this one function, so
-/// every caller gets the rule.
+/// into the language server. Every caller goes through this function or
+/// [`CustomAnalyzerSearch`], so every caller gets the rule. A caller with
+/// several entries uses [`CustomAnalyzerSearch`], which decides trust once.
 pub fn discover_custom_analyzer(
     entry: &str,
     project_root: &Path,
     assembly_probing_paths: &[PathBuf],
 ) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
-    let entry = entry.trim();
-    if entry.is_empty() || is_builtin_analyzer(entry) {
-        return Ok(None);
+    CustomAnalyzerSearch::new(project_root, assembly_probing_paths).resolve(entry)
+}
+
+/// [`discover_custom_analyzer`] for several entries of one project, with one
+/// trust decision for all of them.
+///
+/// A trust decision walks the project's analyzer folders once per configured
+/// analyzer and hashes every DLL it finds. Made once per entry, three
+/// analyzers cost nine walks on every compile and every semantic pass. The
+/// decision is made at the first entry that needs it, so a list of built-in
+/// cops makes none.
+pub struct CustomAnalyzerSearch<'a> {
+    project_root: &'a Path,
+    assembly_probing_paths: &'a [PathBuf],
+    trusted: std::cell::OnceCell<bool>,
+}
+
+impl<'a> CustomAnalyzerSearch<'a> {
+    #[must_use]
+    pub fn new(project_root: &'a Path, assembly_probing_paths: &'a [PathBuf]) -> Self {
+        Self {
+            project_root,
+            assembly_probing_paths,
+            trusted: std::cell::OnceCell::new(),
+        }
     }
-    let trusted = crate::trust::decide(project_root).is_ok_and(|decision| decision.is_trusted());
-    discover(entry, project_root, assembly_probing_paths, trusted)
+
+    /// [`discover_custom_analyzer`] for `entry`.
+    pub fn resolve(&self, entry: &str) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
+        let entry = entry.trim();
+        if entry.is_empty() || is_builtin_analyzer(entry) {
+            return Ok(None);
+        }
+        let trusted = *self.trusted.get_or_init(|| {
+            crate::trust::decide(self.project_root).is_ok_and(|decision| decision.is_trusted())
+        });
+        discover(
+            entry,
+            self.project_root,
+            self.assembly_probing_paths,
+            trusted,
+        )
+    }
 }
 
 /// [`discover_custom_analyzer`] with the trust decision already made.
@@ -465,6 +537,31 @@ mod tests {
         discover(entry, project_root, assembly_probing_paths, true)
     }
 
+    /// A trust decision walks and hashes the project's analyzer folders, so a
+    /// resolution of several analyzers makes it once. It used to make it once
+    /// per analyzer, and each decision walks the folders once per configured
+    /// analyzer, so three analyzers cost nine walks on every compile and every
+    /// semantic pass.
+    #[test]
+    fn resolving_several_analyzers_decides_trust_once() {
+        let project = tempfile::tempdir().unwrap();
+        let reads = || crate::trust::REPOSITORY_READS.with(std::cell::Cell::get);
+        let before = reads();
+        let search = CustomAnalyzerSearch::new(project.path(), &[]);
+        for entry in ["${CodeCop}", "UICop"] {
+            search.resolve(entry).unwrap();
+        }
+        assert_eq!(
+            reads() - before,
+            0,
+            "a built-in cop needs no trust decision"
+        );
+        for entry in ["FirstCop", "SecondCop", "ThirdCop"] {
+            search.resolve(entry).unwrap();
+        }
+        assert_eq!(reads() - before, 1);
+    }
+
     #[test]
     fn probing_path_finds_nested_analyzer_case_insensitively() {
         let project = tempfile::tempdir().unwrap();
@@ -715,6 +812,41 @@ mod tests {
         // custom (or unsafe) entry, not a builtin.
         assert!(!is_builtin_analyzer("${LinterCop}"));
         assert!(!is_builtin_analyzer("${../evil}"));
+    }
+
+    #[test]
+    fn every_builtin_spelling_maps_to_its_toolchain_file() {
+        let toolchain = crate::toolchain::AnalyzerPaths {
+            code_cop: PathBuf::from("/tc/Microsoft.Dynamics.Nav.CodeCop.dll"),
+            app_source_cop: PathBuf::from("/tc/Microsoft.Dynamics.Nav.AppSourceCop.dll"),
+            ui_cop: PathBuf::from("/tc/Microsoft.Dynamics.Nav.UICop.dll"),
+            per_tenant_cop: PathBuf::from("/tc/Microsoft.Dynamics.Nav.PerTenantExtensionCop.dll"),
+            common: PathBuf::from("/tc/Microsoft.Dynamics.Nav.Analyzers.Common.dll"),
+            custom: Vec::new(),
+        };
+        for (entry, expected) in [
+            ("CodeCop", &toolchain.code_cop),
+            ("${CodeCop}", &toolchain.code_cop),
+            (" codecop.DLL ", &toolchain.code_cop),
+            ("${AppSourceCop}", &toolchain.app_source_cop),
+            ("UICop.dll", &toolchain.ui_cop),
+            ("PerTenantCop", &toolchain.per_tenant_cop),
+            ("${PerTenantExtensionCop}", &toolchain.per_tenant_cop),
+        ] {
+            assert_eq!(
+                builtin_analyzer_path(&toolchain, entry),
+                Some(expected.as_path()),
+                "{entry:?}"
+            );
+        }
+        for entry in [
+            "BusinessCentral.LinterCop",
+            "${LinterCop}",
+            "./CodeCop.dll",
+            "",
+        ] {
+            assert_eq!(builtin_analyzer_path(&toolchain, entry), None, "{entry:?}");
+        }
     }
 
     /// An entry the toolchain resolves itself, or no entry at all, is not a custom

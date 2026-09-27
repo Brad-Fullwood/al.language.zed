@@ -115,6 +115,74 @@ pub fn authorize_debug_scenario(
     Ok(())
 }
 
+/// The keys of a debug scenario that decide where the credential goes, as
+/// `BcDebugConfig::from_dap_args` spells them.
+const TARGET_KEYS: [&str; 9] = [
+    "server",
+    "serverInstance",
+    "port",
+    "tenant",
+    "environmentType",
+    "environmentName",
+    "authentication",
+    "validateServerCertificate",
+    "acceptInvalidCerts",
+];
+
+/// The target the proxy judges a `launch` or `attach` by, or why it refuses
+/// to judge it.
+///
+/// The proxy forwards the original bytes to EditorServices.Host, so the
+/// judgement has to read them the way the host might. A key the adapter reads
+/// by its exact spelling and the host may bind in any case (`Server`), a
+/// field the adapter could not read, and an unknown `environmentType` are
+/// refused. A scenario that names a server is on-premises unless it names an
+/// online `environmentType`: Microsoft's "Your own server" template has no
+/// `environmentType`, and the adapter's default for a missing one is
+/// `Sandbox`, which is Business Central online and needs no trust.
+fn proxy_debug_config(
+    arguments: &serde_json::Value,
+) -> Result<al_dap::dap::bc_debug::BcDebugConfig, String> {
+    for key in arguments.as_object().into_iter().flat_map(|map| map.keys()) {
+        if let Some(expected) = TARGET_KEYS
+            .iter()
+            .find(|expected| expected.eq_ignore_ascii_case(key) && **expected != key.as_str())
+        {
+            return Err(format!(
+                "Refusing to start this debug session: the configuration spells `{expected}` as \
+                 `{}`, and a key that differs only in case may be read by the debugger and not \
+                 by the check. Write it as `{expected}`.",
+                al_project::trust::one_line(key)
+            ));
+        }
+    }
+    let mut config = al_dap::dap::bc_debug::BcDebugConfig::from_dap_args(arguments);
+    if !config.validation_errors.is_empty() {
+        return Err(format!(
+            "Refusing to start this debug session: {}",
+            al_project::trust::one_line(&config.validation_errors.join("; "))
+        ));
+    }
+    let environment_type = arguments.get("environmentType").and_then(|v| v.as_str());
+    let online = match environment_type {
+        None => false,
+        Some(kind) if kind.eq_ignore_ascii_case("Sandbox") => true,
+        Some(kind) if kind.eq_ignore_ascii_case("Production") => true,
+        Some(kind) if kind.eq_ignore_ascii_case("OnPrem") => false,
+        Some(kind) => {
+            return Err(format!(
+                "Refusing to start this debug session: environmentType must be OnPrem, Sandbox \
+                 or Production, got `{}`.",
+                al_project::trust::one_line(kind)
+            ));
+        }
+    };
+    if !online && config.server.is_some() {
+        config.environment_type = "OnPrem".to_string();
+    }
+    Ok(config)
+}
+
 /// The failure response for a `launch`/`attach` the proxy refuses to forward,
 /// or `None` when the request may go to EditorServices.Host.
 fn refuse_unauthorised_launch(
@@ -130,8 +198,9 @@ fn refuse_unauthorised_launch(
         .get("arguments")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let config = al_dap::dap::bc_debug::BcDebugConfig::from_dap_args(&arguments);
-    let error = authorize_debug_scenario(Path::new(project_root), &config).err()?;
+    let error = proxy_debug_config(&arguments)
+        .and_then(|config| authorize_debug_scenario(Path::new(project_root), &config))
+        .err()?;
     let request_seq = msg.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
     Some(serde_json::json!({
         "seq": seq_counter.fetch_add(1, Ordering::Relaxed),
@@ -1145,5 +1214,101 @@ mod tests {
 
         let threads = serde_json::json!({"seq": 4, "type": "request", "command": "threads"});
         assert!(refuse_unauthorised_launch(&threads, root, &seq).is_none());
+    }
+
+    /// The proxy's refusal message for `arguments`, or `None` when it forwards
+    /// the launch.
+    fn proxy_refusal(project: &Path, arguments: serde_json::Value) -> Option<String> {
+        let launch = serde_json::json!({
+            "seq": 1,
+            "type": "request",
+            "command": "launch",
+            "arguments": arguments,
+        });
+        refuse_unauthorised_launch(&launch, project.to_str().unwrap(), &AtomicI64::new(1))
+            .map(|refusal| refusal["message"].as_str().unwrap().to_string())
+    }
+
+    /// Microsoft's "Your own server" template names a server and no
+    /// `environmentType`. The proxy read the missing type as its default,
+    /// `Sandbox`, judged the target to be Business Central online and
+    /// forwarded the bytes, which name the repository's server.
+    #[test]
+    #[serial_test::serial]
+    fn the_legacy_proxy_judges_a_named_server_without_an_environment_type_as_on_premises() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://collector.example.test", false);
+
+        let refusal = proxy_refusal(
+            project.path(),
+            serde_json::json!({
+                "server": "https://collector.example.test",
+                "serverInstance": "BC",
+                "authentication": "AAD",
+            }),
+        )
+        .expect("a named server needs trust whatever the environment type");
+        assert!(refusal.contains("not trusted"), "{refusal}");
+    }
+
+    /// EditorServices.Host may read `Server` as `server`. The proxy reads the
+    /// exact key, saw no server, and judged the scenario online.
+    #[test]
+    #[serial_test::serial]
+    fn the_legacy_proxy_refuses_a_target_key_in_another_case() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://collector.example.test", false);
+
+        for arguments in [
+            serde_json::json!({"Server": "https://collector.example.test"}),
+            serde_json::json!({
+                "EnvironmentType": "OnPrem",
+                "server": "https://collector.example.test",
+            }),
+        ] {
+            let refusal = proxy_refusal(project.path(), arguments.clone())
+                .unwrap_or_else(|| panic!("forwarded {arguments}"));
+            assert!(refusal.contains("case"), "{refusal}");
+        }
+    }
+
+    /// A scenario the adapter could not read in full was judged on the
+    /// defaults of the fields it dropped.
+    #[test]
+    #[serial_test::serial]
+    fn the_legacy_proxy_refuses_a_scenario_it_cannot_read() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://collector.example.test", false);
+
+        for arguments in [
+            serde_json::json!({"environmentType": "Sandbox", "port": "7049"}),
+            serde_json::json!({"environmentType": "Sandbox", "server": 7}),
+            serde_json::json!({"environmentType": "Bogus"}),
+        ] {
+            assert!(
+                proxy_refusal(project.path(), arguments.clone()).is_some(),
+                "forwarded {arguments}"
+            );
+        }
+    }
+
+    /// A Business Central online scenario still needs no trust.
+    #[test]
+    #[serial_test::serial]
+    fn the_legacy_proxy_forwards_an_online_scenario() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://collector.example.test", false);
+
+        for arguments in [
+            serde_json::json!({
+                "environmentType": "Sandbox",
+                "environmentName": "Test",
+                "tenant": "organizations",
+            }),
+            serde_json::json!({"environmentType": "production"}),
+            serde_json::json!({"tenant": "organizations"}),
+        ] {
+            assert_eq!(proxy_refusal(project.path(), arguments), None);
+        }
     }
 }

@@ -254,7 +254,17 @@ pub(crate) async fn initialize_workspace(
                     return Ok(());
                 }
                 let has_server = !project.server_configs.is_empty();
-                if let Some(source) = prompt_download_symbols(&client, deps.len(), has_server).await
+                // A download into this folder would be refused, so the user is
+                // told why the symbols are missing instead of being asked.
+                let refusal = refuse_symbol_download_into(&project.root, &project.packages_dir);
+                if let Some(refusal) = refusal {
+                    let message = format!(
+                        "AL project has {} missing symbol package(s). {refusal}",
+                        deps.len()
+                    );
+                    client.show_message(MessageType::WARNING, message).await;
+                } else if let Some(source) =
+                    prompt_download_symbols(&client, deps.len(), has_server).await
                 {
                     // Resolve the whole dependency closure: a downloaded
                     // package's own manifest dependencies are fetched too.
@@ -687,8 +697,30 @@ pub(crate) fn next_transitive_dependencies(
     next
 }
 
+/// Why symbols may not be downloaded into `dest`, or `None` when they may.
+///
+/// Packages are renamed into `dest`. A `.alpackages` the repository ships as a
+/// link out of the project makes that a write outside it. The daemon's
+/// `downloadSymbols` and the language server's download both ask this, so
+/// they refuse the same folder with the same words.
+pub(crate) fn refuse_symbol_download_into(project_root: &Path, dest: &Path) -> Option<String> {
+    al_project::trust::escapes_untrusted_project(project_root, dest).then(|| {
+        format!(
+            "Refusing to download symbols into {}: it is inside this project but resolves \
+             outside it through a symbolic link, and the project is not trusted. To read the \
+             configuration and decide, the user runs this in a terminal: {} --show {}",
+            al_project::trust::one_line(&dest.display().to_string()),
+            al_project::trust::TRUST_COMMAND,
+            al_project::trust::one_line(&project_root.display().to_string())
+        )
+    })
+}
+
 /// Download `direct` and then, recursively, whatever those packages themselves
 /// depend on — bounded by [`MAX_TRANSITIVE_DEPENDENCY_DEPTH`] and a visited set.
+///
+/// Every package goes into `project.packages_dir`, the folder discovery reads,
+/// whichever the source.
 async fn download_dependency_closure(
     workspace: &al_workspace::Workspace,
     project: &al_project::project::AlProject,
@@ -704,6 +736,11 @@ async fn download_dependency_closure(
         .collect();
     let mut queue = direct.to_vec();
     let mut batch = DownloadBatch::default();
+    let dest = project.packages_dir.as_path();
+    if let Some(refusal) = refuse_symbol_download_into(&project.root, dest) {
+        batch.failures.push(refusal);
+        return batch;
+    }
 
     for wave in 0..=MAX_TRANSITIVE_DEPENDENCY_DEPTH {
         if queue.is_empty() {
@@ -721,15 +758,14 @@ async fn download_dependency_closure(
                 download_symbols_from_server(
                     project,
                     &queue,
+                    dest,
                     client,
                     session.clone(),
                     requested_config,
                 )
                 .await
             }
-            DownloadSource::NuGet => {
-                download_packages_nuget(workspace, &queue, &project.packages_dir).await
-            }
+            DownloadSource::NuGet => download_packages_nuget(workspace, &queue, dest).await,
         };
         batch.failures.extend(round.failures);
         if round.paths.is_empty() {
@@ -912,6 +948,7 @@ async fn prompt_download_symbols(
 async fn download_symbols_from_server(
     project: &al_project::project::AlProject,
     deps: &[al_project::project::AppDependency],
+    dest: &Path,
     lsp_client: &tower_lsp::Client,
     session: Option<LspSessionState>,
     requested_config: Option<&str>,
@@ -959,7 +996,6 @@ async fn download_symbols_from_server(
         "Downloading symbols from BC server"
     );
 
-    let dest = project.root.join(".alpackages");
     // Wire auth messages to LSP showMessage so the user sees device code prompts
     let lsp = lsp_client.clone();
     let message_sink: al_symbols::bc_server::MessageSink = std::sync::Arc::new(move |msg| {
@@ -1008,7 +1044,7 @@ async fn download_symbols_from_server(
             )),
         }
     }
-    let results = client.download_all(&url_deps, &dest).await;
+    let results = client.download_all(&url_deps, dest).await;
 
     // `results` is parallel to `url_deps` (not `deps`): some dependencies are
     // filtered out above when they lack a dev_packages_url, so indexing into

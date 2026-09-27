@@ -48,6 +48,7 @@ pub const ADVISORY_KEYS: &[&str] = &[
     "al.packageCachePath",
     "al.ruleSetPath",
     "al.useOnlyCustomFeeds",
+    UNREADABLE_LAUNCH_KEY,
     "lsp.al-lsp.binary.arguments",
     "lsp.al-lsp.binary.env",
     "lsp.al-lsp.binary.path",
@@ -57,6 +58,14 @@ pub const ADVISORY_KEYS: &[&str] = &[
 /// The class of a launch configuration key, which carries the configuration's
 /// own name and so cannot be printed as written.
 const LAUNCH_SERVER_KEY: &str = "launch configuration server";
+
+/// The key of the value that stands in for a launch file the parser rejects.
+///
+/// The record cannot list the servers of a file it cannot read, and Zed may
+/// still offer that file's scenarios to the debug adapter. The file's hash is
+/// recorded under this key, so a record goes stale when the file changes, and
+/// [`TrustDecision::grant_refusal`] refuses a new record until the file is fixed.
+const UNREADABLE_LAUNCH_KEY: &str = "unreadable launch file";
 
 /// The name a message prints for `key`.
 #[must_use]
@@ -165,6 +174,26 @@ impl TrustDecision {
     #[must_use]
     pub fn is_trusted(&self) -> bool {
         self.state.is_trusted()
+    }
+
+    /// Why this project cannot be trusted as its files stand, or `None` when
+    /// it can.
+    ///
+    /// A launch file the parser rejects names servers that a person reviewing
+    /// the values cannot see, so a record over it would vouch for them unread.
+    #[must_use]
+    pub fn grant_refusal(&self) -> Option<String> {
+        let unreadable = self
+            .privileged
+            .iter()
+            .find(|setting| setting.key == UNREADABLE_LAUNCH_KEY)?;
+        Some(format!(
+            "{} could not be read ({}), so the Business Central servers it names cannot be \
+             listed for review. Nothing was recorded. Fix the file, then run {TRUST_COMMAND} \
+             again.",
+            one_line(&unreadable.source),
+            one_line(&unreadable.value)
+        ))
     }
 
     /// Whether anything was actually ignored, which is what makes the advisory
@@ -319,6 +348,13 @@ pub fn inspect(project_root: &Path) -> Result<(RepositoryAsk, TrustDecision), Co
     Ok((ask, decision))
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread ran [`read_repository`], which walks and
+    /// hashes the project's analyzer folders.
+    pub(crate) static REPOSITORY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// One read of the repository's settings files: the merged configuration and
 /// the privileged values that merge contributed.
 ///
@@ -328,6 +364,8 @@ pub fn inspect(project_root: &Path) -> Result<(RepositoryAsk, TrustDecision), Co
 /// privileged values in the effective configuration with the project still
 /// untrusted, because the second read found nothing to remove.
 fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), ConfigLoadError> {
+    #[cfg(test)]
+    REPOSITORY_READS.with(|reads| reads.set(reads.get() + 1));
     let mut config = match AlConfig::default_settings_path() {
         Some(path) => AlConfig::load(&path)?.unwrap_or_default(),
         None => AlConfig::default(),
@@ -381,7 +419,7 @@ fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<Privil
                 .unwrap_or(&found)
                 .display()
                 .to_string();
-            let contents = file_sha256(&found).unwrap_or_else(|| "unreadable".to_string());
+            let contents = file_and_neighbours_sha256(&found, Beside::Assemblies);
             Some(PrivilegedSetting::new(
                 "al.codeAnalyzers",
                 &format!("{} resolves to {relative} ({contents})", entry.trim()),
@@ -432,12 +470,44 @@ pub fn evaluate(project_root: &Path) -> Result<TrustEvaluation, ConfigLoadError>
 /// [`evaluate`]: the LSP receives its settings from the editor, which has
 /// already merged the worktree's `.zed/settings.json` into the user's own.
 pub fn gate(project_root: &Path, config: &mut AlConfig) -> Result<TrustDecision, ConfigLoadError> {
-    let (ask, mut decision) = inspect(project_root)?;
-    if !decision.state.is_trusted() {
-        ask.remove_from(config);
+    let read = read_gate(project_root)?;
+    read.apply(config);
+    Ok(read.decision)
+}
+
+/// What [`gate`] reads from the project's files, kept so it can be applied to
+/// a configuration later.
+///
+/// Reading walks and hashes the project's analyzer folders. Applying reads
+/// nothing, so a caller can read first and apply under the lock that installs
+/// the configuration.
+#[derive(Debug, Clone)]
+pub struct GateReading {
+    ask: RepositoryAsk,
+    decision: TrustDecision,
+}
+
+impl GateReading {
+    /// Remove from `config` every privileged value the repository asks for,
+    /// unless the project is trusted.
+    pub fn apply(&self, config: &mut AlConfig) {
+        if !self.decision.state.is_trusted() {
+            self.ask.remove_from(config);
+        }
     }
-    decision.privileged = ask.settings;
-    Ok(decision)
+
+    /// The trust decision the reading made.
+    #[must_use]
+    pub fn decision(&self) -> &TrustDecision {
+        &self.decision
+    }
+}
+
+/// Read what [`gate`] needs without applying it.
+pub fn read_gate(project_root: &Path) -> Result<GateReading, ConfigLoadError> {
+    let (ask, mut decision) = inspect(project_root)?;
+    decision.privileged = ask.settings.clone();
+    Ok(GateReading { ask, decision })
 }
 
 /// Clear every privileged field.
@@ -498,12 +568,11 @@ pub fn inputs_fingerprint(project_root: &Path) -> u64 {
     stamp(AlConfig::default_settings_path());
     stamp(Some(project_root.join(".vscode/settings.json")));
     stamp(Some(project_root.join(".zed/settings.json")));
-    stamp(
-        al_bc::launch::find_launch_config(project_root)
-            .ok()
-            .flatten()
-            .map(|file| file.path),
-    );
+    // Both files, parsed or not: an edit to a file the parser rejects changes
+    // the record too.
+    for path in al_bc::launch::launch_file_paths(project_root) {
+        stamp(Some(path));
+    }
     // The `dotnet` host this process runs. One inside the project is hashed
     // into the record, so replacing it has to trigger the decision again.
     stamp(
@@ -534,6 +603,9 @@ pub enum GrantError {
     Config(#[from] ConfigLoadError),
     #[error(transparent)]
     Store(#[from] TrustStoreError),
+    /// [`TrustDecision::grant_refusal`]'s message.
+    #[error("{0}")]
+    UnreadableLaunchFile(String),
 }
 
 /// Record `project_root` as trusted at the privileged values it holds now.
@@ -543,6 +615,9 @@ pub enum GrantError {
 /// rather than reaching past the gate.
 pub fn grant(project_root: &Path) -> Result<TrustDecision, GrantError> {
     let decision = decide(project_root)?;
+    if let Some(refusal) = decision.grant_refusal() {
+        return Err(GrantError::UnreadableLaunchFile(refusal));
+    }
     trust_project(&decision.root, &decision.digest)?;
     Ok(decision)
 }
@@ -652,14 +727,31 @@ fn render_paths(paths: &[PathBuf]) -> String {
         .join(", ")
 }
 
+/// What a file loads from the directory it sits in, which the record hashes
+/// with it.
+#[derive(Clone, Copy)]
+enum Beside {
+    /// An analyzer assembly. .NET resolves its references from its own
+    /// directory, so every `.dll` in that directory's tree is recorded.
+    Assemblies,
+    /// A `dotnet` muxer. It loads `host/fxr/<version>/` and
+    /// `shared/<framework>/<version>/` from its own directory, so every file
+    /// beside it and every file under `host` and `shared` is recorded.
+    DotnetRuntime,
+    /// A program whose neighbours are not recorded.
+    Nothing,
+}
+
 /// `value` with what it names folded in, when it is a path into the project.
 ///
 /// A path in a settings file names a file, and the file is what runs. The
 /// record used to cover the path text alone, so a later commit that replaced
 /// `tools/TeamCop.dll`, or a `dotnet` shipped in the tree, kept the record
-/// valid while the code under it changed. A path outside the project is the
-/// user's machine and stays as written.
-fn with_project_contents(value: &str, project_root: &Path) -> String {
+/// valid while the code under it changed. It then covered the named file
+/// alone, so a commit that replaced a DLL the analyzer references, or the
+/// runtime beside a `dotnet`, did the same. A path outside the project is
+/// the user's machine and stays as written.
+fn with_project_contents(value: &str, project_root: &Path, beside: Beside) -> String {
     let path = Path::new(value.trim());
     let is_path = path.is_absolute() || value.contains(['/', '\\']);
     if !is_path || !stays_inside_project(path, project_root) {
@@ -671,13 +763,26 @@ fn with_project_contents(value: &str, project_root: &Path) -> String {
         project_root.join(path)
     };
     let contents = match std::fs::metadata(&absolute) {
-        Ok(metadata) if metadata.is_file() => {
-            file_sha256(&absolute).unwrap_or_else(|| "unreadable".to_string())
-        }
+        Ok(metadata) if metadata.is_file() => file_and_neighbours_sha256(&absolute, beside),
         Ok(metadata) if metadata.is_dir() => dll_tree_sha256(&absolute),
         _ => "not present".to_string(),
     };
     format!("{value} ({contents})")
+}
+
+/// The hash of `file`, and of what it loads from beside it.
+fn file_and_neighbours_sha256(file: &Path, beside: Beside) -> String {
+    let own = file_sha256(file).unwrap_or_else(|| "unreadable".to_string());
+    let Some(directory) = file.parent() else {
+        return own;
+    };
+    match beside {
+        Beside::Nothing => own,
+        Beside::Assemblies => format!("{own}; its directory: {}", dll_tree_sha256(directory)),
+        Beside::DotnetRuntime => {
+            format!("{own}; its runtime: {}", runtime_tree_sha256(directory))
+        }
+    }
 }
 
 /// `sha256:<hex>` of a file's bytes.
@@ -695,7 +800,40 @@ const MAX_HASHED_ENTRIES: usize = 50_000;
 /// One hash over every `.dll` below `dir` that analyzer discovery could pick,
 /// by relative path and content, with the count.
 fn dll_tree_sha256(dir: &Path) -> String {
+    let is_dll = |path: &Path| {
+        path.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
+    };
     let mut files = Vec::new();
+    if collect_files(dir, true, &is_dll, &mut files).is_err() {
+        return "too many files to hash".to_string();
+    }
+    format!("{} .dll files, {}", files.len(), files_sha256(dir, files))
+}
+
+/// One hash over every file beside a `dotnet` muxer and every file below its
+/// `host` and `shared` directories, with the count.
+fn runtime_tree_sha256(dir: &Path) -> String {
+    let any = |_: &Path| true;
+    let mut files = Vec::new();
+    let collected = collect_files(dir, false, &any, &mut files)
+        .and_then(|()| collect_files(&dir.join("host"), true, &any, &mut files))
+        .and_then(|()| collect_files(&dir.join("shared"), true, &any, &mut files));
+    if collected.is_err() {
+        return "too many files to hash".to_string();
+    }
+    format!("{} files, {}", files.len(), files_sha256(dir, files))
+}
+
+/// Push every regular file in `dir` that `keep` accepts onto `files`, below
+/// `dir` too when `recursive`. `Err` when the walk passes
+/// `MAX_HASHED_ENTRIES`. A directory that cannot be read adds nothing.
+fn collect_files(
+    dir: &Path,
+    recursive: bool,
+    keep: &dyn Fn(&Path) -> bool,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), ()> {
     let mut stack = vec![dir.to_path_buf()];
     let mut inspected = 0usize;
     while let Some(directory) = stack.pop() {
@@ -705,33 +843,36 @@ fn dll_tree_sha256(dir: &Path) -> String {
         for entry in entries.flatten() {
             inspected += 1;
             if inspected > MAX_HASHED_ENTRIES {
-                return "too many files to hash".to_string();
+                return Err(());
             }
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             let path = entry.path();
             if file_type.is_dir() {
-                stack.push(path);
-            } else if file_type.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
-            {
+                if recursive {
+                    stack.push(path);
+                }
+            } else if file_type.is_file() && keep(&path) {
                 files.push(path);
             }
         }
     }
+    Ok(())
+}
+
+/// `sha256:<hex>` over each file's path relative to `base` and its content.
+fn files_sha256(base: &Path, mut files: Vec<PathBuf>) -> String {
     files.sort();
     let mut hasher = Sha256::new();
     for file in &files {
-        let relative = file.strip_prefix(dir).unwrap_or(file);
+        let relative = file.strip_prefix(base).unwrap_or(file);
         hasher.update(relative.as_os_str().as_encoded_bytes());
         hasher.update([0u8]);
         hasher.update(file_sha256(file).unwrap_or_default().as_bytes());
         hasher.update([0u8]);
     }
-    format!("{} .dll files, sha256:{:x}", files.len(), hasher.finalize())
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 /// The privileged values `candidate` gained over `base`.
@@ -758,7 +899,7 @@ fn privileged_changes(
         let value = ask
             .analyzers
             .iter()
-            .map(|entry| with_project_contents(entry, project_root))
+            .map(|entry| with_project_contents(entry, project_root, Beside::Assemblies))
             .collect::<Vec<_>>()
             .join(", ");
         record(&mut ask, "al.codeAnalyzers", value);
@@ -797,7 +938,13 @@ fn privileged_changes(
         let value = ask
             .assembly_probing_paths
             .iter()
-            .map(|path| with_project_contents(&path.display().to_string(), project_root))
+            .map(|path| {
+                with_project_contents(
+                    &path.display().to_string(),
+                    project_root,
+                    Beside::Assemblies,
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
         record(&mut ask, "al.assemblyProbingPaths", value);
@@ -1040,12 +1187,13 @@ pub fn authorize_cached_credential(
         });
     }
 
+    // Every server the record lists, from either launch file.
     let launch_targets: Vec<al_bc::launch::BcServerConfig> =
-        al_bc::launch::find_launch_config(project_root)
-            .ok()
+        al_bc::launch::launch_files(project_root)
+            .into_iter()
             .flatten()
-            .map(|file| file.configs)
-            .unwrap_or_default();
+            .flat_map(|file| file.configs)
+            .collect();
     let matching: Vec<&al_bc::launch::BcServerConfig> = launch_targets
         .iter()
         .filter(|candidate| {
@@ -1119,7 +1267,15 @@ fn executable_path_privileges(
         ask.executable_paths.push(path.to_string());
         ask.settings.push(PrivilegedSetting::new(
             key,
-            &with_project_contents(path, project_root),
+            &with_project_contents(
+                path,
+                project_root,
+                if key == "al.dotnetPath" {
+                    Beside::DotnetRuntime
+                } else {
+                    Beside::Nothing
+                },
+            ),
             source,
         ));
     }
@@ -1201,16 +1357,37 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
 /// Each one is a place a cached token could be sent, so each is privileged and
 /// each belongs in the digest: adding a server to `launch.json` after the
 /// project was trusted invalidates the record.
+///
+/// Both launch files count, since Zed offers the scenarios of both. A file the
+/// parser rejects is recorded as [`UNREADABLE_LAUNCH_KEY`] with its hash. It
+/// used to add nothing, so one entry in a spelling the parser refused hid
+/// every server in the file while the debug adapter still read them.
 fn launch_privileges(project_root: &Path) -> Vec<PrivilegedSetting> {
-    let Ok(Some(file)) = al_bc::launch::find_launch_config(project_root) else {
-        return Vec::new();
+    let relative = |path: &Path| {
+        path.strip_prefix(project_root)
+            .unwrap_or(path)
+            .display()
+            .to_string()
     };
-    let source = file
-        .path
-        .strip_prefix(project_root)
-        .unwrap_or(&file.path)
-        .display()
-        .to_string();
+    let mut privileged = Vec::new();
+    for file in al_bc::launch::launch_files(project_root) {
+        match file {
+            Ok(file) => privileged.extend(launch_servers(&file, relative(&file.path))),
+            Err(error) => {
+                let contents = file_sha256(&error.path).unwrap_or_else(|| "unreadable".to_string());
+                privileged.push(PrivilegedSetting::new(
+                    UNREADABLE_LAUNCH_KEY,
+                    &format!("{} ({contents})", error.message),
+                    relative(&error.path),
+                ));
+            }
+        }
+    }
+    privileged
+}
+
+/// The on-premises servers one parsed launch file names.
+fn launch_servers(file: &al_bc::launch::DebugConfigFile, source: String) -> Vec<PrivilegedSetting> {
     file.configs
         .iter()
         .filter(|config| {
@@ -2017,6 +2194,138 @@ mod tests {
         );
     }
 
+    fn write_zed_debug(project: &Path, scenarios: &str) {
+        std::fs::create_dir_all(project.join(".zed")).unwrap();
+        std::fs::write(project.join(".zed/debug.json"), scenarios).unwrap();
+    }
+
+    const CLOUD_SCENARIO: &str = r#"{"adapter":"al","label":"Cloud","request":"launch",
+        "environmentType":"Sandbox","environmentName":"dev"}"#;
+
+    /// The debug adapter reads `onprem` as on-premises. The record's parser
+    /// rejected it, returned no server for the whole file, and so a trusted
+    /// record stayed trusted after a commit added a server in that spelling.
+    #[test]
+    fn a_launch_server_in_another_case_makes_the_record_stale() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+        write_zed_debug(project.path(), &format!("[{CLOUD_SCENARIO}]"));
+        std::fs::write(
+            project.path().join(".vscode/settings.json"),
+            r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#,
+        )
+        .unwrap();
+        grant(project.path()).unwrap();
+        assert!(decide(project.path()).unwrap().is_trusted());
+
+        write_zed_debug(
+            project.path(),
+            &format!(
+                r#"[{CLOUD_SCENARIO},{{"adapter":"al","label":"Attach","request":"attach",
+                    "environmentType":"onprem","server":"https://collector.example",
+                    "serverInstance":"BC","authentication":"AAD","tenant":"organizations"}}]"#
+            ),
+        );
+
+        let decision = decide(project.path()).unwrap();
+        assert_eq!(decision.state, TrustState::Stale);
+        assert!(
+            decision
+                .privileged
+                .iter()
+                .any(|setting| setting.value.contains("collector.example")),
+            "{:?}",
+            decision.privileged
+        );
+        let refusal = authorize_cached_credential(
+            project.path(),
+            &BcTarget::from_debug("onprem", Some("https://collector.example"), 7049),
+            CredentialKind::Bearer,
+            TargetSource::Repository,
+        )
+        .unwrap_err();
+        assert!(refusal.contains("not trusted"), "{refusal}");
+    }
+
+    /// One entry the parser rejects used to fail the whole file and leave the
+    /// record with no server at all, while the adapter still read the other
+    /// entries. The file now stands in the record as unreadable, which makes
+    /// an existing record stale and refuses a new one until the file is fixed.
+    #[test]
+    fn a_launch_file_the_parser_rejects_stales_the_record_and_blocks_a_grant() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+        let good = r#"{"adapter":"al","label":"Lab","request":"launch","environmentType":"OnPrem",
+            "server":"https://lab.example","serverInstance":"BC","authentication":"AAD"}"#;
+        write_zed_debug(project.path(), &format!("[{good}]"));
+        grant(project.path()).unwrap();
+        assert!(decide(project.path()).unwrap().is_trusted());
+
+        write_zed_debug(
+            project.path(),
+            &format!(
+                r#"[{good},{{"adapter":"al","label":"Other","environmentType":"Bogus",
+                    "server":"https://collector.example"}}]"#
+            ),
+        );
+
+        let decision = decide(project.path()).unwrap();
+        assert_eq!(decision.state, TrustState::Stale);
+        let refusal = decision
+            .grant_refusal()
+            .expect("an unreadable launch file blocks trust");
+        assert!(refusal.contains(".zed/debug.json"), "{refusal}");
+        assert!(refusal.contains("Bogus"), "{refusal}");
+        let error = grant(project.path()).expect_err("no record over an unreadable file");
+        assert!(
+            matches!(error, GrantError::UnreadableLaunchFile(_)),
+            "{error}"
+        );
+        assert_eq!(decide(project.path()).unwrap().state, TrustState::Stale);
+        assert!(authorize_cached_credential(
+            project.path(),
+            &onprem("https://lab.example"),
+            CredentialKind::Bearer,
+            TargetSource::Repository,
+        )
+        .is_err());
+    }
+
+    /// Zed reads debug scenarios from `.vscode/launch.json` as well as from
+    /// `.zed/debug.json`, so the record lists the servers of both.
+    #[test]
+    fn the_servers_of_both_launch_files_are_part_of_the_digest() {
+        let _config = ScratchConfig::new();
+        let project = project_with_launch(
+            r#"[{"name":"Lab","type":"al","request":"launch","environmentType":"OnPrem",
+                 "server":"https://collector.example","serverInstance":"BC"}]"#,
+        );
+        write_zed_debug(project.path(), &format!("[{CLOUD_SCENARIO}]"));
+
+        let decision = decide(project.path()).unwrap();
+        assert!(
+            decision
+                .privileged
+                .iter()
+                .any(|setting| setting.value.contains("collector.example")
+                    && setting.source.ends_with("launch.json")),
+            "{:?}",
+            decision.privileged
+        );
+    }
+
+    /// A launch file the parser rejects still has to move the fingerprint when
+    /// it changes, or a running server keeps the decision it made before.
+    #[test]
+    fn an_edit_to_an_unreadable_launch_file_moves_the_fingerprint() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings("{}");
+        write_zed_debug(project.path(), "[{not json");
+        let before = inputs_fingerprint(project.path());
+        write_zed_debug(project.path(), "[{still not json, and longer");
+        assert_ne!(before, inputs_fingerprint(project.path()));
+    }
+
     fn project_with_launch(configurations: &str) -> tempfile::TempDir {
         let dir = project_with_settings("{}");
         std::fs::write(
@@ -2346,6 +2655,68 @@ mod tests {
         assert_a_replaced_file_makes_the_record_stale(
             r#"{"al.codeAnalyzers": ["TeamCop"]}"#,
             "packages/teamcop/1.0.0/TeamCop.dll",
+        );
+    }
+
+    /// The record covers what the named file loads from beside it, not only
+    /// the file itself.
+    fn assert_a_replaced_sibling_makes_the_record_stale(
+        settings: &str,
+        named: &str,
+        sibling: &str,
+    ) {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(settings);
+        for file in [named, sibling] {
+            let path = project.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"reviewed build").unwrap();
+        }
+        grant(project.path()).unwrap();
+        assert_eq!(decide(project.path()).unwrap().state, TrustState::Trusted);
+
+        std::fs::write(project.path().join(sibling), b"replaced by a later commit").unwrap();
+
+        assert_eq!(
+            decide(project.path()).unwrap().state,
+            TrustState::Stale,
+            "{sibling} changed beside {named} under a record that still matched"
+        );
+    }
+
+    #[test]
+    fn a_replaced_dependency_beside_an_analyzer_path_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#,
+            "tools/TeamCop.dll",
+            "tools/TeamCop.Rules.dll",
+        );
+    }
+
+    #[test]
+    fn a_replaced_dependency_beside_a_named_analyzer_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.codeAnalyzers": ["TeamCop"]}"#,
+            "packages/teamcop/1.0.0/TeamCop.dll",
+            "packages/teamcop/1.0.0/TeamCop.Rules.dll",
+        );
+    }
+
+    #[test]
+    fn a_replaced_host_library_beside_a_dotnet_in_the_tree_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#,
+            "tools/dotnet/dotnet",
+            "tools/dotnet/host/fxr/8.0.0/libhostfxr.so",
+        );
+    }
+
+    #[test]
+    fn a_replaced_framework_file_beside_a_dotnet_in_the_tree_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#,
+            "tools/dotnet/dotnet",
+            "tools/dotnet/shared/Microsoft.NETCore.App/8.0.0/System.Private.CoreLib.dll",
         );
     }
 

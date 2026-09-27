@@ -589,6 +589,24 @@ fn every_tool_has_a_valid_schema_and_description() {
     }
 }
 
+/// `object` and `byId` answer a workspace object without its members until the
+/// daemon has built its call graph. A description that sends an agent there
+/// for members has to say how to wait for them, or the first answer the agent
+/// gets is `partial: true` with no `methods` or `fields`.
+#[test]
+fn a_description_that_sends_agents_to_by_id_names_wait_for_members() {
+    for tool in tools() {
+        if tool.description.contains("byId") {
+            assert!(
+                tool.description.contains("waitForMembers: true"),
+                "{}: {}",
+                tool.name,
+                tool.description
+            );
+        }
+    }
+}
+
 /// A named tool must accept exactly what the method behind it accepts.
 /// `al_getdiagnostics` rejected `text` at its schema while `al_call` with
 /// method `lint` took it, so an agent holding an unsaved buffer could lint
