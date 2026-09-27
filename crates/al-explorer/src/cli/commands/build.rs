@@ -866,7 +866,7 @@ mod validation_trust_tests {
     #[serial_test::serial]
     fn an_untrusted_project_s_refusal_names_the_real_folder() {
         let _config = ScratchConfig::new();
-        let (project, root) = project_with_lintercop();
+        let (project, _root) = project_with_lintercop();
         let settings = al_project::trust::evaluate(project.path()).unwrap();
 
         let error = validation_analyzer_entries(
@@ -876,9 +876,11 @@ mod validation_trust_tests {
         )
         .expect_err("an untrusted project's analyzer is refused");
 
+        // The folder as the user named it: canonical form differs on macOS
+        // (/private/var) and Windows (8.3 short names).
         assert!(error.contains("not trusted"), "{error}");
         assert!(
-            error.contains(&format!("--show {}", root.display())),
+            error.contains(&format!("--show {}", project.path().display())),
             "{error}"
         );
     }
