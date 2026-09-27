@@ -124,7 +124,8 @@ automatically. To control it:
   subprocess backend, which does not route through this FFI bridge.
 - Analyzer names resolve through `al_project::analyzers::discover_custom_analyzer` to an installed
   analyzer DLL or an explicit DLL path, and the project's own folders are searched only when the
-  project is trusted. Custom analyzer DLLs run in-process and must be treated as trusted code, so an
+  project is trusted. A copy found there loads only when the trust record lists that file with the
+  hash it has now. Custom analyzer DLLs run in-process and must be treated as trusted code, so an
   `al.codeAnalyzers` entry that is not a built-in token and comes from the repository's own
   settings applies only after `al-explorer trust`. See [project trust](./project-trust.md).
 - `al.enableExternalRulesets`, `al.ruleSetPath`, and `al.outputAnalyzerStatistics` apply to the

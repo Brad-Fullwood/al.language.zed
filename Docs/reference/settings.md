@@ -71,7 +71,7 @@ takes the same four keys plus `tabSize`, `insertSpaces` and `keywordCasing`.
 
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
-| `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only, 🔒 |
+| `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only, 🔒. A repository entry that names a file alc loads from (`/analyzer:`, `/assemblyprobingpaths:`, `/ruleset:`, `/packagecachepath:`, an `@` response file) keeps the project from being trusted |
 | `al.incrementalBuild` | boolean | `false` | ✅ official `alc` backend only |
 | `al.useOfficialCompiler` | boolean | `false` | ✅ builds with Microsoft's `dotnet alc` |
 | `al.dotnetPath` | string\|null | `null` | ✅ the `dotnet` executable for every .NET and `alc` process the toolchain spawns, the setting form of `AL_DOTNET_PATH`, 🔒 when it names a program inside the project |

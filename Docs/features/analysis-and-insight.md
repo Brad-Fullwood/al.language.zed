@@ -23,9 +23,13 @@ both package symbols and your code contribute.
 `OnBefore/OnAfter{Op}Event` and on to their subscribers whatever the `RunTrigger` argument is.
 Business Central raises those events either way. `RunTrigger` decides only whether the table's own
 `OnInsert`/`OnModify`/`OnDelete` code runs, which is why subscribers test `if not RunTrigger then
-exit`. `Validate` produces edges to `OnBefore/OnAfterValidateEvent` the same way. Member calls
+exit`. `Validate` produces edges to `OnBefore/OnAfterValidateEvent` the same way, `Rename` to the
+Rename events, and `ModifyAll` and `DeleteAll` to the Modify and Delete events. In table code, calls
+on `Rec` and `xRec` and a bare record method such as `Modify()` produce the same edges. Member calls
 resolve the receiver's declared object type before lookup, and workspace subscribers are connected
 after the graph is built. Attribute names are matched case-insensitively, as AL defines them.
+A name declared more than once in an object, such as the `OnValidate` trigger of each field or the
+overloads of a procedure, is one graph node with the calls of every declaration.
 Objects from different packages that share a `(kind, name)` each get their own graph node.
 Event traversal detects cycles and enforces a 10,000-node global bound.
 
