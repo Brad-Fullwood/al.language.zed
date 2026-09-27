@@ -24,7 +24,7 @@ package, wasm, drift). The grammar is pushed to its `campaign/2026-09-21`, and t
 pointer and `extension.toml` rev moved (4c1b0ae6). Superproject gates on 4c1b0ae6 run in the
 background (`.campaign/run-gates.sh`, results in `.campaign/gate-status.txt`). Push after they pass.
 
-Agents in flight (dispatched 02:48):
+Agents in flight (dispatched 02:48 to 02:58):
 
 - Round 7 fixes (A, D), Opus: worktree `.claude/worktrees/agent-fix-r7`, branch
   `campaign/fix-r7-review`. Commits the BLOG-3 fix, fixes DOC-2 and DOC-1, merges the campaign
@@ -44,6 +44,9 @@ Agents in flight (dispatched 02:48):
   round 8 fixes, the codeunit instances, the mutation tests, `al-fetch-release.sh`, merge damage,
   the three unreproduced round 8 claims, ten audit triage spot-checks. Writes
   `findings/r9-session-review.md`, commits after each finding, ends with `## Review complete`.
+- Docs re-check (H), Sonnet, dispatched 02:58: worktree `.claude/worktrees/agent-docs-r8`, branch
+  `campaign/docs-r8`. Reads the user docs against `git diff 2b7bce37..4c1b0ae6 -- crates`, fixes
+  claims the round 8 merges made wrong, appends a re-check section to `findings/docs-review.md`.
 
 A second session (interactive, not the watchdog's) works on the local test interpreter and the
 test router and pushes straight to this branch (`LOG.md`, 18:45 entry). The orchestrator fetches
