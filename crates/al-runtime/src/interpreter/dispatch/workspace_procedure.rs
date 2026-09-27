@@ -139,24 +139,40 @@ pub(super) fn dispatch_workspace_procedure(
             stack,
             ctx,
         );
-        let site = |globals_root| DeclarationSite {
+        // Each arm below has the globals on the stack before the call runs.
+        let site = DeclarationSite {
             path,
             source,
             object_name: &object_name,
-            globals_root,
+            globals_root: None,
             implicit_record: None,
         };
         return match globals {
             Globals::None | Globals::OnStack => {
-                run_declaration(declaration, site(None), args, stack, ctx)
+                run_declaration(declaration, site, args, stack, ctx)
             }
-            Globals::Fresh => run_declaration(declaration, site(Some(root)), args, stack, ctx),
-            // The instance's globals sit under the call and are kept for its
-            // next call.
-            Globals::Instance(id, frame) => {
+            // The new instance has an id while the call runs, so an event
+            // it raises can pass it as `sender`, and is dropped after.
+            Globals::Fresh => {
+                ctx.next_codeunit_instance += 1;
+                let id = ctx.next_codeunit_instance;
+                let mut frame = CallFrame::new(&object_name, "<globals>");
+                bind_object_globals(root, source, &mut frame);
+                frame.instance = Some(id);
                 stack.push(frame);
                 ctx.active_instances.insert(id);
-                let result = run_declaration(declaration, site(None), args, stack, ctx);
+                let result = run_declaration(declaration, site, args, stack, ctx);
+                ctx.active_instances.remove(&id);
+                stack.pop();
+                result
+            }
+            // The instance's globals sit under the call and are kept for its
+            // next call.
+            Globals::Instance(id, mut frame) => {
+                frame.instance = Some(id);
+                stack.push(*frame);
+                ctx.active_instances.insert(id);
+                let result = run_declaration(declaration, site, args, stack, ctx);
                 ctx.active_instances.remove(&id);
                 if let Some(frame) = stack.pop() {
                     ctx.codeunit_instances.insert(id, frame);
@@ -446,7 +462,7 @@ enum Globals {
     Fresh,
     /// The stored globals of instance `id` (a codeunit variable's, or a
     /// `SingleInstance` codeunit's).
-    Instance(u64, CallFrame),
+    Instance(u64, Box<CallFrame>),
 }
 
 /// Where a call of `object` finds its globals: on the instance `instance`
@@ -486,7 +502,7 @@ fn globals_for_call(
                 bind_object_globals(object, source, &mut frame);
                 frame
             });
-            Globals::Instance(id, frame)
+            Globals::Instance(id, Box::new(frame))
         }
         None if !subscriber && stack.has_object_globals(object_name) => Globals::OnStack,
         None => Globals::Fresh,
@@ -562,8 +578,9 @@ fn raise_published_event(
         .unwrap_or("codeunit")
         .to_string();
     // With IncludeSender the subscriber's `sender` is the publishing
-    // codeunit, or for a table procedure the record it runs on, which a
-    // `var Sender: Record "X"` parameter shares.
+    // codeunit instance, whose globals the publisher reads, or for a table
+    // procedure the record it runs on, which a `var Sender: Record "X"`
+    // parameter shares.
     let sender = if !super::events::includes_sender(proc_node, source) {
         None
     } else if kind.eq_ignore_ascii_case("table") {
@@ -575,7 +592,7 @@ fn raise_published_event(
     } else {
         Some(Value::Codeunit {
             object_name: object_name.to_string(),
-            instance: None,
+            instance: stack.object_instance(object_name),
         })
     };
     let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();

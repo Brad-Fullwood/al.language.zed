@@ -29,6 +29,8 @@ pub struct CallFrame {
     /// Table code: bare names that are not variables are fields of `Rec`,
     /// and bare record methods (`Modify()`, `TestField(...)`) act on it.
     pub implicit_record: bool,
+    /// For a codeunit's globals frame, the instance the globals belong to.
+    pub instance: Option<u64>,
 }
 
 impl CallFrame {
@@ -40,6 +42,7 @@ impl CallFrame {
             declared_text_lengths: HashMap::new(),
             call_site: None,
             implicit_record: false,
+            instance: None,
         }
     }
 
@@ -142,6 +145,16 @@ impl ScopeStack {
         self.frames
             .iter()
             .any(|frame| frame.is_object_globals() && frame.object.eq_ignore_ascii_case(object))
+    }
+
+    /// The instance of `object` whose globals the running code reads: that
+    /// of the innermost globals frame of `object`.
+    pub fn object_instance(&self, object: &str) -> Option<u64> {
+        self.frames
+            .iter()
+            .rev()
+            .find(|frame| frame.is_object_globals() && frame.object.eq_ignore_ascii_case(object))
+            .and_then(|frame| frame.instance)
     }
 
     pub fn lookup(&self, name: &str) -> Option<&Value> {

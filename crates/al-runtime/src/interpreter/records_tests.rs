@@ -4873,6 +4873,78 @@ fn table_publisher_passes_its_record_as_sender() {
     assert_eq!(ok(result), Value::Text("stamped P1 5".into()));
 }
 
+const CODEUNIT_PUBLISHER_SENDER: &str = r#"codeunit 50444 "Sender Pub"
+{
+    var
+        Counter: Integer;
+
+    procedure Post()
+    begin
+        Counter := 7;
+        OnPost();
+    end;
+
+    procedure PostAndRead(): Integer
+    begin
+        Post();
+        exit(Counter);
+    end;
+
+    procedure GetCounter(): Integer
+    begin
+        exit(Counter);
+    end;
+
+    procedure SetCounter(Value: Integer)
+    begin
+        Counter := Value;
+    end;
+
+    [IntegrationEvent(true, false)]
+    local procedure OnPost()
+    begin
+    end;
+}
+
+codeunit 50445 "Sender Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sender Pub", 'OnPost', '', false, false)]
+    local procedure OnPostSub(sender: Codeunit "Sender Pub")
+    begin
+        if sender.GetCounter() <> 7 then
+            Error('sender counter %1', sender.GetCounter());
+        sender.SetCounter(sender.GetCounter() + 1);
+    end;
+}
+
+codeunit 50446 "Sender Probe"
+{
+    procedure ThroughVariable(): Integer
+    var
+        Pub: Codeunit "Sender Pub";
+    begin
+        Pub.Post();
+        exit(Pub.GetCounter());
+    end;
+}
+"#;
+
+/// With IncludeSender, a codeunit publisher's `sender` is the instance that
+/// raised the event, so a subscriber reads and changes its globals. The
+/// sender was a new instance, whose `Counter` read 0.
+#[test]
+fn a_codeunit_publishers_sender_is_the_running_instance() {
+    let files = [("/ws/SenderPub.al", CODEUNIT_PUBLISHER_SENDER)];
+    assert_eq!(
+        ok(run(&files, "Sender Probe", "ThroughVariable", vec![])),
+        Value::Integer(8)
+    );
+    assert_eq!(
+        ok(run(&files, "Sender Pub", "PostAndRead", vec![])),
+        Value::Integer(8)
+    );
+}
+
 const KEYWORD_NAMED_VARIABLES: &str = r#"table 50283 "Keyword Named"
 {
     fields
