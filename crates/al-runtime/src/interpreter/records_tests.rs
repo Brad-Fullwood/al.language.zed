@@ -3992,6 +3992,72 @@ fn subscriber_codeunits_with_globals_run_on_a_fresh_instance() {
     assert_eq!(ok(result), Value::Integer(11));
 }
 
+/// "Each event subscriber will be run in its own codeunit instance"
+/// (EventSubscriberInstance on Learn), also when an instance of the
+/// subscriber's codeunit is the one raising the event. The subscriber found
+/// the running instance's globals on the stack and wrote into them.
+#[test]
+fn a_subscriber_gets_its_own_instance_while_its_codeunit_runs() {
+    let publisher = r#"codeunit 50430 "Self Ticker"
+{
+    procedure Tick()
+    begin
+        OnTick();
+    end;
+
+    [IntegrationEvent(false, false)]
+    local procedure OnTick()
+    begin
+    end;
+}
+"#;
+    let subscriber = r#"codeunit 50431 "Self Sub"
+{
+    procedure Run(): Integer
+    var
+        T: Codeunit "Self Ticker";
+    begin
+        T.Tick();
+        T.Tick();
+        exit(Calls);
+    end;
+
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Self Ticker", 'OnTick', '', false, false)]
+    local procedure CountTick()
+    begin
+        Calls += 1;
+    end;
+
+    var
+        Calls: Integer;
+}
+"#;
+    let probe = r#"codeunit 50432 "Self Sub Probe"
+{
+    procedure Run(): Integer
+    var
+        S: Codeunit "Self Sub";
+    begin
+        exit(S.Run());
+    end;
+}
+"#;
+    let files = [
+        ("/ws/SelfTicker.al", publisher),
+        ("/ws/SelfSub.al", subscriber),
+        ("/ws/SelfSubProbe.al", probe),
+    ];
+    assert_eq!(
+        ok(run(&files, "Self Sub Probe", "Run", vec![])),
+        Value::Integer(0)
+    );
+    // Run as the first object of the run, with no variable.
+    assert_eq!(
+        ok(run(&files, "Self Sub", "Run", vec![])),
+        Value::Integer(0)
+    );
+}
+
 const SAME_NAME_SETUP_PAGE: &str = r#"page 50300 "My Setup"
 {
     SourceTable = "My Setup";
@@ -4976,6 +5042,55 @@ fn case_labels_with_a_leading_minus_match() {
     );
 }
 
+const SIGNED_CASE_RANGES: &str = r#"codeunit 50434 "Signed Ranges"
+{
+    procedure ByRange(X: Integer): Integer
+    begin
+        case X of
+            -5..-3:
+                exit(1);
+            - 2:
+                exit(2);
+            -10..- 8:
+                exit(3);
+            0..-1:
+                exit(4);
+            else
+                exit(0);
+        end;
+    end;
+}
+"#;
+
+/// Grammar a108400 scans `-5..-3:` as a `signed_case_label`, `..`, a unary
+/// minus and an integer, where it made `-5..` one token before, and accepts
+/// `- 2:` with a space after the minus (GR2-4).
+#[test]
+fn negative_range_labels_and_a_spaced_minus_match() {
+    let call = |x: i64| {
+        ok(run(
+            &[("/ws/SignedRanges.al", SIGNED_CASE_RANGES)],
+            "Signed Ranges",
+            "ByRange",
+            vec![Value::Integer(x)],
+        ))
+    };
+    for (x, arm) in [
+        (-5, 1),
+        (-4, 1),
+        (-3, 1),
+        (-2, 2),
+        (-10, 3),
+        (-8, 3),
+        (-6, 0),
+        (-11, 0),
+        (-1, 0),
+        (0, 0),
+    ] {
+        assert_eq!(call(x), Value::Integer(arm), "case {x}");
+    }
+}
+
 const ID_BOUND_PUBLISHER: &str = r#"codeunit 50287 "Id Publisher"
 {
     procedure Raise(): Integer
@@ -5052,5 +5167,389 @@ fn subscribers_bound_by_object_id_run() {
     assert_eq!(
         ok(run(&files, "Id Probe", "Inserts", vec![])),
         Value::Text("by id".into())
+    );
+}
+
+const KEPT_MEMBER: &str = r#"table 50420 "Kept Member"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Name; Text[50])
+        {
+            trigger OnValidate()
+            begin
+                if not HideDialog then
+                    Error('dialog shown');
+            end;
+        }
+        field(3; Stamp; Text[10]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    var
+        Strict: Boolean;
+        HideDialog: Boolean;
+        Inserted: Integer;
+        Deleted: Integer;
+
+    trigger OnInsert()
+    begin
+        if Strict then
+            Error('strict insert');
+        Inserted += 1;
+    end;
+
+    trigger OnModify()
+    begin
+        if Strict then
+            Error('strict modify');
+        Stamp := 'S';
+    end;
+
+    trigger OnDelete()
+    var
+        Log: Record "Kept Log";
+    begin
+        if Strict then
+            Error('strict delete');
+        Deleted += 1;
+        Log."Entry No." := Log.Count() + 1;
+        Log.Deleted := Deleted;
+        Log.Insert();
+    end;
+
+    procedure SetStrict()
+    begin
+        Strict := true;
+    end;
+
+    procedure SetHideDialog(Hide: Boolean)
+    begin
+        HideDialog := Hide;
+    end;
+
+    procedure InsertedCount(): Integer
+    begin
+        exit(Inserted);
+    end;
+
+    procedure StrictAfterReset(): Boolean
+    begin
+        Strict := true;
+        Reset();
+        exit(Strict);
+    end;
+}
+"#;
+
+const KEPT_LOG: &str = r#"table 50422 "Kept Log"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Deleted; Integer) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+
+const KEPT_PROBE: &str = r#"codeunit 50421 "Kept Probe"
+{
+    procedure HideDialogReachesOnValidate(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Member.SetHideDialog(true);
+        Member.Validate(Name, 'x');
+        exit(Member.Name);
+    end;
+
+    procedure StrictReachesOnInsert(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.SetStrict();
+        asserterror Member.Insert(true);
+        exit(GetLastErrorText());
+    end;
+
+    procedure TriggerStateIsKept(): Integer
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.Insert(true);
+        Member."No." := 'B';
+        Member.Insert(true);
+        exit(Member.InsertedCount());
+    end;
+
+    procedure EachVariableHasItsOwn(): Integer
+    var
+        Strict: Record "Kept Member";
+        Plain: Record "Kept Member";
+    begin
+        Strict.SetStrict();
+        Plain."No." := 'A';
+        Plain.Insert(true);
+        exit(10 * Plain.InsertedCount() + Strict.InsertedCount());
+    end;
+
+    procedure ResetClearsThem(): Integer
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.Insert(true);
+        Member.SetStrict();
+        Member.Reset();
+        Member."No." := 'B';
+        Member.Insert(true);
+        exit(Member.InsertedCount());
+    end;
+
+    procedure ResetInTableCodeClearsThem(): Boolean
+    var
+        Member: Record "Kept Member";
+    begin
+        exit(Member.StrictAfterReset());
+    end;
+
+    procedure ModifyAllStartsThemFresh(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.Insert();
+        Member.SetStrict();
+        Member.ModifyAll(Name, 'y', true);
+        Member.Get('A');
+        exit(Member.Name + Member.Stamp);
+    end;
+
+    procedure DeleteAllSharesOneFreshCopy(): Text
+    var
+        Member: Record "Kept Member";
+        Log: Record "Kept Log";
+        Seen: Text;
+    begin
+        Member."No." := 'A';
+        Member.Insert();
+        Member."No." := 'B';
+        Member.Insert();
+        Member.SetStrict();
+        Member.DeleteAll(true);
+        if Log.FindSet() then
+            repeat
+                Seen += Format(Log.Deleted);
+            until Log.Next() = 0;
+        Member."No." := 'C';
+        asserterror Member.Insert(true);
+        exit(Seen + '|' + GetLastErrorText());
+    end;
+}
+"#;
+
+/// Business Central keeps a table's global variables with the record
+/// variable, so a setter such as `SetHideValidationDialog` reaches a trigger
+/// that runs later. Each call used to start them fresh. Record.Reset clears
+/// them, and ModifyAll and DeleteAll run their triggers on a copy whose
+/// globals start at their defaults.
+#[test]
+fn table_globals_are_kept_with_the_record_variable() {
+    let call = |proc: &str| {
+        ok(run(
+            &[
+                ("/ws/KeptMember.al", KEPT_MEMBER),
+                ("/ws/KeptLog.al", KEPT_LOG),
+                ("/ws/KeptProbe.al", KEPT_PROBE),
+            ],
+            "Kept Probe",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(call("HideDialogReachesOnValidate"), Value::Text("x".into()));
+    assert_eq!(
+        call("StrictReachesOnInsert"),
+        Value::Text("strict insert".into())
+    );
+    assert_eq!(call("TriggerStateIsKept"), Value::Integer(2));
+    assert_eq!(call("EachVariableHasItsOwn"), Value::Integer(10));
+    assert_eq!(call("ResetClearsThem"), Value::Integer(1));
+    assert_eq!(call("ResetInTableCodeClearsThem"), Value::Boolean(false));
+    assert_eq!(call("ModifyAllStartsThemFresh"), Value::Text("yS".into()));
+    // One copy with fresh globals for the whole DeleteAll, and the record
+    // keeps its own afterwards.
+    assert_eq!(
+        call("DeleteAllSharesOneFreshCopy"),
+        Value::Text("12|strict insert".into())
+    );
+}
+
+const CLEAR_COUNTER: &str = r#"codeunit 50424 "Clear Counter"
+{
+    procedure Bump()
+    begin
+        Count += 1;
+    end;
+
+    procedure Get(): Integer
+    begin
+        exit(Count);
+    end;
+
+    var
+        Count: Integer;
+}
+"#;
+
+const CLEAR_PROBE: &str = r#"codeunit 50425 "Clear Probe"
+{
+    procedure ClearsScalars(): Text
+    var
+        N: Integer;
+        D: Decimal;
+        T: Text;
+        C: Code[10];
+        B: Boolean;
+        G: Guid;
+    begin
+        N := 5;
+        D := 1.5;
+        T := 'x';
+        C := 'Y';
+        B := true;
+        G := CreateGuid();
+        Clear(N);
+        Clear(D);
+        Clear(T);
+        Clear(C);
+        Clear(B);
+        Clear(G);
+        if N <> 0 then
+            exit('N');
+        if D <> 0 then
+            exit('D');
+        if T <> '' then
+            exit('T');
+        if C <> '' then
+            exit('C');
+        if B then
+            exit('B');
+        if not IsNullGuid(G) then
+            exit('G');
+        exit('cleared');
+    end;
+
+    procedure ClearsCodeunitInstance(): Integer
+    var
+        C: Codeunit "Clear Counter";
+        D: Codeunit "Clear Counter";
+    begin
+        C.Bump();
+        C.Bump();
+        D := C;
+        Clear(C);
+        C.Bump();
+        exit(10 * C.Get() + D.Get());
+    end;
+
+    procedure KeepsTheVariableStorageQueue(): Integer
+    var
+        LibraryVariableStorage: Codeunit "Library - Variable Storage";
+        N: Integer;
+    begin
+        LibraryVariableStorage.Enqueue(7);
+        N := 5;
+        Clear(N);
+        exit(LibraryVariableStorage.DequeueInteger() + N);
+    end;
+
+    procedure ClearsARecord(): Integer
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.Insert();
+        Member.SetRange("No.", 'Z');
+        Member.SetStrict();
+        Clear(Member);
+        if Member."No." <> '' then
+            exit(-1);
+        Member."No." := 'B';
+        Member.Insert(true);
+        exit(Member.Count());
+    end;
+
+    procedure ClearsAField(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Member.Stamp := 'S';
+        Clear(Member.Stamp);
+        exit('[' + Member.Stamp + ']');
+    end;
+
+    procedure EvaluatesAField(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Evaluate(Member.Stamp, 'abc');
+        exit(Member.Stamp);
+    end;
+
+    procedure OwnProcedureNamedLikeAStub(): Text
+    begin
+        exit(AreEqual());
+    end;
+
+    local procedure AreEqual(): Text
+    begin
+        exit('own');
+    end;
+}
+"#;
+
+/// `Clear(X)` resolved to the Library - Variable Storage stub's `Clear`: it
+/// reset nothing and emptied the test's variable storage queue. It now resets
+/// the variable to its type's default, and a stub catalog answers only a call
+/// on its own codeunit.
+#[test]
+fn clear_resets_the_variable_to_its_default() {
+    let call = |proc: &str| {
+        ok(run(
+            &[
+                ("/ws/KeptMember.al", KEPT_MEMBER),
+                ("/ws/KeptLog.al", KEPT_LOG),
+                ("/ws/ClearCounter.al", CLEAR_COUNTER),
+                ("/ws/ClearProbe.al", CLEAR_PROBE),
+            ],
+            "Clear Probe",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(call("ClearsScalars"), Value::Text("cleared".into()));
+    // "Only the reference to the codeunit is deleted": C gets a new instance
+    // (1) and D keeps the old one (2).
+    assert_eq!(call("ClearsCodeunitInstance"), Value::Integer(12));
+    assert_eq!(call("KeepsTheVariableStorageQueue"), Value::Integer(7));
+    // Fields, filters and the table's globals go, the rows stay.
+    assert_eq!(call("ClearsARecord"), Value::Integer(2));
+    // A record field passed to a `var` parameter takes the value back.
+    assert_eq!(call("ClearsAField"), Value::Text("[]".into()));
+    assert_eq!(call("EvaluatesAField"), Value::Text("abc".into()));
+    assert_eq!(
+        call("OwnProcedureNamedLikeAStub"),
+        Value::Text("own".into())
     );
 }

@@ -208,6 +208,19 @@ pub struct DispatchCtx {
     /// through a codeunit variable and taken by the dispatcher.
     #[doc(hidden)]
     pub pending_instance: Option<u64>,
+    /// The call being dispatched runs an event subscriber, which runs on a
+    /// new instance of its codeunit. Set by `events::raise` and taken by the
+    /// dispatcher.
+    #[doc(hidden)]
+    pub pending_subscriber: bool,
+    /// A table's globals as a record variable holds them, by the variable's
+    /// view handle, while no table code runs on that record.
+    #[doc(hidden)]
+    pub record_globals: HashMap<u64, CallFrame>,
+    /// Records with table code running: the stack index of the globals frame
+    /// that code uses, by view handle.
+    #[doc(hidden)]
+    pub active_record_globals: HashMap<u64, usize>,
 }
 
 /// Fixed default seed for the deterministic `Random` builtin.
@@ -241,6 +254,9 @@ impl DispatchCtx {
             single_instances: HashMap::new(),
             next_codeunit_instance: 0,
             pending_instance: None,
+            pending_subscriber: false,
+            record_globals: HashMap::new(),
+            active_record_globals: HashMap::new(),
         }
     }
 

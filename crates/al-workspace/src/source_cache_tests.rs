@@ -871,3 +871,43 @@ fn a_linked_project_store_is_not_followed() {
 }
 
 use std::time::{Duration, SystemTime};
+
+/// The package is hashed before it is summarized. A package rewritten in
+/// between, as a symbol download or a dependency build does, was saved under
+/// the old bytes' key, so the entry served the new bytes' summary whenever the
+/// old bytes came back.
+#[test]
+fn a_package_rewritten_while_it_is_summarized_is_not_saved() {
+    let fixture = Fixture::new();
+    let workspace = Workspace::new();
+    workspace.enable_source_summary_cache(fixture.cache());
+    let original = std::fs::read(&fixture.other_app).unwrap();
+    let rewritten = app_bytes(
+        "00000000-0000-0000-0000-0000000000c2",
+        "Other",
+        &[(
+            "src/Other.al".to_string(),
+            OTHER.replace("procedure Run()", "procedure Walk()"),
+        )],
+    );
+
+    let loaded = workspace
+        .cached_package_summary(&fixture.other_app, true, || {
+            std::fs::write(&fixture.other_app, &rewritten).unwrap();
+            PackageSourceSummary::build(&fixture.other_app, || {}).map(Arc::new)
+        })
+        .unwrap();
+    assert!(!loaded.from_disk);
+    assert_eq!(
+        loaded.summary.files[0].objects[0].procedures[0].name,
+        "Walk"
+    );
+
+    std::fs::write(&fixture.other_app, original).unwrap();
+    let key = PackageKey::of(&fixture.other_app).unwrap();
+    assert_eq!(
+        fixture.cache().load(&key),
+        None,
+        "the old bytes have an entry that describes the rewritten package"
+    );
+}

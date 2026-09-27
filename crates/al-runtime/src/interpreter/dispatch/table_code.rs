@@ -11,10 +11,10 @@ use crate::interpreter::records::{
     find_table_object, object_name_of, parse_field_def, record_binding, section_body,
     sections_with_keyword, IMPLICIT_RECORD,
 };
-use crate::interpreter::scope::{Eval, ScopeStack};
+use crate::interpreter::scope::{CallFrame, Eval, ScopeStack};
 use crate::interpreter::value::Value;
 
-use super::frames::{collect_params, collect_return};
+use super::frames::{bind_object_globals, collect_params, collect_return};
 use super::workspace_procedure::{
     object_has_global_declarations, run_declaration, Declaration, DeclarationSite,
 };
@@ -77,27 +77,108 @@ pub(crate) fn run_table_code(
         TableCode::Procedure(name) | TableCode::Trigger(name) => name,
         TableCode::FieldTrigger { trigger, .. } => trigger,
     };
-    Some(run_declaration(
-        Declaration {
-            node,
-            name,
-            params: collect_params(node, source),
-            return_decl: collect_return(node, source),
-        },
-        DeclarationSite {
-            path: &path,
-            source,
-            object_name: &object_name,
-            // A table's globals belong to the record instance; each call
-            // starts them fresh, which is exact for triggers and procedures
-            // that do not keep state between calls.
-            globals_root: object_has_global_declarations(object).then_some(object),
-            implicit_record: Some((rec, x_rec)),
-        },
-        args,
-        stack,
-        ctx,
-    ))
+    let declaration = Declaration {
+        node,
+        name,
+        params: collect_params(node, source),
+        return_decl: collect_return(node, source),
+    };
+    let handle = record.handle;
+    let site = |globals_root| DeclarationSite {
+        path: &path,
+        source,
+        object_name: &object_name,
+        globals_root,
+        implicit_record: Some((rec.clone(), x_rec.clone())),
+    };
+    if !object_has_global_declarations(object) {
+        return Some(run_declaration(declaration, site(None), args, stack, ctx));
+    }
+    // The table's globals belong to the record variable: bound on its first
+    // call and kept for the next, as BC keeps them with the record instance.
+    let Some(handle) = handle else {
+        return Some(run_declaration(
+            declaration,
+            site(Some(object)),
+            args,
+            stack,
+            ctx,
+        ));
+    };
+    if ctx.active_record_globals.contains_key(&handle) {
+        return Some(run_declaration(declaration, site(None), args, stack, ctx));
+    }
+    let frame = ctx
+        .record_globals
+        .remove(&handle)
+        .unwrap_or_else(|| fresh_globals(object, source, &object_name));
+    let index = stack.push(frame);
+    ctx.active_record_globals.insert(handle, index);
+    let result = run_declaration(declaration, site(None), args, stack, ctx);
+    ctx.active_record_globals.remove(&handle);
+    if let Some(frame) = stack.pop() {
+        ctx.record_globals.insert(handle, frame);
+    }
+    Some(result)
+}
+
+/// Table `object`'s globals at their defaults.
+fn fresh_globals(object: tree_sitter::Node<'_>, source: &[u8], object_name: &str) -> CallFrame {
+    let mut frame = CallFrame::new(object_name, "<globals>");
+    bind_object_globals(object, source, &mut frame);
+    frame
+}
+
+/// Set the globals that the record on view `handle` holds for table
+/// `table_name` back to their defaults, as Record.Reset does.
+pub(crate) fn reset_record_globals(
+    table_name: &str,
+    handle: u64,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) {
+    ctx.record_globals.remove(&handle);
+    // Reset called from the record's own table code: its globals frame is
+    // on the stack.
+    let Some(index) = ctx.active_record_globals.get(&handle).copied() else {
+        return;
+    };
+    let Some(path) = ctx.source.find_object_of_kind(table_name, &["table"]) else {
+        return;
+    };
+    let Some((text, tree)) = ctx.source.get_cached_parse(&path) else {
+        return;
+    };
+    let source = text.as_bytes();
+    let Some(object) = find_table_object(tree.root_node(), source, table_name) else {
+        return;
+    };
+    if let Some(frame) = stack.frame_mut(index) {
+        *frame = fresh_globals(object, source, &frame.object.clone());
+    }
+}
+
+/// Keep the globals of the record on view `handle` out of reach while `run`
+/// runs, so table code that `run` starts binds fresh ones and shares them
+/// until `run` returns, then put the record's own back. ModifyAll and
+/// DeleteAll run their triggers this way: the Record.ModifyAll page says the
+/// record's globals are initialized to their defaults while ModifyAll runs.
+pub(crate) fn without_record_globals<T>(
+    handle: u64,
+    ctx: &mut DispatchCtx,
+    run: impl FnOnce(&mut DispatchCtx) -> T,
+) -> T {
+    let kept = ctx.record_globals.remove(&handle);
+    let active = ctx.active_record_globals.remove(&handle);
+    let result = run(ctx);
+    ctx.record_globals.remove(&handle);
+    if let Some(frame) = kept {
+        ctx.record_globals.insert(handle, frame);
+    }
+    if let Some(index) = active {
+        ctx.active_record_globals.insert(handle, index);
+    }
+    result
 }
 
 /// A call `procedure(args)` that is a table procedure: on a record variable

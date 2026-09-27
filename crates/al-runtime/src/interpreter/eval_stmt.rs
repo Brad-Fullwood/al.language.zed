@@ -904,8 +904,8 @@ pub(crate) fn eval_call_parts(
                         Ok(Some(value)) => {
                             ctx.var_writebacks.clear();
                             ctx.var_writebacks.push((1, value));
-                            apply_var_writebacks(args_node, source, stack, ctx);
-                            Eval::Normal(Value::Boolean(true))
+                            apply_var_writebacks(args_node, source, stack, ctx)
+                                .unwrap_or(Eval::Normal(Value::Boolean(true)))
                         }
                         Ok(None) => Eval::Normal(Value::Boolean(false)),
                         Err(error) => crate::interpreter::eval_error(error),
@@ -925,8 +925,8 @@ pub(crate) fn eval_call_parts(
                 let result = crate::interpreter::json::dispatch_json_method(
                     &recv, &proc_name, args, statement, stack, ctx,
                 );
-                apply_var_writebacks(args_node, source, stack, ctx);
-                return result;
+                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                return first_error(result, written);
             }
             Some(Value::TextBuilder(_)) if records::supports_textbuilder_method(&proc_name) => {
                 let recv = recv.to_string();
@@ -975,8 +975,8 @@ pub(crate) fn eval_call_parts(
                 };
                 ctx.pending_instance = Some(instance);
                 let result = dispatch_call_scoped(Some(&object_name), &proc_name, args, stack, ctx);
-                apply_var_writebacks(args_node, source, stack, ctx);
-                return result;
+                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                return first_error(result, written);
             }
             _ => {}
         }
@@ -990,42 +990,61 @@ pub(crate) fn eval_call_parts(
 
     ctx.stmt_position = statement;
     let result = dispatch_call_scoped(receiver.as_deref(), &proc_name, args, stack, ctx);
-    apply_var_writebacks(args_node, source, stack, ctx);
-    result
+    let written = apply_var_writebacks(args_node, source, stack, ctx);
+    first_error(result, written)
+}
+
+/// A call's result, or the error writing its `var` arguments back raised
+/// when the call itself succeeded.
+fn first_error(result: Eval, written: Option<Eval>) -> Eval {
+    match written {
+        Some(error) if !result.is_error() => error,
+        _ => result,
+    }
 }
 
 /// After a workspace procedure returns, propagate the final values of its
 /// `var` (by-reference) parameters back into the caller's argument variables.
 /// `dispatch_workspace_procedure` populates `ctx.var_writebacks` with
 /// `(arg_index, final_value)`; here we map each index to its argument
-/// expression and, when that argument is a plain variable reference (a valid
-/// lvalue), overwrite the caller's binding. Arguments that are not simple
-/// variables (literals, computed expressions, field access) are skipped —
-/// they have no single slot to write back to, matching AL, which only permits
-/// lvalues in `var` argument positions.
+/// expression and, when that argument is a plain variable reference or a
+/// record field (`Rec.Name`, or a bare field name in table code), write the
+/// value there. Other arguments (literals, computed expressions) are
+/// skipped: they have no slot to write back to, matching AL, which only
+/// permits lvalues in `var` argument positions. `Some` carries the error of
+/// a field write the field's type refuses.
+#[must_use]
 fn apply_var_writebacks(
     args_node: Option<Node<'_>>,
     source: &[u8],
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
-) {
+) -> Option<Eval> {
     if ctx.var_writebacks.is_empty() {
-        return;
+        return None;
     }
     let writebacks = std::mem::take(&mut ctx.var_writebacks);
-    let Some(an) = args_node else {
-        return;
-    };
+    let an = args_node?;
     let arg_nodes = arg_expr_nodes(an);
     for (idx, val) in writebacks {
-        if let Some(node) = arg_nodes.get(idx) {
-            if let Some(name) = simple_lvalue_name(*node, source) {
-                if let Some(slot) = stack.lookup_mut(&name) {
+        let Some(node) = arg_nodes.get(idx) else {
+            continue;
+        };
+        let written = match simple_lvalue_name(*node, source) {
+            Some(name) => match stack.lookup_mut(&name) {
+                Some(slot) => {
                     *slot = val;
+                    None
                 }
-            }
+                None => records::implicit_field_set(&name, &val, stack, ctx),
+            },
+            None => records::try_field_assign(*node, source, &val, stack, ctx),
+        };
+        if let Some(error @ Eval::Error(_)) = written {
+            return Some(error);
         }
     }
+    None
 }
 
 /// Return the lowercased variable name if `node` is a plain variable reference

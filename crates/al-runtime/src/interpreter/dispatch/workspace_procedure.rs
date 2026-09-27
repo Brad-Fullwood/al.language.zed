@@ -34,6 +34,8 @@ pub(super) fn dispatch_workspace_procedure(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
+    let instance = ctx.pending_instance.take();
+    let subscriber = std::mem::take(&mut ctx.pending_subscriber);
     // Recursion guard. Use `>=` (not `>`) so MAX_RECURSION_DEPTH is the
     // inclusive upper bound on simultaneous frames — without this, one
     // extra frame slipped through (101 instead of the documented 100).
@@ -45,7 +47,6 @@ pub(super) fn dispatch_workspace_procedure(
         ));
     }
 
-    let instance = ctx.pending_instance.take();
     let target_object = receiver
         .map(str::to_string)
         .or_else(|| stack.top().map(|frame| frame.object.clone()));
@@ -94,7 +95,14 @@ pub(super) fn dispatch_workspace_procedure(
                 path.display()
             ));
         };
-        let globals = globals_for_call(root, source, &object_name, instance, stack, ctx);
+        let globals = globals_for_call(
+            root,
+            source,
+            &object_name,
+            (instance, subscriber),
+            stack,
+            ctx,
+        );
 
         // Walk the tree to find a procedure_declaration with the matching name.
         // Iterative traversal (rule: no recursion).
@@ -396,11 +404,15 @@ enum Globals {
     Instance(u64, CallFrame),
 }
 
+/// Where a call of `object` finds its globals: on the instance `instance`
+/// names when set, and on a new instance when `subscriber` says the call runs
+/// an event subscriber, which Business Central runs "in its own codeunit
+/// instance" even while another instance of its codeunit is running.
 fn globals_for_call(
     object: tree_sitter::Node<'_>,
     source: &[u8],
     object_name: &str,
-    instance: Option<u64>,
+    (instance, subscriber): (Option<u64>, bool),
     stack: &ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Globals {
@@ -431,7 +443,7 @@ fn globals_for_call(
             });
             Globals::Instance(id, frame)
         }
-        None if stack.has_object_globals(object_name) => Globals::OnStack,
+        None if !subscriber && stack.has_object_globals(object_name) => Globals::OnStack,
         None => Globals::Fresh,
     }
 }

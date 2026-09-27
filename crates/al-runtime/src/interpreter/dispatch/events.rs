@@ -206,6 +206,7 @@ pub(crate) fn raise(
                 None => sender.cloned().unwrap_or(Value::Null),
             })
             .collect();
+        ctx.pending_subscriber = true;
         match dispatch_workspace_procedure(
             Some(&subscriber.object),
             &subscriber.procedure,

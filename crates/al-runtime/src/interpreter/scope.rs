@@ -133,6 +133,11 @@ impl ScopeStack {
         self.frames.last_mut()
     }
 
+    /// The frame at `index`, as [`Self::push`] returned it.
+    pub fn frame_mut(&mut self, index: usize) -> Option<&mut CallFrame> {
+        self.frames.get_mut(index)
+    }
+
     pub fn has_object_globals(&self, object: &str) -> bool {
         self.frames
             .iter()
