@@ -4785,3 +4785,66 @@ fn variables_named_after_keywords_read_and_write() {
     assert_eq!(ok(call("PassesVar")), Value::Text("xyz!|XY|XY".into()));
     assert_eq!(ok(call("BuiltinsStillWork")), Value::Integer(2));
 }
+
+const SIGNED_CASE_LABELS: &str = r#"codeunit 50286 "Signed Labels"
+{
+    procedure ByInteger(X: Integer): Integer
+    var
+        Limit: Integer;
+    begin
+        Limit := 7;
+        case X of
+            -1:
+                exit(1);
+            -2, 2:
+                exit(2);
+            -Limit:
+                exit(7);
+            else
+                exit(0);
+        end;
+    end;
+
+    procedure ByDecimal(D: Decimal): Integer
+    begin
+        case D of
+            -2.5:
+                exit(1);
+            2.5:
+                exit(2);
+        end;
+        exit(0);
+    end;
+}
+"#;
+
+/// A case label with a leading minus is one `signed_case_label` node,
+/// which `eval_expr` rejected as an unsupported expression kind.
+#[test]
+fn case_labels_with_a_leading_minus_match() {
+    let call = |proc: &str, arg: Value| {
+        run(
+            &[("/ws/Signed.al", SIGNED_CASE_LABELS)],
+            "Signed Labels",
+            proc,
+            vec![arg],
+        )
+    };
+    assert_eq!(ok(call("ByInteger", Value::Integer(-1))), Value::Integer(1));
+    assert_eq!(ok(call("ByInteger", Value::Integer(-2))), Value::Integer(2));
+    assert_eq!(ok(call("ByInteger", Value::Integer(2))), Value::Integer(2));
+    assert_eq!(ok(call("ByInteger", Value::Integer(-7))), Value::Integer(7));
+    assert_eq!(ok(call("ByInteger", Value::Integer(1))), Value::Integer(0));
+    assert_eq!(
+        ok(call("ByDecimal", Value::Decimal(dec!(-2.5)))),
+        Value::Integer(1)
+    );
+    assert_eq!(
+        ok(call("ByDecimal", Value::Decimal(dec!(2.5)))),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        ok(call("ByDecimal", Value::Decimal(dec!(-1.5)))),
+        Value::Integer(0)
+    );
+}

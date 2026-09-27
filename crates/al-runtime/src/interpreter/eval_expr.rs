@@ -176,6 +176,15 @@ fn eval_expr_inner(
             }
         }
         "unary_expression" => eval_unary(node, source, stack, ctx),
+        // `-1:` or `-2.5:` in a case: the grammar makes a label with a leading
+        // minus one token, so its text is evaluated as an expression.
+        "signed_case_label" => {
+            let text = utf8_text(node, source).unwrap_or_default().trim();
+            match indexing::eval_standalone_expression(text, stack, ctx) {
+                Ok(value) => Eval::Normal(value),
+                Err(error) => error,
+            }
+        }
         // Anything else: signal a clear error rather than silently
         // returning a default — failing loud is better than failing wrong.
         other => Eval::Error(error_info(format!("unsupported expression kind: {other}"))),
