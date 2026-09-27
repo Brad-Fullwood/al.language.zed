@@ -1,8 +1,10 @@
 //! The single entry point for a procedure call, and the order it tries.
 //!
-//! Stub catalogs first, then the inline builtins, then workspace procedures.
-//! An explicit receiver skips the builtin step, so a workspace procedure named
-//! like a builtin is still the one that runs.
+//! A call on a receiver tries the stub catalog of that codeunit, then table
+//! and workspace procedures. A bare call tries the inline builtins, then the
+//! procedures of the running object. A stub catalog answers only a call on its
+//! own codeunit, so a bare `Clear(X)` is the builtin, and a workspace
+//! procedure named like a builtin still runs when called on its object.
 
 use crate::interpreter::eval_error;
 use crate::interpreter::scope::{Eval, ScopeStack};
@@ -86,14 +88,6 @@ pub(crate) fn dispatch_call_scoped(
             return stub_fn(&args);
         }
     }
-    if receiver.is_none() {
-        for cat in stubs::CATALOGS {
-            if let Some(f) = (cat.resolve)(procedure) {
-                return f(&args);
-            }
-        }
-    }
-
     // Global builtins must never hijack an explicitly-qualified workspace
     // method with the same name (for example `Helper.Format(...)`).
     if receiver.is_none() {
@@ -297,6 +291,18 @@ pub(crate) fn dispatch_call_scoped(
                 ctx.last_error = None;
                 return Eval::Normal(Value::Empty);
             }
+            "clear" => {
+                let [value] = args.as_slice() else {
+                    return eval_error("Clear expects one variable");
+                };
+                return match cleared(value, ctx) {
+                    Ok(value) => {
+                        ctx.var_writebacks.push((0, value));
+                        Eval::Normal(Value::Empty)
+                    }
+                    Err(error) => eval_error(error),
+                };
+            }
             _ => {}
         }
     }
@@ -308,6 +314,67 @@ pub(crate) fn dispatch_call_scoped(
         };
     ctx.pending_instance = instance;
     dispatch_workspace_procedure(receiver, procedure, args, stack, ctx)
+}
+
+/// The value `Clear` leaves in a variable that holds `value`: its type's
+/// default. A record gets a new view, so its fields, filters and the table's
+/// globals go and the rows stay. A temporary record's rows go with its old
+/// view: Learn does not say whether Clear keeps them. A codeunit variable
+/// drops its instance ("only the reference to the codeunit is deleted"), and a
+/// JSON variable refers to a new empty node.
+fn cleared(value: &Value, ctx: &mut DispatchCtx) -> Result<Value, String> {
+    Ok(match value {
+        Value::Integer(_) => Value::Integer(0),
+        Value::BigInteger(_) => Value::BigInteger(0),
+        Value::Decimal(_) => Value::Decimal(Default::default()),
+        Value::Boolean(_) => Value::Boolean(false),
+        Value::Char(_) => Value::Char('\0'),
+        Value::Text(_) => Value::Text(String::new()),
+        Value::Code(_) => Value::Code(String::new()),
+        Value::TextBuilder(_) => Value::TextBuilder(String::new()),
+        Value::Date(_) => Value::Date(0),
+        Value::Time(_) => Value::Time(0),
+        Value::DateTime(_) => Value::DateTime(0),
+        Value::Duration(_) => Value::Duration(0),
+        Value::Guid(_) => Value::default_for("guid").unwrap_or(Value::Null),
+        // An enum or option at ordinal 0, named when it is shown.
+        Value::Option { type_name, .. } => Value::Option {
+            type_name: type_name.clone(),
+            member: String::new(),
+            ordinal: 0,
+        },
+        Value::Json(json) => crate::interpreter::json::cleared(json.kind),
+        Value::Record(record) => {
+            if let Some(handle) = record.handle {
+                ctx.record_globals.remove(&handle);
+            }
+            Value::Record(crate::interpreter::value::RecordValue {
+                handle: None,
+                ..record.clone()
+            })
+        }
+        Value::Codeunit { object_name, .. } => Value::Codeunit {
+            object_name: object_name.clone(),
+            instance: None,
+        },
+        Value::Variant(_) => Value::Variant(Box::new(Value::Null)),
+        Value::List(_) => Value::List(Vec::new()),
+        Value::Dict(_) => Value::Dict(Default::default()),
+        Value::Blob(_) => Value::Blob(Vec::new()),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| cleared(item, ctx))
+                .collect::<Result<_, _>>()?,
+        ),
+        Value::Null | Value::Empty => value.clone(),
+        other => {
+            return Err(format!(
+                "Clear: the local runtime does not clear a {} value",
+                other.type_name()
+            ))
+        }
+    })
 }
 
 /// Run a stub member that reads the interpreter context, which a context-free
@@ -380,6 +447,7 @@ pub fn supports_global_builtin(name: &str) -> bool {
             | "randomize"
             | "getlasterrortext"
             | "clearlasterror"
+            | "clear"
     )
 }
 
@@ -514,6 +582,7 @@ mod tests {
             "Randomize",
             "GetLastErrorText",
             "ClearLastError",
+            "Clear",
         ];
         for name in names {
             assert!(

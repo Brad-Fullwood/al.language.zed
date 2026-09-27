@@ -2177,3 +2177,54 @@ end;
         opens.reasons
     );
 }
+
+/// A bare call resolves against the runtime's builtins and the object's own
+/// procedures. A stub catalog answers only a call on its own codeunit, so a
+/// bare name that only a catalog knows has no local implementation. `Clear`
+/// counted as local only because the Library - Variable Storage catalog has a
+/// member of that name.
+#[test]
+fn bare_calls_resolve_against_builtins_and_not_stub_catalogs() {
+    let classify = |statement: &str| {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/BareCalls.Codeunit.al"),
+            format!(
+                r#"codeunit 50202 "Bare Call Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Calls()
+var
+    N: Integer;
+begin
+    N := 5;
+    {statement}
+end;
+}}"#
+            ),
+        );
+        classify_all(&workspace).unwrap().remove(0)
+    };
+    let cleared = classify("Clear(N);");
+    assert_eq!(
+        cleared.decision,
+        RoutingDecision::Interp,
+        "{:?}",
+        cleared.reasons
+    );
+    let stub_only = classify("N := RandInt(5);");
+    assert_eq!(
+        stub_only.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        stub_only.reasons
+    );
+    assert!(
+        stub_only.reasons.iter().any(|reason| reason
+            .message
+            .contains("calls global 'RandInt' that the local interpreter does not implement")),
+        "{:?}",
+        stub_only.reasons
+    );
+}

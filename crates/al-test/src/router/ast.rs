@@ -531,10 +531,11 @@ pub(super) fn classify_call(
         }
         // A bare global call is interpreter-safe only when the interpreter
         // actually implements it: a builtin from the shared catalog
-        // (`supports_global_builtin` is the single source of truth), a
-        // procedure of the same object (followed through the call graph), or
-        // a receiver-less native stub. Everything else has no local
-        // implementation and must route to LiveBc.
+        // (`supports_global_builtin` is the single source of truth) or a
+        // procedure of the same object (followed through the call graph).
+        // The runtime asks a stub catalog only about a call on its own
+        // codeunit. Everything else has no local implementation and must
+        // route to LiveBc.
         // In table code a bare record method acts on the implicit Rec.
         if al_runtime::interpreter::records::supports_record_method(&receiver)
             && workspace
@@ -573,13 +574,9 @@ pub(super) fn classify_call(
             return;
         }
         let is_builtin = al_runtime::interpreter::dispatch::supports_global_builtin(&receiver);
-        let is_same_object_procedure = is_builtin
-            || catalog.contains_key(&(object.to_ascii_lowercase(), receiver.to_ascii_lowercase()));
-        let is_stub = is_same_object_procedure
-            || al_runtime::stubs::CATALOGS
-                .iter()
-                .any(|catalog| (catalog.resolve)(&receiver).is_some());
-        if !is_builtin && !is_same_object_procedure && !is_stub {
+        let is_same_object_procedure =
+            catalog.contains_key(&(object.to_ascii_lowercase(), receiver.to_ascii_lowercase()));
+        if !is_builtin && !is_same_object_procedure {
             promote(
                 decision,
                 reasons,

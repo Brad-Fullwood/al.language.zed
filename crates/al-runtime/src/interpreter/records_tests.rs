@@ -5152,3 +5152,162 @@ fn table_globals_are_kept_with_the_record_variable() {
         Value::Text("12|strict insert".into())
     );
 }
+
+const CLEAR_COUNTER: &str = r#"codeunit 50424 "Clear Counter"
+{
+    procedure Bump()
+    begin
+        Count += 1;
+    end;
+
+    procedure Get(): Integer
+    begin
+        exit(Count);
+    end;
+
+    var
+        Count: Integer;
+}
+"#;
+
+const CLEAR_PROBE: &str = r#"codeunit 50425 "Clear Probe"
+{
+    procedure ClearsScalars(): Text
+    var
+        N: Integer;
+        D: Decimal;
+        T: Text;
+        C: Code[10];
+        B: Boolean;
+        G: Guid;
+    begin
+        N := 5;
+        D := 1.5;
+        T := 'x';
+        C := 'Y';
+        B := true;
+        G := CreateGuid();
+        Clear(N);
+        Clear(D);
+        Clear(T);
+        Clear(C);
+        Clear(B);
+        Clear(G);
+        if N <> 0 then
+            exit('N');
+        if D <> 0 then
+            exit('D');
+        if T <> '' then
+            exit('T');
+        if C <> '' then
+            exit('C');
+        if B then
+            exit('B');
+        if not IsNullGuid(G) then
+            exit('G');
+        exit('cleared');
+    end;
+
+    procedure ClearsCodeunitInstance(): Integer
+    var
+        C: Codeunit "Clear Counter";
+        D: Codeunit "Clear Counter";
+    begin
+        C.Bump();
+        C.Bump();
+        D := C;
+        Clear(C);
+        C.Bump();
+        exit(10 * C.Get() + D.Get());
+    end;
+
+    procedure KeepsTheVariableStorageQueue(): Integer
+    var
+        LibraryVariableStorage: Codeunit "Library - Variable Storage";
+        N: Integer;
+    begin
+        LibraryVariableStorage.Enqueue(7);
+        N := 5;
+        Clear(N);
+        exit(LibraryVariableStorage.DequeueInteger() + N);
+    end;
+
+    procedure ClearsARecord(): Integer
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.Insert();
+        Member.SetRange("No.", 'Z');
+        Member.SetStrict();
+        Clear(Member);
+        if Member."No." <> '' then
+            exit(-1);
+        Member."No." := 'B';
+        Member.Insert(true);
+        exit(Member.Count());
+    end;
+
+    procedure ClearsAField(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Member.Stamp := 'S';
+        Clear(Member.Stamp);
+        exit('[' + Member.Stamp + ']');
+    end;
+
+    procedure EvaluatesAField(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Evaluate(Member.Stamp, 'abc');
+        exit(Member.Stamp);
+    end;
+
+    procedure OwnProcedureNamedLikeAStub(): Text
+    begin
+        exit(AreEqual());
+    end;
+
+    local procedure AreEqual(): Text
+    begin
+        exit('own');
+    end;
+}
+"#;
+
+/// `Clear(X)` resolved to the Library - Variable Storage stub's `Clear`: it
+/// reset nothing and emptied the test's variable storage queue. It now resets
+/// the variable to its type's default, and a stub catalog answers only a call
+/// on its own codeunit.
+#[test]
+fn clear_resets_the_variable_to_its_default() {
+    let call = |proc: &str| {
+        ok(run(
+            &[
+                ("/ws/KeptMember.al", KEPT_MEMBER),
+                ("/ws/KeptLog.al", KEPT_LOG),
+                ("/ws/ClearCounter.al", CLEAR_COUNTER),
+                ("/ws/ClearProbe.al", CLEAR_PROBE),
+            ],
+            "Clear Probe",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(call("ClearsScalars"), Value::Text("cleared".into()));
+    // "Only the reference to the codeunit is deleted": C gets a new instance
+    // (1) and D keeps the old one (2).
+    assert_eq!(call("ClearsCodeunitInstance"), Value::Integer(12));
+    assert_eq!(call("KeepsTheVariableStorageQueue"), Value::Integer(7));
+    // Fields, filters and the table's globals go, the rows stay.
+    assert_eq!(call("ClearsARecord"), Value::Integer(2));
+    // A record field passed to a `var` parameter takes the value back.
+    assert_eq!(call("ClearsAField"), Value::Text("[]".into()));
+    assert_eq!(call("EvaluatesAField"), Value::Text("abc".into()));
+    assert_eq!(
+        call("OwnProcedureNamedLikeAStub"),
+        Value::Text("own".into())
+    );
+}

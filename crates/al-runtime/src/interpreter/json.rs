@@ -1197,6 +1197,15 @@ fn run(
     }
 }
 
+/// What `Clear` leaves in a JSON variable of `kind`: a reference to a new
+/// empty node, so copies of the old reference keep the old node.
+pub(crate) fn cleared(kind: JsonKind) -> Value {
+    Value::Json(JsonRef {
+        kind,
+        handle: Some(fresh_id()),
+    })
+}
+
 /// The zero value of a declared JSON type (`JsonObject`, ...).
 pub(crate) fn default_for(type_name: &str) -> Option<Value> {
     let kind = match type_name.to_ascii_lowercase().as_str() {
