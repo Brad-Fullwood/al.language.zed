@@ -2033,3 +2033,150 @@ fn a_linked_probing_path_is_listed_with_where_it_resolves() {
     link(root, "tools", second.path().to_str().unwrap());
     assert_eq!(decide(root).unwrap().state, TrustState::Stale);
 }
+
+/// `./tools` reads as a folder inside the project. When a link the repository
+/// ships carried it outside, the record held the text alone, so `trust
+/// --show` gave no sign of the link and the files at its target could change
+/// under a record that still matched.
+#[cfg(unix)]
+#[test]
+fn a_path_through_a_link_out_of_the_project_is_recorded_where_it_resolves() {
+    let _config = ScratchConfig::new();
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    write_file(first.path(), "TeamCop.dll", b"reviewed analyzer");
+    write_file(second.path(), "TeamCop.dll", b"other analyzer");
+    let project = project_with_settings(
+        r#"{"al.assemblyProbingPaths": ["./tools"], "al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#,
+    );
+    let root = project.path();
+    link(root, "tools", first.path().to_str().unwrap());
+
+    let granted = grant(root).unwrap();
+    let target = first.path().canonicalize().unwrap().display().to_string();
+    for key in ["al.assemblyProbingPaths", "al.codeAnalyzers"] {
+        let setting = granted
+            .privileged
+            .iter()
+            .find(|setting| setting.key == key && setting.source == ".vscode/settings.json")
+            .unwrap();
+        let line = setting.display_line();
+        assert!(line.contains(&format!("resolves to {target}")), "{line}");
+        assert!(line.contains("sha256:"), "{line}");
+    }
+
+    std::fs::remove_file(root.join("tools")).unwrap();
+    link(root, "tools", second.path().to_str().unwrap());
+    assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+
+    grant(root).unwrap();
+    let found = crate::analyzers::CustomAnalyzerSearch::new(root, &[PathBuf::from("./tools")])
+        .resolve(TEAM_COP)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        found,
+        second.path().join("TeamCop.dll").canonicalize().unwrap()
+    );
+}
+
+/// A file alc probes at the link's target, beside no analyzer the record
+/// hashes, changed under a record that still matched.
+#[cfg(unix)]
+#[test]
+fn a_replaced_file_under_a_linked_probing_path_makes_the_record_stale() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    write_file(
+        outside.path(),
+        "deps/TeamCop.Rules.dll",
+        b"reviewed dependency",
+    );
+    let project = project_with_settings(r#"{"al.assemblyProbingPaths": ["./tools"]}"#);
+    let root = project.path();
+    link(root, "tools", outside.path().to_str().unwrap());
+    grant(root).unwrap();
+
+    write_file(
+        outside.path(),
+        "deps/TeamCop.Rules.dll",
+        b"replaced by the other user",
+    );
+
+    assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+}
+
+/// The muxer loads `host/fxr` and `shared` beside the file it resolves to,
+/// wherever a link carries it.
+#[cfg(unix)]
+#[test]
+fn a_dotnet_through_a_link_out_of_the_project_is_hashed_with_its_runtime() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    write_file(outside.path(), "dotnet/dotnet", b"reviewed muxer");
+    write_file(
+        outside.path(),
+        "dotnet/host/fxr/8.0.0/libhostfxr.so",
+        b"reviewed hostfxr",
+    );
+    let project = project_with_settings(r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#);
+    let root = project.path();
+    link(root, "tools", outside.path().to_str().unwrap());
+
+    let granted = grant(root).unwrap();
+    let dotnet = granted
+        .privileged
+        .iter()
+        .find(|setting| setting.key == "al.dotnetPath")
+        .unwrap();
+    let muxer = outside.path().join("dotnet/dotnet").canonicalize().unwrap();
+    assert!(
+        dotnet
+            .value
+            .contains(&format!("resolves to {}", muxer.display())),
+        "{}",
+        dotnet.value
+    );
+    assert!(dotnet.value.contains("its runtime"), "{}", dotnet.value);
+
+    write_file(
+        outside.path(),
+        "dotnet/host/fxr/8.0.0/libhostfxr.so",
+        b"replaced by the other user",
+    );
+    assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+}
+
+/// The check before a spawn skipped a host whose resolved path was outside
+/// the project, so a runtime replaced at a link's target ran at the next
+/// build even though the record no longer matched.
+#[cfg(unix)]
+#[test]
+fn a_replaced_runtime_beside_a_linked_dotnet_is_dropped_before_the_next_spawn() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    write_file(outside.path(), "dotnet/dotnet", b"reviewed muxer");
+    write_file(
+        outside.path(),
+        "dotnet/host/fxr/8.0.0/libhostfxr.so",
+        b"reviewed hostfxr",
+    );
+    let project = project_with_settings(r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#);
+    let root = project.path();
+    link(root, "tools", outside.path().to_str().unwrap());
+    let dotnet = root.join("tools/dotnet/dotnet");
+    let _dotnet = EnvVar::set(crate::toolchain::DOTNET_PATH_ENV, &dotnet);
+    grant(root).unwrap();
+    assert_eq!(enforce_dotnet_path_before_spawn(root), None);
+
+    write_file(
+        outside.path(),
+        "dotnet/host/fxr/8.0.0/libhostfxr.so",
+        b"replaced by the other user",
+    );
+
+    let advisory = enforce_dotnet_path_before_spawn(root)
+        .expect("a runtime the record no longer matches is dropped");
+    assert!(advisory.contains("changed since"), "{advisory}");
+    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+}

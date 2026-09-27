@@ -157,14 +157,15 @@ while the language server runs takes effect at the next settings change or resta
 debug adapter is a new process for each session and decides at launch.
 
 The fingerprint stamps the `dotnet` muxer and not the runtime beside it, which the record
-hashes. So a `dotnet` inside the project is decided again before each spawn: every alc build
-(the daemon's, the language server's, the debug adapter's launch compile, publish and
-`al-explorer build`) and the `--official-lsp` start. A `git pull` that replaces
-`host/fxr/<version>/libhostfxr.so` makes the project stale, `AL_DOTNET_PATH` is dropped, and
-the build runs `dotnet` from `PATH`. Before, the process kept the variable until the
-fingerprint moved, and the next build ran the new library. When a settings file stops parsing
-there is nothing to decide with, so a `dotnet` inside the project is dropped the same way, with
-a message naming the file. A `dotnet` outside the project costs one path check.
+hashes. So a `dotnet` the project supplies, inside it or through a link written inside it, is
+decided again before each spawn: every alc build (the daemon's, the language server's, the
+debug adapter's launch compile, publish and `al-explorer build`) and the `--official-lsp`
+start. A `git pull` that replaces `host/fxr/<version>/libhostfxr.so` makes the project stale,
+`AL_DOTNET_PATH` is dropped, and the build runs `dotnet` from `PATH`. Before, the process kept
+the variable until the fingerprint moved, and the next build ran the new library. When a
+settings file stops parsing there is nothing to decide with, so such a `dotnet` is dropped the
+same way, with a message naming the file. A `dotnet` written outside the project costs one
+path check.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
@@ -186,8 +187,15 @@ every file under its `host` and `shared` directories, where it finds `hostfxr` a
 framework. `trust --show` prints the resolved paths and the hashes. A commit that replaces one
 of those files, adds one where the record saw none, or points a link somewhere else makes the
 record `stale`. An analyzer at the project root puts every file in the project into its
-record, so keep an analyzer in a directory of its own. A path outside the project is the
-user's machine and is recorded as written.
+record, so keep an analyzer in a directory of its own. A path written outside the project is
+the user's machine and is recorded as written.
+
+A path written inside the project that a link carries outside it is resolved and hashed the
+same way. With `"al.assemblyProbingPaths": ["./tools"]` and `tools` a link to a directory
+beside the clone, `trust --show` prints `./tools (resolves to /home/you/src/shared-tools; ...)`
+with the hash of every file there, and a change to those files or a commit that points the
+link somewhere else makes the record `stale`. Before, the record held `./tools` as text, which
+reads as a folder inside the project, and the files at the target could change under it.
 
 `al.compilationOptions` is recorded as text, so it cannot vouch for a file an entry names.
 An entry that names a file or directory alc loads from is refused: `/analyzer:` and its
