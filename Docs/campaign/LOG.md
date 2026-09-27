@@ -516,3 +516,26 @@ Append-only. Newest entry last.
 - Superproject gates on b3d5121b (the new parser through the path dependency, the interactive
   session's List and Dictionary work, the plugin fixes): fmt, release, both clippy runs and rustdoc
   clean, 94 suites, 5304 passed, 0 failed, 10 ignored. Pushed.
+
+## 2026-09-27 13:05 BST: round 9 fixes and round 10 review merged, grammar at 142aba6, five agents out
+
+- The 07:49 session died with five agents dead and nothing merged after 68f0bbe8. Recovered:
+  the round 9 fix branch was complete (7 of 7 plus the `-5..-2` interpreter test, 217af726) and
+  is merged (52d07278). The round 10 review (`findings/r10-session-review.md`) had all nine
+  coverage items ticked and 11 findings, 1 high, 5 medium, 5 low, but no completion block: merged
+  (817f137f), block added (c896c10c), its 1,569 lines of scratch tests saved as
+  `.campaign/r10-scratch-tests.patch`. The high finding: since List, Dictionary and JSON values
+  became handles, `A, B: List of [Integer]` binds one list to both names.
+- Grammar corpus round 3 (`findings/grammar-corpus-r3.md`): seven commits on the grammar branch,
+  six corpus files, GR3-1 fixed in the grammar (`X:=-1`, `A*-1` and `X<-1` lexed the sign into the
+  operator; a sign now starts a unary expression after any operator). Grammar gates on 142aba6
+  green: 119 of 119 corpus tests, 46,389 of 46,389 repository files, crate 20, generator 16,
+  package, wasm and drift clean. Grammar branch fast-forwarded and pushed, pointer and
+  `extension.toml` rev moved (4c429ac5). GR3-2 (indexing a keyword-named variable) and GR3-3
+  (fourteen node kinds and three field names the interpreter matches that the grammar does not
+  produce) go to the round 10 fix agent B.
+- Dispatched 13:02: round 10 fixes A (collections and references, Opus), B (dispatch, expressions,
+  GR3-2, GR3-3, Opus), text (plugin prose and comments, Sonnet), the mutants continuation on the
+  formatting module (Sonnet), and the docs re-check after the round 9 merges (Opus). Three idle
+  worktrees were repointed onto the new branches to reuse their build directories.
+- Superproject gates on 4c429ac5 in progress.
