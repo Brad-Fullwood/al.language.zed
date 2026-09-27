@@ -56,6 +56,7 @@ None found so far.
 | `al-runtime/src/mock/filter.rs` | 112 | 97 | 1 | 9 | 5 |
 | `al-syntax/src/lint.rs` | 152 | 128 | 15 | 7 | 2 |
 | `al-symbols/src/composition.rs` | 11 | 9 | 0 | 2 | 0 |
+| `al-test/src/output/cobertura.rs` | 50 | 49 | 0 | 1 | 0 |
 
 ## Runs
 
@@ -401,3 +402,72 @@ left uncommitted and this run picked up, plus the pre-existing composition tests
 viable mutant on the two functions in this file: the workspace-over-package tiebreak in
 `get_composed`, the `!=`/`==` equality checks that route extensions to the right kind, and
 the `is_workspace_entry` boolean itself.
+
+### al-test: `crates/al-test/src/output/cobertura.rs`
+
+```bash
+cargo mutants --in-place -p al-test --file crates/al-test/src/output/cobertura.rs
+```
+
+50 mutants in 4 minutes: 28 caught, 21 missed, 1 unviable, 0 timeout. The unviable mutant
+replaces `group_by_object`, which returns `Vec<ClassEntry>`, with `vec![Default::default()]`;
+`ClassEntry` does not implement `Default`, so it does not compile.
+
+`missed.txt`:
+
+```text
+crates/al-test/src/output/cobertura.rs:173:66: replace > with == in write_cobertura
+crates/al-test/src/output/cobertura.rs:250:30: replace += with *= in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:251:32: replace += with *= in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:251:65: replace + with - in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:251:65: replace + with * in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:251:60: replace > with == in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:251:60: replace > with < in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:251:60: replace > with >= in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:251:92: replace > with == in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:251:92: replace > with < in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:251:92: replace > with >= in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:350:55: replace + with - in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:350:55: replace + with * in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:350:50: replace > with == in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:350:50: replace > with < in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:350:50: replace > with >= in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:350:82: replace > with == in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:350:82: replace > with < in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:350:82: replace > with >= in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:359:40: replace * with + in write_cobertura_dynamic
+crates/al-test/src/output/cobertura.rs:368:50: replace * with + in write_cobertura_dynamic
+```
+
+- `cobertura.rs:173`, `l.hits > 0` to `== 0` in the per-class line-rate: test added
+  `per_class_line_rate_counts_covered_procedures_not_untested_ones`. Every existing test
+  gave a class exactly one covered and one untested procedure, so counting hits `> 0` and
+  counting hits `== 0` produced the same number by coincidence. The new test gives one
+  class two covered procedures and one untested one, so the two counts differ (2 vs. 1).
+- `cobertura.rs:250` and `251`, `+=` to `*=` on `branch_total` and `branch_covered`; `251:65`,
+  `+` to `-`/`*` summing the two `usize::from(bool)` terms; `251:60` and `251:92`, `> 0` to
+  `== 0`/`< 0`/`>= 0` on `then_taken` and `else_taken`: test added
+  `dynamic_branch_rate_and_condition_coverage_use_real_then_and_else_counts`. Every existing
+  dynamic-coverage test drove at most one branch, so a `*=` accumulator starting at 0 stayed
+  0 either way, and a single `then_taken`/`else_taken` pair could not separate `> 0` from its
+  three neighbors (a zero-vs-zero or nonzero-vs-nonzero pair agrees with more than one
+  operator). The new test uses three branches, one with only its else side taken, one with
+  only its then side, one with both, which pins every operator to a distinct branch-rate.
+- `cobertura.rs:350:55`, `350:50`, `350:82`: the same three defects, one level down, in the
+  per-line `condition-coverage` computed inside the executed-lines loop rather than the
+  file-level accumulator above. Same test, same three branches, with assertions tied to
+  each line's own `number="…"` attribute so a mutant that moves the right answer to a
+  different line still fails.
+- `cobertura.rs:359`, `paths_taken * 100` to `+ 100` computing `condition-coverage`'s
+  percentage: caught by the same test's `100% (2/2)` assertion on line 12. The `* 100`-to-
+  `/ 100` mutant at the same column was already caught; the existing
+  `dynamic_cobertura_uses_all_named_case_paths_as_denominator` test used a paths_taken/count
+  pair where `(n * 100) / d` and `(n + 100) / d` round to the same integer, so only the
+  division swap showed.
+- `cobertura.rs:368`, `mcdc_covered * 100` to `+ 100` computing `mcdc-coverage`: test added
+  `dynamic_mcdc_coverage_percentage_is_a_product_not_a_sum`. The existing mcdc test covered
+  one of two conditions (pct 50), where `* 100` and `+ 100` again round to the same integer
+  under integer division; the new test covers both conditions, where the two operators
+  read 100% and 51%.
+
+Re-run after the three new tests: 50 mutants, 49 caught, 1 unviable, 0 missed.
