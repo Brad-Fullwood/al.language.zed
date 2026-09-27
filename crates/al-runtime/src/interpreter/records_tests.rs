@@ -4679,3 +4679,109 @@ fn table_publisher_passes_its_record_as_sender() {
     );
     assert_eq!(ok(result), Value::Text("stamped P1 5".into()));
 }
+
+const KEYWORD_NAMED_VARIABLES: &str = r#"table 50283 "Keyword Named"
+{
+    fields
+    {
+        field(1; Code; Code[20]) { }
+        field(2; Description; Text[50]) { }
+        field(3; Value; Text[50])
+        {
+            trigger OnValidate()
+            begin
+                Description := Code + '=' + Value;
+            end;
+        }
+    }
+    keys
+    {
+        key(PK; Code) { }
+    }
+}
+
+enum 50285 "Keyword Kind"
+{
+    value(0; First) { }
+    value(1; Second) { }
+}
+
+codeunit 50284 "Keyword Probe"
+{
+    procedure Reads(): Text
+    var
+        Value: Text;
+        Code: Code[10];
+        Text: Text;
+        Date: Date;
+        Time: Time;
+        Version: Integer;
+        File: Text;
+        Page: Integer;
+        Report: TextBuilder;
+    begin
+        Value := 'abc';
+        Code := Value;
+        Text := Value + Code;
+        Date := 20240101D;
+        Time := 120000T;
+        Report.Append(Value);
+        Version := Report.Length + StrLen(Code);
+        File := Value.ToUpper();
+        Page := Version * 2;
+        exit(Text + '|' + Format(Date, 0, 9) + '|' + Format(Time, 0, 9) + '|' + Format(Version) + '|' + File + '|' + Format(Page));
+    end;
+
+    procedure Parameters(Value: Text; var Code: Code[10]): Text
+    begin
+        Code := CopyStr(Value, 1, 2);
+        Append(Value);
+        exit(Value + '|' + Code);
+    end;
+
+    procedure PassesVar(): Text
+    var
+        Code: Code[10];
+    begin
+        exit(Parameters('xyz', Code) + '|' + Code);
+    end;
+
+    local procedure Append(var Value: Text)
+    begin
+        Value += '!';
+    end;
+
+    procedure BuiltinsStillWork(): Integer
+    var
+        Keyed: Record "Keyword Named";
+    begin
+        Keyed.Code := 'K1';
+        Keyed.Validate(Value, 'v1');
+        if Keyed.Description <> 'K1=v1' then
+            Error('bare field names read %1', Keyed.Description);
+        exit(Enum::"Keyword Kind"::Second.AsInteger() + Enum::"Keyword Kind".FromInteger(1).AsInteger());
+    end;
+}
+"#;
+
+/// A variable, parameter or field named `Value`, `Code`, `Text`, `Date`,
+/// `Time`, `Version`, `File`, `Page` or `Report` parses as an object or type
+/// keyword node. Every read failed with `unsupported expression kind`.
+/// `Report.Length` also calls a method without its parentheses.
+#[test]
+fn variables_named_after_keywords_read_and_write() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/Keyword.al", KEYWORD_NAMED_VARIABLES)],
+            "Keyword Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("Reads")),
+        Value::Text("abcABC|2024-01-01|12:00:00|6|ABC|12".into())
+    );
+    assert_eq!(ok(call("PassesVar")), Value::Text("xyz!|XY|XY".into()));
+    assert_eq!(ok(call("BuiltinsStillWork")), Value::Integer(2));
+}

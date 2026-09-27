@@ -156,6 +156,25 @@ fn eval_expr_inner(
             }
             None => Eval::Error(error_info("invalid identifier text")),
         },
+        // A variable, parameter or field named `Value`, `Code`, `Page` or
+        // another object or type word parses as a keyword node. It reads as
+        // a name when something binds it: `Page.RunModal` and `Database::X`
+        // receivers are handled before they reach here.
+        "object_keyword" | "type_keyword" => {
+            let name = utf8_text(node, source).unwrap_or_default();
+            match stack.lookup(name) {
+                Some(value) => Eval::Normal(value.clone()),
+                None => niladic_clock_builtin(name, ctx)
+                    .map(Eval::Normal)
+                    .or_else(|| records::implicit_field_get(name, stack, ctx))
+                    .unwrap_or_else(|| {
+                        Eval::Error(error_info(format!(
+                            "unsupported expression kind: {}",
+                            node.kind()
+                        )))
+                    }),
+            }
+        }
         "unary_expression" => eval_unary(node, source, stack, ctx),
         // Anything else: signal a clear error rather than silently
         // returning a default — failing loud is better than failing wrong.
@@ -526,10 +545,25 @@ fn eval_postfix(
     // Record field read: `Rec."Field"` (a `member_suffix`, not a call) where the
     // receiver resolves to a bound `Value::Record`.
     if let Some((recv, field)) = records::record_field_access(node, source) {
-        if matches!(stack.lookup(&recv), Some(Value::Record(_))) {
-            if let Some((table, handle)) = records::record_binding(&recv, stack, ctx) {
-                return records::field_get(&table, handle, &field, ctx);
+        match stack.lookup(&recv) {
+            Some(Value::Record(_)) => {
+                if let Some((table, handle)) = records::record_binding(&recv, stack, ctx) {
+                    return records::field_get(&table, handle, &field, ctx);
+                }
             }
+            // A method with no arguments may drop its parentheses:
+            // `S.Length`, `Names.Count`.
+            Some(_) if node.named_child_count() == 2 => {
+                return crate::interpreter::eval_stmt::eval_call_parts(
+                    Some(&recv),
+                    &field,
+                    None,
+                    source,
+                    stack,
+                    ctx,
+                );
+            }
+            _ => {}
         }
     }
 

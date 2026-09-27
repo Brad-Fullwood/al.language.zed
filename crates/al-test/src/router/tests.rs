@@ -1994,3 +1994,65 @@ fn rename_with_a_conditional_relation_to_the_table_routes_to_live_bc() {
         );
     }
 }
+
+/// A variable named `Page` or `Report` parses as an object keyword. The
+/// router took `Page := ...` for the platform's Page and `Report.Append`
+/// for a report call, and sent the test to live BC.
+#[test]
+fn variables_named_after_object_keywords_stay_local() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Kw.Codeunit.al"),
+        r#"codeunit 50300 "Kw Tests"
+{
+Subtype = Test;
+[Test]
+procedure Reads()
+var
+    Value: Text;
+    Code: Code[10];
+    Report: TextBuilder;
+    Page: Integer;
+begin
+    Value := 'abc';
+    Code := Value;
+    Report.Append(Value);
+    Page := Report.Length + StrLen(Code);
+    if Value.ToUpper() <> Code then
+        Error('x');
+end;
+
+[Test]
+procedure OpensAPage()
+begin
+    Page.RunModal(0);
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    let reads = results
+        .iter()
+        .find(|result| result.method_name == "Reads")
+        .expect("Reads classification");
+    assert!(
+        !reads
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("Page") || reason.message.contains("Report")),
+        "{:?}",
+        reads.reasons
+    );
+    let opens = results
+        .iter()
+        .find(|result| result.method_name == "OpensAPage")
+        .expect("OpensAPage classification");
+    assert!(
+        opens
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("calls Page.RunModal")),
+        "{:?}",
+        opens.reasons
+    );
+}

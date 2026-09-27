@@ -427,6 +427,13 @@ pub(super) fn classify_call(
         return;
     };
     let receiver = primary.utf8_text(source).unwrap_or("").unquote_identifier();
+    // A variable or parameter named `Page`, `Report` or `Codeunit` is not
+    // the platform object of that name.
+    let declared = || {
+        resolver
+            .resolve_type(&receiver, syntax_position(primary, source))
+            .is_some()
+    };
 
     // AL permits parameterless built-ins as statements without parentheses
     // (`Commit;`). In that shape the postfix expression has no call suffix.
@@ -434,6 +441,7 @@ pub(super) fn classify_call(
         && PLATFORM_GLOBALS
             .iter()
             .any(|global| receiver.eq_ignore_ascii_case(global))
+        && !declared()
     {
         promote(
             decision,
@@ -630,7 +638,8 @@ pub(super) fn classify_call(
     if matches!(
         receiver.to_ascii_lowercase().as_str(),
         "codeunit" | "page" | "report" | "xmlport"
-    ) {
+    ) && !declared()
+    {
         promote(
             decision,
             reasons,
