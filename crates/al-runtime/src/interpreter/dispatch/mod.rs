@@ -208,9 +208,9 @@ pub struct DispatchCtx {
     /// through a codeunit variable and taken by the dispatcher.
     #[doc(hidden)]
     pub pending_instance: Option<u64>,
-    /// The call being dispatched runs an event subscriber, which gets an
-    /// instance of its codeunit of its own. Set by `events::raise` and taken
-    /// by the dispatcher.
+    /// The call being dispatched runs an event subscriber, which runs on a
+    /// new instance of its codeunit. Set by `events::raise` and taken by the
+    /// dispatcher.
     #[doc(hidden)]
     pub pending_subscriber: bool,
     /// A table's globals as a record variable holds them, by the variable's
