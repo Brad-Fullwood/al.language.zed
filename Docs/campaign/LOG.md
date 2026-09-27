@@ -625,3 +625,25 @@ Append-only. Newest entry last.
   the daemon kept a stale `app.json` in memory after an edit on disk.
 - Gates on b2c38e6a: 93 suites, 5352 passed, 0 failed. Pushed. Still out: mutants (formatting module), security round 6, the
   round 11 plugin and text fixes.
+
+## 2026-09-27 17:58 BST: session resumed, three stray branches merged, six agents out
+
+- The 12:48 session ended after its 13:46 push with six agents still out. `campaign/fix-r11-text`
+  was complete: merged (6532618e), round 11 is 7 of 7 fixed. `plugin/tests/al-fetch-release-test.sh`
+  passes its four scenarios on the merge.
+- Security round 6 review had items 1 to 4 ticked and SEC6-1 to SEC6-5 committed, scratch tests
+  uncommitted: saved as `.campaign/r6-scratch-tests.patch`, merged (a4d45426). Items 2 and 3 hold
+  with no finding (the DAP host binds keys with Newtonsoft's ordinal-ignore-case rule, checked with a
+  .NET 10 probe against the extension's own assemblies, and the summary store refuses links, other
+  owners and group-writable entries). SEC6-1 is medium: a `.netpackages` or `packages` link to a
+  directory outside the project loads an analyzer the record does not list. SEC6-3 and SEC6-4:
+  cyclic lists abort or hang the daemon from an untrusted test run. SEC6-5: no memory limit.
+- The mutants agent's uncommitted `passes.rs` tests pass (35 in the module) and were committed
+  (e7466885). Six proptest seeds from its mutant runs pass on the real code and were discarded.
+  `campaign/test-mutants` merged (7b607e40): tests for `indent.rs`, `text.rs`, `range.rs`, `passes.rs`,
+  `composition.rs` and `cobertura.rs`.
+- `campaign/slop-splits-4` had no commits: deleted, the split re-queued behind the runtime fixes.
+- Removed the three merged worktrees (`agent-docs`, `agent-fix-r9`, `agent-sec5`): 34 GB free.
+- Dispatched six agents: SEC6-1 and SEC6-2 (trust), SEC6-3 to SEC6-5 (runtime), security round 6
+  items 5 to 7, round 12 review over `4c429ac5..7b607e40`, the daemon `app.json` reload, and the
+  mutants formatting run. Gates on 7b607e40 in progress.

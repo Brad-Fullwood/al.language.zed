@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 13:46 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 18:00 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,41 +8,40 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Session 2026-09-27 12:48 BST (headless, Fable orchestrator). The 07:49 session died with five
-agents dead and nothing merged since 68f0bbe8. Recovered at 12:50: the round 9 fix branch was
-complete (7 of 7 fixed plus the `-5..-2` interpreter test, 217af726) and is merged (52d07278). The
-round 10 review had all nine coverage items ticked and 11 findings but no completion block: merged
-(817f137f), block added (c896c10c), scratch tests saved as `.campaign/r10-scratch-tests.patch`.
-Grammar corpus round 3 had seven commits on `campaign/gr-corpus-r3` (six corpus files, GR3-1 fixed)
-and its findings file uncommitted in the main checkout: grammar gates green (119 corpus tests,
-46,389 of 46,389 files, crate 20, generator 16, package, wasm, drift), grammar branch
-fast-forwarded to 142aba6 and pushed, pointer and `extension.toml` rev moved (4c429ac5). The
-mutants agent had uncommitted `indent.rs` tests. `campaign/fix-r5-security` was already merged.
+Session 2026-09-27 17:44 BST (headless, Fable orchestrator). The 12:48 session ended after its
+13:46 push with six agents out. Recovered at 17:50: `campaign/fix-r11-text` was complete (R11-PLUGIN-1
+fixed, R11-TEXT-1 fixed for its files) and is merged (6532618e), so round 11 is 7 of 7 fixed.
+Security round 6 had coverage items 1 to 4 ticked and five findings (SEC6-1 to SEC6-5) committed, with
+its scratch tests uncommitted: saved as `.campaign/r6-scratch-tests.patch`, branch merged (a4d45426).
+The mutants agent had committed tests for `indent.rs`, `text.rs` and `range.rs` and left the
+`passes.rs` tests uncommitted: they pass (35 in the module), committed (e7466885), the six proptest
+seeds its mutant runs left in `property_formatting.proptest-regressions` pass on the real code and
+were discarded, branch merged (7b607e40). `campaign/slop-splits-4` had no commits and an empty
+worktree: branch deleted, the split is re-queued. Three merged worktrees removed (34 GB free).
 
-Superproject gates on 4c429ac5 green (92 suites, 5331 passed, 0 failed), pushed 13:12.
+Gates on 7b607e40 in progress.
 
-Merged 13:08: `campaign/fix-r10-text` (9a364d46, R10-PLUGIN-1 and R10-TEXT-1), `campaign/docs-recheck-3`
-(aaa3ca37, 13 claims corrected in six docs, `findings/docs-review.md` re-check section), and
-`campaign/fix-r10-a` (19a7cae9, R10-REF-1, R10-REF-2, R10-DICT-1, R10-LIST-1, R10-LIST-2: each
-declared name and array element gets its own List, Dictionary or JSON value, TextBuilder is a
-reference, Dictionary keys convert to the declared key type, the `var` forms of `List.Get`,
-`List.Set` and `Dictionary.Set` run locally, `RemoveRange` returns false when used, `AddRange`
-picks its overload by the declared element type). Gates on 19a7cae9 green (92 suites, 5336 passed, 0 failed). Merged 13:21: `campaign/fix-r10-b`
-(85426311, no conflicts: R10-RT-2, R10-EV-1, R10-RT-1, R10-KW-1, GR3-2, GR3-3: overloads chosen by
-the call's arguments, a codeunit publisher's sender is the running instance, quoted names read,
-record methods without parentheses run, keyword-named variables index, fourteen dead node kinds
-and three dead field names removed with a guard test in `al-test/tests/node_kind_literals.rs`).
-Gates run on 85426311.
+Agents in flight (dispatched 17:58):
 
-Agents in flight (dispatched 12:58 unless noted):
+- Security round 6 fixes, trust (SEC6-1, SEC6-2), Opus: `.claude/worktrees/agent-fix-r6sec-trust`,
+  `campaign/fix-r6sec-trust`. Ends with `## Fix pass complete`.
+- Security round 6 fixes, runtime (SEC6-3, SEC6-4, SEC6-5), Opus: `.claude/worktrees/agent-fix-r6sec-rt`,
+  `campaign/fix-r6sec-rt`. Ends with `## Fix pass complete`.
+- Security round 6 review, coverage items 5 to 7 (daemon methods since round 4, plugin scripts,
+  terminal escapes), Fable: `.claude/worktrees/agent-r10`, `campaign/r6-security-b`. Findings from
+  SEC6-6. Ends with `## Review complete`.
+- Round 12 review over `4c429ac5..7b607e40` (round 10 and 11 fixes, docs re-check 3, splits, plugin
+  round 6, mutants), Fable: `.claude/worktrees/agent-r12`, `campaign/r12-review`,
+  `findings/r12-session-review.md`. Ends with `## Review complete`.
+- Daemon reloads `app.json` when it changes on disk (the plugin round 6 defect), Opus:
+  `.claude/worktrees/agent-r11`, `campaign/fix-daemon-appjson`. Ends with `## Fix pass complete`.
+- `cargo mutants` (E), Sonnet, continuation on the formatting module: `.claude/worktrees/agent-a34708a3121ce8ac2`,
+  `campaign/test-mutants` (fast-forwarded to 7b607e40). Ends with `## Mutation pass complete`.
 
-- `cargo mutants` (E), Sonnet, continuation: `.claude/worktrees/agent-a34708a3121ce8ac2`,
-  `campaign/test-mutants` at b13da4ce. Commits the `indent.rs` tests, then the formatting module.
-  Ends with `## Mutation pass complete`.
-
-Merge order when they finish: `campaign/fix-r11-text`, mutants, then security round 6's findings
-to a fix agent. Gates on each merge, `cargo test -p al-test-harness
---no-fail-fast` after the runtime merges. Then round 11 over `9e3f26a1..HEAD -- crates plugin`.
+Merge order when they finish: the two security fix branches, the app.json fix, mutants, then the
+two reviews' findings to fix agents. Gates on each merge, `cargo test -p al-test-harness
+--no-fail-fast` after the runtime and daemon merges. After `campaign/fix-r6sec-rt` merges: the
+`records.rs`, `eval_expr.rs` and `records_tests.rs` splits (C). After the fixes merge: docs re-check 4 (H).
 
 A second session (interactive, not the watchdog's) has pushed straight to this branch before
 (`LOG.md`, 18:45 entry on 2026-09-26). The orchestrator fetches and merges
@@ -107,13 +106,13 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 
 | # | Workstream | Progress | Next step |
 |---|------------|----------|-----------|
-| A | Correctness: review rounds, triage, fixes with a failing test first | Rounds 1 to 7 fixed or queued. Round 7: 15 of 15 fixed and merged (fac24900). Round 8: 14 of 14 fixed and merged (a1afe8e6, bd76f89f, 12b1778a, 8f70b75e). Round 9: 7 of 7 fixed and merged (7cd0a904, 52d07278). Round 10 complete 2026-09-27 (`findings/r10-session-review.md`, scope a0e85e0b..9e3f26a1): 11 findings, 1 high (variables declared on one line share one List, Dictionary or JSON value), 11 of 11 fixed and merged (9a364d46, 19a7cae9, 580151c1). Round 11 complete 2026-09-27 (`findings/r11-session-review.md`, scope 9e3f26a1..4c429ac5): 7 findings, 2 medium, 5 low, three agents on all 7 | Merge `campaign/fix-r11-sec`, `campaign/fix-r11-rt`, `campaign/fix-r11-text`, then round 12 over 4c429ac5..HEAD |
+| A | Correctness: review rounds, triage, fixes with a failing test first | Rounds 1 to 7 fixed or queued. Round 7: 15 of 15 fixed and merged (fac24900). Round 8: 14 of 14 fixed and merged (a1afe8e6, bd76f89f, 12b1778a, 8f70b75e). Round 9: 7 of 7 fixed and merged (7cd0a904, 52d07278). Round 10 complete 2026-09-27 (`findings/r10-session-review.md`, scope a0e85e0b..9e3f26a1): 11 findings, 1 high (variables declared on one line share one List, Dictionary or JSON value), 11 of 11 fixed and merged (9a364d46, 19a7cae9, 580151c1). Round 11 complete 2026-09-27 (`findings/r11-session-review.md`, scope 9e3f26a1..4c429ac5): 7 findings, 2 medium, 5 low, 7 of 7 fixed and merged (0d851d9d, dab2eb06, 6532618e). Round 12 review in flight over 4c429ac5..7b607e40 | Round 12 findings to fix agents |
 | B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | Done 2026-09-26 (`findings/audit-backlog-triage.md`): 253 rows, 249 fixed with the commit or code named, 3 open (queued above), 1 unclear. Round 9 spot-checked ten `fixed` rows with no commit or file:line in their evidence: all ten hold | Nothing queued |
 | C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 11 merged 2026-09-26 (re-score: overall 80.2 unchanged, strict 79.9 to 79.6 as the scan surface grew, `findings/desloppify.md` section 5, `desloppify scan` is unreliable with sibling worktrees active). 2026-09-24: test modules split out of six large files, rustdoc warnings 46 to 0 (CI gated), bulk-fix errors typed | 2026-09-27: the trust and lsp_dispatch test modules split out (b5c05341). Largest files now `records_tests.rs` 5555, `records.rs` 3315, `client/mod.rs` 2804, `eval_expr.rs` 2643, `lsp/mod.rs` 2644 | The 63 deferred items (typed RPC boundary is the largest), `records.rs` and `eval_expr.rs` splits after the round 11 runtime fixes merge, a holistic desloppify review to re-score the subjective dimensions |
-| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Four review rounds (8, 19, 10, 14 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint, trust digest over analyzer and dotnet file hashes, credential authorisation on every DAP and test path. Round 7's eight security findings merged 2026-09-27 (fac24900): the launch file the strict parser rejects stales the record, the legacy proxy judges a named server as on-premises, no download into a linked `.alpackages`, built-in analyzer names resolve to the toolchain, the record hashes what an analyzer or dotnet loads from beside it, the digest mismatch refusal prints no digest, a revoke during a settings change holds, `--validate` judges trust on the real folder | Round 5 complete 2026-09-27 (`findings/r5-security.md`, 9 findings: symlinks and native libraries outside the hashed tree, the entry cap as a constant, the proxy forwarding on-premises and `applicationFamily` scenarios, `compilationOptions` paths as text, Zed-named analyzer copies, a `.alpackages` link, the dotnet fingerprint), 9 of 9 fixed and merged 2026-09-27 (68f0bbe8) Round 11 found three bypasses beside the round 5 fixes (a path in place of a name, a settings file that stops parsing, other spellings of `authentication`), agent on all three. Round 6 review in flight | Merge `campaign/fix-r11-sec`, then round 6's findings |
-| E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal. `cargo mutants` 7 of 10 files merged (7e4c02f3, 58781aa7, `findings/mutants.md`), 9 of 10 files done on `campaign/test-mutants` (cobertura.rs and composition.rs added this session, unmerged), agent on the formatting module. Snapshot profiling flake closed 2026-09-27 (cause: a private mutex over `XDG_CONFIG_HOME` in the containment tests, fixed by 17bd4758) | Merge the rest of `campaign/test-mutants`, make `al-test/backends/snapshot.rs` testable |
+| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Four review rounds (8, 19, 10, 14 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint, trust digest over analyzer and dotnet file hashes, credential authorisation on every DAP and test path. Round 7's eight security findings merged 2026-09-27 (fac24900): the launch file the strict parser rejects stales the record, the legacy proxy judges a named server as on-premises, no download into a linked `.alpackages`, built-in analyzer names resolve to the toolchain, the record hashes what an analyzer or dotnet loads from beside it, the digest mismatch refusal prints no digest, a revoke during a settings change holds, `--validate` judges trust on the real folder | Round 5 complete 2026-09-27 (`findings/r5-security.md`, 9 findings: symlinks and native libraries outside the hashed tree, the entry cap as a constant, the proxy forwarding on-premises and `applicationFamily` scenarios, `compilationOptions` paths as text, Zed-named analyzer copies, a `.alpackages` link, the dotnet fingerprint), 9 of 9 fixed and merged 2026-09-27 (68f0bbe8) Round 11 found three bypasses beside the round 5 fixes (a path in place of a name, a settings file that stops parsing, other spellings of `authentication`), 3 of 3 fixed and merged (0d851d9d). Round 6 review: items 1 to 4 done 2026-09-27 (`findings/r6-security.md`, 5 findings: a `.netpackages` link outside the project loads an unrecorded analyzer, a linked path recorded as text, cyclic list comparison aborts the daemon, `Contains` on a cycle hangs a thread, no memory limit in the test runtime), two fix agents on the five, review agent on items 5 to 7 | Merge the two round 6 fix branches, then items 5 to 7's findings |
+| E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal. `cargo mutants` 7 of 10 files merged (7e4c02f3, 58781aa7, `findings/mutants.md`), 9 of 10 files merged (7e4c02f3, 58781aa7, 7b607e40: cobertura.rs, composition.rs and tests for four formatting files), agent on the rest of the formatting module. Snapshot profiling flake closed 2026-09-27 (cause: a private mutex over `XDG_CONFIG_HOME` in the containment tests, fixed by 17bd4758) | Merge the formatting run, make `al-test/backends/snapshot.rs` testable |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review fixed 10 of 11 plus three items found while fixing. 2026-09-26: the seven shared query files are byte-identical in both places and the Makefile checks it. Corpus round 2 merged 2026-09-27: grammar cc31863 (12 commits, corpus tests for every construct the interpreter runs, GR2-1 scanner fix), pointer and `extension.toml` rev moved (4c1b0ae6). GR2-2, GR2-3, GR2-5 fixed in the interpreter (8f70b75e). GR2-4 fixed 2026-09-27: grammar a108400, pointer b3d5121b, interpreter test 217af726. Corpus round 3 merged 2026-09-27 (`findings/grammar-corpus-r3.md`, grammar 142aba6, pointer 4c429ac5): six corpus files (List and Dictionary, glued signs, keyword names, case labels, round 8 and 9 shapes, every node kind the interpreter matches), GR3-1 fixed in the grammar (`X:=-1` parses as `X := -1`), 119 corpus tests | GR3-2 and GR3-3 in the interpreter (agent on `campaign/fix-r10-b`), then a query drift check over the new node shapes |
-| G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Plugin, daemon projection, free-ids, compact answers merged. Persisted dependency source index merged 2026-09-26: second start 23.6 s to 1.25 s, peak memory 2.8 GB to 371 MB, and the follow-up (builder fixture hash in the key, shared store with a 1 GiB limit, sorted rows). Plugin leftovers merged 2026-09-26 (cf0f794c): `plugin/evals/` with 12 ground-truth cases and `make plugin-evals`, a SessionStart hook that downloads and checksum-verifies a release archive | Round 5 runs merged 2026-09-27: `bc-test-locally`, `bc-upgrade-impact`, `bc-cop-fixer` and a `.alpackages` symbol lookup all right, three defects fixed on the way. Round 6 runs in flight (the five skills against `.alpackages`, `package-diff` with two versions). Left: a release with `binary-checksums.txt` |
+| G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Plugin, daemon projection, free-ids, compact answers merged. Persisted dependency source index merged 2026-09-26: second start 23.6 s to 1.25 s, peak memory 2.8 GB to 371 MB, and the follow-up (builder fixture hash in the key, shared store with a 1 GiB limit, sorted rows). Plugin leftovers merged 2026-09-26 (cf0f794c): `plugin/evals/` with 12 ground-truth cases and `make plugin-evals`, a SessionStart hook that downloads and checksum-verifies a release archive | Round 5 runs merged 2026-09-27: `bc-test-locally`, `bc-upgrade-impact`, `bc-cop-fixer` and a `.alpackages` symbol lookup all right, three defects fixed on the way. Round 6 runs in flight (the five skills against `.alpackages`, `package-diff` with two versions). Round 6 runs merged 2026-09-27 (b2c38e6a): all right on the first try. Agent on the stale `app.json` defect it found. Left: a release with `binary-checksums.txt` |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | Done 2026-09-26: every user doc checked against the code and given a plain-wording pass (`findings/docs-review.md`). Re-checked 2026-09-27 against the round 8 merges (6516172a): six claims corrected in `native-test-runtime.md` and `debugging-dap.md`, eleven docs read with nothing to change Re-check 3 merged 2026-09-27 (aaa3ca37): 13 claims corrected in six docs, twelve read with nothing to change | Re-check after the round 11 fixes and security round 6 merge |
 | I | Blog: replace the six articles with a new series on the current project, unsloppify each | Nine articles written, fact-passed, unsloppified and re-read after the security round on blog branch `campaign/2026-09-rewrite` (pushed), `pnpm validate` passes, all `draft: true` | Article 9 final re-read at campaign end, quiet-machine timings, `readTime`, then merge to `main` (Brad) |
 
