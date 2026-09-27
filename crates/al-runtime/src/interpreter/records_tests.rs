@@ -1459,6 +1459,72 @@ fn list_range_methods_and_typed_dictionary_keys() {
     assert_eq!(probe("KeysKeepTypeAndOrder"), Value::Integer(100702));
 }
 
+const SEPARATE_DEFAULTS: &str = r#"codeunit 50305 "Separate Defaults"
+{
+    var
+        GA, GB: List of [Integer];
+
+    procedure MultiNameLocalLists(): Integer
+    var
+        A, B: List of [Integer];
+    begin
+        A.Add(1);
+        exit(B.Count());
+    end;
+
+    procedure MultiNameLocalDicts(): Integer
+    var
+        A, B: Dictionary of [Integer, Integer];
+    begin
+        A.Add(1, 1);
+        exit(B.Count());
+    end;
+
+    procedure MultiNameGlobalLists(): Integer
+    begin
+        GA.Add(1);
+        exit(GB.Count());
+    end;
+
+    procedure MultiNameJson(): Text
+    var
+        A, B: JsonObject;
+        T: Text;
+    begin
+        A.Add('x', 1);
+        B.WriteTo(T);
+        exit(T);
+    end;
+
+    procedure ArrayOfJson(): Text
+    var
+        A: array[2] of JsonObject;
+        T: Text;
+    begin
+        A[1].Add('x', 1);
+        A[2].WriteTo(T);
+        exit(T);
+    end;
+}
+"#;
+
+#[test]
+fn each_declared_name_and_array_element_gets_its_own_list_dictionary_or_json_value() {
+    let probe = |proc: &str| {
+        ok(run(
+            &[("/ws/SeparateDefaults.al", SEPARATE_DEFAULTS)],
+            "Separate Defaults",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(probe("MultiNameLocalLists"), Value::Integer(0));
+    assert_eq!(probe("MultiNameLocalDicts"), Value::Integer(0));
+    assert_eq!(probe("MultiNameGlobalLists"), Value::Integer(0));
+    assert_eq!(probe("MultiNameJson"), Value::Text("{}".into()));
+    assert_eq!(probe("ArrayOfJson"), Value::Text("{}".into()));
+}
+
 #[test]
 fn compound_assignment_to_record_field_accumulates() {
     // Regression: `Rec.Amount += 5` must store Amount + 5, not the raw RHS.

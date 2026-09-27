@@ -3161,8 +3161,9 @@ fn default_for_array(type_text: &str) -> Option<Value> {
     let length: usize = rest[..close].trim().parse().ok()?;
     let element = strip_keyword(rest[close + 1..].trim_start(), "of")?.trim();
     let base = element.split('[').next()?.trim();
-    let default = Value::default_for(base)?;
-    Some(Value::Array(vec![default; length]))
+    // Each element on its own: clones of one JSON default share its node.
+    let elements = (0..length).map(|_| Value::default_for(base));
+    Some(Value::Array(elements.collect::<Option<_>>()?))
 }
 
 /// `text` after a leading `keyword`, compared without case.
