@@ -48,6 +48,7 @@ pub const ADVISORY_KEYS: &[&str] = &[
     "al.packageCachePath",
     "al.ruleSetPath",
     "al.useOnlyCustomFeeds",
+    PATH_OPTION_KEY,
     UNHASHABLE_PATH_KEY,
     UNREADABLE_LAUNCH_KEY,
     "lsp.al-lsp.binary.arguments",
@@ -77,6 +78,51 @@ const UNREADABLE_LAUNCH_KEY: &str = "unreadable launch file";
 /// are recorded under this key, so an existing record goes stale, and
 /// [`TrustDecision::grant_refusal`] refuses a new record until the tree changes.
 const UNHASHABLE_PATH_KEY: &str = "path the record cannot hash";
+
+/// The key of an `al.compilationOptions` entry that names a file or directory
+/// alc loads from: an analyzer, a probing directory, a ruleset, a package
+/// cache, or an `@` response file of further switches.
+///
+/// The record holds `al.compilationOptions` as text, so it could not notice a
+/// commit that replaced the file such an entry names. Each dedicated key
+/// (`al.codeAnalyzers`, `al.assemblyProbingPaths`, `al.ruleSetPath`,
+/// `al.packageCachePath`) records what it names, so the entry is recorded
+/// under this key, which makes an existing record stale, and
+/// [`TrustDecision::grant_refusal`] points to those keys.
+const PATH_OPTION_KEY: &str = "compilation option that names a file";
+
+/// The `alc` switches that name a file or directory the compiler loads from,
+/// as alc spells them after the `/` or `-`, in any case. `a` is alc's short
+/// form of `analyzer`.
+const PATH_SWITCHES: &[&str] = &[
+    "a",
+    "analyzer",
+    "assemblyprobingpaths",
+    "packagecachepath",
+    "ruleset",
+];
+
+/// Whether an `al.compilationOptions` entry names a file or directory alc
+/// loads from.
+///
+/// alc reads a switch after `/` or `-` in any case, up to a `:`, and reads an
+/// argument that starts with `@` as a response file of further switches.
+/// Leading whitespace makes alc read the entry as a source file, and it is
+/// trimmed here anyway, so a spelling alc does not read as a switch is
+/// refused rather than missed.
+fn is_path_option(option: &str) -> bool {
+    let option = option.trim_start();
+    if option.starts_with('@') {
+        return true;
+    }
+    let Some(switch) = option.strip_prefix(['/', '-']) else {
+        return false;
+    };
+    let name = switch.split(':').next().unwrap_or(switch).trim();
+    PATH_SWITCHES
+        .iter()
+        .any(|known| name.eq_ignore_ascii_case(known))
+}
 
 /// The name a message prints for `key`.
 #[must_use]
@@ -207,6 +253,20 @@ impl TrustDecision {
                  {TRUST_COMMAND} again.",
                 one_line(&unreadable.source),
                 one_line(&unreadable.value)
+            ));
+        }
+        if let Some(option) = self
+            .privileged
+            .iter()
+            .find(|setting| setting.key == PATH_OPTION_KEY)
+        {
+            return Some(format!(
+                "al.compilationOptions passes {} (from {}), which names a file or directory the \
+                 compiler loads from. The trust record cannot hash a file named there, so \
+                 nothing was recorded. Name it with al.codeAnalyzers, al.assemblyProbingPaths, \
+                 al.ruleSetPath or al.packageCachePath instead, then run {TRUST_COMMAND} again.",
+                one_line(&option.value),
+                one_line(&option.source)
             ));
         }
         let unhashable = self
@@ -1050,6 +1110,15 @@ fn privileged_changes(
         if !ask.compilation_options.is_empty() {
             let value = ask.compilation_options.join(" ");
             record(&mut ask, "al.compilationOptions", value);
+            let path_options: Vec<String> = ask
+                .compilation_options
+                .iter()
+                .filter(|option| is_path_option(option))
+                .cloned()
+                .collect();
+            for option in path_options {
+                record(&mut ask, PATH_OPTION_KEY, option);
+            }
         }
     }
 
@@ -2073,6 +2142,71 @@ mod tests {
             .privileged
             .iter()
             .any(|setting| setting.key == "al.compilationOptions"));
+    }
+
+    /// alc loads the file an `/analyzer:` inside `al.compilationOptions` names,
+    /// and the record held the option's text alone, so a commit that replaced
+    /// `tools/TeamCop.dll` kept the record trusted. alc reads the switch with
+    /// `/` or `-`, in any case, as the alias `/a:`, and from an `@` response
+    /// file.
+    #[test]
+    fn a_path_switch_in_compilation_options_blocks_a_grant() {
+        for option in [
+            "/analyzer:tools/TeamCop.dll",
+            "-A:tools/TeamCop.dll",
+            "/AssemblyProbingPaths:tools",
+            "/ruleset:tools/team.ruleset",
+            "/packagecachepath:cache",
+            "@tools/build.rsp",
+        ] {
+            let _config = ScratchConfig::new();
+            let project = project_with_settings(
+                &serde_json::json!({"al.compilationOptions": ["/nowarn:AL0432", option]})
+                    .to_string(),
+            );
+            write_file(project.path(), "tools/TeamCop.dll", b"reviewed analyzer");
+
+            let error = grant(project.path()).expect_err(option);
+            let GrantError::Refused(refusal) = error else {
+                panic!("{error}");
+            };
+            assert!(refusal.contains(option), "{refusal}");
+            assert!(refusal.contains("al.codeAnalyzers"), "{refusal}");
+            assert_eq!(decide(project.path()).unwrap().state, TrustState::Untrusted);
+        }
+    }
+
+    /// A record made while the record held such an option as text goes stale.
+    #[test]
+    fn a_record_over_a_path_switch_in_compilation_options_goes_stale() {
+        let _config = ScratchConfig::new();
+        let project =
+            project_with_settings(r#"{"al.compilationOptions": ["/analyzer:tools/TeamCop.dll"]}"#);
+        write_file(project.path(), "tools/TeamCop.dll", b"reviewed analyzer");
+        let decision = decide(project.path()).unwrap();
+        let as_text: Vec<PrivilegedSetting> = decision
+            .privileged
+            .iter()
+            .filter(|setting| setting.key == "al.compilationOptions")
+            .cloned()
+            .collect();
+        trust_project(&decision.root, &digest_of(&as_text)).unwrap();
+
+        assert_eq!(decide(project.path()).unwrap().state, TrustState::Stale);
+    }
+
+    #[test]
+    fn compilation_options_that_name_no_file_can_be_trusted() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(
+            r#"{"al.compilationOptions": ["/nowarn:AL0432", "/target:Cloud", "/parallel-",
+                "/define:DEBUG", "/features:TranslationFile"]}"#,
+        );
+
+        grant(project.path()).unwrap();
+        let evaluated = evaluate(project.path()).unwrap();
+        assert!(evaluated.decision.is_trusted());
+        assert_eq!(evaluated.config.compilation_options.len(), 5);
     }
 
     /// A path that looks like a project-relative directory and resolves to one

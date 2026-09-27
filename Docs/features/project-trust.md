@@ -18,7 +18,7 @@ else applies as it always has.
 | Setting | Why it is privileged |
 | --- | --- |
 | `al.codeAnalyzers` entries that are not built-in tokens | A path entry becomes `/analyzer:<path>`; Roslyn loads the assembly and runs its type initialisers |
-| `al.compilationOptions` | Appended verbatim to the `alc` command line, including `/analyzer:` and `/ruleset:` |
+| `al.compilationOptions` | Appended verbatim to the `alc` command line. An entry that names a file alc loads from is refused (see below) |
 | `al.ruleSetPath` outside the project | Reads a file from anywhere as `/ruleset:` |
 | `al.assemblyProbingPaths` | Directories the analyzer search walks and `/assemblyprobingpaths:` names |
 | `al.packageCachePath` outside the project | Chooses where `.app` symbol packages are read from, and reaches `/packagecachepath:` |
@@ -164,6 +164,16 @@ of those files, adds one where the record saw none, or points a link somewhere e
 record `stale`. An analyzer at the project root puts every file in the project into its
 record, so keep an analyzer in a directory of its own. A path outside the project is the
 user's machine and is recorded as written.
+
+`al.compilationOptions` is recorded as text, so it cannot vouch for a file an entry names.
+An entry that names a file or directory alc loads from is refused: `/analyzer:` and its
+short form `/a:`, `/assemblyprobingpaths:`, `/ruleset:` and `/packagecachepath:`, with `/`
+or `-` and in any case, as alc reads them, and an `@` response file, which alc reads as more
+switches. Such an entry is recorded as `compilation option that names a file`, so an existing
+record goes stale, and `al-explorer trust` refuses to record the project and names the
+dedicated key to use instead: `al.codeAnalyzers`, `al.assemblyProbingPaths`, `al.ruleSetPath`
+or `al.packageCachePath`, which record what they name. Switches that name no input, such as
+`/nowarn:` or `/target:`, are recorded as text as before.
 
 A tree the record cannot hash is not recorded. The walk does not follow a symbolic link
 inside the tree, because the loader does and a commit could change the target without
