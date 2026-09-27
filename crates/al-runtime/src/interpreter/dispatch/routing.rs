@@ -358,8 +358,10 @@ fn cleared(value: &Value, ctx: &mut DispatchCtx) -> Result<Value, String> {
             instance: None,
         },
         Value::Variant(_) => Value::Variant(Box::new(Value::Null)),
-        Value::List(_) => Value::List(Vec::new()),
-        Value::Dict(_) => Value::Dict(Default::default()),
+        // List and Dictionary are references: the variable gets new empty
+        // contents, and copies keep the old ones.
+        Value::List(_) => Value::list(Vec::new()),
+        Value::Dict(_) => Value::dict(Default::default()),
         Value::Blob(_) => Value::Blob(Vec::new()),
         Value::Array(items) => Value::Array(
             items

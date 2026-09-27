@@ -326,6 +326,22 @@ fn rename_blocker(
         .map(|reason| format!("Rename: {reason}"))
 }
 
+/// How many arguments a member call passes, from its argument list.
+fn argument_count(call: tree_sitter::Node<'_>) -> Option<usize> {
+    let arguments = call.child_by_field_name("call")?;
+    let mut cursor = arguments.walk();
+    let count = arguments
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "expression_list")
+        .map_or(0, |list| {
+            let mut cursor = list.walk();
+            list.named_children(&mut cursor)
+                .filter(|child| child.kind() == "expression")
+                .count()
+        });
+    Some(count)
+}
+
 /// The first comma-separated argument, outside quotes.
 fn first_argument(arguments: &str) -> &str {
     let mut quote: Option<char> = None;
@@ -724,12 +740,21 @@ pub(super) fn classify_call(
             reachable,
         );
     } else if type_name == "list" {
-        if !al_runtime::interpreter::records::supports_list_method(&method) {
+        let blocker = if !al_runtime::interpreter::records::supports_list_method(&method) {
+            Some(format!(
+                "calls unsupported List.{method} (requires BC semantics)"
+            ))
+        } else if method.eq_ignore_ascii_case("getrange") && argument_count(suffix) == Some(3) {
+            Some("calls List.GetRange with a var result list (requires BC semantics)".to_string())
+        } else {
+            None
+        };
+        if let Some(blocker) = blocker {
             promote(
                 decision,
                 reasons,
                 RoutingDecision::LiveBc,
-                &format!("calls unsupported List.{method} (requires BC semantics)"),
+                &blocker,
                 file,
                 member_node,
                 reachable,

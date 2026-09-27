@@ -4,9 +4,8 @@
 # would otherwise fail: neither al-lsp nor al-explorer is on PATH or in the
 # plugin's own cache directory. Downloads the platform release archive,
 # verifies every file it contains against the release's published
-# binary-checksums.txt, and only then installs it. Nothing is made
-# executable, and nothing is added to the plugin's cache directory, before
-# its digest matches.
+# binary-checksums.txt, and only then installs it. Nothing reaches the
+# install directory before its digest matches.
 #
 # A message always goes to stderr. When there is something the calling
 # session should know (installed, or refused for an actionable reason), the
@@ -198,6 +197,16 @@ if ! tar -xzf "$archive_path" -C "$stage_dir"; then
 	exit 0
 fi
 
+# A symlink is neither a regular file nor a directory, so it is invisible to
+# the `find . -type f` below and would never be hashed: a symlinked al-lsp
+# would install unverified and unnoticed. Refuse the whole archive before any
+# hashing starts, the same way a missing digest does further down.
+bad_members="$(cd "$stage_dir" && find . ! -type f ! -type d)"
+if [ -n "$bad_members" ]; then
+	report "$asset_name from release $AL_PIN_RELEASE_TAG contains a member that is not a regular file or a directory; nothing was installed"
+	exit 0
+fi
+
 file_list="$work_dir/extracted-files.txt"
 (cd "$stage_dir" && find . -type f | sed 's|^\./||') | LC_ALL=C sort >"$file_list"
 if [ ! -s "$file_list" ]; then
@@ -232,12 +241,41 @@ if ! have_pair "$stage_dir"; then
 	exit 0
 fi
 
+# have_pair uses -x, which is true for a directory and for a symlink to an
+# executable, neither of which is a hashed, verified file. The member scan
+# above already refuses a symlink anywhere in the archive; check the two
+# binaries specifically, since a directory named al-lsp or al-explorer passes
+# that scan (a directory is a valid member type) but must not be installed
+# as if it were the verified file.
+for name in al-explorer al-lsp; do
+	if [ ! -f "$stage_dir/$name" ] || [ -L "$stage_dir/$name" ]; then
+		report "$asset_name from release $AL_PIN_RELEASE_TAG has $name as something other than a regular file at its root; nothing was installed"
+		exit 0
+	fi
+done
+
 chmod +x "$stage_dir/al-explorer" "$stage_dir/al-lsp"
 
-mkdir -p "$data_dir"
-rm -rf "${bin_dir:?}.new"
-mv "$stage_dir" "$bin_dir.new"
-rm -rf "${bin_dir:?}"
-mv "$bin_dir.new" "$bin_dir"
+# Each step has to name itself on failure, or a broken step here reports
+# "installed" over binaries that never moved. The old bin_dir is removed only
+# after the verified stage is fully in place at bin_dir.new, so a failure
+# between here and the last mv leaves either the old install or the new one
+# staged at bin_dir.new, never neither.
+install_step() {
+	# $1 = what this step does, for the refusal message. Remaining args = the
+	# command.
+	local doing="$1"
+	shift
+	if ! "$@"; then
+		report "could not $doing; nothing was installed"
+		exit 0
+	fi
+}
+
+install_step "create $data_dir" mkdir -p "$data_dir"
+install_step "clear a stale $bin_dir.new left from an earlier attempt" rm -rf "${bin_dir:?}.new"
+install_step "stage the verified binaries at $bin_dir.new" mv "$stage_dir" "$bin_dir.new"
+install_step "remove the old $bin_dir to make room for $bin_dir.new" rm -rf "${bin_dir:?}"
+install_step "move the verified binaries from $bin_dir.new into $bin_dir" mv "$bin_dir.new" "$bin_dir"
 
 report "installed al-lsp and al-explorer $AL_PIN_RELEASE_TAG into $bin_dir, verified against $BINARY_CHECKSUMS_ASSET. Add it to PATH this session to call them directly: export PATH=\"$bin_dir:\$PATH\" (every al-bc skill and the MCP server already find it there through al-bin.sh)"

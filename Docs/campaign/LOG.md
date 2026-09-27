@@ -396,3 +396,123 @@ Append-only. Newest entry last.
   (fac24900, 15 of 15). Gates on the merge: clean, 94 suites, 5291 passed, 0 failed, 10 ignored.
   Pushed. The fix-r7 and fix-r8 worktrees removed (`git worktree remove` refuses a worktree with a
   submodule, so `rm -rf` and `git worktree prune`), 34 GB free.
+
+## 2026-09-27 03:25 BST: round 8 closed, round 9 reviewed, three merges
+
+- The runtime agent fixed all five: a table procedure's event with IncludeSender passes the record
+  as `var Sender` (the router already kept that test local), variables named after type or object
+  keywords read as names and a no-argument method on such a variable runs without parentheses
+  (the router had sent any test with a local named `Page` or `Report` to live BC and now checks
+  declared variables first), a `signed_case_label` evaluates through the index code, a subscriber
+  bound by a bare object ID runs and `get_events` reports the publisher's name, and a call graph
+  node gets the edges of every declaration of its name (the queued report said only the first
+  `OnValidate` got edges, the repro showed the last one, and overloads had the same bug),
+  `SCHEMA_VERSION` 5. Left for the grammar: `-5..-2` as a range label is one token.
+- The docs agent corrected six claims in `native-test-runtime.md` and `debugging-dap.md` and read
+  eleven other docs with nothing to change (`findings/docs-review.md`, re-check section).
+- The round 9 reviewer (`findings/r9-session-review.md`) found 7: the hand merge 6b4be394 dropped
+  the router rule that sent a table with globals to live BC while the runtime gives a table's
+  globals a fresh frame per trigger call, where BC keeps them with the record variable (high),
+  `Clear(X)` resolves to the LibraryVariableStorage stub and resets nothing (medium),
+  `al-fetch-release.sh` verifies regular files only so a symlink named `al-lsp` installs
+  (medium), a subscriber joins its codeunit's running instance, the release script reports
+  "installed" when the install failed, the eval runner hides a missing `al-lsp`, the summary
+  cache hashes the package before summarizing it (all low, the last one reproduced after two
+  rounds of reading). Merge damage: ten of thirteen merges equal the automatic merge, the rest
+  are docs or the regression above. Ten audit triage spot-checks all hold.
+- Merged `campaign/fix-r8-runtime` (8f70b75e), `campaign/docs-r8` (6516172a) and
+  `campaign/r9-review` (e64b982a). fmt clean in the main checkout. Gates on e64b982a started
+  03:17.
+- Three more agents (`STATE.md`): round 9 runtime fixes, round 9 plugin script fixes with a shell
+  test wired into `make plugin-validate`, and GR2-4 in a grammar worktree.
+
+## 2026-09-27 07:49 BST: the 03:25 session's gates pushed, seven agents re-dispatched
+
+- Gates on e64b982a (the 03:17 run): fmt, release, both clippy runs and rustdoc clean, 94 suites,
+  5302 passed, 0 failed, 10 ignored. The 03:25 session died before pushing. Pushed 07:50
+  (8feb7c8e, 24 commits).
+- All seven agents of the 03:25 session were dead with the machine idle. Security round 5 had six
+  findings committed on `campaign/r5-security` (SEC5-1 to SEC5-6: a symlink moves the loaded code
+  outside the hashed tree, a tree over 50,000 entries hashes to a constant, native libraries beside
+  an analyzer are not hashed, the legacy proxy forwards a Sandbox or Production scenario with
+  Windows or UserPassword authentication to its `server`, an analyzer named in
+  `al.compilationOptions` is recorded as text, a replaced runtime beside a trusted `dotnet` does
+  not move `inputs_fingerprint`) with coverage items 2, 3, 6 to 9 unread. Its scratch tests are
+  saved as `.campaign/sec5-scratch-tests.patch`. The plugin runs agent had committed two doc fixes
+  and no round 5. The mutants agent had two uncommitted `composition.rs` tests. The other four had
+  written nothing.
+- Seven agents re-dispatched onto the same worktrees and branches (`STATE.md`). The flake agent
+  now has the two test names (`snapshot_start_posts_and_parses_id`,
+  `snapshot_start_server_error_maps_to_internal_error`, al-lsp) and the wrong value (-32602 for
+  -32603 at load), which the first two attempts lacked.
+
+## 2026-09-27 08:05 BST: the snapshot flake was already fixed, four interactive commits merged
+
+- The flake agent reproduced `snapshot_start_server_error_maps_to_internal_error` 11 times in 40
+  runs of `cargo test -p al-lsp --lib daemon -- --test-threads=12`: the containment tests set
+  `XDG_CONFIG_HOME` behind their own mutex, not the `serial_test` lock the other trust tests use,
+  so a containment test could repoint the trust store while a snapshot test awaited its mocked
+  server, and the authorisation then failed with -32602. Its fix was the change 17bd4758 already
+  made on 2026-09-26 17:45 (the agent's worktree branched from 58781aa7, which lacks it), so the
+  merge conflicted on the same lines and the branch was dropped. The two earlier flake dispatches
+  after 17bd4758 were unnecessary. `campaign/fix-snapshot-flake` deleted, its worktree removed.
+- CI on 5abcfd5c: all six jobs green.
+- The interactive session pushed four commits (af3a36cd, 404f2fb4, 8cf97b56, b2577ceb) between
+  07:56 and 08:10: List and Dictionary as reference types with List range methods, the subscriber
+  test's var section moved back above the subscriber (the queued GR2-1 item), a `pack-native`
+  refusal test that compares the folder as the user named it, and a `clippy.toml`. Fast-forwarded
+  onto them. They go through the next gate run and the round 10 review.
+
+## 2026-09-27 08:12 BST: security round 5 complete, plugin round 5 merged, GR2-4 in the grammar
+
+- Security round 5 complete (`findings/r5-security.md`, merged c41346e9): 9 findings, 7 medium, 2
+  low, all nine coverage items ticked. New this session: the legacy proxy forwards an online
+  scenario whose `applicationFamily` puts another host in front of Microsoft's domain, reproduced
+  with the deployment library sending a bearer token to a local TLS listener (SEC5-7), an analyzer
+  name from Zed user settings resolves to a project copy the record never lists (SEC5-8), and a
+  `.alpackages` link added after trust widens the daemon's containment to the link's target
+  (SEC5-9, `/` as a root accepts `$HOME/.bashrc`). One Windows-only candidate (a UNC path resolved
+  while deciding trust opens an SMB connection) is noted under item 3, unverified. A fix agent is
+  on all nine (`campaign/fix-r5-security`).
+- Plugin runs round 5 merged: four Haiku runs (`bc-test-locally`, `bc-upgrade-impact`,
+  `bc-cop-fixer`, a `.alpackages` symbol lookup on a scaffolded project with Base Application 28
+  symbols) all right, after three fixes: `bc-upgrade-impact` never fired on a dependency question
+  (its description and the SessionStart routing note), `by-id` undercounts fields when an
+  extension is loaded, and `composed --limit --fields` does not shrink its output (recipe now
+  pipes through `jq`). `make plugin-validate` OK, `make plugin-evals` 12 of 12.
+- GR2-4 fixed in the grammar (`campaign/gr2-4`, three commits on cc31863): the scanner reads a
+  signed case label as alc does (blanks after the minus, `::` and member access, stops before `:`
+  and `..`, and does not run where a binary operator is valid, which also fixes `Y := A -1;` as the
+  last statement of a case arm, an ERROR before). The `operator` regex stops before a sign after a
+  dot so `-5..-2` is four tokens. The grammar route (an optional unary minus) was tried and
+  rejected: the lexer picked the unary token at the end of an arm without a semicolon. Agent gates:
+  103 of 103 corpus tests, 46,389 of 46,389 corpus files, crate and generator tests, package,
+  wasm, drift. Merged into the grammar's `campaign/2026-09-21`, orchestrator gates running.
+- The interactive session's four commits carry `Co-Authored-By: Claude` and `Claude-Session:`
+  trailers, which `~/.claude/CLAUDE.md` forbids. They are pushed, so left as they are.
+
+## 2026-09-27 08:16 BST: round 9 plugin fixes merged, round 10 dispatched
+
+- Merged `campaign/fix-r9-plugin` (7cd0a904): the release script refuses an archive whose members
+  are not regular files or directories and a binary that is a link or a directory, chains the
+  install steps and names the one that failed, and the eval runner resolves `al-lsp` beside
+  `al-explorer` then on `PATH`, skips with the reason when none is found, and keeps a failing
+  check's stderr. New `plugin/tests/al-fetch-release-test.sh` (a local `python3 -m http.server`
+  serves the archives) runs from `make plugin-validate`, which CI now runs on ubuntu, and the
+  ShellCheck glob covers `plugin/tests/*.sh`. Finding IDs taken out of the validator and CI
+  comments (e60e8db7).
+- Round 10 review dispatched (`campaign/r10-review`, worktree `agent-r10`): scope
+  `a0e85e0b..9e3f26a1 -- crates plugin` (49 files), which covers the round 8 last batch, the round
+  7 fixes, the grammar pointer move, the interactive session's List and Dictionary reference
+  semantics, and the plugin round 5 fixes. Nine coverage items, ends with `## Review complete`.
+- Earlier entries this morning carried clock times about twenty minutes ahead of the machine's
+  clock (the orchestrator estimated them). Corrected to the times in the git log.
+
+## 2026-09-27 08:27 BST: grammar a108400 pushed, pointer moved, gates green
+
+- Grammar gates on a108400 (the GR2-4 merge): 103 of 103 corpus tests, 46,389 of 46,389 corpus
+  files parse, 20 crate tests, 16 generator tests, package, wasm and drift all pass. Pushed to the
+  grammar's `campaign/2026-09-21`. Submodule pointer and `extension.toml` rev moved (b3d5121b).
+- Superproject gates on b3d5121b (the new parser through the path dependency, the interactive
+  session's List and Dictionary work, the plugin fixes): fmt, release, both clippy runs and rustdoc
+  clean, 94 suites, 5304 passed, 0 failed, 10 ignored. Pushed.

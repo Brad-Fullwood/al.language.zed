@@ -326,7 +326,7 @@ fn eval_set_literal(
             other => return other,
         }
     }
-    Eval::Normal(Value::List(values))
+    Eval::Normal(Value::list(values))
 }
 
 /// Split on commas at the set literal's top level while respecting AL strings,
@@ -1599,7 +1599,10 @@ pub(crate) fn apply_binary(operator: &str, left: Value, right: Value) -> Eval {
             start: Box::new(start),
             end: Box::new(end),
         }),
-        ("in", value, Value::List(members)) | ("in", value, Value::Array(members)) => {
+        ("in", value, Value::List(members)) => {
+            apply_binary("in", value, Value::Array(members.snapshot()))
+        }
+        ("in", value, Value::Array(members)) => {
             for member in members {
                 let matched = match member {
                     Value::Range { start, end } => match value_in_range(&value, &start, &end) {
@@ -2487,7 +2490,7 @@ mod tests {
             ok(apply_binary(
                 "in",
                 Value::Integer(10),
-                Value::List(vec![range.clone()])
+                Value::list(vec![range.clone()])
             )),
             Value::Boolean(true)
         );
@@ -2495,7 +2498,7 @@ mod tests {
             ok(apply_binary(
                 "in",
                 Value::Integer(20),
-                Value::List(vec![range.clone()])
+                Value::list(vec![range.clone()])
             )),
             Value::Boolean(true)
         );
@@ -2503,7 +2506,7 @@ mod tests {
             ok(apply_binary(
                 "in",
                 Value::Integer(21),
-                Value::List(vec![range])
+                Value::list(vec![range])
             )),
             Value::Boolean(false)
         );
@@ -2515,7 +2518,7 @@ mod tests {
             ok(apply_binary(
                 "in",
                 Value::Integer(2),
-                Value::List(vec![
+                Value::list(vec![
                     Value::Integer(1),
                     Value::Decimal(dec!(2.0)),
                     Value::Integer(3),

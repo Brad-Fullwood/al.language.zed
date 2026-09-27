@@ -1,9 +1,9 @@
 # Grammar: an attributed member with a modifier loses its attribute after a var section
 
 Found 2026-09-26 while testing event subscribers in the local interpreter.
-Status: **open**. The fix is in the grammar repository (`tree-sitter-al`
-submodule, Brad-Fullwood/AL-Tree-Sitter), which the session that found it
-could not push to. The patch below is tested against this repository.
+Status: **fixed** by grammar commit 290ef3c (`fix(scanner): keep the attribute
+of a modified member after a var section`), pinned here from cc31863. The
+patch below is kept as the record of the diagnosis.
 
 ## Symptom
 

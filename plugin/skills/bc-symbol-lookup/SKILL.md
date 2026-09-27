@@ -60,13 +60,40 @@ For a partial name, search the distinctive part: `search "Planning Categ"`.
 Keep `--fields`. Without it `by-id codeunit 80` is 552,710 bytes, of which 607
 method signatures surround the one package name you asked for.
 
-## Fields of a table
+## How many fields a table has
+
+A table extension in another loaded package adds fields that `by-id` and
+`object` do not show, so answering from `by-id` alone can understate the true
+count. Check with `composed` and `jq` first, every time the question is "how
+many fields" or "what fields", not only once an extension is already known
+about:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --compact composed table --name 'Customer' \
+  | jq -c '{name: .base.name, package: .base.package, fieldCount: (.all_fields | length), baseFieldCount: (.base.fields | length), extensionCount: (.extensions | length)}'
+```
+
+```json
+{"name":"Customer","package":"Base Application","fieldCount":172,"baseFieldCount":165,"extensionCount":1}
+```
+
+`extensionCount: 0` means `by-id`'s count already was the complete count.
+Above zero means it was not, and `fieldCount` (`all_fields`, already merged) is
+the true total. `--limit` and `--fields` do not shrink `composed`'s own
+output, because it returns one merged object, not a list of rows. `jq` is
+what keeps this small, the same way the single-field recipe below does.
+
+## One table's own fields, not merged with an extension
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields fields by-id table 18
 ```
 
-That returns the field list and nothing else. For a workspace table add `--wait-for-members`,
+The table's own fields only. Use this once `composed` above has told you
+`extensionCount` is 0, or the question names one field rather than asking for
+a count.
+
+For a workspace table add `--wait-for-members`,
 or the daemon may answer before it has the fields:
 
 ```bash
@@ -123,15 +150,20 @@ with "names enum_values that no row has". Read the declaration instead:
 ## A base table merged with every extension of it
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --limit 20 --fields name,package,fields composed table --name 'Item'
+"${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --compact composed table --name 'Item' \
+  | jq -c '{name: .base.name, package: .base.package, fieldCount: (.all_fields | length)}'
 ```
 
 `composed` reads one argument as a name and two as kind then name, so a name
 that could pass for a kind is ambiguous. `--name` settles it, with or without
 a kind in front.
 
-450,532 bytes without the flags. `composed` waits on the dependency source
-index, so read "When a call is slow" below before using it.
+Around 240 KB unfiltered, with or without `--limit` or `--fields`: neither
+flag reduces `composed`'s payload, because it returns one merged object
+(`base`, `extensions`, `all_fields`, `all_methods`), not a list of rows for
+the projection to act on. `jq` is what keeps this small. `composed` waits on
+the dependency source index, so read "When a call is slow" below before using
+it.
 
 ## Where the object's file is
 
