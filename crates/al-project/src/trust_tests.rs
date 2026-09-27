@@ -2060,7 +2060,9 @@ fn a_path_through_a_link_out_of_the_project_is_recorded_where_it_resolves() {
             .iter()
             .find(|setting| setting.key == key && setting.source == ".vscode/settings.json")
             .unwrap();
-        let line = setting.display_line();
+        // The value itself, since `display_line` caps it at 120 characters and a
+        // macOS temp path pushes the digest past the cap.
+        let line = &setting.value;
         assert!(line.contains(&format!("resolves to {target}")), "{line}");
         assert!(line.contains("sha256:"), "{line}");
     }
