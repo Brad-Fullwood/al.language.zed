@@ -6530,3 +6530,86 @@ fn a_record_called_back_from_another_records_table_code_keeps_its_own_globals() 
     );
     assert_eq!(ok(call("AskOtherReadsBack")), Value::Boolean(true));
 }
+
+/// Lists and dictionaries that hold each other, the shapes of the round 6
+/// security findings SEC6-3 and SEC6-4.
+const CYCLIC_COLLECTIONS: &str = r#"codeunit 50390 "Cyclic Collections"
+{
+    procedure ListsInACycle(): Boolean
+    var
+        A: List of [Integer];
+        B: List of [Integer];
+        C: List of [Integer];
+        D: List of [Integer];
+    begin
+        A.Add(B);
+        B.Add(A);
+        C.Add(D);
+        D.Add(C);
+        exit(A = C);
+    end;
+
+    procedure ListsInACycleThatDiffer(): Boolean
+    var
+        A: List of [Integer];
+        B: List of [Integer];
+        C: List of [Integer];
+        D: List of [Integer];
+    begin
+        A.Add(B);
+        B.Add(A);
+        B.Add(1);
+        C.Add(D);
+        D.Add(C);
+        D.Add(2);
+        exit(A <> C);
+    end;
+
+    procedure DictionariesHoldingThemselves(): Boolean
+    var
+        D1: Dictionary of [Integer, Integer];
+        D2: Dictionary of [Integer, Integer];
+    begin
+        D1.Set(1, D1);
+        D2.Set(1, D2);
+        exit(D1 = D2);
+    end;
+}
+"#;
+
+/// Run `proc` of [`CYCLIC_COLLECTIONS`] on a thread with the interpreter's
+/// stack, as the test backend does, so a test measures the runtime's own
+/// guards and not the 2 MiB stack of a test thread.
+fn run_cyclic(proc: &'static str) -> Eval {
+    std::thread::Builder::new()
+        .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+        .spawn(move || {
+            run(
+                &[("/ws/Cyclic.al", CYCLIC_COLLECTIONS)],
+                "Cyclic Collections",
+                proc,
+                vec![],
+            )
+        })
+        .expect("spawn the interpreter thread")
+        .join()
+        .expect("the interpreter thread panicked")
+}
+
+/// Comparing two lists that hold each other walked the cycle in `Value::cmp`
+/// until the stack overflowed and the process aborted. A pair of lists met
+/// again in one comparison now counts as equal.
+#[test]
+fn comparing_lists_in_a_cycle_ends() {
+    assert_eq!(ok(run_cyclic("ListsInACycle")), Value::Boolean(true));
+    assert_eq!(ok(run_cyclic("ListsInACycleThatDiffer")), Value::Boolean(true));
+}
+
+/// A dictionary that holds itself, compared with another that holds itself.
+#[test]
+fn comparing_dictionaries_that_hold_themselves_ends() {
+    assert_eq!(
+        ok(run_cyclic("DictionariesHoldingThemselves")),
+        Value::Boolean(true)
+    );
+}
