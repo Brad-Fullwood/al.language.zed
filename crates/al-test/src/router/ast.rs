@@ -110,7 +110,7 @@ pub(super) fn classify_declaration(
                     object: &location.object,
                 },
             );
-        } else if node.kind() == "attribute" || node.kind() == "attribute_list" {
+        } else if node.kind() == "attribute" {
             let attr = node.utf8_text(bytes).unwrap_or("");
             let attr_lower = attr.to_ascii_lowercase();
             if attr_lower.contains("testpermissions") {
@@ -391,7 +391,7 @@ pub(super) fn table_platform_capability(
     let bytes = text.as_bytes();
     let mut stack = vec![object_scope(workspace, path, &tree, table)];
     while let Some(node) = stack.pop() {
-        if matches!(node.kind(), "property" | "property_assignment") {
+        if node.kind() == "property_assignment" {
             let property = node.utf8_text(bytes).unwrap_or("").to_ascii_lowercase();
             if property.contains("fieldclass") && property.contains("flowfilter") {
                 return Some("declares FlowFilter fields that require BC execution");

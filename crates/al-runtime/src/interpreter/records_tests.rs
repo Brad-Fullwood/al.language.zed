@@ -5286,6 +5286,78 @@ fn table_publisher_passes_its_record_as_sender() {
     assert_eq!(ok(result), Value::Text("stamped P1 5".into()));
 }
 
+const CODEUNIT_PUBLISHER_SENDER: &str = r#"codeunit 50444 "Sender Pub"
+{
+    var
+        Counter: Integer;
+
+    procedure Post()
+    begin
+        Counter := 7;
+        OnPost();
+    end;
+
+    procedure PostAndRead(): Integer
+    begin
+        Post();
+        exit(Counter);
+    end;
+
+    procedure GetCounter(): Integer
+    begin
+        exit(Counter);
+    end;
+
+    procedure SetCounter(Value: Integer)
+    begin
+        Counter := Value;
+    end;
+
+    [IntegrationEvent(true, false)]
+    local procedure OnPost()
+    begin
+    end;
+}
+
+codeunit 50445 "Sender Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Sender Pub", 'OnPost', '', false, false)]
+    local procedure OnPostSub(sender: Codeunit "Sender Pub")
+    begin
+        if sender.GetCounter() <> 7 then
+            Error('sender counter %1', sender.GetCounter());
+        sender.SetCounter(sender.GetCounter() + 1);
+    end;
+}
+
+codeunit 50446 "Sender Probe"
+{
+    procedure ThroughVariable(): Integer
+    var
+        Pub: Codeunit "Sender Pub";
+    begin
+        Pub.Post();
+        exit(Pub.GetCounter());
+    end;
+}
+"#;
+
+/// With IncludeSender, a codeunit publisher's `sender` is the instance that
+/// raised the event, so a subscriber reads and changes its globals. The
+/// sender was a new instance, whose `Counter` read 0.
+#[test]
+fn a_codeunit_publishers_sender_is_the_running_instance() {
+    let files = [("/ws/SenderPub.al", CODEUNIT_PUBLISHER_SENDER)];
+    assert_eq!(
+        ok(run(&files, "Sender Probe", "ThroughVariable", vec![])),
+        Value::Integer(8)
+    );
+    assert_eq!(
+        ok(run(&files, "Sender Pub", "PostAndRead", vec![])),
+        Value::Integer(8)
+    );
+}
+
 const KEYWORD_NAMED_VARIABLES: &str = r#"table 50283 "Keyword Named"
 {
     fields
@@ -5390,6 +5462,135 @@ fn variables_named_after_keywords_read_and_write() {
     );
     assert_eq!(ok(call("PassesVar")), Value::Text("xyz!|XY|XY".into()));
     assert_eq!(ok(call("BuiltinsStillWork")), Value::Integer(2));
+}
+
+const DROPPED_PARENTHESES: &str = r#"table 50448 "Dropped Parens"
+{
+    fields
+    {
+        field(1; Code; Code[20]) { }
+        field(2; Note; Text[50]) { }
+    }
+    keys
+    {
+        key(PK; Code) { }
+    }
+
+    procedure Stamp()
+    begin
+        Note := 'stamped';
+    end;
+}
+
+codeunit 50449 "Dropped Parens Probe"
+{
+    procedure InsertStatement(): Integer
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Code := 'A';
+        R.Insert;
+        R.Reset;
+        exit(R.Count());
+    end;
+
+    procedure FindFirstCondition(): Text
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Code := 'A';
+        R.Insert();
+        R.Code := '';
+        if R.FindFirst then
+            exit('found ' + R.Code);
+        exit('none');
+    end;
+
+    procedure CountInExit(): Integer
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Code := 'Q';
+        R.Insert();
+        R.Code := 'R';
+        R.Insert();
+        exit(R.Count);
+    end;
+
+    procedure TableProcedure(): Text
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Stamp;
+        exit(R.Note);
+    end;
+
+    procedure DuplicateInsertStatementRaises(): Text
+    var
+        R: Record "Dropped Parens";
+    begin
+        R.Code := 'A';
+        R.Insert;
+        asserterror R.Insert;
+        exit('raised');
+    end;
+}
+"#;
+
+/// A record method or table procedure written without parentheses runs, as
+/// AL compiles it (CodeCop AA0008 warns about the form). It was read as a
+/// field and failed with "field 'Insert' is not declared".
+#[test]
+fn record_methods_without_parentheses_run() {
+    let call = |proc: &str| {
+        ok(run(
+            &[("/ws/DroppedParens.al", DROPPED_PARENTHESES)],
+            "Dropped Parens Probe",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(call("InsertStatement"), Value::Integer(1));
+    assert_eq!(call("FindFirstCondition"), Value::Text("found A".into()));
+    assert_eq!(call("CountInExit"), Value::Integer(2));
+    assert_eq!(call("TableProcedure"), Value::Text("stamped".into()));
+    assert_eq!(
+        call("DuplicateInsertStatementRaises"),
+        Value::Text("raised".into())
+    );
+}
+
+const KEYWORD_NAMED_INDEXES: &str = r#"codeunit 50450 "Keyword Indexes"
+{
+    procedure Indexes(): Text
+    var
+        Page: Text;
+        Code: Code[10];
+        Value: array[3] of Integer;
+        Letter: Text;
+    begin
+        Page := 'abc';
+        Page[1] := 'x';
+        Code := 'AB';
+        Letter := Code[2];
+        Value[2] := 5;
+        exit(Page + '|' + Format(Letter) + '|' + Format(Value[2]));
+    end;
+}
+"#;
+
+/// A variable named after an object or type keyword can be indexed. The
+/// grammar gives its name as `object_keyword` or `type_keyword`, which the
+/// index read and write did not accept (GR3-2).
+#[test]
+fn variables_named_after_keywords_can_be_indexed() {
+    let result = run(
+        &[("/ws/KeywordIndexes.al", KEYWORD_NAMED_INDEXES)],
+        "Keyword Indexes",
+        "Indexes",
+        vec![],
+    );
+    assert_eq!(ok(result), Value::Text("xbc|B|5".into()));
 }
 
 const SIGNED_CASE_LABELS: &str = r#"codeunit 50286 "Signed Labels"
@@ -5504,6 +5705,48 @@ fn negative_range_labels_and_a_spaced_minus_match() {
     }
 }
 
+const QUOTED_VARIABLE_NAMES: &str = r#"codeunit 50447 "Quoted Names"
+{
+    procedure ByLocal(X: Integer): Integer
+    var
+        "My Limit": Integer;
+    begin
+        "My Limit" := 4;
+        case X of
+            -"My Limit":
+                exit(1);
+            "My Limit":
+                exit(2);
+        end;
+        exit(-"My Limit" * 10);
+    end;
+
+    procedure ByParameter("Line No.": Integer): Integer
+    begin
+        exit("Line No." + 1);
+    end;
+}
+"#;
+
+/// A quoted variable or parameter name reads its value, also as a case
+/// label with a leading minus. The read looked the name up with its quotes
+/// and failed with `unbound identifier`.
+#[test]
+fn quoted_variable_names_read_their_value() {
+    let call = |proc: &str, arg: i64| {
+        ok(run(
+            &[("/ws/Quoted.al", QUOTED_VARIABLE_NAMES)],
+            "Quoted Names",
+            proc,
+            vec![Value::Integer(arg)],
+        ))
+    };
+    assert_eq!(call("ByLocal", -4), Value::Integer(1));
+    assert_eq!(call("ByLocal", 4), Value::Integer(2));
+    assert_eq!(call("ByLocal", 0), Value::Integer(-40));
+    assert_eq!(call("ByParameter", 10000), Value::Integer(10001));
+}
+
 const ID_BOUND_PUBLISHER: &str = r#"codeunit 50287 "Id Publisher"
 {
     procedure Raise(): Integer
@@ -5580,6 +5823,158 @@ fn subscribers_bound_by_object_id_run() {
     assert_eq!(
         ok(run(&files, "Id Probe", "Inserts", vec![])),
         Value::Text("by id".into())
+    );
+}
+
+const OVERLOADED_PROCEDURES: &str = r#"codeunit 50440 "Overloads"
+{
+    procedure Helper(A: Integer): Text
+    begin
+        exit('int');
+    end;
+
+    procedure Helper(A: Text): Text
+    begin
+        exit('text');
+    end;
+
+    procedure Other(): Text
+    begin
+        exit('none');
+    end;
+
+    procedure Other(A: Integer): Text
+    begin
+        exit('one');
+    end;
+
+    procedure Amount(A: Decimal): Text
+    begin
+        exit('decimal');
+    end;
+
+    procedure Amount(A: Integer): Text
+    begin
+        exit('integer');
+    end;
+
+    procedure Calls(): Text
+    begin
+        exit(Helper(1) + '|' + Helper('x') + '|' + Other() + '|' + Other(5) + '|' + Amount(1) + '|' + Amount(1.5));
+    end;
+
+    procedure NoMatch(): Text
+    begin
+        exit(Helper(true));
+    end;
+}
+
+codeunit 50441 "Overloads Reversed"
+{
+    procedure Helper(A: Text): Text
+    begin
+        exit('text');
+    end;
+
+    procedure Helper(A: Integer): Text
+    begin
+        exit('int');
+    end;
+
+    procedure Other(A: Integer): Text
+    begin
+        exit('one');
+    end;
+
+    procedure Other(): Text
+    begin
+        exit('none');
+    end;
+
+    procedure Calls(): Text
+    begin
+        exit(Helper(1) + '|' + Helper('x') + '|' + Other() + '|' + Other(5));
+    end;
+}
+
+table 50442 "Overload Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    procedure Describe(A: Integer): Text
+    begin
+        exit('int');
+    end;
+
+    procedure Describe(A: Text): Text
+    begin
+        exit('text');
+    end;
+
+    procedure Kind(A: Text): Text
+    begin
+        exit('text');
+    end;
+
+    procedure Kind(A: Integer): Text
+    begin
+        exit('int');
+    end;
+}
+
+codeunit 50443 "Overload Probe"
+{
+    procedure ThroughVariables(): Text
+    var
+        Cu: Codeunit "Overloads";
+        Reversed: Codeunit "Overloads Reversed";
+    begin
+        exit(Cu.Helper(1) + '|' + Reversed.Helper(1) + '|' + Cu.Other() + '|' + Reversed.Other());
+    end;
+
+    procedure TableProcedures(): Text
+    var
+        R: Record "Overload Table";
+    begin
+        exit(R.Describe(1) + '|' + R.Describe('x') + '|' + R.Kind(1) + '|' + R.Kind('x'));
+    end;
+}
+"#;
+
+/// A call to an overloaded procedure runs the declaration whose parameters
+/// take its arguments, in either order of declaration. The codeunit lookup
+/// always ran the last declaration of the name, and the table lookup the
+/// first, so the other overload failed its type or count check.
+#[test]
+fn overloaded_procedures_run_the_declaration_that_takes_the_arguments() {
+    let files = [("/ws/Overloads.al", OVERLOADED_PROCEDURES)];
+    assert_eq!(
+        ok(run(&files, "Overloads", "Calls", vec![])),
+        Value::Text("int|text|none|one|integer|decimal".into())
+    );
+    assert_eq!(
+        ok(run(&files, "Overloads Reversed", "Calls", vec![])),
+        Value::Text("int|text|none|one".into())
+    );
+    assert_eq!(
+        ok(run(&files, "Overload Probe", "ThroughVariables", vec![])),
+        Value::Text("int|int|none|none".into())
+    );
+    assert_eq!(
+        ok(run(&files, "Overload Probe", "TableProcedures", vec![])),
+        Value::Text("int|text|int|text".into())
+    );
+    let message = error_message(run(&files, "Overloads", "NoMatch", vec![]));
+    assert!(
+        message.contains("no overload of 'Helper' takes these arguments"),
+        "got: {message}"
     );
 }
 

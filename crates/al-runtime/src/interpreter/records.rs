@@ -1734,6 +1734,15 @@ pub(crate) fn field_get(
     Eval::Normal(read_buffer_field(store, handle, f))
 }
 
+/// Whether workspace table `table` declares a field named `field`.
+pub(crate) fn declares_field(table: &TableRef, field: &str, ctx: &mut DispatchCtx) -> bool {
+    ensure_store(ctx, table).is_ok_and(|key| {
+        ctx.records
+            .get(&key)
+            .is_some_and(|store| store.resolve_field(field).is_ok())
+    })
+}
+
 /// The record on `table`'s view `handle`, as table code's implicit `Rec`.
 fn record_value_on(table: &TableRef, handle: u64) -> Value {
     Value::Record(RecordValue {

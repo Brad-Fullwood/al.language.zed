@@ -95,33 +95,19 @@ pub(super) fn dispatch_workspace_procedure(
                 path.display()
             ));
         };
-        let globals = globals_for_call(
-            root,
-            source,
-            &object_name,
-            (instance, subscriber),
-            stack,
-            ctx,
-        );
-
-        // Walk the tree to find a procedure_declaration with the matching name.
+        // Walk the tree for every procedure_declaration with the matching
+        // name, so an overload is chosen by its arguments.
         // Iterative traversal (rule: no recursion).
         let mut stack_nodes = vec![root];
-        let mut found_proc: Option<(tree_sitter::Node<'_>, Vec<ParamDecl>, Option<ReturnDecl>)> =
-            None;
-
-        'outer: while let Some(node) = stack_nodes.pop() {
+        let mut candidates = Vec::new();
+        while let Some(node) = stack_nodes.pop() {
             if node.kind() == "procedure_declaration" {
-                if let Some(name_node) = node.child_by_field_name("name") {
-                    if let Ok(name_text) = name_node.utf8_text(source) {
-                        let clean = name_text.unquote_identifier();
-                        if clean.eq_ignore_ascii_case(procedure) {
-                            let params = collect_params(node, source);
-                            let ret = collect_return(node, source);
-                            found_proc = Some((node, params, ret));
-                            break 'outer;
-                        }
-                    }
+                let named = node
+                    .child_by_field_name("name")
+                    .and_then(|name| name.utf8_text(source).ok())
+                    .is_some_and(|name| name.unquote_identifier().eq_ignore_ascii_case(procedure));
+                if named {
+                    candidates.push(node);
                 }
                 // Don't descend into procedure bodies when just searching by name.
                 continue;
@@ -131,34 +117,62 @@ pub(super) fn dispatch_workspace_procedure(
                 stack_nodes.push(child);
             }
         }
-
-        let Some((proc_node, params, return_decl)) = found_proc else {
+        if candidates.is_empty() {
             continue;
+        }
+        candidates.sort_by_key(|node| node.start_byte());
+        let proc_node = match choose_overload(&candidates, source, procedure, &args) {
+            Ok(node) => node,
+            Err(error) => return error,
         };
         let declaration = Declaration {
             node: proc_node,
             name: procedure,
-            params,
-            return_decl,
+            params: collect_params(proc_node, source),
+            return_decl: collect_return(proc_node, source),
         };
-        let site = |globals_root| DeclarationSite {
+        let globals = globals_for_call(
+            root,
+            source,
+            &object_name,
+            (instance, subscriber),
+            stack,
+            ctx,
+        );
+        // Each arm below has the globals on the stack before the call runs.
+        let site = DeclarationSite {
             path,
             source,
             object_name: &object_name,
-            globals_root,
+            globals_root: None,
             implicit_record: None,
         };
         return match globals {
             Globals::None | Globals::OnStack => {
-                run_declaration(declaration, site(None), args, stack, ctx)
+                run_declaration(declaration, site, args, stack, ctx)
             }
-            Globals::Fresh => run_declaration(declaration, site(Some(root)), args, stack, ctx),
-            // The instance's globals sit under the call and are kept for its
-            // next call.
-            Globals::Instance(id, frame) => {
+            // The new instance has an id while the call runs, so an event
+            // it raises can pass it as `sender`, and is dropped after.
+            Globals::Fresh => {
+                ctx.next_codeunit_instance += 1;
+                let id = ctx.next_codeunit_instance;
+                let mut frame = CallFrame::new(&object_name, "<globals>");
+                bind_object_globals(root, source, &mut frame);
+                frame.instance = Some(id);
                 stack.push(frame);
                 ctx.active_instances.insert(id);
-                let result = run_declaration(declaration, site(None), args, stack, ctx);
+                let result = run_declaration(declaration, site, args, stack, ctx);
+                ctx.active_instances.remove(&id);
+                stack.pop();
+                result
+            }
+            // The instance's globals sit under the call and are kept for its
+            // next call.
+            Globals::Instance(id, mut frame) => {
+                frame.instance = Some(id);
+                stack.push(*frame);
+                ctx.active_instances.insert(id);
+                let result = run_declaration(declaration, site, args, stack, ctx);
                 ctx.active_instances.remove(&id);
                 if let Some(frame) = stack.pop() {
                     ctx.codeunit_instances.insert(id, frame);
@@ -173,6 +187,53 @@ pub(super) fn dispatch_workspace_procedure(
         receiver.map(|r| format!("{r}.")).unwrap_or_default(),
         procedure
     ))
+}
+
+/// The declaration among the same-named `candidates`, in source order, that a
+/// call with `args` runs: its parameter count matches and `check_param_type`
+/// accepts every argument. When several do, the one with the most arguments
+/// of exactly the declared type wins, then the first declared, so `Amount(1)`
+/// runs `Amount(A: Integer)` over `Amount(A: Decimal)`. A lone candidate is
+/// returned as it is, and `run_declaration` reports its mismatch.
+pub(super) fn choose_overload<'t>(
+    candidates: &[tree_sitter::Node<'t>],
+    source: &[u8],
+    procedure: &str,
+    args: &[Value],
+) -> Result<tree_sitter::Node<'t>, Eval> {
+    if let [only] = candidates {
+        return Ok(*only);
+    }
+    let mut chosen: Option<(usize, tree_sitter::Node<'t>)> = None;
+    for &candidate in candidates {
+        let params = collect_params(candidate, source);
+        let takes = params.len() == args.len()
+            && params
+                .iter()
+                .zip(args)
+                .all(|(param, arg)| check_param_type(arg, &param.type_name).is_none());
+        if !takes {
+            continue;
+        }
+        let exact = params
+            .iter()
+            .zip(args)
+            .filter(|(param, arg)| {
+                let base = param.type_name.split(['[', ' ']).next().unwrap_or_default();
+                base.eq_ignore_ascii_case(arg.type_name())
+            })
+            .count();
+        if chosen.is_none_or(|(best, _)| exact > best) {
+            chosen = Some((exact, candidate));
+        }
+    }
+    chosen.map(|(_, node)| node).ok_or_else(|| {
+        let types: Vec<&str> = args.iter().map(Value::type_name).collect();
+        eval_error(format!(
+            "no overload of '{procedure}' takes these arguments ({})",
+            types.join(", ")
+        ))
+    })
 }
 
 /// A procedure or trigger declaration ready to run.
@@ -401,7 +462,7 @@ enum Globals {
     Fresh,
     /// The stored globals of instance `id` (a codeunit variable's, or a
     /// `SingleInstance` codeunit's).
-    Instance(u64, CallFrame),
+    Instance(u64, Box<CallFrame>),
 }
 
 /// Where a call of `object` finds its globals: on the instance `instance`
@@ -441,7 +502,7 @@ fn globals_for_call(
                 bind_object_globals(object, source, &mut frame);
                 frame
             });
-            Globals::Instance(id, frame)
+            Globals::Instance(id, Box::new(frame))
         }
         None if !subscriber && stack.has_object_globals(object_name) => Globals::OnStack,
         None => Globals::Fresh,
@@ -517,8 +578,9 @@ fn raise_published_event(
         .unwrap_or("codeunit")
         .to_string();
     // With IncludeSender the subscriber's `sender` is the publishing
-    // codeunit, or for a table procedure the record it runs on, which a
-    // `var Sender: Record "X"` parameter shares.
+    // codeunit instance, whose globals the publisher reads, or for a table
+    // procedure the record it runs on, which a `var Sender: Record "X"`
+    // parameter shares.
     let sender = if !super::events::includes_sender(proc_node, source) {
         None
     } else if kind.eq_ignore_ascii_case("table") {
@@ -530,7 +592,7 @@ fn raise_published_event(
     } else {
         Some(Value::Codeunit {
             object_name: object_name.to_string(),
-            instance: None,
+            instance: stack.object_instance(object_name),
         })
     };
     let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();

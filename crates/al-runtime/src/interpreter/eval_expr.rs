@@ -10,6 +10,7 @@ use tree_sitter::Node;
 
 use super::error_info;
 use crate::interpreter::chain;
+use crate::interpreter::dispatch::table_code::{self, TableCode};
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::indexing;
 use crate::interpreter::records;
@@ -79,27 +80,23 @@ fn eval_expr_inner(
     ctx: &mut DispatchCtx,
 ) -> Eval {
     match node.kind() {
-        // Literal forms — the AL grammar uses `integer`, `decimal`, `string`
-        // as the actual node kinds (not `integer_literal` etc.).
-        "integer_literal" | "integer" => match utf8_text(node, source) {
+        // Literals: the grammar's kinds are `integer`, `decimal` and `string`.
+        "integer" => match utf8_text(node, source) {
             Some(t) => match int_literal_value(t) {
                 Some(v) => Eval::Normal(v),
                 None => Eval::Error(error_info(format!("malformed integer literal: {t}"))),
             },
             None => Eval::Error(error_info("invalid integer literal text")),
         },
-        "decimal_literal" | "decimal" => {
-            match utf8_text(node, source).and_then(|t| t.parse::<Decimal>().ok()) {
-                Some(n) => Eval::Normal(Value::Decimal(n)),
-                None => Eval::Error(error_info("malformed decimal literal")),
-            }
-        }
-        "boolean_literal" => eval_literal(node, source),
+        "decimal" => match utf8_text(node, source).and_then(|t| t.parse::<Decimal>().ok()) {
+            Some(n) => Eval::Normal(Value::Decimal(n)),
+            None => Eval::Error(error_info("malformed decimal literal")),
+        },
         // Date / Time / DateTime literals — `20240701D`, `063030T`. The
         // lexer tokenises these; evaluation maps them onto the day/ms carriers.
         "date_literal" => eval_date_literal(node, source),
         "time_literal" => eval_time_literal(node, source),
-        "string_literal" | "string" | "verbatim_string" => {
+        "string" | "verbatim_string" => {
             let text = utf8_text(node, source).unwrap_or("");
             Eval::Normal(Value::Text(unescape_al_string(text)))
         }
@@ -131,14 +128,17 @@ fn eval_expr_inner(
         // member as an ordinary expression so calls, enum scopes, variables,
         // and ranges use exactly the same semantics as expressions elsewhere.
         "bracketed_block" => eval_set_literal(node, source, stack, ctx),
-        "identifier" | "variable_reference" | "name" => match utf8_text(node, source) {
+        "identifier" | "name" => match utf8_text(node, source) {
             Some(name) => {
-                // Boolean keywords may appear as identifiers in some grammar versions.
+                // `true` and `false` parse as names.
                 match name.to_ascii_lowercase().as_str() {
                     "true" => return Eval::Normal(Value::Boolean(true)),
                     "false" => return Eval::Normal(Value::Boolean(false)),
                     _ => {}
                 }
+                // Declarations bind `"My Limit"` as `My Limit`.
+                let name = name.unquote_identifier();
+                let name = name.as_ref();
                 match stack.lookup(name) {
                     Some(v) => Eval::Normal(v.clone()),
                     // Niladic clock builtins may appear without parentheses
@@ -226,28 +226,6 @@ fn int_literal_value(text: &str) -> Option<Value> {
 
 fn named_child(node: Node<'_>, index: usize) -> Option<Node<'_>> {
     node.named_child(index)
-}
-
-fn eval_literal(node: Node<'_>, source: &[u8]) -> Eval {
-    let Some(text) = utf8_text(node, source) else {
-        return Eval::Error(error_info("invalid literal text"));
-    };
-    match node.kind() {
-        "integer_literal" => match int_literal_value(text) {
-            Some(v) => Eval::Normal(v),
-            None => Eval::Error(error_info(format!("malformed integer literal: {text}"))),
-        },
-        "decimal_literal" => match text.parse::<Decimal>() {
-            Ok(n) => Eval::Normal(Value::Decimal(n)),
-            Err(_) => Eval::Error(error_info(format!("malformed decimal literal: {text}"))),
-        },
-        "boolean_literal" => match text.eq_ignore_ascii_case("true") {
-            true => Eval::Normal(Value::Boolean(true)),
-            false => Eval::Normal(Value::Boolean(false)),
-        },
-        "string_literal" => Eval::Normal(Value::Text(unescape_al_string(text))),
-        other => Eval::Error(error_info(format!("unknown literal kind: {other}"))),
-    }
 }
 
 fn eval_unary(
@@ -557,6 +535,21 @@ fn eval_postfix(
         match stack.lookup(&recv) {
             Some(Value::Record(_)) => {
                 if let Some((table, handle)) = records::record_binding(&recv, stack, ctx) {
+                    // A record method or table procedure may drop its
+                    // parentheses too (`R.Insert;`, `if R.FindFirst then`).
+                    // A field of the same name wins.
+                    let method = records::supports_record_method(&field)
+                        || table_code::declares(ctx, &table.name, TableCode::Procedure(&field));
+                    if method && !records::declares_field(&table, &field, ctx) {
+                        return crate::interpreter::eval_stmt::eval_call_parts(
+                            Some(&recv),
+                            &field,
+                            None,
+                            source,
+                            stack,
+                            ctx,
+                        );
+                    }
                     return records::field_get(&table, handle, &field, ctx);
                 }
             }
@@ -1237,7 +1230,7 @@ fn extract_identifier_name(node: Node<'_>, source: &[u8]) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
         match child.kind() {
-            "identifier" | "name" | "variable_reference" => {
+            "identifier" | "name" => {
                 return child
                     .utf8_text(source)
                     .ok()

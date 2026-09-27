@@ -37,7 +37,11 @@ pub(crate) fn indexed_variable<'tree>(
     if primary.kind() != "primary_expression" || suffix.kind() != "index_suffix" {
         return None;
     }
-    let name = primary.named_child(0).filter(|n| n.kind() == "name")?;
+    // `Page[1]` or `Code[2]` on a variable named after a keyword parses the
+    // name as a keyword node.
+    let name = primary
+        .named_child(0)
+        .filter(|n| matches!(n.kind(), "name" | "object_keyword" | "type_keyword"))?;
     let text = name.utf8_text(source).ok()?;
     Some((text.unquote_identifier().to_ascii_lowercase(), suffix))
 }

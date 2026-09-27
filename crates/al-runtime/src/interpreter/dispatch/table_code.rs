@@ -16,7 +16,7 @@ use crate::interpreter::value::Value;
 
 use super::frames::{bind_object_globals, collect_params, collect_return};
 use super::workspace_procedure::{
-    object_has_global_declarations, run_declaration, Declaration, DeclarationSite,
+    choose_overload, object_has_global_declarations, run_declaration, Declaration, DeclarationSite,
 };
 use super::{DispatchCtx, MAX_RECURSION_DEPTH};
 
@@ -65,7 +65,20 @@ pub(crate) fn run_table_code(
     let (text, tree) = ctx.source.get_cached_parse(&path)?;
     let source = text.as_bytes();
     let object = find_table_object(tree.root_node(), source, &record.table_name)?;
-    let node = find_code(object, source, code)?;
+    let node = match code {
+        TableCode::Procedure(name) => {
+            let body = object.child_by_field_name("body")?;
+            let candidates = named_child_declarations(body, "procedure_declaration", name, source);
+            if candidates.is_empty() {
+                return None;
+            }
+            match choose_overload(&candidates, source, name, &args) {
+                Ok(node) => node,
+                Err(error) => return Some(error),
+            }
+        }
+        _ => find_code(object, source, code)?,
+    };
     if ctx.recursion_depth >= MAX_RECURSION_DEPTH {
         return Some(eval_error(format!(
             "call depth of {MAX_RECURSION_DEPTH} exceeded in table '{}'",
@@ -348,13 +361,29 @@ fn named_child_declaration<'t>(
     name: &str,
     source: &[u8],
 ) -> Option<tree_sitter::Node<'t>> {
+    named_child_declarations(body, kind, name, source)
+        .into_iter()
+        .next()
+}
+
+/// Every direct child of `body` of `kind` named `name`, in source order: the
+/// overloads of a procedure.
+fn named_child_declarations<'t>(
+    body: tree_sitter::Node<'t>,
+    kind: &str,
+    name: &str,
+    source: &[u8],
+) -> Vec<tree_sitter::Node<'t>> {
     let mut cursor = body.walk();
-    let found = body.named_children(&mut cursor).find(|child| {
-        child.kind() == kind
-            && child
-                .child_by_field_name("name")
-                .and_then(|node| node.utf8_text(source).ok())
-                .is_some_and(|text| text.unquote_identifier().eq_ignore_ascii_case(name))
-    });
+    let found = body
+        .named_children(&mut cursor)
+        .filter(|child| {
+            child.kind() == kind
+                && child
+                    .child_by_field_name("name")
+                    .and_then(|node| node.utf8_text(source).ok())
+                    .is_some_and(|text| text.unquote_identifier().eq_ignore_ascii_case(name))
+        })
+        .collect();
     found
 }
