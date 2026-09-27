@@ -47,12 +47,21 @@ jobs:
             scripts/*.sh \
             plugin/scripts/*.sh \
             plugin/evals/*.sh \
+            plugin/tests/*.sh \
             crates/al-test-harness/editor-e2e/*.sh \
             crates/al-test-harness/editor-e2e/container/*.sh \
             tree-sitter-al/tests/*.sh
 
       - name: Test cross-platform shell helper contracts
         run: bash scripts/test-use-api.sh
+
+      # Manifests, skill/agent frontmatter, and the al-fetch-release.sh /
+      # run.sh regression tests (R9-PLUGIN-1, R9-PLUGIN-2, R9-PLUGIN-3). Not
+      # platform-specific, so this runs once rather than on every OS in the
+      # matrix.
+      - name: Validate the Claude Code plugin
+        if: matrix.os == 'ubuntu-latest'
+        run: make plugin-validate
 
       - name: Cache cargo registry and build artifacts
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

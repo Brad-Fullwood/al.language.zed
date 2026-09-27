@@ -4,9 +4,8 @@
 # would otherwise fail: neither al-lsp nor al-explorer is on PATH or in the
 # plugin's own cache directory. Downloads the platform release archive,
 # verifies every file it contains against the release's published
-# binary-checksums.txt, and only then installs it. Nothing is made
-# executable, and nothing is added to the plugin's cache directory, before
-# its digest matches.
+# binary-checksums.txt, and only then installs it. Nothing reaches the
+# install directory before its digest matches.
 #
 # A message always goes to stderr. When there is something the calling
 # session should know (installed, or refused for an actionable reason), the
@@ -198,6 +197,16 @@ if ! tar -xzf "$archive_path" -C "$stage_dir"; then
 	exit 0
 fi
 
+# A symlink is neither a regular file nor a directory, so it is invisible to
+# the `find . -type f` below and would never be hashed: a symlinked al-lsp
+# would install unverified and unnoticed. Refuse the whole archive before any
+# hashing starts, the same way a missing digest does further down.
+bad_members="$(cd "$stage_dir" && find . ! -type f ! -type d)"
+if [ -n "$bad_members" ]; then
+	report "$asset_name from release $AL_PIN_RELEASE_TAG contains a member that is not a regular file or a directory; nothing was installed"
+	exit 0
+fi
+
 file_list="$work_dir/extracted-files.txt"
 (cd "$stage_dir" && find . -type f | sed 's|^\./||') | LC_ALL=C sort >"$file_list"
 if [ ! -s "$file_list" ]; then
@@ -231,6 +240,19 @@ if ! have_pair "$stage_dir"; then
 	report "$asset_name from release $AL_PIN_RELEASE_TAG has verified digests but is missing al-explorer or al-lsp at its root; nothing was installed"
 	exit 0
 fi
+
+# have_pair uses -x, which is true for a directory and for a symlink to an
+# executable, neither of which is a hashed, verified file. The member scan
+# above already refuses a symlink anywhere in the archive; check the two
+# binaries specifically, since a directory named al-lsp or al-explorer passes
+# that scan (a directory is a valid member type) but must not be installed
+# as if it were the verified file.
+for name in al-explorer al-lsp; do
+	if [ ! -f "$stage_dir/$name" ] || [ -L "$stage_dir/$name" ]; then
+		report "$asset_name from release $AL_PIN_RELEASE_TAG has $name as something other than a regular file at its root; nothing was installed"
+		exit 0
+	fi
+done
 
 chmod +x "$stage_dir/al-explorer" "$stage_dir/al-lsp"
 
