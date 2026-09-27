@@ -40,6 +40,11 @@ Agents in flight (dispatched 13:02):
   142aba6. Writes a `## Re-check 2026-09-27, round 9` section in `findings/docs-review.md`. Ends
   with `## Docs re-check complete`.
 
+- Round 11 review (A, D), Opus, dispatched 13:08: `.claude/worktrees/agent-r11`, branch
+  `campaign/r11-review` at 4c429ac5, scope `9e3f26a1..4c429ac5 -- crates plugin` (the security
+  round 5 fixes, the round 9 runtime and plugin fixes, the grammar move). Writes
+  `findings/r11-session-review.md`, ends with `## Review complete`.
+
 Merge order when they finish: A, then B (merge the campaign branch into B first if A touched the
 same lines), then text, docs, mutants. Gates on each merge, `cargo test -p al-test-harness
 --no-fail-fast` after the runtime merges. Then round 11 over `9e3f26a1..HEAD -- crates plugin`.
