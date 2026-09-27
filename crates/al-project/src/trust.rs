@@ -48,6 +48,7 @@ pub const ADVISORY_KEYS: &[&str] = &[
     "al.packageCachePath",
     "al.ruleSetPath",
     "al.useOnlyCustomFeeds",
+    UNHASHABLE_PATH_KEY,
     UNREADABLE_LAUNCH_KEY,
     "lsp.al-lsp.binary.arguments",
     "lsp.al-lsp.binary.env",
@@ -66,6 +67,16 @@ const LAUNCH_SERVER_KEY: &str = "launch configuration server";
 /// recorded under this key, so a record goes stale when the file changes, and
 /// [`TrustDecision::grant_refusal`] refuses a new record until the file is fixed.
 const UNREADABLE_LAUNCH_KEY: &str = "unreadable launch file";
+
+/// The key of the value that stands in for a path whose files the record
+/// cannot hash: a tree that holds a symbolic link, or more than
+/// `MAX_HASHED_ENTRIES` entries.
+///
+/// The loader follows a link and reads a tree of any size, so a hash that
+/// skipped either would vouch for files it never read. The path and the reason
+/// are recorded under this key, so an existing record goes stale, and
+/// [`TrustDecision::grant_refusal`] refuses a new record until the tree changes.
+const UNHASHABLE_PATH_KEY: &str = "path the record cannot hash";
 
 /// The name a message prints for `key`.
 #[must_use]
@@ -181,18 +192,35 @@ impl TrustDecision {
     ///
     /// A launch file the parser rejects names servers that a person reviewing
     /// the values cannot see, so a record over it would vouch for them unread.
+    /// A path whose tree holds a symbolic link or too many entries loads files
+    /// the record did not hash, so a record over it would vouch for those.
     #[must_use]
     pub fn grant_refusal(&self) -> Option<String> {
-        let unreadable = self
+        if let Some(unreadable) = self
             .privileged
             .iter()
-            .find(|setting| setting.key == UNREADABLE_LAUNCH_KEY)?;
+            .find(|setting| setting.key == UNREADABLE_LAUNCH_KEY)
+        {
+            return Some(format!(
+                "{} could not be read ({}), so the Business Central servers it names cannot be \
+                 listed for review. Nothing was recorded. Fix the file, then run \
+                 {TRUST_COMMAND} again.",
+                one_line(&unreadable.source),
+                one_line(&unreadable.value)
+            ));
+        }
+        let unhashable = self
+            .privileged
+            .iter()
+            .find(|setting| setting.key == UNHASHABLE_PATH_KEY)?;
         Some(format!(
-            "{} could not be read ({}), so the Business Central servers it names cannot be \
-             listed for review. Nothing was recorded. Fix the file, then run {TRUST_COMMAND} \
-             again.",
-            one_line(&unreadable.source),
-            one_line(&unreadable.value)
+            "{} (from {}). The trust record hashes every file a privileged path loads, and it \
+             does not follow a symbolic link or walk more than {MAX_HASHED_ENTRIES} entries, so \
+             it cannot vouch for this path. Nothing was recorded. Replace the link with the \
+             file it names, or move the file into a directory of its own, then run \
+             {TRUST_COMMAND} again.",
+            one_line(&unhashable.value),
+            one_line(&unhashable.source)
         ))
     }
 
@@ -402,31 +430,33 @@ fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), Con
 /// probing path. Recording the file's hash means a commit that replaces it
 /// makes the record stale, rather than loading new code under the old record.
 fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<PrivilegedSetting> {
-    let root = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
-    config
-        .code_analyzers
-        .iter()
-        .filter_map(|entry| {
-            let found = crate::analyzers::find_in_project(
-                entry,
-                project_root,
-                &config.assembly_probing_paths,
-            )?;
-            let relative = found
-                .strip_prefix(&root)
-                .unwrap_or(&found)
-                .display()
-                .to_string();
-            let contents = file_and_neighbours_sha256(&found, Beside::Assemblies);
-            Some(PrivilegedSetting::new(
-                "al.codeAnalyzers",
-                &format!("{} resolves to {relative} ({contents})", entry.trim()),
-                relative,
-            ))
-        })
-        .collect()
+    let root = canonical_root(project_root);
+    let mut settings = Vec::new();
+    for entry in &config.code_analyzers {
+        let Some(found) =
+            crate::analyzers::find_in_project(entry, project_root, &config.assembly_probing_paths)
+        else {
+            continue;
+        };
+        let relative = shown_within(&found, &root);
+        let mut unhashable = None;
+        let contents =
+            file_and_neighbours_sha256(&found, &root, Beside::Assemblies, &mut unhashable);
+        let value = format!("{} resolves to {relative}", entry.trim());
+        if let Some(reason) = unhashable {
+            settings.push(PrivilegedSetting::new(
+                UNHASHABLE_PATH_KEY,
+                &format!("{value}: {reason}"),
+                relative.clone(),
+            ));
+        }
+        settings.push(PrivilegedSetting::new(
+            "al.codeAnalyzers",
+            &format!("{value} ({contents})"),
+            relative,
+        ));
+    }
+    settings
 }
 
 /// The trust state of `project_root` for the values `ask` holds.
@@ -603,9 +633,10 @@ pub enum GrantError {
     Config(#[from] ConfigLoadError),
     #[error(transparent)]
     Store(#[from] TrustStoreError),
-    /// [`TrustDecision::grant_refusal`]'s message.
+    /// [`TrustDecision::grant_refusal`]'s message: a value the record cannot
+    /// vouch for, such as a launch file the parser rejects.
     #[error("{0}")]
-    UnreadableLaunchFile(String),
+    Refused(String),
 }
 
 /// Record `project_root` as trusted at the privileged values it holds now.
@@ -616,7 +647,7 @@ pub enum GrantError {
 pub fn grant(project_root: &Path) -> Result<TrustDecision, GrantError> {
     let decision = decide(project_root)?;
     if let Some(refusal) = decision.grant_refusal() {
-        return Err(GrantError::UnreadableLaunchFile(refusal));
+        return Err(GrantError::Refused(refusal));
     }
     trust_project(&decision.root, &decision.digest)?;
     Ok(decision)
@@ -645,24 +676,46 @@ fn stays_inside_project(path: &Path, project_root: &Path) -> bool {
     } else {
         project_root.join(path)
     };
-    let root = project_root
-        .canonicalize()
-        .unwrap_or_else(|_| project_root.to_path_buf());
+    let root = canonical_root(project_root);
+    let Some(normalised) = fold_dots(&absolute) else {
+        return false;
+    };
+    let resolved = resolve_deepest_existing(&normalised);
+    resolved.starts_with(&root) || resolved.starts_with(project_root)
+}
+
+/// `path` with `.` and `..` folded without reading the file system, or `None`
+/// when `..` climbs above the first component.
+fn fold_dots(path: &Path) -> Option<PathBuf> {
     let mut normalised = PathBuf::new();
-    for component in absolute.components() {
+    for component in path.components() {
         use std::path::Component;
         match component {
             Component::ParentDir => {
                 if !normalised.pop() {
-                    return false;
+                    return None;
                 }
             }
             Component::CurDir => {}
             other => normalised.push(other.as_os_str()),
         }
     }
-    let resolved = resolve_deepest_existing(&normalised);
-    resolved.starts_with(&root) || resolved.starts_with(project_root)
+    Some(normalised)
+}
+
+/// The canonical project root, or the root as given when it does not resolve.
+fn canonical_root(project_root: &Path) -> PathBuf {
+    project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf())
+}
+
+/// `path` relative to `root` when it is inside it, for a value or a message.
+fn shown_within(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 /// Whether `path`, written inside the project, resolves outside it through a
@@ -731,8 +784,9 @@ fn render_paths(paths: &[PathBuf]) -> String {
 /// with it.
 #[derive(Clone, Copy)]
 enum Beside {
-    /// An analyzer assembly. .NET resolves its references from its own
-    /// directory, so every `.dll` in that directory's tree is recorded.
+    /// An analyzer assembly. .NET resolves its references and its P/Invoke
+    /// native libraries (`.so`, `.dylib`) from its own directory, so every
+    /// regular file in that directory's tree is recorded.
     Assemblies,
     /// A `dotnet` muxer. It loads `host/fxr/<version>/` and
     /// `shared/<framework>/<version>/` from its own directory, so every file
@@ -751,7 +805,19 @@ enum Beside {
 /// alone, so a commit that replaced a DLL the analyzer references, or the
 /// runtime beside a `dotnet`, did the same. A path outside the project is
 /// the user's machine and stays as written.
-fn with_project_contents(value: &str, project_root: &Path, beside: Beside) -> String {
+///
+/// The path is resolved through symbolic links before anything is hashed,
+/// because the loader opens the target and reads its neighbours beside the
+/// target. When the resolved path differs from the one written, the value
+/// says where it resolves, so `trust --show` prints it and a commit that
+/// retargets the link changes the record. A tree the record cannot hash adds
+/// its reason to `unhashable`.
+fn with_project_contents(
+    value: &str,
+    project_root: &Path,
+    beside: Beside,
+    unhashable: &mut Vec<String>,
+) -> String {
     let path = Path::new(value.trim());
     let is_path = path.is_absolute() || value.contains(['/', '\\']);
     if !is_path || !stays_inside_project(path, project_root) {
@@ -762,26 +828,62 @@ fn with_project_contents(value: &str, project_root: &Path, beside: Beside) -> St
     } else {
         project_root.join(path)
     };
-    let contents = match std::fs::metadata(&absolute) {
-        Ok(metadata) if metadata.is_file() => file_and_neighbours_sha256(&absolute, beside),
-        Ok(metadata) if metadata.is_dir() => dll_tree_sha256(&absolute),
+    let Ok(resolved) = absolute.canonicalize() else {
+        return format!("{value} (not present)");
+    };
+    let root = canonical_root(project_root);
+    let mut problem = None;
+    let contents = match std::fs::metadata(&resolved) {
+        Ok(metadata) if metadata.is_file() => {
+            file_and_neighbours_sha256(&resolved, &root, beside, &mut problem)
+        }
+        Ok(metadata) if metadata.is_dir() => tree_sha256(&resolved, &root, &mut problem),
         _ => "not present".to_string(),
     };
-    format!("{value} ({contents})")
+    if let Some(reason) = problem {
+        unhashable.push(format!("{}: {reason}", value.trim()));
+    }
+    let written = fold_dots(&absolute);
+    let written_within = written.as_deref().and_then(|written| {
+        written
+            .strip_prefix(project_root)
+            .or_else(|_| written.strip_prefix(&root))
+            .ok()
+    });
+    if written_within.is_some() && written_within == resolved.strip_prefix(&root).ok() {
+        format!("{value} ({contents})")
+    } else {
+        format!(
+            "{value} (resolves to {}; {contents})",
+            shown_within(&resolved, &root)
+        )
+    }
 }
 
 /// The hash of `file`, and of what it loads from beside it.
-fn file_and_neighbours_sha256(file: &Path, beside: Beside) -> String {
+///
+/// `file` is already resolved, so its directory is the one the loader reads.
+/// `root` is the canonical project root, for the paths a reason names.
+fn file_and_neighbours_sha256(
+    file: &Path,
+    root: &Path,
+    beside: Beside,
+    unhashable: &mut Option<String>,
+) -> String {
     let own = file_sha256(file).unwrap_or_else(|| "unreadable".to_string());
     let Some(directory) = file.parent() else {
         return own;
     };
     match beside {
         Beside::Nothing => own,
-        Beside::Assemblies => format!("{own}; its directory: {}", dll_tree_sha256(directory)),
-        Beside::DotnetRuntime => {
-            format!("{own}; its runtime: {}", runtime_tree_sha256(directory))
-        }
+        Beside::Assemblies => format!(
+            "{own}; its directory: {}",
+            tree_sha256(directory, root, unhashable)
+        ),
+        Beside::DotnetRuntime => format!(
+            "{own}; its runtime: {}",
+            runtime_tree_sha256(directory, root, unhashable)
+        ),
     }
 }
 
@@ -793,47 +895,74 @@ fn file_sha256(path: &Path) -> Option<String> {
     Some(format!("sha256:{:x}", hasher.finalize()))
 }
 
-/// The most entries a probing directory is walked for, the same order of
-/// limit analyzer discovery applies.
+/// The most entries one tree is walked for, the same order of limit analyzer
+/// discovery applies. A tree over it cannot be recorded.
 const MAX_HASHED_ENTRIES: usize = 50_000;
 
-/// One hash over every `.dll` below `dir` that analyzer discovery could pick,
-/// by relative path and content, with the count.
-fn dll_tree_sha256(dir: &Path) -> String {
-    let is_dll = |path: &Path| {
-        path.extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("dll"))
-    };
-    let mut files = Vec::new();
-    if collect_files(dir, true, &is_dll, &mut files).is_err() {
-        return "too many files to hash".to_string();
+/// Why a tree cannot be hashed.
+enum Unhashable {
+    /// The walk of this directory passed `MAX_HASHED_ENTRIES`.
+    TooManyEntries(PathBuf),
+    /// A symbolic link. The loader follows it and the walk does not, so a
+    /// commit could change what it names without changing anything hashed.
+    Link(PathBuf),
+}
+
+impl Unhashable {
+    fn describe(&self, root: &Path) -> String {
+        match self {
+            Unhashable::TooManyEntries(directory) => format!(
+                "{} holds more than {MAX_HASHED_ENTRIES} entries",
+                shown_within(directory, root)
+            ),
+            Unhashable::Link(path) => {
+                format!("{} is a symbolic link", shown_within(path, root))
+            }
+        }
     }
-    format!("{} .dll files, {}", files.len(), files_sha256(dir, files))
+}
+
+/// One hash over every regular file below `dir`, by relative path and
+/// content, with the count, or the reason it cannot be hashed.
+fn tree_sha256(dir: &Path, root: &Path, unhashable: &mut Option<String>) -> String {
+    let mut files = Vec::new();
+    match collect_files(dir, true, &mut files) {
+        Ok(()) => format!("{} files, {}", files.len(), files_sha256(dir, files)),
+        Err(reason) => not_hashed(&reason, root, unhashable),
+    }
 }
 
 /// One hash over every file beside a `dotnet` muxer and every file below its
-/// `host` and `shared` directories, with the count.
-fn runtime_tree_sha256(dir: &Path) -> String {
-    let any = |_: &Path| true;
+/// `host` and `shared` directories, with the count, or the reason it cannot
+/// be hashed.
+fn runtime_tree_sha256(dir: &Path, root: &Path, unhashable: &mut Option<String>) -> String {
     let mut files = Vec::new();
-    let collected = collect_files(dir, false, &any, &mut files)
-        .and_then(|()| collect_files(&dir.join("host"), true, &any, &mut files))
-        .and_then(|()| collect_files(&dir.join("shared"), true, &any, &mut files));
-    if collected.is_err() {
-        return "too many files to hash".to_string();
+    let collected = collect_files(dir, false, &mut files)
+        .and_then(|()| collect_files(&dir.join("host"), true, &mut files))
+        .and_then(|()| collect_files(&dir.join("shared"), true, &mut files));
+    match collected {
+        Ok(()) => format!("{} files, {}", files.len(), files_sha256(dir, files)),
+        Err(reason) => not_hashed(&reason, root, unhashable),
     }
-    format!("{} files, {}", files.len(), files_sha256(dir, files))
 }
 
-/// Push every regular file in `dir` that `keep` accepts onto `files`, below
-/// `dir` too when `recursive`. `Err` when the walk passes
-/// `MAX_HASHED_ENTRIES`. A directory that cannot be read adds nothing.
-fn collect_files(
-    dir: &Path,
-    recursive: bool,
-    keep: &dyn Fn(&Path) -> bool,
-    files: &mut Vec<PathBuf>,
-) -> Result<(), ()> {
+/// The recorded text for a tree that cannot be hashed, with its reason kept
+/// for the refusal.
+fn not_hashed(reason: &Unhashable, root: &Path, unhashable: &mut Option<String>) -> String {
+    let described = reason.describe(root);
+    let text = format!("not hashed, {described}");
+    *unhashable = Some(described);
+    text
+}
+
+/// Push every regular file in `dir` onto `files`, below `dir` too when
+/// `recursive`. A directory that cannot be read adds nothing.
+///
+/// `Err` for a symbolic link anywhere in the walk, and when the walk passes
+/// `MAX_HASHED_ENTRIES`. The walk used to skip a link and to return a fixed
+/// text past the cap, so a link beside an analyzer, or a file in a tree of
+/// 50,001 entries, could change under a record that still matched.
+fn collect_files(dir: &Path, recursive: bool, files: &mut Vec<PathBuf>) -> Result<(), Unhashable> {
     let mut stack = vec![dir.to_path_buf()];
     let mut inspected = 0usize;
     while let Some(directory) = stack.pop() {
@@ -843,17 +972,20 @@ fn collect_files(
         for entry in entries.flatten() {
             inspected += 1;
             if inspected > MAX_HASHED_ENTRIES {
-                return Err(());
+                return Err(Unhashable::TooManyEntries(dir.to_path_buf()));
             }
             let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             let path = entry.path();
+            if file_type.is_symlink() {
+                return Err(Unhashable::Link(path));
+            }
             if file_type.is_dir() {
                 if recursive {
                     stack.push(path);
                 }
-            } else if file_type.is_file() && keep(&path) {
+            } else if file_type.is_file() {
                 files.push(path);
             }
         }
@@ -887,6 +1019,7 @@ fn privileged_changes(
         ask.settings
             .push(PrivilegedSetting::new(key, &value, source));
     };
+    let mut unhashable = Vec::new();
 
     ask.analyzers = candidate
         .code_analyzers
@@ -899,7 +1032,9 @@ fn privileged_changes(
         let value = ask
             .analyzers
             .iter()
-            .map(|entry| with_project_contents(entry, project_root, Beside::Assemblies))
+            .map(|entry| {
+                with_project_contents(entry, project_root, Beside::Assemblies, &mut unhashable)
+            })
             .collect::<Vec<_>>()
             .join(", ");
         record(&mut ask, "al.codeAnalyzers", value);
@@ -943,6 +1078,7 @@ fn privileged_changes(
                     &path.display().to_string(),
                     project_root,
                     Beside::Assemblies,
+                    &mut unhashable,
                 )
             })
             .collect::<Vec<_>>()
@@ -988,6 +1124,10 @@ fn privileged_changes(
     if candidate.use_only_custom_feeds && !base.use_only_custom_feeds {
         ask.use_only_custom_feeds = true;
         record(&mut ask, "al.useOnlyCustomFeeds", "true".to_string());
+    }
+
+    for reason in unhashable {
+        record(&mut ask, UNHASHABLE_PATH_KEY, reason);
     }
 
     ask
@@ -1272,19 +1412,23 @@ fn executable_path_privileges(
             continue;
         }
         ask.executable_paths.push(path.to_string());
-        ask.settings.push(PrivilegedSetting::new(
-            key,
-            &with_project_contents(
-                path,
-                project_root,
-                if key == "al.dotnetPath" {
-                    Beside::DotnetRuntime
-                } else {
-                    Beside::Nothing
-                },
-            ),
-            source,
-        ));
+        let mut unhashable = Vec::new();
+        let recorded = with_project_contents(
+            path,
+            project_root,
+            if key == "al.dotnetPath" {
+                Beside::DotnetRuntime
+            } else {
+                Beside::Nothing
+            },
+            &mut unhashable,
+        );
+        ask.settings
+            .push(PrivilegedSetting::new(key, &recorded, source));
+        for reason in unhashable {
+            ask.settings
+                .push(PrivilegedSetting::new(UNHASHABLE_PATH_KEY, &reason, source));
+        }
     }
 
     // The command line, the environment and the initialization options each
@@ -2329,10 +2473,7 @@ mod tests {
         assert!(refusal.contains(".zed/debug.json"), "{refusal}");
         assert!(refusal.contains("Bogus"), "{refusal}");
         let error = grant(project.path()).expect_err("no record over an unreadable file");
-        assert!(
-            matches!(error, GrantError::UnreadableLaunchFile(_)),
-            "{error}"
-        );
+        assert!(matches!(error, GrantError::Refused(_)), "{error}");
         assert_eq!(decide(project.path()).unwrap().state, TrustState::Stale);
         assert!(authorize_cached_credential(
             project.path(),
@@ -2770,6 +2911,204 @@ mod tests {
             "tools/dotnet/dotnet",
             "tools/dotnet/shared/Microsoft.NETCore.App/8.0.0/System.Private.CoreLib.dll",
         );
+    }
+
+    fn write_file(root: &Path, relative: &str, bytes: &[u8]) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn link(root: &Path, relative: &str, target: &str) {
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(target, path).unwrap();
+    }
+
+    /// The loader follows a link to its target and resolves references from
+    /// the target's directory. The record hashed the directory the link sits
+    /// in, which held no `.dll`, so a commit that replaced a DLL beside the
+    /// target left the record trusted.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_analyzer_path_is_hashed_where_it_resolves() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#);
+        let root = project.path();
+        write_file(root, "vendor/TeamCop.dll", b"reviewed analyzer");
+        write_file(root, "vendor/TeamCop.Rules.dll", b"reviewed dependency");
+        link(root, "tools/TeamCop.dll", "../vendor/TeamCop.dll");
+
+        let granted = grant(root).unwrap();
+        let analyzers = granted
+            .privileged
+            .iter()
+            .find(|setting| setting.key == "al.codeAnalyzers")
+            .unwrap();
+        assert!(
+            analyzers.display_line().contains("vendor/TeamCop.dll"),
+            "trust --show prints where the path resolves: {}",
+            analyzers.display_line()
+        );
+
+        write_file(
+            root,
+            "vendor/TeamCop.Rules.dll",
+            b"replaced by a later commit",
+        );
+        assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+    }
+
+    /// The walk skipped a link beside the analyzer, and the loader follows it.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_beside_an_analyzer_blocks_a_grant_and_stales_the_record() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#);
+        let root = project.path();
+        write_file(root, "tools/TeamCop.dll", b"reviewed analyzer");
+        write_file(root, "vendor/Rules.dll", b"reviewed dependency");
+        grant(root).unwrap();
+
+        link(root, "tools/TeamCop.Rules.dll", "../vendor/Rules.dll");
+
+        let decision = decide(root).unwrap();
+        assert_eq!(decision.state, TrustState::Stale);
+        let refusal = decision
+            .grant_refusal()
+            .expect("a tree with a link cannot be recorded");
+        assert!(refusal.contains("symbolic link"), "{refusal}");
+        assert!(refusal.contains("tools/TeamCop.Rules.dll"), "{refusal}");
+        assert!(matches!(grant(root), Err(GrantError::Refused(_))));
+        assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+    }
+
+    /// The muxer finds `host/fxr` and `shared` beside the file it resolves to.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_dotnet_is_hashed_with_the_runtime_beside_its_target() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#);
+        let root = project.path();
+        write_file(root, "vendor/dotnet/dotnet", b"reviewed muxer");
+        write_file(
+            root,
+            "vendor/dotnet/host/fxr/8.0.0/libhostfxr.so",
+            b"reviewed hostfxr",
+        );
+        link(root, "tools/dotnet/dotnet", "../../vendor/dotnet/dotnet");
+
+        let granted = grant(root).unwrap();
+        let dotnet = granted
+            .privileged
+            .iter()
+            .find(|setting| setting.key == "al.dotnetPath")
+            .unwrap();
+        assert!(
+            dotnet.value.contains("vendor/dotnet/dotnet"),
+            "{}",
+            dotnet.value
+        );
+
+        write_file(
+            root,
+            "vendor/dotnet/host/fxr/8.0.0/libhostfxr.so",
+            b"replaced",
+        );
+        assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+    }
+
+    /// A link to a directory inside the runtime was skipped the same way.
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_directory_in_the_runtime_blocks_a_grant() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#);
+        let root = project.path();
+        write_file(root, "tools/dotnet/dotnet", b"reviewed muxer");
+        write_file(root, "vendor/fxr/8.0.0/libhostfxr.so", b"reviewed hostfxr");
+        link(root, "tools/dotnet/host/fxr", "../../../vendor/fxr");
+
+        let error = grant(root).expect_err("a runtime with a link cannot be recorded");
+        let GrantError::Refused(refusal) = error else {
+            panic!("{error}");
+        };
+        assert!(refusal.contains("tools/dotnet/host/fxr"), "{refusal}");
+    }
+
+    /// .NET resolves a P/Invoke from the calling assembly's directory, so a
+    /// native library beside an analyzer is loaded with it on Linux and macOS.
+    #[test]
+    fn a_replaced_native_library_beside_an_analyzer_path_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#,
+            "tools/TeamCop.dll",
+            "tools/libTeamNative.so",
+        );
+    }
+
+    #[test]
+    fn a_replaced_native_library_beside_a_named_analyzer_makes_the_record_stale() {
+        assert_a_replaced_sibling_makes_the_record_stale(
+            r#"{"al.codeAnalyzers": ["TeamCop"]}"#,
+            "packages/teamcop/1.0.0/TeamCop.dll",
+            "packages/teamcop/1.0.0/runtimes/linux-x64/native/libTeamNative.so",
+        );
+    }
+
+    fn pad(root: &Path, relative: &str, count: usize) {
+        let directory = root.join(relative);
+        std::fs::create_dir_all(&directory).unwrap();
+        for index in 0..count {
+            std::fs::write(directory.join(index.to_string()), b"").unwrap();
+        }
+    }
+
+    /// A tree over the entry cap used to be recorded as the fixed text "too
+    /// many files to hash", so nothing under it could make the record stale.
+    #[test]
+    fn a_runtime_over_the_entry_cap_blocks_a_grant_and_stales_the_record() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#);
+        let root = project.path();
+        write_file(root, "tools/dotnet/dotnet", b"reviewed muxer");
+        write_file(
+            root,
+            "tools/dotnet/host/fxr/8.0.0/libhostfxr.so",
+            b"reviewed hostfxr",
+        );
+        grant(root).unwrap();
+
+        pad(root, "tools/dotnet/shared/pad", MAX_HASHED_ENTRIES + 1);
+
+        let decision = decide(root).unwrap();
+        assert_eq!(decision.state, TrustState::Stale);
+        let refusal = decision
+            .grant_refusal()
+            .expect("a tree over the cap cannot be recorded");
+        assert!(refusal.contains("./tools/dotnet/dotnet"), "{refusal}");
+        assert!(
+            refusal.contains(&MAX_HASHED_ENTRIES.to_string()),
+            "{refusal}"
+        );
+        assert!(matches!(grant(root), Err(GrantError::Refused(_))));
+    }
+
+    #[test]
+    fn an_analyzer_tree_over_the_entry_cap_blocks_a_grant() {
+        let _config = ScratchConfig::new();
+        let project = project_with_settings(r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#);
+        let root = project.path();
+        write_file(root, "tools/TeamCop.dll", b"reviewed analyzer");
+        pad(root, "tools/docs", MAX_HASHED_ENTRIES + 1);
+
+        let error = grant(root).expect_err("a tree over the cap cannot be recorded");
+        let GrantError::Refused(refusal) = error else {
+            panic!("{error}");
+        };
+        assert!(refusal.contains("./tools/TeamCop.dll"), "{refusal}");
+        assert_eq!(decide(root).unwrap().state, TrustState::Untrusted);
     }
 
     /// A file that appears after the project was trusted changes the record

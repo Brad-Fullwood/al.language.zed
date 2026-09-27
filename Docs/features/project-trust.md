@@ -151,14 +151,27 @@ until you run `trust` a second time. `al-explorer trust --show` reports that as 
 A privileged value that is a path into the project names a file the repository ships, and
 the file is what runs. For an analyzer path, `al.dotnetPath`, `binary.path` and each
 analyzer name that resolves to a DLL under `.netpackages`, `packages` or a relative probing
-path, the recorded value carries the file's SHA-256, and for a probing directory inside the
-project one hash over every `.dll` below it. The record also covers what the file loads from
-beside it: for an analyzer, one hash over every `.dll` in its directory and below, since .NET
-resolves an analyzer's references from its own directory, and for `al.dotnetPath`, one hash
-over every file beside the muxer and every file under its `host` and `shared` directories,
-where it finds `hostfxr` and the framework. `trust --show` prints those hashes. A commit
-that replaces one of those files, or adds one where the record saw none, makes the record
-`stale`. A path outside the project is the user's machine and is recorded as written.
+path, the path is first resolved through any symbolic link, since the loader opens the target
+and reads its neighbours beside the target. The recorded value carries the resolved file's
+SHA-256 and, when the path is a link, where it resolves. For a probing directory inside the
+project it carries one hash over every file below it. The record also covers what the file
+loads from beside it: for an analyzer, one hash over every file in its directory and below,
+since .NET resolves an analyzer's references and its native libraries (`.so`, `.dylib`) from
+its own directory, and for `al.dotnetPath`, one hash over every file beside the muxer and
+every file under its `host` and `shared` directories, where it finds `hostfxr` and the
+framework. `trust --show` prints the resolved paths and the hashes. A commit that replaces one
+of those files, adds one where the record saw none, or points a link somewhere else makes the
+record `stale`. An analyzer at the project root puts every file in the project into its
+record, so keep an analyzer in a directory of its own. A path outside the project is the
+user's machine and is recorded as written.
+
+A tree the record cannot hash is not recorded. The walk does not follow a symbolic link
+inside the tree, because the loader does and a commit could change the target without
+changing any file the walk reads. It also stops after 50,000 entries. A path whose tree holds
+a link or more entries than that is recorded as `path the record cannot hash`, with the path
+and the reason, so an existing record goes stale, and `al-explorer trust` refuses to record
+the project until the link is replaced by the file it names or the file moves to a directory
+of its own.
 
 ## Settings you wrote yourself
 
