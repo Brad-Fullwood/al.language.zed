@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 02:55 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 03:06 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -21,14 +21,12 @@ Merged 02:46: `campaign/fix-r8-review` (12b1778a, six findings, `SCHEMA_VERSION`
 `campaign/test-mutants` (58781aa7, tests for `lint.rs` and `mock/record.rs`). Grammar gates on
 cc31863 all pass (tree-sitter test, 46,389 of 46,389 corpus files, crate and generator tests,
 package, wasm, drift). The grammar is pushed to its `campaign/2026-09-21`, and the submodule
-pointer and `extension.toml` rev moved (4c1b0ae6). Superproject gates on 4c1b0ae6 run in the
-background (`.campaign/run-gates.sh`, results in `.campaign/gate-status.txt`). Push after they pass.
+pointer and `extension.toml` rev moved (4c1b0ae6). Gates on 4c1b0ae6: 94 suites, 5261 passed, 0
+failed. Merged 03:00: `campaign/fix-r7-review` (fac24900, the last three findings, all 15 fixed).
+Gates on fac24900: 94 suites, 5291 passed, 0 failed. Both pushed.
 
 Agents in flight (dispatched 02:48 to 02:58):
 
-- Round 7 fixes (A, D), Opus: worktree `.claude/worktrees/agent-fix-r7`, branch
-  `campaign/fix-r7-review`. Commits the BLOG-3 fix, fixes DOC-2 and DOC-1, merges the campaign
-  branch, runs its crate gates.
 - Runtime fixes (A, F), Opus: worktree `.claude/worktrees/agent-fix-r8b`, branch
   `campaign/fix-r8-runtime`: R8-RT-3 (a table publisher passes its record as `Sender`), GR2-2
   (variables named after keywords), GR2-3 (signed case labels), GR2-5 (bare integer subscriber
@@ -106,10 +104,10 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 
 | # | Workstream | Progress | Next step |
 |---|------------|----------|-----------|
-| A | Correctness: review rounds, triage, fixes with a failing test first | Rounds 1 to 7 fixed or queued. Round 7: 12 of 15 fixed, agent on the 3. Round 8: 13 findings, 12 merged (a1afe8e6, bd76f89f, 12b1778a), agent on RT-3 and the call graph item. Round 9 reviewer dispatched 2026-09-27 02:48 | Merge `campaign/fix-r7-review` and `campaign/fix-r8-runtime`, then fix round 9 |
+| A | Correctness: review rounds, triage, fixes with a failing test first | Rounds 1 to 7 fixed or queued. Round 7: 15 of 15 fixed and merged (fac24900). Round 8: 13 findings, 12 merged (a1afe8e6, bd76f89f, 12b1778a), agent on RT-3 and the call graph item. Round 9 reviewer dispatched 2026-09-27 02:48 | Merge `campaign/fix-r8-runtime`, then fix round 9 |
 | B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | Done 2026-09-26 (`findings/audit-backlog-triage.md`): 253 rows, 249 fixed with the commit or code named, 3 open (queued above), 1 unclear. The round 9 reviewer spot-checks ten `fixed` rows | Act on the spot-check |
 | C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 11 merged 2026-09-26 (re-score: overall 80.2 unchanged, strict 79.9 to 79.6 as the scan surface grew, `findings/desloppify.md` section 5, `desloppify scan` is unreliable with sibling worktrees active). 2026-09-24: test modules split out of six large files, rustdoc warnings 46 to 0 (CI gated), bulk-fix errors typed | The 63 deferred items (typed RPC boundary is the largest), batch 10 (async locking) done, remaining file splits (`resolution.rs` 2754 lines, `dispatch.rs` 3243, `tests_dispatch.rs` 4216, `lsp.rs` 3415, `native_dap.rs` 3636), a holistic desloppify review to re-score the subjective dimensions |
-| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Four review rounds (8, 19, 10, 14 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint, trust digest over analyzer and dotnet file hashes, credential authorisation on every DAP and test path | Windows named pipe owner check. A fifth round over what changed after 2026-09-26 |
+| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Four review rounds (8, 19, 10, 14 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint, trust digest over analyzer and dotnet file hashes, credential authorisation on every DAP and test path. Round 7's eight security findings merged 2026-09-27 (fac24900): the launch file the strict parser rejects stales the record, the legacy proxy judges a named server as on-premises, no download into a linked `.alpackages`, built-in analyzer names resolve to the toolchain, the record hashes what an analyzer or dotnet loads from beside it, the digest mismatch refusal prints no digest, a revoke during a settings change holds, `--validate` judges trust on the real folder | Windows named pipe owner check. A fifth round over the trust changes in fac24900 |
 | E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal. `cargo mutants` 7 of 10 files merged (7e4c02f3, 58781aa7, `findings/mutants.md`), agent on the last three. Snapshot flake agent on its second attempt | Merge the rest of `campaign/test-mutants` and `campaign/fix-snapshot-flake`, make `al-test/backends/snapshot.rs` testable |
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review fixed 10 of 11 plus three items found while fixing. 2026-09-26: the seven shared query files are byte-identical in both places and the Makefile checks it. Corpus round 2 merged 2026-09-27: grammar cc31863 (12 commits, corpus tests for every construct the interpreter runs, GR2-1 scanner fix), pointer and `extension.toml` rev moved (4c1b0ae6). GR2-2, GR2-3, GR2-5 with the runtime agent | GR2-4, then a grammar round on what round 9 finds |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Plugin, daemon projection, free-ids, compact answers merged. Persisted dependency source index merged 2026-09-26: second start 23.6 s to 1.25 s, peak memory 2.8 GB to 371 MB, and the follow-up (builder fixture hash in the key, shared store with a 1 GiB limit, sorted rows). Plugin leftovers merged 2026-09-26 (cf0f794c): `plugin/evals/` with 12 ground-truth cases and `make plugin-evals`, a SessionStart hook that downloads and checksum-verifies a release archive | Haiku runs for `bc-test-locally`, `bc-upgrade-impact`, `bc-cop-fixer`, a run on a project with `.alpackages`, a release with `binary-checksums.txt` |
@@ -141,6 +139,7 @@ round on the areas with the most findings.
 
 ## Done
 
+- 2026-09-27 round 7 complete and merged (fac24900, `findings/r7-session-review.md`, 15 of 15): the eight security items above, one trust decision per analyzer resolution, `object` and `byId` find every object of a multi-object file, the MCP description names `waitForMembers`, projected rows keep `partial` and `partial_reason`, help examples say `al-explorer` and the fish completion file is named for the binary, the dispatch doc names the recursion constant.
 - 2026-09-27 grammar corpus round 2 merged (`findings/grammar-corpus-r2.md`, grammar cc31863, pointer 4c1b0ae6): corpus tests with field names for JSON, labels, table triggers, events, enums, record methods, builtins and test codeunits, every interpreter and router source parses with no stray ERROR node, the scanner keeps an attribute on a modified member after a var section (GR2-1). Four interpreter items found (GR2-2 to GR2-5).
 - 2026-09-27 round 8 second batch merged (12b1778a): tables, enums and codeunits found by kind, `DeleteAll` and `ModifyAll` raise the table events per row and reach subscribers in the router, `ReadFrom` gives a JSON variable a new node, JSON failures follow statement position, `SelectToken` follows filters, `..` and `*` and refuses slices and unions (the router sends those live), typed getters honour `DefaultIfNotFound`, `SCHEMA_VERSION` 4. Mutation tests for `lint.rs` and `mock/record.rs` merged (58781aa7).
 - 2026-09-26 round 8 multi-object fixes merged (bd76f89f): per-object effect sites in the dependency summaries (transaction lint credits the right object), native DAP breakpoints resolve to the object around the line, one `object_at_line` rule for the daemon and `--dap`, `SCHEMA_VERSION` 3.

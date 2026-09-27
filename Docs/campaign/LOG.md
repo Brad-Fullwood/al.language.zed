@@ -383,3 +383,16 @@ Append-only. Newest entry last.
 - Five agents dispatched at 02:48 (`STATE.md`): round 7 fixes (the last three), runtime fixes
   (RT-3, GR2-2, GR2-3, GR2-5, the OnValidate call graph item), the snapshot flake (second attempt),
   mutants on the last three files, the round 9 review with ten audit triage spot-checks.
+
+## 2026-09-27 03:06 BST: gates green on the grammar move, round 7 complete and merged
+
+- Gates on 4c1b0ae6 (the round 8 batch, the mutation tests, grammar cc31863): fmt, release, both
+  clippy runs and rustdoc clean, 94 suites, 5261 passed, 0 failed, 10 ignored. Pushed. CI on PR 32
+  was green on every job for the previous push (131ebdd5).
+- The round 7 fix agent finished the last three: projected rows keep `partial` and
+  `partial_reason` and a name a partial row lacks goes in `absentFields` (BLOG-3), the 31 help
+  examples say `al-explorer` and the fish completion example writes `al-explorer.fish` (DOC-2),
+  the dispatch module doc names `MAX_RECURSION_DEPTH` (DOC-1). Merged `campaign/fix-r7-review`
+  (fac24900, 15 of 15). Gates on the merge: clean, 94 suites, 5291 passed, 0 failed, 10 ignored.
+  Pushed. The fix-r7 and fix-r8 worktrees removed (`git worktree remove` refuses a worktree with a
+  submodule, so `rm -rf` and `git worktree prune`), 34 GB free.
