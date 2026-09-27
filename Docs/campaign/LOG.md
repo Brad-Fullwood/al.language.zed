@@ -507,3 +507,12 @@ Append-only. Newest entry last.
   semantics, and the plugin round 5 fixes. Nine coverage items, ends with `## Review complete`.
 - Earlier entries this morning carried clock times about twenty minutes ahead of the machine's
   clock (the orchestrator estimated them). Corrected to the times in the git log.
+
+## 2026-09-27 08:27 BST: grammar a108400 pushed, pointer moved, gates green
+
+- Grammar gates on a108400 (the GR2-4 merge): 103 of 103 corpus tests, 46,389 of 46,389 corpus
+  files parse, 20 crate tests, 16 generator tests, package, wasm and drift all pass. Pushed to the
+  grammar's `campaign/2026-09-21`. Submodule pointer and `extension.toml` rev moved (b3d5121b).
+- Superproject gates on b3d5121b (the new parser through the path dependency, the interactive
+  session's List and Dictionary work, the plugin fixes): fmt, release, both clippy runs and rustdoc
+  clean, 94 suites, 5304 passed, 0 failed, 10 ignored. Pushed.
