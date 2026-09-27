@@ -5147,6 +5147,39 @@ fn record_methods_without_parentheses_run() {
     );
 }
 
+const KEYWORD_NAMED_INDEXES: &str = r#"codeunit 50450 "Keyword Indexes"
+{
+    procedure Indexes(): Text
+    var
+        Page: Text;
+        Code: Code[10];
+        Value: array[3] of Integer;
+        Letter: Text;
+    begin
+        Page := 'abc';
+        Page[1] := 'x';
+        Code := 'AB';
+        Letter := Code[2];
+        Value[2] := 5;
+        exit(Page + '|' + Format(Letter) + '|' + Format(Value[2]));
+    end;
+}
+"#;
+
+/// A variable named after an object or type keyword can be indexed. The
+/// grammar gives its name as `object_keyword` or `type_keyword`, which the
+/// index read and write did not accept (GR3-2).
+#[test]
+fn variables_named_after_keywords_can_be_indexed() {
+    let result = run(
+        &[("/ws/KeywordIndexes.al", KEYWORD_NAMED_INDEXES)],
+        "Keyword Indexes",
+        "Indexes",
+        vec![],
+    );
+    assert_eq!(ok(result), Value::Text("xbc|B|5".into()));
+}
+
 const SIGNED_CASE_LABELS: &str = r#"codeunit 50286 "Signed Labels"
 {
     procedure ByInteger(X: Integer): Integer
