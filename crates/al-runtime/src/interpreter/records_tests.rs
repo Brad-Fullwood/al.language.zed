@@ -5163,6 +5163,48 @@ fn negative_range_labels_and_a_spaced_minus_match() {
     }
 }
 
+const QUOTED_VARIABLE_NAMES: &str = r#"codeunit 50447 "Quoted Names"
+{
+    procedure ByLocal(X: Integer): Integer
+    var
+        "My Limit": Integer;
+    begin
+        "My Limit" := 4;
+        case X of
+            -"My Limit":
+                exit(1);
+            "My Limit":
+                exit(2);
+        end;
+        exit(-"My Limit" * 10);
+    end;
+
+    procedure ByParameter("Line No.": Integer): Integer
+    begin
+        exit("Line No." + 1);
+    end;
+}
+"#;
+
+/// A quoted variable or parameter name reads its value, also as a case
+/// label with a leading minus. The read looked the name up with its quotes
+/// and failed with `unbound identifier`.
+#[test]
+fn quoted_variable_names_read_their_value() {
+    let call = |proc: &str, arg: i64| {
+        ok(run(
+            &[("/ws/Quoted.al", QUOTED_VARIABLE_NAMES)],
+            "Quoted Names",
+            proc,
+            vec![Value::Integer(arg)],
+        ))
+    };
+    assert_eq!(call("ByLocal", -4), Value::Integer(1));
+    assert_eq!(call("ByLocal", 4), Value::Integer(2));
+    assert_eq!(call("ByLocal", 0), Value::Integer(-40));
+    assert_eq!(call("ByParameter", 10000), Value::Integer(10001));
+}
+
 const ID_BOUND_PUBLISHER: &str = r#"codeunit 50287 "Id Publisher"
 {
     procedure Raise(): Integer

@@ -139,6 +139,9 @@ fn eval_expr_inner(
                     "false" => return Eval::Normal(Value::Boolean(false)),
                     _ => {}
                 }
+                // Declarations bind `"My Limit"` as `My Limit`.
+                let name = name.unquote_identifier();
+                let name = name.as_ref();
                 match stack.lookup(name) {
                     Some(v) => Eval::Normal(v.clone()),
                     // Niladic clock builtins may appear without parentheses
