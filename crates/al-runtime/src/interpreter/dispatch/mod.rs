@@ -10,8 +10,8 @@
 //!    UpperCase, IndexOf).
 //! 3. **Workspace procedures** — looks up the procedure in the workspace file
 //!    index by receiver/object name, finds the `procedure_declaration` node,
-//!    and executes its body via `eval_stmt`. Recursion depth is capped at 100.
-
+//!    and executes its body via `eval_stmt`. Recursion depth is capped at
+//!    `MAX_RECURSION_DEPTH`.
 //!
 //! The call path lives in [`routing`] and [`workspace_procedure`], the local
 //! and global bindings a call frame needs in [`frames`], and the inline
@@ -390,5 +390,22 @@ mod tests {
         let mut ctx = DispatchCtx::new_pure(ws);
         ctx.deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
         assert!(!ctx.deadline_exceeded());
+    }
+
+    /// The module doc gave the call cap as 100 while the constant was 512.
+    /// A doc that names the constant stays right when the number changes.
+    #[test]
+    fn the_module_doc_names_the_call_cap_by_its_constant() {
+        let doc: Vec<&str> = include_str!("mod.rs")
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .take_while(|line| line.starts_with("//!"))
+            .map(|line| line.trim_start_matches("//!").trim())
+            .collect();
+        let doc = doc.join(" ");
+        assert!(
+            doc.contains("Recursion depth is capped at `MAX_RECURSION_DEPTH`"),
+            "{doc}"
+        );
     }
 }
