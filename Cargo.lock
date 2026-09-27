@@ -290,6 +290,7 @@ dependencies = [
  "al-syntax",
  "al-types",
  "getrandom 0.4.2",
+ "indexmap",
  "proptest",
  "rust_decimal",
  "rust_decimal_macros",

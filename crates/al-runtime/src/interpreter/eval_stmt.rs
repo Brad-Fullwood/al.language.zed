@@ -411,7 +411,9 @@ fn eval_foreach(
     };
 
     let items = match list_val {
-        Value::List(v) | Value::Array(v) => v,
+        // A snapshot: the body may change the list it walks.
+        Value::List(v) => v.snapshot(),
+        Value::Array(v) => v,
         other => {
             return Eval::Error(error_info(format!(
                 "foreach: expected List or Array, got {}",

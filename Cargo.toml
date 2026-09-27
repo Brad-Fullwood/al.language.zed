@@ -73,6 +73,7 @@ regex = "1"
 libc = "0.2"
 # `dec!(…)` literal macro — dev/test ergonomics only.
 rust_decimal_macros = "1"
+indexmap = "2"
 tree-sitter = "0.25"
 # `serde` is needed by al-analysis and unions across the graph anyway.
 url = { version = "2", features = ["serde"] }

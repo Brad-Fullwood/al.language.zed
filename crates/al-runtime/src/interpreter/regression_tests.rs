@@ -259,7 +259,7 @@ mod tests {
         let body = find_proc_body(root, bytes).expect("body");
         let mut stack = ScopeStack::new();
         let mut frame = CallFrame::new("Regression", "Test");
-        frame.bind("labels", Value::List(vec![]));
+        frame.bind("labels", Value::list(vec![]));
         frame.bind("first", Value::Text(String::new()));
         stack.push(frame);
         let mut ctx = ctx();

@@ -1329,6 +1329,136 @@ fn list_method_wrong_arity_is_rejected() {
     assert!(message.contains("expects no arguments"), "got: {message}");
 }
 
+const SHARED_COLLECTIONS: &str = r#"codeunit 50301 "Shared Collections"
+{
+    procedure AssignedListIsShared(): Integer
+    var
+        First: List of [Integer];
+        Second: List of [Integer];
+    begin
+        First.Add(1);
+        Second := First;
+        Second.Add(2);
+        exit(First.Count());
+    end;
+
+    procedure ValueParameterShares(): Integer
+    var
+        Items: List of [Integer];
+    begin
+        AddTwo(Items);
+        exit(Items.Count());
+    end;
+
+    local procedure AddTwo(Items: List of [Integer])
+    begin
+        Items.Add(1);
+        Items.Add(2);
+    end;
+
+    procedure GetRangeCopies(): Text
+    var
+        First: List of [Integer];
+        Copy: List of [Integer];
+    begin
+        First.AddRange(1, 2, 3);
+        Copy := First.GetRange(1, First.Count());
+        Copy.Add(4);
+        exit(Format(First.Count()) + '/' + Format(Copy.Count()));
+    end;
+
+    procedure EmptyGetRange(): Integer
+    var
+        First: List of [Integer];
+        Copy: List of [Integer];
+    begin
+        Copy := First.GetRange(1, First.Count());
+        exit(Copy.Count());
+    end;
+
+    procedure RangeMethods(): Text
+    var
+        Items: List of [Text];
+        Other: List of [Text];
+        Item: Text;
+        Result: Text;
+    begin
+        Items.AddRange('a', 'b', 'c', 'b');
+        Other.Add('z');
+        Items.AddRange(Other);
+        Items.AddRange(Items);
+        Items.RemoveRange(2, 5);
+        Items.Reverse();
+        foreach Item in Items do
+            Result += Item;
+        exit(Result + Format(Items.LastIndexOf('b')));
+    end;
+
+    procedure DictionaryIsShared(): Integer
+    var
+        First: Dictionary of [Code[10], Integer];
+        Second: Dictionary of [Code[10], Integer];
+    begin
+        First.Add('A', 1);
+        Second := First;
+        Second.Add('B', 2);
+        exit(First.Count());
+    end;
+
+    procedure KeysKeepTypeAndOrder(): Integer
+    var
+        Totals: Dictionary of [Integer, Integer];
+        Key: Integer;
+        Result: Integer;
+    begin
+        Totals.Add(10, 1);
+        Totals.Add(2, 1);
+        Totals.Add(7, 1);
+        Totals.Remove(2);
+        Totals.Add(2, 1);
+        foreach Key in Totals.Keys() do
+            Result := Result * 100 + Key;
+        exit(Result);
+    end;
+}
+"#;
+
+/// A List or Dictionary was copied on assignment and by-value parameter
+/// passing, where BC shares one instance: both are reference types.
+#[test]
+fn lists_and_dictionaries_are_reference_types() {
+    let probe = |proc: &str| {
+        ok(run(
+            &[("/ws/Shared.al", SHARED_COLLECTIONS)],
+            "Shared Collections",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(probe("AssignedListIsShared"), Value::Integer(2));
+    assert_eq!(probe("ValueParameterShares"), Value::Integer(2));
+    assert_eq!(probe("GetRangeCopies"), Value::Text("3/4".into()));
+    assert_eq!(probe("EmptyGetRange"), Value::Integer(0));
+    assert_eq!(probe("DictionaryIsShared"), Value::Integer(2));
+}
+
+/// AddRange, GetRange, RemoveRange, Reverse and LastIndexOf, and Dictionary
+/// keys that keep their type and insertion order.
+#[test]
+fn list_range_methods_and_typed_dictionary_keys() {
+    let probe = |proc: &str| {
+        ok(run(
+            &[("/ws/Shared.al", SHARED_COLLECTIONS)],
+            "Shared Collections",
+            proc,
+            vec![],
+        ))
+    };
+    // a b c b z a b c b z -> remove 5 from 2 -> a b c b z -> reversed.
+    assert_eq!(probe("RangeMethods"), Value::Text("zbcba4".into()));
+    assert_eq!(probe("KeysKeepTypeAndOrder"), Value::Integer(100702));
+}
+
 #[test]
 fn compound_assignment_to_record_field_accumulates() {
     // Regression: `Rec.Amount += 5` must store Amount + 5, not the raw RHS.
@@ -2686,7 +2816,7 @@ const CHAIN_PROBE: &str = r#"codeunit 50190 Chain
     var
         S: Text;
     begin
-        exit(S.Split(',').Reverse());
+        exit(Format(S.Trim().IndexOfAny('x')));
     end;
 }
 "#;
@@ -2711,7 +2841,7 @@ fn chained_calls_apply_every_step_in_order() {
     assert_eq!(ok(chain("ElementCharacter")), Value::Text("d".into()));
     let unsupported = error_message(chain("UnsupportedStep"));
     assert!(
-        unsupported.contains("List.Reverse in a chained call is not supported"),
+        unsupported.contains("Text.IndexOfAny in a chained call is not supported"),
         "{unsupported}"
     );
 }

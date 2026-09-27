@@ -13,9 +13,51 @@
 //!  * structured: Option, Record, RecordRef, Variant, Array, List, Dict,
 //!    Blob, Stream, ErrorInfo
 
-use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub use rust_decimal::Decimal;
+
+/// The entries of an AL `Dictionary`, in insertion order: the normalised
+/// key text maps to the key as given and its value.
+pub type DictEntries = indexmap::IndexMap<String, (Value, Value)>;
+
+/// The contents of an AL reference type (`List`, `Dictionary`): cloning the
+/// handle shares the contents, as assigning the AL variable does.
+///
+/// Values cross to the test runner's thread, hence `Arc<Mutex>`. Hold one
+/// guard at a time: locking the same contents twice deadlocks.
+#[derive(Debug, Default)]
+pub struct Shared<T>(Arc<Mutex<T>>);
+
+impl<T> Clone for Shared<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T> Shared<T> {
+    pub fn new(contents: T) -> Self {
+        Self(Arc::new(Mutex::new(contents)))
+    }
+
+    /// The contents, locked until the guard drops.
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        // A panic while locked leaves the contents as they were; use them.
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether both handles name the same contents.
+    pub fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl<T: Clone> Shared<T> {
+    /// A copy of the contents, detached from the handle.
+    pub fn snapshot(&self) -> T {
+        self.lock().clone()
+    }
+}
 
 /// AL `Date` carrier: days since 0001-01-01.
 pub type AlDate = i64;
@@ -130,9 +172,12 @@ pub enum Value {
     Variant(Box<Value>),
     /// AL `array[N]` of homogeneous values.
     Array(Vec<Value>),
-    List(Vec<Value>),
-    /// AL `Dictionary of [K, V]` — keyed by serialised K.
-    Dict(BTreeMap<String, Value>),
+    /// AL `List of [T]`. A reference type: copies of the value, and a
+    /// parameter passed without `var`, share one list.
+    List(Shared<Vec<Value>>),
+    /// AL `Dictionary of [K, V]` — keyed by serialised K. A reference type
+    /// like `List`.
+    Dict(Shared<DictEntries>),
     /// AL `Blob` / `InStream` / `OutStream` — raw bytes.
     Blob(Vec<u8>),
     /// AL `ErrorInfo` — structured error captured by `asserterror` / `Error`.
@@ -261,11 +306,16 @@ impl Ord for Value {
                 (a.table_id, &a.table_name, a.handle).cmp(&(b.table_id, &b.table_name, b.handle))
             }
             (Variant(a), Variant(b)) => a.cmp(b),
-            (Array(a), Array(b)) | (List(a), List(b)) => a.cmp(b),
-            (Dict(a), Dict(b)) => a
-                .iter()
-                .collect::<Vec<_>>()
-                .cmp(&b.iter().collect::<Vec<_>>()),
+            (Array(a), Array(b)) => a.cmp(b),
+            (List(a), List(b)) if a.same(b) => Ordering::Equal,
+            (List(a), List(b)) => a.snapshot().cmp(&b.snapshot()),
+            (Dict(a), Dict(b)) if a.same(b) => Ordering::Equal,
+            (Dict(a), Dict(b)) => {
+                let (a, b) = (a.snapshot(), b.snapshot());
+                a.values()
+                    .collect::<Vec<_>>()
+                    .cmp(&b.values().collect::<Vec<_>>())
+            }
             (Blob(a), Blob(b)) => a.cmp(b),
             (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
             (
@@ -428,6 +478,16 @@ impl Value {
         }
     }
 
+    /// A new `List` holding `items`.
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::List(Shared::new(items))
+    }
+
+    /// A new `Dictionary` holding `entries`.
+    pub fn dict(entries: DictEntries) -> Value {
+        Value::Dict(Shared::new(entries))
+    }
+
     /// Short type-name for diagnostic output. Stable identifiers; do not
     /// depend on these for parsing.
     pub fn type_name(&self) -> &'static str {
@@ -472,6 +532,7 @@ impl Value {
 mod tests {
     use super::*;
     use rust_decimal_macros::dec;
+    use std::collections::BTreeMap;
 
     #[test]
     fn truthiness_is_strict() {
@@ -634,8 +695,8 @@ mod tests {
             }),
             Value::Variant(Box::new(Value::Null)),
             Value::Array(vec![]),
-            Value::List(vec![]),
-            Value::Dict(BTreeMap::new()),
+            Value::list(vec![]),
+            Value::dict(DictEntries::new()),
             Value::Blob(vec![]),
             Value::ErrorInfo(Box::new(ErrorInfo {
                 message: String::new(),
@@ -716,21 +777,22 @@ mod tests {
             Value::Array(vec![Value::Integer(1)])
                 < Value::Array(vec![Value::Integer(1), Value::Integer(0)])
         );
-        assert!(Value::List(vec![Value::Integer(1)]) < Value::List(vec![Value::Integer(2)]));
+        assert!(Value::list(vec![Value::Integer(1)]) < Value::list(vec![Value::Integer(2)]));
         assert!(Value::Blob(vec![1, 2]) < Value::Blob(vec![1, 3]));
         assert!(Value::Blob(vec![1]) < Value::Blob(vec![1, 0]));
     }
 
     #[test]
     fn dict_ordering_compares_entry_sequences() {
-        let mut a = BTreeMap::new();
-        a.insert("k1".to_string(), Value::Integer(1));
-        let mut b = BTreeMap::new();
-        b.insert("k1".to_string(), Value::Integer(2));
-        assert!(Value::Dict(a.clone()) < Value::Dict(b));
+        let key = |text: &str| Value::Text(text.to_string());
+        let mut a = DictEntries::new();
+        a.insert("k1".to_string(), (key("k1"), Value::Integer(1)));
+        let mut b = DictEntries::new();
+        b.insert("k1".to_string(), (key("k1"), Value::Integer(2)));
+        assert!(Value::dict(a.clone()) < Value::dict(b));
         let mut c = a.clone();
-        c.insert("k2".to_string(), Value::Integer(0));
-        assert!(Value::Dict(a) < Value::Dict(c));
+        c.insert("k2".to_string(), (key("k2"), Value::Integer(0)));
+        assert!(Value::dict(a) < Value::dict(c));
     }
 
     #[test]
@@ -772,8 +834,8 @@ mod tests {
         assert_eq!(Value::Guid(String::new()).type_name(), "Guid");
         assert_eq!(Value::Variant(Box::new(Value::Null)).type_name(), "Variant");
         assert_eq!(Value::Array(vec![]).type_name(), "Array");
-        assert_eq!(Value::List(vec![]).type_name(), "List");
-        assert_eq!(Value::Dict(BTreeMap::new()).type_name(), "Dict");
+        assert_eq!(Value::list(vec![]).type_name(), "List");
+        assert_eq!(Value::dict(DictEntries::new()).type_name(), "Dict");
         assert_eq!(Value::Blob(vec![]).type_name(), "Blob");
         assert_eq!(
             Value::Record(RecordValue {

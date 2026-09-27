@@ -1067,13 +1067,13 @@ fn run(
             ctx.var_writebacks.push((1, token));
             Ok(Value::Boolean(true))
         }
-        (JsonKind::Object, "keys", Node::Object(entries)) => Ok(Value::List(
+        (JsonKind::Object, "keys", Node::Object(entries)) => Ok(Value::list(
             entries
                 .into_iter()
                 .map(|(key, _)| Value::Text(key))
                 .collect(),
         )),
-        (JsonKind::Object, "values", Node::Object(entries)) => Ok(Value::List(
+        (JsonKind::Object, "values", Node::Object(entries)) => Ok(Value::list(
             entries
                 .into_iter()
                 .map(|(_, child)| arena.reference(JsonKind::Token, child))

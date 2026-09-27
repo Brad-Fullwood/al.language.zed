@@ -327,29 +327,60 @@ end;
 #[test]
 fn unsupported_list_method_routes_to_live_bc() {
     let workspace = Workspace::new();
-    workspace.file_index.add_file(
-        std::path::PathBuf::from("/tmp/ListRoutingTests.Codeunit.al"),
-        r#"codeunit 50166 "List Routing Tests"
-{
+    for (id, name, body) in [
+        (50166, "Unsupported", "Values.Sort();"),
+        (50168, "VarRange", "Values.GetRange(1, 0, Copy);"),
+        (
+            50169,
+            "ReturnedRange",
+            "Values.AddRange(1, 2);\n    Copy := Values.GetRange(1, 2);\n    Copy.Reverse();",
+        ),
+    ] {
+        workspace.file_index.add_file(
+            std::path::PathBuf::from(format!("/tmp/{name}.Codeunit.al")),
+            format!(
+                r#"codeunit {id} "{name}"
+{{
 Subtype = Test;
 [Test]
-procedure UsesUnsupportedListMethod()
+procedure {name}()
 var Values: List of [Integer];
+    Copy: List of [Integer];
 begin
-    Values.Reverse();
+    {body}
 end;
-}"#
-        .to_string(),
-    );
-    let result = classify_all(&workspace).unwrap().remove(0);
-    assert_eq!(result.decision, RoutingDecision::LiveBc);
-    assert!(
-        result
-            .reasons
+}}"#
+            ),
+        );
+    }
+    let results = classify_all(&workspace).unwrap();
+    let decision = |name: &str| {
+        results
             .iter()
-            .any(|reason| reason.message.contains("unsupported List.Reverse")),
-        "unexpected reasons: {:?}",
-        result.reasons
+            .find(|result| result.method_name == name)
+            .unwrap_or_else(|| panic!("{name} was not classified"))
+    };
+    for (name, reason) in [
+        ("Unsupported", "unsupported List.Sort"),
+        ("VarRange", "List.GetRange with a var result list"),
+    ] {
+        let result = decision(name);
+        assert_eq!(result.decision, RoutingDecision::LiveBc, "{name}");
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|found| found.message.contains(reason)),
+            "{name}: unexpected reasons: {:?}",
+            result.reasons
+        );
+    }
+    let returned = decision("ReturnedRange");
+    assert_ne!(
+        returned.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        returned.reasons
     );
 }
 

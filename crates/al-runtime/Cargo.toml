@@ -20,6 +20,8 @@ getrandom = { workspace = true }
 rust_decimal = { workspace = true }
 # JsonObject.ReadFrom parses JSON text.
 serde_json = { workspace = true }
+# Dictionary values keep their keys in insertion order, as in BC.
+indexmap = { workspace = true }
 
 [dev-dependencies]
 al-types = { path = "../al-types", version = "0.1.0" }

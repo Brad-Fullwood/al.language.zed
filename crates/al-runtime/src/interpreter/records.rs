@@ -2388,7 +2388,20 @@ fn descend_to_postfix(node: Node<'_>) -> Option<Node<'_>> {
 pub fn supports_list_method(method: &str) -> bool {
     matches!(
         method.to_ascii_lowercase().as_str(),
-        "add" | "get" | "count" | "contains" | "indexof" | "insert" | "remove" | "removeat" | "set"
+        "add"
+            | "addrange"
+            | "get"
+            | "getrange"
+            | "count"
+            | "contains"
+            | "indexof"
+            | "lastindexof"
+            | "insert"
+            | "remove"
+            | "removeat"
+            | "removerange"
+            | "reverse"
+            | "set"
     )
 }
 
@@ -2403,10 +2416,61 @@ pub(crate) fn dispatch_list_method(
     let Some(slot) = stack.lookup_mut(recv) else {
         return eval_error(format!("list variable '{recv}' is not bound"));
     };
-    let Value::List(items) = slot else {
+    let Value::List(list) = slot else {
         return eval_error(format!("'{recv}' is not a List"));
     };
+    let list = list.clone();
+    // `AddRange(Other)` adds Other's elements. Read them before the list is
+    // locked: `L.AddRange(L)` doubles L.
+    let args = match (lower.as_str(), args.as_slice()) {
+        ("addrange", [Value::List(other)]) => other.snapshot(),
+        _ => args,
+    };
+    // Comparing with the list itself would lock it twice.
+    if args
+        .iter()
+        .any(|arg| matches!(arg, Value::List(other) if other.same(&list)))
+    {
+        return eval_error(format!(
+            "List.{method} with the list itself as an argument is not supported by the local runtime"
+        ));
+    }
+    let mut items = list.lock();
     match lower.as_str() {
+        "addrange" if !args.is_empty() => {
+            items.extend(args);
+            Eval::Normal(Value::Empty)
+        }
+        "addrange" => eval_error("List.AddRange expects at least one value or a List"),
+        "getrange" => match list_range("List.GetRange", &args, items.len()) {
+            Ok(range) => Eval::Normal(Value::list(items[range].to_vec())),
+            Err(error) => eval_error(error),
+        },
+        "removerange" => match list_range("List.RemoveRange", &args, items.len()) {
+            Ok(range) => {
+                items.drain(range);
+                Eval::Normal(Value::Boolean(true))
+            }
+            Err(error) => eval_error(error),
+        },
+        "reverse" if args.is_empty() => {
+            items.reverse();
+            Eval::Normal(Value::Empty)
+        }
+        "reverse" => eval_error("List.Reverse expects no arguments"),
+        "lastindexof" => match args.as_slice() {
+            [needle] => {
+                let position = items.iter().rposition(|item| item == needle);
+                match position.map(|position| i64::try_from(position + 1)) {
+                    Some(Ok(position)) => Eval::Normal(Value::Integer(position)),
+                    Some(Err(_)) => {
+                        eval_error("List.LastIndexOf result exceeds the supported Integer range")
+                    }
+                    None => Eval::Normal(Value::Integer(0)),
+                }
+            }
+            _ => eval_error("List.LastIndexOf expects exactly one value"),
+        },
         "add" if args.len() == 1 => {
             items.push(args[0].clone());
             Eval::Normal(Value::Boolean(true))
@@ -2488,6 +2552,28 @@ pub(crate) fn dispatch_list_method(
         },
         other => eval_error(format!("unsupported List method: {other}")),
     }
+}
+
+/// The 0-based range `(index, count)` names in a list of `len` elements, for
+/// `GetRange` and `RemoveRange`. The var-parameter form of `GetRange` runs
+/// live only.
+fn list_range(method: &str, args: &[Value], len: usize) -> Result<std::ops::Range<usize>, String> {
+    let (index, count) = match args {
+        [Value::Integer(index), Value::Integer(count)] => (*index, *count),
+        _ => return Err(format!("{method} expects an Integer index and count")),
+    };
+    let start = index
+        .checked_sub(1)
+        .and_then(|start| usize::try_from(start).ok());
+    let range = start
+        .zip(usize::try_from(count).ok())
+        .and_then(|(start, count)| {
+            let end = start.checked_add(count)?;
+            (end <= len).then_some(start..end)
+        });
+    range.ok_or_else(|| {
+        format!("{method}: index {index} and count {count} are out of range for {len} elements")
+    })
 }
 
 fn list_index(method: &str, args: &[Value], len: usize) -> Result<usize, String> {
@@ -2610,7 +2696,7 @@ pub(crate) fn dispatch_text_method(
                 }
             }
             if separators.is_empty() {
-                return Eval::Normal(Value::List(vec![Value::Text(s)]));
+                return Eval::Normal(Value::list(vec![Value::Text(s)]));
             }
             let mut parts = vec![s];
             for sep in &separators {
@@ -2623,7 +2709,7 @@ pub(crate) fn dispatch_text_method(
                     })
                     .collect();
             }
-            Eval::Normal(Value::List(parts.into_iter().map(Value::Text).collect()))
+            Eval::Normal(Value::list(parts.into_iter().map(Value::Text).collect()))
         }
         "trim" | "trimstart" | "trimend" => {
             if !args.is_empty() {
@@ -2866,7 +2952,10 @@ pub(crate) fn dict_lookup(
     let Some(Value::Dict(entries)) = stack.lookup(recv) else {
         return Err(format!("'{recv}' is not a Dictionary"));
     };
-    Ok(entries.get(&dict_key(key)?).cloned())
+    Ok(entries
+        .lock()
+        .get(&dict_key(key)?)
+        .map(|(_, value)| value.clone()))
 }
 
 /// Serialise a dictionary key value into the `Dict` map's string key space.
@@ -2882,6 +2971,10 @@ fn dict_key(value: &Value) -> Result<String, String> {
         Value::Time(t) => format!("T{t}"),
         Value::DateTime(dt) => format!("DT{dt}"),
         Value::Guid(g) => g.to_uppercase(),
+        Value::Char(c) => format!("C{c}"),
+        Value::Option {
+            type_name, ordinal, ..
+        } => format!("O{}:{ordinal}", type_name.to_ascii_lowercase()),
         other => {
             return Err(format!(
                 "Dictionary keys of type {} are not supported by the local runtime",
@@ -2903,18 +2996,20 @@ pub(crate) fn dispatch_dict_method(
     let Some(slot) = stack.lookup_mut(recv) else {
         return eval_error(format!("dictionary variable '{recv}' is not bound"));
     };
-    let Value::Dict(entries) = slot else {
+    let Value::Dict(dict) = slot else {
         return eval_error(format!("'{recv}' is not a Dictionary"));
     };
+    let dict = dict.clone();
+    let mut entries = dict.lock();
     match lower.as_str() {
         "add" => match args.as_slice() {
             [key, value] => match dict_key(key) {
                 Ok(key_text) => match entries.entry(key_text) {
-                    std::collections::btree_map::Entry::Occupied(_) => {
+                    indexmap::map::Entry::Occupied(_) => {
                         eval_error("Dictionary.Add: the key already exists")
                     }
-                    std::collections::btree_map::Entry::Vacant(slot) => {
-                        slot.insert(value.clone());
+                    indexmap::map::Entry::Vacant(slot) => {
+                        slot.insert((key.clone(), value.clone()));
                         Eval::Normal(Value::Empty)
                     }
                 },
@@ -2925,7 +3020,7 @@ pub(crate) fn dispatch_dict_method(
         "set" => match args.as_slice() {
             [key, value] => match dict_key(key) {
                 Ok(key_text) => {
-                    entries.insert(key_text, value.clone());
+                    entries.insert(key_text, (key.clone(), value.clone()));
                     Eval::Normal(Value::Empty)
                 }
                 Err(error) => eval_error(error),
@@ -2935,7 +3030,7 @@ pub(crate) fn dispatch_dict_method(
         "get" => match args.as_slice() {
             [key] => match dict_key(key) {
                 Ok(key_text) => match entries.get(&key_text) {
-                    Some(value) => Eval::Normal(value.clone()),
+                    Some((_, value)) => Eval::Normal(value.clone()),
                     None => eval_error("Dictionary.Get: the key does not exist"),
                 },
                 Err(error) => eval_error(error),
@@ -2954,7 +3049,9 @@ pub(crate) fn dispatch_dict_method(
         },
         "remove" => match args.as_slice() {
             [key] => match dict_key(key) {
-                Ok(key_text) => Eval::Normal(Value::Boolean(entries.remove(&key_text).is_some())),
+                Ok(key_text) => {
+                    Eval::Normal(Value::Boolean(entries.shift_remove(&key_text).is_some()))
+                }
                 Err(error) => eval_error(error),
             },
             _ => eval_error("Dictionary.Remove expects exactly one key"),
@@ -2972,15 +3069,17 @@ pub(crate) fn dispatch_dict_method(
             if !args.is_empty() {
                 return eval_error("Dictionary.Keys expects no arguments");
             }
-            Eval::Normal(Value::List(
-                entries.keys().cloned().map(Value::Text).collect(),
+            Eval::Normal(Value::list(
+                entries.values().map(|(key, _)| key.clone()).collect(),
             ))
         }
         "values" => {
             if !args.is_empty() {
                 return eval_error("Dictionary.Values expects no arguments");
             }
-            Eval::Normal(Value::List(entries.values().cloned().collect()))
+            Eval::Normal(Value::list(
+                entries.values().map(|(_, value)| value.clone()).collect(),
+            ))
         }
         other => eval_error(format!("unsupported Dictionary method: {other}")),
     }
@@ -3019,10 +3118,10 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
         }
     }
     if lower.starts_with("list of") {
-        return Some(Value::List(Vec::new()));
+        return Some(Value::list(Vec::new()));
     }
     if lower.starts_with("dictionary of") {
-        return Some(Value::Dict(std::collections::BTreeMap::new()));
+        return Some(Value::dict(Default::default()));
     }
     if lower == "variant" {
         return Some(Value::Variant(Box::new(Value::Null)));
