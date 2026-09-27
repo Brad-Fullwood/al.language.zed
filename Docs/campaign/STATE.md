@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 08:27 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 08:30 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -51,6 +51,13 @@ the round 9 runtime agent once it merges the campaign branch.
 
 Merged 08:16: `campaign/fix-r9-plugin` (7cd0a904, R9-PLUGIN-1 to 3 fixed, shell test in `make
 plugin-validate`, which CI now runs).
+
+- Grammar corpus round 3 (F), Opus, dispatched 08:27: `.claude/worktrees/grammar-gr2-4`, grammar
+  branch `campaign/gr-corpus-r3` from a108400. Corpus tests for List and Dictionary, glued sign
+  operators (`X:=-1`, `A*-1`), keyword-named variables, case labels after GR2-4, the round 8 and 9
+  table and codeunit shapes, and every node kind the interpreter and router read. Writes
+  `findings/grammar-corpus-r3.md` in the main checkout (the orchestrator commits it), ends with
+  `## Corpus round complete`.
 
 Next in this session: merge each branch as it completes, gates on the merge, push. After the
 round 9 fixes merge: the docs re-check (H) for table globals, `Clear` and subscriber instances,
