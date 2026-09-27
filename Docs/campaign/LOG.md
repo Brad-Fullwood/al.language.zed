@@ -582,3 +582,22 @@ Append-only. Newest entry last.
   child modules, 257 al-project and 724 al-lsp lib tests with the same names. The
   `inputs_fingerprint` comment now says up to seven `stat` calls, which matches the doc corrected
   in the re-check. Gates on the merge in progress.
+
+## 2026-09-27 13:40 BST: round 11 review merged, three fix agents, security round 6 and plugin round 6 out
+
+- Gates on b5c05341 (the splits): 93 suites, 5343 passed, 0 failed. Pushed (14381c32).
+- Round 11 review merged (16514e84): 7 findings over the security round 5 fixes, the round 9
+  fixes and the grammar move. Medium: a user settings analyzer path that resolves into the
+  project loads a file the record does not list (the round 5 rule covered bare names only), and
+  Microsoft's deployment library reads `authentication` with `Enum.TryParse(ignoreCase)`, so
+  `" Windows"`, `"2"`, `"3"` and `"AAD,Windows"` mean Windows or UserPassword to it while the proxy
+  judges them online and forwards them without trust (checked with a .NET 8 probe against the
+  library). Low: an unreadable settings file leaves `AL_DOTNET_PATH` on the project's `dotnet`,
+  nested table code of two records of one table binds the wrong globals, an array element as a
+  `var` target is dropped silently, the eval runner reports a mismatched al-lsp as wrong answers,
+  and writing rule breaches. No merge damage in the five merges. Ten scratch tests saved as
+  `.campaign/r11-scratch-tests.patch`.
+- Dispatched: round 11 fixes on three branches (security, runtime, plugin and text), security
+  round 6 (links in the trust inputs, proxy key folding, the summary store, hostile AL in the local
+  runtime, daemon methods since round 4, plugin scripts, terminal escapes), plugin round 6 runs.
+  The mutants agent is still on the formatting module.
