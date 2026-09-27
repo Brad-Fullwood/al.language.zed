@@ -4952,6 +4952,7 @@ const KEPT_MEMBER: &str = r#"table 50420 "Kept Member"
         Strict: Boolean;
         HideDialog: Boolean;
         Inserted: Integer;
+        Deleted: Integer;
 
     trigger OnInsert()
     begin
@@ -4965,6 +4966,18 @@ const KEPT_MEMBER: &str = r#"table 50420 "Kept Member"
         if Strict then
             Error('strict modify');
         Stamp := 'S';
+    end;
+
+    trigger OnDelete()
+    var
+        Log: Record "Kept Log";
+    begin
+        if Strict then
+            Error('strict delete');
+        Deleted += 1;
+        Log."Entry No." := Log.Count() + 1;
+        Log.Deleted := Deleted;
+        Log.Insert();
     end;
 
     procedure SetStrict()
@@ -4988,6 +5001,20 @@ const KEPT_MEMBER: &str = r#"table 50420 "Kept Member"
         Reset();
         exit(Strict);
     end;
+}
+"#;
+
+const KEPT_LOG: &str = r#"table 50422 "Kept Log"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Deleted; Integer) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
 }
 "#;
 
@@ -5065,19 +5092,42 @@ const KEPT_PROBE: &str = r#"codeunit 50421 "Kept Probe"
         Member.Get('A');
         exit(Member.Name + Member.Stamp);
     end;
+
+    procedure DeleteAllSharesOneFreshCopy(): Text
+    var
+        Member: Record "Kept Member";
+        Log: Record "Kept Log";
+        Seen: Text;
+    begin
+        Member."No." := 'A';
+        Member.Insert();
+        Member."No." := 'B';
+        Member.Insert();
+        Member.SetStrict();
+        Member.DeleteAll(true);
+        if Log.FindSet() then
+            repeat
+                Seen += Format(Log.Deleted);
+            until Log.Next() = 0;
+        Member."No." := 'C';
+        asserterror Member.Insert(true);
+        exit(Seen + '|' + GetLastErrorText());
+    end;
 }
 "#;
 
 /// Business Central keeps a table's global variables with the record
 /// variable, so a setter such as `SetHideValidationDialog` reaches a trigger
 /// that runs later. Each call used to start them fresh. Record.Reset clears
-/// them, and ModifyAll runs its triggers with them at their defaults.
+/// them, and ModifyAll and DeleteAll run their triggers on a copy whose
+/// globals start at their defaults.
 #[test]
 fn table_globals_are_kept_with_the_record_variable() {
     let call = |proc: &str| {
         ok(run(
             &[
                 ("/ws/KeptMember.al", KEPT_MEMBER),
+                ("/ws/KeptLog.al", KEPT_LOG),
                 ("/ws/KeptProbe.al", KEPT_PROBE),
             ],
             "Kept Probe",
@@ -5095,4 +5145,10 @@ fn table_globals_are_kept_with_the_record_variable() {
     assert_eq!(call("ResetClearsThem"), Value::Integer(1));
     assert_eq!(call("ResetInTableCodeClearsThem"), Value::Boolean(false));
     assert_eq!(call("ModifyAllStartsThemFresh"), Value::Text("yS".into()));
+    // One copy with fresh globals for the whole DeleteAll, and the record
+    // keeps its own afterwards.
+    assert_eq!(
+        call("DeleteAllSharesOneFreshCopy"),
+        Value::Text("12|strict insert".into())
+    );
 }

@@ -1206,12 +1206,13 @@ fn write_all(
             if result.is_error() {
                 return result;
             }
-            // Each row's table code starts with the table's globals at
-            // their defaults.
-            ctx.record_globals.remove(&handle);
         }
         Eval::Normal(Value::Empty)
     };
+    // The rows' table code runs on a copy of the record whose globals start
+    // at their defaults: "When you use DeleteAll(true), a copy of the AL
+    // variable with its initial values is created" (Insert, Modify,
+    // ModifyAll, Delete, DeleteAll, and Truncate methods on Learn).
     let result = without_record_globals(handle, ctx, each_row);
     restore(ctx);
     result

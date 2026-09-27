@@ -159,10 +159,10 @@ pub(crate) fn reset_record_globals(
 }
 
 /// Keep the globals of the record on view `handle` out of reach while `run`
-/// runs, so table code that `run` starts sees fresh ones, then put them
-/// back. ModifyAll and DeleteAll run their triggers this way: the
-/// Record.ModifyAll page says the record's globals are initialized to their
-/// defaults while ModifyAll runs.
+/// runs, so table code that `run` starts binds fresh ones and shares them
+/// until `run` returns, then put the record's own back. ModifyAll and
+/// DeleteAll run their triggers this way: the Record.ModifyAll page says the
+/// record's globals are initialized to their defaults while ModifyAll runs.
 pub(crate) fn without_record_globals<T>(
     handle: u64,
     ctx: &mut DispatchCtx,
