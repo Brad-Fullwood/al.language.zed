@@ -92,6 +92,8 @@ probe a finding. Each becomes a real test when the finding it probes is fixed, o
    branch.
 2. Read `STATE.md`. The first units are the round 12 findings and SEC6-6 to SEC6-8 to fix
    agents, coverage item 1a of the round 12 review, and the grammar pointer move to 82e89f8 with
-   the full gates.
+   the full gates. `HANDOFF-tree-sitter.md` is the brief for a grammar agent (R12-GR-1 and the
+   pointer move), and `CHECKPOINT-2026-09-27-close.md` records the interactive runtime
+   session's close-out.
 3. The campaign window ends on 2026-09-28. After that, run
    `systemctl --user disable --now al-campaign-watchdog.timer`.

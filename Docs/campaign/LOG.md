@@ -697,3 +697,6 @@ Append-only. Newest entry last.
 - Pull request 32 merged into `dev` after CI on the checkpoint commit. `CHECKPOINT-2026-09-27.md`
   has the full picture and the resume steps.
 - CI on 59c598de: macOS failed `a_path_through_a_link_out_of_the_project_is_recorded_where_it_resolves` (al-project), the display line's 120 character cap cut the digest off on a macOS temp path. The test reads the recorded value instead. Pushed, CI green, PR 32 merged.
+- Runtime session close-out: `CHECKPOINT-2026-09-27-close.md` (its commits, the two CI fixes at
+  the pause, open items it touches) and `HANDOFF-tree-sitter.md` (the grammar brief: R12-GR-1, an
+  argument field on call arguments, the query drift check, and the steps to move the pointer).
