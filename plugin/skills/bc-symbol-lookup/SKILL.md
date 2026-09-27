@@ -66,7 +66,15 @@ method signatures surround the one package name you asked for.
 "${CLAUDE_PLUGIN_ROOT}/scripts/al-bin.sh" al-explorer --json --fields fields by-id table 18
 ```
 
-That returns the field list and nothing else. For a workspace table add `--wait-for-members`,
+That returns the field list and nothing else, but only the table's own fields.
+A table extension in another loaded package adds fields that `by-id` and
+`object` do not show, so "how many fields does this table have" can come out
+lower than the true count when the package cache holds an extension of it.
+When the loaded packages might extend the table, or the question is about the
+complete field list rather than the base object, use `composed` below instead
+of `by-id`.
+
+For a workspace table add `--wait-for-members`,
 or the daemon may answer before it has the fields:
 
 ```bash
