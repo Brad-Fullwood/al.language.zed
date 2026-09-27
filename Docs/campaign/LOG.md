@@ -573,3 +573,12 @@ Append-only. Newest entry last.
   status lines: the router does not classify a record method without parentheses, so an
   unsupported one routes locally. Round 10 is 11 of 11 fixed.
 - Gates on 85426311 in progress.
+
+## 2026-09-27 13:26 BST: pushed, test module splits merged
+
+- Gates on 580151c1: 93 suites, 5343 passed, 0 failed. Pushed.
+- `campaign/slop-splits-3` merged (b5c05341): `trust.rs` 3589 to 1956 lines and `lsp_dispatch.rs`
+  2562 to 1409, the test modules in `trust_tests.rs` and `lsp_dispatch_tests.rs` as `#[path]`
+  child modules, 257 al-project and 724 al-lsp lib tests with the same names. The
+  `inputs_fingerprint` comment now says up to seven `stat` calls, which matches the doc corrected
+  in the re-check. Gates on the merge in progress.

@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 13:22 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 13:26 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -45,12 +45,7 @@ Agents in flight (dispatched 12:58 unless noted):
   round 5 fixes, the round 9 runtime and plugin fixes, the grammar move). Writes
   `findings/r11-session-review.md`, ends with `## Review complete`.
 
-- Test module splits (C), Sonnet, dispatched 13:11: `.claude/worktrees/agent-sec5`, branch
-  `campaign/slop-splits-3` from 19a7cae9. The test modules of `al-project/src/trust.rs` (1,635
-  lines) and `al-lsp/src/server/daemon/lsp_dispatch.rs` (1,155 lines) move to their own files, and
-  the stale "six `stat` calls" comment is corrected. Ends with `## Splits complete`.
-
-Merge order when they finish: mutants, then the splits, then round 11's findings to a fix agent. Gates on each merge, `cargo test -p al-test-harness
+Merge order when they finish: mutants, then round 11's findings to a fix agent. Gates on each merge, `cargo test -p al-test-harness
 --no-fail-fast` after the runtime merges. Then round 11 over `9e3f26a1..HEAD -- crates plugin`.
 
 A second session (interactive, not the watchdog's) has pushed straight to this branch before
