@@ -19,7 +19,7 @@ Scratch tests for every scenario below are saved, uncommitted, as
 `.campaign/r10-scratch-tests.patch` in the main checkout. Every cargo command ran one crate at a
 time.
 
-- [ ] 1. Round 8 `fixed` statuses hold.
+- [x] 1. Round 8 `fixed` statuses hold, except the codeunit half of R8-RT-3 (R10-EV-1) and the JSON declarations that R8-JSON-1's handle model now shares (R10-REF-1). Round 9 ran a scratch scenario for every fix up to a0e85e0b. Since then only records.rs (List and Dictionary methods, a `None` sender for the table and validate events) and json.rs (`Value::list` for `Keys` and `Values`) changed among the files those fixes touched, and the suites pass: al-runtime 634, al-test 174 (with the scratch router tests), al-insight 141. R8-RT-3, table publisher (95f1905b): a subscriber that takes `Sender` by value and writes `Note` leaves the caller's record as it was (`original`, scratch `ByValueSender`), and a publisher raised from `OnInsert` with `Insert(true)` gives the subscriber the record being inserted, whose write is saved with it (`from insert P2`, scratch `SenderFromTrigger`). R8-RT-3, codeunit publisher: the sender is a new instance (R10-EV-1). R8-CG-1 (4143be7a): `Validate(City)` on a table whose `Name` trigger runs `Rec.Modify()` and whose Modify subscriber opens a page routes `LiveBc`, since one node holds the edges of both triggers. That sends to live BC a test BC would pass locally, which costs time and gives no wrong answer.
 - [ ] 2. Round 7 security fixes (R7-SEC-1 to R7-SEC-8) do what their statuses say.
 - [ ] 3. List and Dictionary as references (b2577ceb), and the `clippy.toml` entry.
 - [ ] 4. Keyword-named variables and the router's declared-variables check.
