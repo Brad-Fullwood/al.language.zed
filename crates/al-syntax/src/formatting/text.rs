@@ -115,7 +115,7 @@ pub(super) fn contains_char_outside_strings(s: &str, needles: &[char]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_comments;
+    use super::{contains_char_outside_strings, first_top_level, strip_comments};
     use crate::formatting::{format_al, FormatOptions};
 
     fn fmt(text: &str) -> String {
@@ -457,6 +457,33 @@ codeunit 50100 Test
             "label body must be deeper than the label:\n{out}"
         );
         assert_eq!(fmt(&out), out, "must be idempotent");
+    }
+
+    /// `first_top_level` must track paren and bracket depth on both sides
+    /// (open and close) to skip a target byte nested inside either, and the
+    /// returned offset must be the span start plus the in-span byte offset,
+    /// not some other combination of the two.
+    #[test]
+    fn first_top_level_skips_nested_parens_and_brackets() {
+        // A `;` inside `(...)` and another inside `[...]` must both be
+        // skipped; only the `;` after both close is top level.
+        let s = "Foo(x;y)[x;y];z;";
+        assert_eq!(first_top_level(s, b';'), Some(13));
+        assert_eq!(first_top_level("no target here", b';'), None);
+    }
+
+    /// The one caller (`is_case_label` in `indent.rs`) treats a colon line
+    /// as a label only when this returns `false`: no disqualifying character
+    /// outside a string. The "found" path itself needs its own direct test,
+    /// since every caller today happens to negate the result.
+    #[test]
+    fn contains_char_outside_strings_finds_an_unquoted_needle() {
+        assert!(contains_char_outside_strings("a;b", &[';', '=', '(', ')']));
+        assert!(!contains_char_outside_strings(
+            "'a;b'",
+            &[';', '=', '(', ')']
+        ));
+        assert!(!contains_char_outside_strings("a,b", &[';', '=', '(', ')']));
     }
 
     // KeywordCasing wiring
