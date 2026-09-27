@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 13:05 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 13:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -21,32 +21,31 @@ mutants agent had uncommitted `indent.rs` tests. `campaign/fix-r5-security` was 
 
 Superproject gates on 4c429ac5 green (92 suites, 5331 passed, 0 failed), pushed 13:12.
 
-Agents in flight (dispatched 13:02):
+Merged 13:15: `campaign/fix-r10-text` (9a364d46, R10-PLUGIN-1 and R10-TEXT-1), `campaign/docs-recheck-3`
+(aaa3ca37, 13 claims corrected in six docs, `findings/docs-review.md` re-check section), and
+`campaign/fix-r10-a` (19a7cae9, R10-REF-1, R10-REF-2, R10-DICT-1, R10-LIST-1, R10-LIST-2: each
+declared name and array element gets its own List, Dictionary or JSON value, TextBuilder is a
+reference, Dictionary keys convert to the declared key type, the `var` forms of `List.Get`,
+`List.Set` and `Dictionary.Set` run locally, `RemoveRange` returns false when used, `AddRange`
+picks its overload by the declared element type). Gates run on 19a7cae9.
 
-- Round 10 fixes A (A), Opus: `.claude/worktrees/agent-r10`, branch `campaign/fix-r10-a` from
-  4c429ac5. R10-REF-1, R10-REF-2, R10-DICT-1, R10-LIST-2, R10-LIST-1 (collections, references,
-  `frames.rs`, `json.rs`, `records.rs`, `value.rs`, `router/ast.rs`). Ends with `## Fixes complete`.
+Agents in flight (dispatched 12:58 unless noted):
+
 - Round 10 fixes B (A, F), Opus: `.claude/worktrees/agent-fix-r9`, branch `campaign/fix-r10-b` from
   4c429ac5. R10-RT-2, R10-EV-1, R10-RT-1, R10-KW-1, GR3-2, GR3-3 (`workspace_procedure.rs`,
   `table_code.rs`, `eval_expr.rs`, `eval_stmt.rs`, `indexing.rs`, a node-kind guard for the
   interpreter). Ends with `## Fixes complete`.
-- Round 10 text fixes (A, G), Sonnet: `.claude/worktrees/agent-sec5`, branch `campaign/fix-r10-text`
-  from 4c429ac5. R10-PLUGIN-1, R10-TEXT-1. Ends with `## Fixes complete`.
 - `cargo mutants` (E), Sonnet, continuation: `.claude/worktrees/agent-a34708a3121ce8ac2`,
   `campaign/test-mutants` at b13da4ce. Commits the `indent.rs` tests, then the formatting module.
   Ends with `## Mutation pass complete`.
-- Docs re-check (H), Opus: `.claude/worktrees/agent-docs`, branch `campaign/docs-recheck-3` from
-  4c429ac5. Round 9 fixes, List and Dictionary, round 8 last batch, security round 5, grammar
-  142aba6. Writes a `## Re-check 2026-09-27, round 9` section in `findings/docs-review.md`. Ends
-  with `## Docs re-check complete`.
 
 - Round 11 review (A, D), Opus, dispatched 13:08: `.claude/worktrees/agent-r11`, branch
   `campaign/r11-review` at 4c429ac5, scope `9e3f26a1..4c429ac5 -- crates plugin` (the security
   round 5 fixes, the round 9 runtime and plugin fixes, the grammar move). Writes
   `findings/r11-session-review.md`, ends with `## Review complete`.
 
-Merge order when they finish: A, then B (merge the campaign branch into B first if A touched the
-same lines), then text, docs, mutants. Gates on each merge, `cargo test -p al-test-harness
+Merge order when they finish: B (resolve against A's `frames.rs` and `eval_stmt.rs` changes), then
+mutants, then the splits. Gates on each merge, `cargo test -p al-test-harness
 --no-fail-fast` after the runtime merges. Then round 11 over `9e3f26a1..HEAD -- crates plugin`.
 
 A second session (interactive, not the watchdog's) has pushed straight to this branch before
@@ -82,6 +81,11 @@ Queued:
 - A wedged daemon request can hold a daemon past its idle window (warns every 60 s).
 - `DotNetPackages` in `SymbolReference.json` is not read by the symbol reader (`ObjectKind::DotNet` exists). Decide whether those entries should index.
 - Ghost race, left open in `findings/ghost-race-2.md`: a project pass can publish a cross-file result for a URI whose own input did not change, and the clears at the top of the publish step have no currency check. Round 9 item 7(b) names the fix: stage an input for every published URI and skip the clear when the document moved.
+- From the docs re-check: in a trusted project a `.netpackages` link that leads outside the project
+  makes the analyzer copy found there fail the inside-project check, after which it may load
+  without the trust record check (unverified, for security round 6). `crates/al-project/src/trust.rs`
+  near line 701 says "six `stat` calls" where the fingerprint makes up to seven (the split agent
+  fixes the comment).
 - Round 10 review's unverified notes: `TARGET_KEYS` compared with `eq_ignore_ascii_case` (a `ſerver` key) for the proxy's next adversarial review, and whether BC's `foreach` over a List raises when the list changes.
 
 A review file without a `## Review complete` line means the agent died. Re-dispatch it to

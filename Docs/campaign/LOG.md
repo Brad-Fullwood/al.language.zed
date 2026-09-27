@@ -540,3 +540,21 @@ Append-only. Newest entry last.
   worktrees were repointed onto the new branches to reuse their build directories.
 - Superproject gates on 4c429ac5 green: 92 suites, 5331 passed, 0 failed (the harness suite ran on the
   release binaries built in the same run). Pushed 13:12 (ccdf471b). CI on 68f0bbe8: all six jobs green.
+
+## 2026-09-27 13:20 BST: round 10 batch A, text fixes and docs re-check merged
+
+- `campaign/fix-r10-text` merged (9a364d46): the three plugin claims corrected against the release
+  binary (implicit dependencies come from `application` and `platform`, `--limit` and `--fields`
+  act on `composed`'s `extensions` array, AL-NL003 and AL-NL004 named), eleven comment and prose
+  lines rewritten.
+- `campaign/docs-recheck-3` merged (aaa3ca37): 13 claims corrected in `native-test-runtime.md`
+  (dispatch order, `Clear`, table globals, `Sender`, the `var` write-back into a record field,
+  subscriber instances, `ModifyAll` and `DeleteAll` globals), `analysis-and-insight.md` (record
+  operations and table code as event edges, one node per name), `project-trust.md` (where linked
+  package folders come from, seven `stat` calls), `semantic-bridge.md`, `cli-commands.md` and
+  `settings.md` (project analyzer copies and `compilationOptions`). Twelve docs read with nothing
+  to change. Two notes queued in `STATE.md`.
+- `campaign/fix-r10-a` merged (19a7cae9) with two conflicts taken from the fix side: 5 of 5 fixed,
+  each with a test that failed first. `Value::List` and `Value::Dict` wrap a `Collection<T>` that
+  keeps the declared element or key type, `Value::TextBuilder` holds a `Shared<String>`. al-runtime
+  643 lib tests on the branch. Gates on the merge in progress.
