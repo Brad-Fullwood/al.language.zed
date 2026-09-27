@@ -304,9 +304,11 @@ has none), or when `authentication` is `Windows` or `UserPassword` in any case. 
 those authentication values the library connects to `server` even for `Sandbox` or
 `Production`. The trust record lists the servers of launch entries under the same rule. The
 proxy refuses a scenario with an `environmentType` other than `OnPrem`, `Sandbox` or
-`Production` (in any case), an `applicationFamily` that is not one DNS label (letters, digits
-and `-`), a target key such as `server`, `environmentType` or `applicationFamily` spelled in
-another case, and a field it cannot read, such as a `port` written as a string.
+`Production` (in any case), an `authentication` other than `Windows`, `UserPassword`, `AAD` or
+`MicrosoftEntraID` (in any case, written alone, since the library also reads `2`, ` Windows`
+and `AAD,Windows` as one of them), an `applicationFamily` that is not one DNS label (letters,
+digits and `-`), a target key such as `server`, `environmentType` or `applicationFamily`
+spelled in another case, and a field it cannot read, such as a `port` written as a string.
 
 `publish` and `tests.run*` are in that list although they never read the OAuth cache: they
 send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The
