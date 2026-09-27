@@ -541,7 +541,7 @@ Append-only. Newest entry last.
 - Superproject gates on 4c429ac5 green: 92 suites, 5331 passed, 0 failed (the harness suite ran on the
   release binaries built in the same run). Pushed 13:12 (ccdf471b). CI on 68f0bbe8: all six jobs green.
 
-## 2026-09-27 13:20 BST: round 10 batch A, text fixes and docs re-check merged
+## 2026-09-27 13:10 BST: round 10 batch A, text fixes and docs re-check merged
 
 - `campaign/fix-r10-text` merged (9a364d46): the three plugin claims corrected against the release
   binary (implicit dependencies come from `application` and `platform`, `--limit` and `--fields`

@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 13:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-27 13:12 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -21,7 +21,7 @@ mutants agent had uncommitted `indent.rs` tests. `campaign/fix-r5-security` was 
 
 Superproject gates on 4c429ac5 green (92 suites, 5331 passed, 0 failed), pushed 13:12.
 
-Merged 13:15: `campaign/fix-r10-text` (9a364d46, R10-PLUGIN-1 and R10-TEXT-1), `campaign/docs-recheck-3`
+Merged 13:08: `campaign/fix-r10-text` (9a364d46, R10-PLUGIN-1 and R10-TEXT-1), `campaign/docs-recheck-3`
 (aaa3ca37, 13 claims corrected in six docs, `findings/docs-review.md` re-check section), and
 `campaign/fix-r10-a` (19a7cae9, R10-REF-1, R10-REF-2, R10-DICT-1, R10-LIST-1, R10-LIST-2: each
 declared name and array element gets its own List, Dictionary or JSON value, TextBuilder is a
@@ -43,6 +43,11 @@ Agents in flight (dispatched 12:58 unless noted):
   `campaign/r11-review` at 4c429ac5, scope `9e3f26a1..4c429ac5 -- crates plugin` (the security
   round 5 fixes, the round 9 runtime and plugin fixes, the grammar move). Writes
   `findings/r11-session-review.md`, ends with `## Review complete`.
+
+- Test module splits (C), Sonnet, dispatched 13:11: `.claude/worktrees/agent-sec5`, branch
+  `campaign/slop-splits-3` from 19a7cae9. The test modules of `al-project/src/trust.rs` (1,635
+  lines) and `al-lsp/src/server/daemon/lsp_dispatch.rs` (1,155 lines) move to their own files, and
+  the stale "six `stat` calls" comment is corrected. Ends with `## Splits complete`.
 
 Merge order when they finish: B (resolve against A's `frames.rs` and `eval_stmt.rs` changes), then
 mutants, then the splits. Gates on each merge, `cargo test -p al-test-harness
