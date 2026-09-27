@@ -10,6 +10,10 @@ use std::path::{Path, PathBuf};
 const MAX_SCAN_ENTRIES: usize = 50_000;
 const MAX_SCAN_DEPTH: usize = 10;
 
+/// The NuGet package folders at the project root that discovery searches for
+/// a bare analyzer name when the project is trusted.
+pub(crate) const PROJECT_PACKAGE_FOLDERS: [&str; 2] = [".netpackages", "packages"];
+
 #[derive(Debug, thiserror::Error)]
 pub enum AnalyzerDiscoveryError {
     #[error("configured analyzer path '{}' does not identify a file", .0.display())]
@@ -25,14 +29,14 @@ pub enum AnalyzerDiscoveryError {
         .0.display()
     )]
     ScanLimit(PathBuf),
-    /// The entry resolves only to a file inside the project, and the project
+    /// The entry resolves only to a file the project supplies, and the project
     /// is not trusted. The fields are already put through
     /// [`crate::trust::one_line`], since a repository chose the file name.
     #[error(
-        "analyzer '{entry}' resolves to '{found}' inside this project, and the project is not \
-         trusted, so it is not loaded. Install the analyzer in the NuGet cache, or name its \
-         absolute path in user settings. To read the project's settings and decide, the user \
-         runs this in a terminal: {} --show {root}",
+        "analyzer '{entry}' resolves to '{found}', which this project supplies, and the \
+         project is not trusted, so it is not loaded. Install the analyzer in the NuGet cache, \
+         or name its absolute path in user settings. To read the project's settings and \
+         decide, the user runs this in a terminal: {} --show {root}",
         crate::trust::TRUST_COMMAND
     )]
     UntrustedProjectAnalyzer {
@@ -40,16 +44,16 @@ pub enum AnalyzerDiscoveryError {
         found: String,
         root: String,
     },
-    /// The entry, a name or a path, resolves to a file inside a trusted
-    /// project, and the trust record does not list that file with its current
+    /// The entry, a name or a path, resolves to a file a trusted project
+    /// supplies, and the trust record does not list that file with its current
     /// hash. The fields are already put through [`crate::trust::one_line`].
     #[error(
-        "analyzer '{entry}' resolves to '{found}' inside this project, and the project's trust \
-         record does not list that file, so it is not loaded. The record lists the file each \
-         analyzer entry in the project's settings or in ~/.config/al-lsp/settings.json \
-         resolves to. Write the entry there, or install the analyzer in the NuGet cache. To \
-         read the project's settings and decide, the user runs this in a terminal: \
-         {} --show {root}",
+        "analyzer '{entry}' resolves to '{found}', which this project supplies, and the \
+         project's trust record does not list that file, so it is not loaded. The record \
+         lists the file each analyzer entry in the project's settings or in \
+         ~/.config/al-lsp/settings.json resolves to. Write the entry there, or install the \
+         analyzer in the NuGet cache. To read the project's settings and decide, the user \
+         runs this in a terminal: {} --show {root}",
         crate::trust::TRUST_COMMAND
     )]
     UnrecordedProjectAnalyzer {
@@ -177,14 +181,16 @@ impl<'a> CustomAnalyzerSearch<'a> {
 
     /// [`discover_custom_analyzer`] for `entry`.
     ///
-    /// An entry, a name or a path, that resolves to a file inside the project
-    /// loads only when the trust decision lists that file with the hash it has
-    /// now. The record learns entries from the project's settings and
-    /// `~/.config/al-lsp/settings.json`, and an entry can also come from Zed's
-    /// user settings, which the record does not read. Such a name used to
-    /// resolve to a copy a later commit added under `.netpackages`, ahead of
-    /// the NuGet cache, and such a path to a file a later commit added at it,
-    /// while the record still matched.
+    /// An entry, a name or a path, that resolves to a file the project
+    /// supplies loads only when the trust decision lists that file with the
+    /// hash it has now. The project supplies a file inside it, and a file
+    /// found through a path spelled inside it or under one of its search
+    /// roots, wherever a link the project ships carries it. The record learns
+    /// entries from the project's settings and `~/.config/al-lsp/settings.json`,
+    /// and an entry can also come from Zed's user settings, which the record
+    /// does not read. Such a name used to resolve to a copy a later commit
+    /// added under `.netpackages`, ahead of the NuGet cache, and such a path to
+    /// a file a later commit added at it, while the record still matched.
     pub fn resolve(&self, entry: &str) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
         let entry = entry.trim();
         if entry.is_empty() || is_builtin_analyzer(entry) {
@@ -201,10 +207,14 @@ impl<'a> CustomAnalyzerSearch<'a> {
             self.assembly_probing_paths,
             trusted.is_some(),
         )?;
-        let Some(found) = found else {
+        let Some(Found {
+            path: found,
+            from_project,
+        }) = found
+        else {
             return Ok(None);
         };
-        if !is_inside(&found, self.project_root) {
+        if !from_project {
             return Ok(Some(found));
         }
         let shown = |text: &str| crate::trust::one_line(text);
@@ -229,13 +239,31 @@ impl<'a> CustomAnalyzerSearch<'a> {
     }
 }
 
+/// A file discovery found, and whether the project supplied it.
+#[derive(Debug)]
+struct Found {
+    path: PathBuf,
+    /// The file is inside the project, or discovery reached it through a
+    /// path spelled inside the project or under one of the project's search
+    /// roots. A link the project ships can carry such a file outside the
+    /// project, and the project still chose it.
+    from_project: bool,
+}
+
+impl Found {
+    fn new(path: PathBuf, reached_through_project: bool, project_root: &Path) -> Self {
+        let from_project = reached_through_project || is_inside(&path, project_root);
+        Self { path, from_project }
+    }
+}
+
 /// [`discover_custom_analyzer`] with the trust decision already made.
 fn discover(
     entry: &str,
     project_root: &Path,
     assembly_probing_paths: &[PathBuf],
     search_project: bool,
-) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
+) -> Result<Option<Found>, AnalyzerDiscoveryError> {
     let untrusted = |found: &Path| AnalyzerDiscoveryError::UntrustedProjectAnalyzer {
         entry: crate::trust::one_line(entry),
         found: crate::trust::one_line(&found.display().to_string()),
@@ -254,10 +282,16 @@ fn discover(
         let found = canonical_file(&path)
             .ok_or(AnalyzerDiscoveryError::MissingExplicitPath(path.clone()))?;
         // A path into the project names a file the repository ships, however
-        // it is spelled. In a trusted project `CustomAnalyzerSearch::resolve`
-        // loads it only when the trust record lists it with its hash.
-        if !search_project && is_inside(&found, project_root) {
-            return Err(untrusted(&found));
+        // it is spelled and wherever a link carries it. In a trusted project
+        // `CustomAnalyzerSearch::resolve` loads it only when the trust record
+        // lists it with its hash.
+        let found = Found::new(
+            found,
+            crate::trust::spelled_inside_project(project_root, &path),
+            project_root,
+        );
+        if !search_project && found.from_project {
+            return Err(untrusted(&found.path));
         }
         return Ok(Some(found));
     }
@@ -281,22 +315,21 @@ fn discover(
                 continue;
             }
             if let Some(path) = find_best_below(&project_root.join(configured), &file_name, true)? {
-                return Ok(Some(path));
+                return Ok(Some(Found::new(path, true, project_root)));
             }
             continue;
         }
         if let Some(path) = find_best_below(configured, &file_name, true)? {
-            return Ok(Some(path));
+            let spelled_inside = crate::trust::spelled_inside_project(project_root, configured);
+            return Ok(Some(Found::new(path, spelled_inside, project_root)));
         }
     }
 
     if search_project {
-        for root in [
-            project_root.join(".netpackages"),
-            project_root.join("packages"),
-        ] {
+        for folder in PROJECT_PACKAGE_FOLDERS {
+            let root = project_root.join(folder);
             if let Some(path) = find_best_below(&root, &file_name, false)? {
-                return Ok(Some(path));
+                return Ok(Some(Found::new(path, true, project_root)));
             }
         }
     }
@@ -316,7 +349,7 @@ fn discover(
         // global cache.
         let package_root = root.join(&package_name);
         if let Some(path) = find_best_below(&package_root, &file_name, false)? {
-            return Ok(Some(path));
+            return Ok(Some(Found::new(path, false, project_root)));
         }
     }
 
@@ -327,7 +360,7 @@ fn discover(
         ] {
             for candidate_root in matching_immediate_directories(&extension_root, &package_name)? {
                 if let Some(path) = find_best_below(&candidate_root, &file_name, false)? {
-                    return Ok(Some(path));
+                    return Ok(Some(Found::new(path, false, project_root)));
                 }
             }
         }
@@ -349,22 +382,27 @@ fn discover(
 /// The directories inside the project that discovery searches for a bare
 /// analyzer name: each relative probing path, then `.netpackages` and
 /// `packages`. They are searched first when the project is trusted and not at
-/// all when it is not.
+/// all when it is not. A file found under one is the project's copy, even
+/// when the root is a link that leads outside the project.
 fn project_search_roots(project_root: &Path, assembly_probing_paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = assembly_probing_paths
         .iter()
         .filter(|configured| !configured.is_absolute())
         .map(|configured| project_root.join(configured))
         .collect();
-    roots.push(project_root.join(".netpackages"));
-    roots.push(project_root.join("packages"));
+    roots.extend(
+        PROJECT_PACKAGE_FOLDERS
+            .iter()
+            .map(|folder| project_root.join(folder)),
+    );
     roots
 }
 
-/// The file inside the project an analyzer entry would resolve to when the
-/// project is trusted, for the trust record to hash: the file a path names, or
-/// the copy a bare name finds under a relative probing path, `.netpackages` or
-/// `packages`.
+/// The file the project supplies for an analyzer entry when the project is
+/// trusted, for the trust record to hash: the file a path spelled inside the
+/// project names, or the copy a bare name finds under a relative probing
+/// path, `.netpackages` or `packages`. Either can sit outside the project
+/// when a link leads there.
 pub(crate) fn find_in_project(
     entry: &str,
     project_root: &Path,
@@ -375,8 +413,11 @@ pub(crate) fn find_in_project(
         return None;
     }
     if Path::new(entry).is_absolute() || entry.contains(['/', '\\']) {
-        return canonical_file(&project_root.join(entry))
-            .filter(|found| is_inside(found, project_root));
+        let path = project_root.join(entry);
+        return canonical_file(&path).filter(|found| {
+            crate::trust::spelled_inside_project(project_root, &path)
+                || is_inside(found, project_root)
+        });
     }
     let file_name = if entry
         .rsplit_once('.')
@@ -591,6 +632,7 @@ mod tests {
             return Ok(None);
         }
         discover(entry, project_root, assembly_probing_paths, true)
+            .map(|found| found.map(|found| found.path))
     }
 
     /// A trust decision walks and hashes the project's analyzer folders, so a
@@ -634,7 +676,7 @@ mod tests {
         )
         .unwrap()
         .expect("analyzer");
-        assert_eq!(found, dll.canonicalize().unwrap());
+        assert_eq!(found.path, dll.canonicalize().unwrap());
     }
 
     #[test]
@@ -654,7 +696,7 @@ mod tests {
         let found = discover("BusinessCentral.LinterCop", project.path(), &[], true)
             .unwrap()
             .expect("analyzer");
-        assert_eq!(found, expected.canonicalize().unwrap());
+        assert_eq!(found.path, expected.canonicalize().unwrap());
     }
 
     /// macOS hands tests a temporary directory under `/var/folders/36/...`.
@@ -676,7 +718,7 @@ mod tests {
         let found = discover("BusinessCentral.LinterCop", &project, &[], true)
             .unwrap()
             .expect("analyzer");
-        assert_eq!(found, expected.canonicalize().unwrap());
+        assert_eq!(found.path, expected.canonicalize().unwrap());
     }
 
     /// A name the user wrote must not resolve to a DLL a cloned repository
@@ -742,7 +784,8 @@ mod tests {
         assert_eq!(
             discover("ProbedCop", project.path(), &[PathBuf::from("tools")], true)
                 .unwrap()
-                .unwrap(),
+                .unwrap()
+                .path,
             probing.join("ProbedCop.dll").canonicalize().unwrap(),
             "a trusted project keeps its probing path"
         );
@@ -759,7 +802,8 @@ mod tests {
         let found = discover(dll.to_str().unwrap(), project.path(), &[], false)
             .unwrap()
             .unwrap();
-        assert_eq!(found, dll.canonicalize().unwrap());
+        assert_eq!(found.path, dll.canonicalize().unwrap());
+        assert!(!found.from_project);
     }
 
     /// An absolute path into the project still names the repository's file,

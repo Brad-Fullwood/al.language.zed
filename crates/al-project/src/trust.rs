@@ -80,8 +80,9 @@ const UNREADABLE_LAUNCH_KEY: &str = "unreadable launch file";
 /// [`TrustDecision::grant_refusal`] refuses a new record until the tree changes.
 const UNHASHABLE_PATH_KEY: &str = "path the record cannot hash";
 
-/// The key of a symbol package folder written inside the project that
-/// resolves outside it, recorded with the directory it resolves to.
+/// The key of a package folder written inside the project that resolves
+/// outside it, recorded with the directory it resolves to: a symbol folder, or
+/// a folder the analyzer search walks.
 const LINKED_PACKAGE_FOLDER_KEY: &str = "linked package folder";
 
 /// The key of an `al.compilationOptions` entry that names a file or directory
@@ -489,23 +490,35 @@ fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), Con
     Ok((config, ask))
 }
 
-/// Each symbol package folder written inside the project that resolves
-/// outside it, with the directory it resolves to.
+/// Each package folder written inside the project that resolves outside it,
+/// with the directory it resolves to.
 ///
-/// A trusted project's package folders are containment roots in the daemon
+/// A trusted project's symbol folders are containment roots in the daemon
 /// and where symbol downloads write. `.alpackages` needs no setting, and a
 /// clone can commit it as a link to any directory, so a link a later commit
 /// added made its target a root while the record still matched. The folders
 /// come from the merged configuration, so a user's `./symbols` that a
 /// repository link carries out is recorded too, and `.alpackages` is always
 /// checked, since the language server may use it when the daemon's
-/// configuration names another cache. Recording where each resolves makes a
-/// link that is added or retargeted stale the record, and `trust --show`
-/// lists it.
+/// configuration names another cache.
+///
+/// The folders the analyzer search walks in a trusted project, `.netpackages`,
+/// `packages` and each probing path, are checked the same way. A copy found
+/// under one of them loads as the project's, and a link a later commit added
+/// there used to lead the search to a directory another user fills.
+///
+/// Recording where each folder resolves makes a link that is added or
+/// retargeted stale the record, and `trust --show` lists it.
 fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<PrivilegedSetting> {
     let mut folders = vec![PathBuf::from(".alpackages")];
     folders.extend(config.package_cache_path.clone());
     folders.extend(config.app_local_folder_paths.iter().cloned());
+    folders.extend(
+        crate::analyzers::PROJECT_PACKAGE_FOLDERS
+            .iter()
+            .map(PathBuf::from),
+    );
+    folders.extend(config.assembly_probing_paths.iter().cloned());
     let mut seen = Vec::new();
     let mut settings = Vec::new();
     for folder in folders {
@@ -531,12 +544,14 @@ fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<Privile
     settings
 }
 
-/// The DLL inside the project each configured analyzer entry resolves to when
-/// the project is trusted, with its hash.
+/// The DLL the project supplies for each configured analyzer entry when the
+/// project is trusted, with its hash.
 ///
 /// Trust is what lets an entry, the user's or the repository's, resolve to a
 /// file the repository ships: a name finds a copy under `.netpackages`,
 /// `packages` or a relative probing path, and a path names the file itself.
+/// A link in the project can carry either outside it, and the file is hashed
+/// where it resolves.
 /// Recording the file's hash means a commit that replaces it makes the record
 /// stale, rather than loading new code under the old record. `config` holds
 /// the entries of `~/.config/al-lsp/settings.json` too, which
@@ -571,8 +586,8 @@ fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<Privil
     settings
 }
 
-/// Whether `decision` lists `found`, the file inside the project an analyzer
-/// entry resolved to, with the hash it has now.
+/// Whether `decision` lists `found`, the file the project supplied for an
+/// analyzer entry, with the hash it has now.
 ///
 /// [`project_analyzer_copies`] records a copy under the relative path it sits
 /// at, so only that entry can match: a settings value has a settings file as
@@ -838,6 +853,30 @@ fn fold_dots(path: &Path) -> Option<PathBuf> {
     Some(normalised)
 }
 
+/// Whether `path`, resolved against `project_root` with `.` and `..` folded
+/// and no link followed, names a place inside the project.
+///
+/// The repository chose such a path, and a link it ships decides where the
+/// path leads, so what the path names is the project's wherever it resolves.
+pub(crate) fn spelled_inside_project(project_root: &Path, path: &Path) -> bool {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    };
+    let Some(folded) = fold_dots(&absolute) else {
+        return false;
+    };
+    let root = fold_dots(project_root).unwrap_or_else(|| project_root.to_path_buf());
+    folded.starts_with(&root) || folded.starts_with(canonical_root(project_root))
+}
+
+/// Whether `path` names a file the project supplies: it is spelled inside the
+/// project, or it resolves inside it.
+fn names_a_project_file(path: &Path, project_root: &Path) -> bool {
+    spelled_inside_project(project_root, path) || stays_inside_project(path, project_root)
+}
+
 /// The canonical project root, or the root as given when it does not resolve.
 fn canonical_root(project_root: &Path) -> PathBuf {
     project_root
@@ -947,15 +986,17 @@ enum Beside {
 /// `tools/TeamCop.dll`, or a `dotnet` shipped in the tree, kept the record
 /// valid while the code under it changed. It then covered the named file
 /// alone, so a commit that replaced a DLL the analyzer references, or the
-/// runtime beside a `dotnet`, did the same. A path outside the project is
-/// the user's machine and stays as written.
+/// runtime beside a `dotnet`, did the same. A path written outside the
+/// project is the user's machine and stays as written.
 ///
 /// The path is resolved through symbolic links before anything is hashed,
 /// because the loader opens the target and reads its neighbours beside the
 /// target. When the resolved path differs from the one written, the value
 /// says where it resolves, so `trust --show` prints it and a commit that
-/// retargets the link changes the record. A tree the record cannot hash adds
-/// its reason to `unhashable`.
+/// retargets the link changes the record. That holds for a link that leads
+/// outside the project too: `./tools` reads as a folder in the project, and
+/// was recorded as that text alone when `tools` linked elsewhere. A tree the
+/// record cannot hash adds its reason to `unhashable`.
 fn with_project_contents(
     value: &str,
     project_root: &Path,
@@ -964,7 +1005,7 @@ fn with_project_contents(
 ) -> String {
     let path = Path::new(value.trim());
     let is_path = path.is_absolute() || value.contains(['/', '\\']);
-    if !is_path || !stays_inside_project(path, project_root) {
+    if !is_path || !names_a_project_file(path, project_root) {
         return value.to_string();
     }
     let absolute = if path.is_absolute() {
@@ -1644,7 +1685,7 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
     let (ask, decision) = match inspect(project_root) {
         Ok(read) => read,
         Err(error) => {
-            if !stays_inside_project(Path::new(&configured), project_root) {
+            if !names_a_project_file(Path::new(&configured), project_root) {
                 return None;
             }
             std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
@@ -1663,7 +1704,7 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
         return None;
     }
     let from_repository = ask.executable_paths.iter().any(|path| path == &configured)
-        || stays_inside_project(Path::new(&configured), project_root);
+        || names_a_project_file(Path::new(&configured), project_root);
     if !from_repository {
         return None;
     }
@@ -1686,7 +1727,8 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
 }
 
 /// [`enforce_dotnet_path`] before a spawn of `dotnet`, when `AL_DOTNET_PATH`
-/// names a file inside `project_root`.
+/// names a file the project supplies: one inside `project_root`, or one a
+/// path spelled inside it reaches through a link.
 ///
 /// The record hashes a `dotnet` in the tree with the runtime beside it, and a
 /// running daemon or language server decides again only when
@@ -1702,7 +1744,7 @@ pub fn enforce_dotnet_path_before_spawn(project_root: &Path) -> Option<String> {
     let configured = configured.trim();
     let path = Path::new(configured);
     let is_path = path.is_absolute() || configured.contains(['/', '\\']);
-    if !is_path || !stays_inside_project(path, project_root) {
+    if !is_path || !names_a_project_file(path, project_root) {
         return None;
     }
     enforce_dotnet_path(project_root)
