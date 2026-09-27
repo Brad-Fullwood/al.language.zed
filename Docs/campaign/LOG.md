@@ -396,3 +396,32 @@ Append-only. Newest entry last.
   (fac24900, 15 of 15). Gates on the merge: clean, 94 suites, 5291 passed, 0 failed, 10 ignored.
   Pushed. The fix-r7 and fix-r8 worktrees removed (`git worktree remove` refuses a worktree with a
   submodule, so `rm -rf` and `git worktree prune`), 34 GB free.
+
+## 2026-09-27 03:25 BST: round 8 closed, round 9 reviewed, three merges
+
+- The runtime agent fixed all five: a table procedure's event with IncludeSender passes the record
+  as `var Sender` (the router already kept that test local), variables named after type or object
+  keywords read as names and a no-argument method on such a variable runs without parentheses
+  (the router had sent any test with a local named `Page` or `Report` to live BC and now checks
+  declared variables first), a `signed_case_label` evaluates through the index code, a subscriber
+  bound by a bare object ID runs and `get_events` reports the publisher's name, and a call graph
+  node gets the edges of every declaration of its name (the queued report said only the first
+  `OnValidate` got edges, the repro showed the last one, and overloads had the same bug),
+  `SCHEMA_VERSION` 5. Left for the grammar: `-5..-2` as a range label is one token.
+- The docs agent corrected six claims in `native-test-runtime.md` and `debugging-dap.md` and read
+  eleven other docs with nothing to change (`findings/docs-review.md`, re-check section).
+- The round 9 reviewer (`findings/r9-session-review.md`) found 7: the hand merge 6b4be394 dropped
+  the router rule that sent a table with globals to live BC while the runtime gives a table's
+  globals a fresh frame per trigger call, where BC keeps them with the record variable (high),
+  `Clear(X)` resolves to the LibraryVariableStorage stub and resets nothing (medium),
+  `al-fetch-release.sh` verifies regular files only so a symlink named `al-lsp` installs
+  (medium), a subscriber joins its codeunit's running instance, the release script reports
+  "installed" when the install failed, the eval runner hides a missing `al-lsp`, the summary
+  cache hashes the package before summarizing it (all low, the last one reproduced after two
+  rounds of reading). Merge damage: ten of thirteen merges equal the automatic merge, the rest
+  are docs or the regression above. Ten audit triage spot-checks all hold.
+- Merged `campaign/fix-r8-runtime` (8f70b75e), `campaign/docs-r8` (6516172a) and
+  `campaign/r9-review` (e64b982a). fmt clean in the main checkout. Gates on e64b982a started
+  03:17.
+- Three more agents (`STATE.md`): round 9 runtime fixes, round 9 plugin script fixes with a shell
+  test wired into `make plugin-validate`, and GR2-4 in a grammar worktree.
