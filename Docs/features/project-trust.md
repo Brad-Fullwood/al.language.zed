@@ -155,8 +155,9 @@ hashes. So a `dotnet` inside the project is decided again before each spawn: eve
 `al-explorer build`) and the `--official-lsp` start. A `git pull` that replaces
 `host/fxr/<version>/libhostfxr.so` makes the project stale, `AL_DOTNET_PATH` is dropped, and
 the build runs `dotnet` from `PATH`. Before, the process kept the variable until the
-fingerprint moved, and the next build ran the new library. A `dotnet` outside the project
-costs one path check.
+fingerprint moved, and the next build ran the new library. When a settings file stops parsing
+there is nothing to decide with, so a `dotnet` inside the project is dropped the same way, with
+a message naming the file. A `dotnet` outside the project costs one path check.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
@@ -218,13 +219,15 @@ repository ships and is refused the same way. The name was the user's, but the r
 chose which file answered to it, and that file is loaded into alc and into the language
 server's semantic bridge.
 
-In a trusted project, a copy found inside the project for a name loads only when the trust
-record lists that file with the hash it has now. The record learns names from the project's
-settings files and `~/.config/al-lsp/settings.json`, and lists the copy each of them resolves
-to. A name written only in Zed or VS Code user settings, or passed to `al-explorer build` as a
-flag, is not in the record, so a copy of it that a later commit adds under `.netpackages` is
-refused, with a message naming the file, where it used to be found ahead of the NuGet cache
-and loaded. To use a project copy, name the analyzer in the project's settings or in
+In a trusted project, a file inside the project that an analyzer entry resolves to, the copy
+found for a name or the file a path names, loads only when the trust record lists that file
+with the hash it has now. The record learns entries from the project's settings files and
+`~/.config/al-lsp/settings.json`, and lists the file each of them resolves to. An entry
+written only in Zed or VS Code user settings, or passed to `al-explorer build` as a flag, is
+not in the record. So a copy of a name that a later commit adds under `.netpackages`, or a
+file it adds at a path such as `./tools/TeamCop.dll`, is refused with a message naming the
+file. Before, the copy was found ahead of the NuGet cache and the file at the path was loaded.
+To use a file in the project, write the entry in the project's settings or in
 `~/.config/al-lsp/settings.json`. The rule sits in
 `al_project::analyzers::CustomAnalyzerSearch`, which every build, publish, debug launch and
 semantic analysis goes through.
@@ -302,9 +305,11 @@ has none), or when `authentication` is `Windows` or `UserPassword` in any case. 
 those authentication values the library connects to `server` even for `Sandbox` or
 `Production`. The trust record lists the servers of launch entries under the same rule. The
 proxy refuses a scenario with an `environmentType` other than `OnPrem`, `Sandbox` or
-`Production` (in any case), an `applicationFamily` that is not one DNS label (letters, digits
-and `-`), a target key such as `server`, `environmentType` or `applicationFamily` spelled in
-another case, and a field it cannot read, such as a `port` written as a string.
+`Production` (in any case), an `authentication` other than `Windows`, `UserPassword`, `AAD` or
+`MicrosoftEntraID` (in any case, written alone, since the library also reads `2`, ` Windows`
+and `AAD,Windows` as one of them), an `applicationFamily` that is not one DNS label (letters,
+digits and `-`), a target key such as `server`, `environmentType` or `applicationFamily`
+spelled in another case, and a field it cannot read, such as a `port` written as a string.
 
 `publish` and `tests.run*` are in that list although they never read the OAuth cache: they
 send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The

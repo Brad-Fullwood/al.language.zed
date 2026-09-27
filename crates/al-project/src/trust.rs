@@ -531,13 +531,16 @@ fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<Privile
     settings
 }
 
-/// The DLL inside the project each configured analyzer name resolves to when
+/// The DLL inside the project each configured analyzer entry resolves to when
 /// the project is trusted, with its hash.
 ///
-/// Trust is what lets a name, the user's or the repository's, resolve to a
-/// file the repository ships under `.netpackages`, `packages` or a relative
-/// probing path. Recording the file's hash means a commit that replaces it
-/// makes the record stale, rather than loading new code under the old record.
+/// Trust is what lets an entry, the user's or the repository's, resolve to a
+/// file the repository ships: a name finds a copy under `.netpackages`,
+/// `packages` or a relative probing path, and a path names the file itself.
+/// Recording the file's hash means a commit that replaces it makes the record
+/// stale, rather than loading new code under the old record. `config` holds
+/// the entries of `~/.config/al-lsp/settings.json` too, which
+/// [`privileged_changes`] leaves out as the user's own.
 fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<PrivilegedSetting> {
     let root = canonical_root(project_root);
     let mut settings = Vec::new();
@@ -568,8 +571,8 @@ fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<Privil
     settings
 }
 
-/// Whether `decision` lists `found`, the file inside the project a bare
-/// analyzer name resolved to, with the hash it has now.
+/// Whether `decision` lists `found`, the file inside the project an analyzer
+/// entry resolved to, with the hash it has now.
 ///
 /// [`project_analyzer_copies`] records a copy under the relative path it sits
 /// at, so only that entry can match: a settings value has a settings file as
@@ -1626,6 +1629,11 @@ fn executable_path_privileges(
 /// a user-level value from a worktree one. al-lsp can tell, because it can read
 /// the repository's files, so the refusal lands here. Removing the variable
 /// makes the whole process fall back to `dotnet` from `PATH`.
+///
+/// A settings file that does not parse leaves nothing to decide with, so a
+/// host inside the project is dropped then too. The function used to return
+/// before deciding, and a trusted project whose runtime a later commit replaced
+/// kept its `dotnet` while the daemon denied every other privileged value.
 pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
     let configured = std::env::var(crate::toolchain::DOTNET_PATH_ENV).ok()?;
     let configured = configured.trim().to_string();
@@ -1633,7 +1641,24 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
         return None;
     }
 
-    let (ask, decision) = inspect(project_root).ok()?;
+    let (ask, decision) = match inspect(project_root) {
+        Ok(read) => read,
+        Err(error) => {
+            if !stays_inside_project(Path::new(&configured), project_root) {
+                return None;
+            }
+            std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
+            return Some(format!(
+                "Ignoring the dotnet host '{}': it is inside this project, and the project's \
+                 settings could not be read to decide whether it is trusted ({}). Falling back \
+                 to 'dotnet' from PATH. To use it, fix that file, and the user runs this in a \
+                 terminal: {TRUST_COMMAND} --show {}",
+                one_line(&configured),
+                one_line(&error.to_string()),
+                one_line(&canonical_root(project_root).display().to_string())
+            ));
+        }
+    };
     if decision.state.is_trusted() {
         return None;
     }

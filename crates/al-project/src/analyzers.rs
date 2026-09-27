@@ -40,15 +40,15 @@ pub enum AnalyzerDiscoveryError {
         found: String,
         root: String,
     },
-    /// The entry is a bare name that resolves to a file inside a trusted
+    /// The entry, a name or a path, resolves to a file inside a trusted
     /// project, and the trust record does not list that file with its current
     /// hash. The fields are already put through [`crate::trust::one_line`].
     #[error(
         "analyzer '{entry}' resolves to '{found}' inside this project, and the project's trust \
-         record does not list that file, so it is not loaded. The record lists the project copy \
-         of an analyzer name written in the project's settings or in \
-         ~/.config/al-lsp/settings.json. Name the analyzer there, or install it in the NuGet \
-         cache. To read the project's settings and decide, the user runs this in a terminal: \
+         record does not list that file, so it is not loaded. The record lists the file each \
+         analyzer entry in the project's settings or in ~/.config/al-lsp/settings.json \
+         resolves to. Write the entry there, or install the analyzer in the NuGet cache. To \
+         read the project's settings and decide, the user runs this in a terminal: \
          {} --show {root}",
         crate::trust::TRUST_COMMAND
     )]
@@ -177,13 +177,14 @@ impl<'a> CustomAnalyzerSearch<'a> {
 
     /// [`discover_custom_analyzer`] for `entry`.
     ///
-    /// A bare name that resolves to a file inside the project loads only when
-    /// the trust decision lists that file with the hash it has now. The record
-    /// learns names from the project's settings and
-    /// `~/.config/al-lsp/settings.json`, and a name can also come from Zed's
+    /// An entry, a name or a path, that resolves to a file inside the project
+    /// loads only when the trust decision lists that file with the hash it has
+    /// now. The record learns entries from the project's settings and
+    /// `~/.config/al-lsp/settings.json`, and an entry can also come from Zed's
     /// user settings, which the record does not read. Such a name used to
     /// resolve to a copy a later commit added under `.netpackages`, ahead of
-    /// the NuGet cache, while the record still matched.
+    /// the NuGet cache, and such a path to a file a later commit added at it,
+    /// while the record still matched.
     pub fn resolve(&self, entry: &str) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
         let entry = entry.trim();
         if entry.is_empty() || is_builtin_analyzer(entry) {
@@ -203,8 +204,7 @@ impl<'a> CustomAnalyzerSearch<'a> {
         let Some(found) = found else {
             return Ok(None);
         };
-        let bare_name = !Path::new(entry).is_absolute() && !entry.contains(['/', '\\']);
-        if !bare_name || !is_inside(&found, self.project_root) {
+        if !is_inside(&found, self.project_root) {
             return Ok(Some(found));
         }
         let shown = |text: &str| crate::trust::one_line(text);
@@ -254,8 +254,8 @@ fn discover(
         let found = canonical_file(&path)
             .ok_or(AnalyzerDiscoveryError::MissingExplicitPath(path.clone()))?;
         // A path into the project names a file the repository ships, however
-        // it is spelled. The trust record hashes that file, so a later commit
-        // that replaces it makes the project stale and lands here.
+        // it is spelled. In a trusted project `CustomAnalyzerSearch::resolve`
+        // loads it only when the trust record lists it with its hash.
         if !search_project && is_inside(&found, project_root) {
             return Err(untrusted(&found));
         }
@@ -361,20 +361,22 @@ fn project_search_roots(project_root: &Path, assembly_probing_paths: &[PathBuf])
     roots
 }
 
-/// The file inside the project a bare analyzer name would resolve to when the
-/// project is trusted, for the trust record to hash.
+/// The file inside the project an analyzer entry would resolve to when the
+/// project is trusted, for the trust record to hash: the file a path names, or
+/// the copy a bare name finds under a relative probing path, `.netpackages` or
+/// `packages`.
 pub(crate) fn find_in_project(
     entry: &str,
     project_root: &Path,
     assembly_probing_paths: &[PathBuf],
 ) -> Option<PathBuf> {
     let entry = entry.trim();
-    if entry.is_empty()
-        || is_builtin_analyzer(entry)
-        || Path::new(entry).is_absolute()
-        || entry.contains(['/', '\\'])
-    {
+    if entry.is_empty() || is_builtin_analyzer(entry) {
         return None;
+    }
+    if Path::new(entry).is_absolute() || entry.contains(['/', '\\']) {
+        return canonical_file(&project_root.join(entry))
+            .filter(|found| is_inside(found, project_root));
     }
     let file_name = if entry
         .rsplit_once('.')

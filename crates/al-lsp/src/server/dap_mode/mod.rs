@@ -131,6 +131,14 @@ const TARGET_KEYS: [&str; 10] = [
     "applicationFamily",
 ];
 
+/// The `authentication` values the proxy forwards, compared in any ASCII case.
+///
+/// Microsoft's deployment library binds the value with .NET's `Enum.TryParse`
+/// in any case, which also trims blanks, reads `2` as `Windows` and joins
+/// `AAD,Windows` into `UserPassword`. Each of those connects to `server`, so
+/// only the names themselves are read.
+const AUTHENTICATION_NAMES: [&str; 4] = ["Windows", "UserPassword", "AAD", "MicrosoftEntraID"];
+
 /// Whether `value` is one DNS label: 1 to 63 ASCII letters, digits and `-`.
 ///
 /// Microsoft's deployment library builds the online address as
@@ -150,15 +158,16 @@ fn is_dns_label(value: &str) -> bool {
 /// The proxy forwards the original bytes to EditorServices.Host, so the
 /// judgement has to read them the way the host might. A key the adapter reads
 /// by its exact spelling and the host may bind in any case (`Server`), a
-/// field the adapter could not read, an unknown `environmentType` and an
+/// field the adapter could not read, an unknown `environmentType`, an
+/// `authentication` other than [`AUTHENTICATION_NAMES`] and an
 /// `applicationFamily` that is not one DNS label are refused.
 ///
 /// A scenario is on-premises, and needs trust for its `server`, when any of
 /// these holds, which is the rule Microsoft's deployment library applies
 /// (`ConnectionOptions.IsOnPremise`):
-/// - `environmentType` is `OnPrem`;
+/// - `environmentType` is `OnPrem`.
 /// - `environmentType` is missing and a `server` is named, as in Microsoft's
-///   "Your own server" template;
+///   "Your own server" template.
 /// - `authentication` is `Windows` or `UserPassword`, in any case. The library
 ///   then builds its on-premises client against `server` whatever
 ///   `environmentType` says.
@@ -199,6 +208,18 @@ fn proxy_debug_config(
                 al_project::trust::one_line(&shown)
             ));
         }
+    }
+    if !AUTHENTICATION_NAMES
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(&config.authentication))
+    {
+        return Err(format!(
+            "Refusing to start this debug session: authentication must be Windows, \
+             UserPassword, AAD or MicrosoftEntraID, got `{}`. The debugger also reads a number, \
+             a name with blanks around it or a comma list as one of these, so write the name \
+             alone.",
+            al_project::trust::one_line(&config.authentication)
+        ));
     }
     let environment_type = arguments.get("environmentType").and_then(|v| v.as_str());
     let on_prem_type = match environment_type {
@@ -1422,5 +1443,47 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// Microsoft's deployment library binds `authentication` with .NET's
+    /// `Enum.TryParse` in any case, which also trims blanks, reads a number
+    /// and joins a comma list, so each of these connects to `server` with
+    /// Windows or password credentials. The proxy compared the exact names
+    /// and judged these online.
+    #[test]
+    #[serial_test::serial]
+    fn the_legacy_proxy_refuses_an_authentication_that_is_not_one_of_the_four_names() {
+        let _config = ScratchConfig::new();
+        let project = project_with_debug_scenario("https://collector.example.test", false);
+        let scenario = |authentication: &str| {
+            serde_json::json!({
+                "environmentType": "Sandbox",
+                "server": "https://collector.example.test",
+                "serverInstance": "BC",
+                "authentication": authentication,
+                "tenant": "default",
+            })
+        };
+
+        for authentication in [
+            " Windows",
+            "Windows ",
+            "2",
+            "3",
+            "AAD,Windows",
+            "aad, windows",
+        ] {
+            let refusal = proxy_refusal(project.path(), scenario(authentication))
+                .unwrap_or_else(|| panic!("forwarded authentication {authentication:?}"));
+            assert!(refusal.contains("authentication must be"), "{refusal}");
+        }
+
+        for authentication in ["AAD", "microsoftentraid"] {
+            assert_eq!(
+                proxy_refusal(project.path(), scenario(authentication)),
+                None,
+                "{authentication}"
+            );
+        }
     }
 }
