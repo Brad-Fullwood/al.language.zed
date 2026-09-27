@@ -1106,3 +1106,49 @@ Still open before publishing:
   `cargo mutants` and the persisted index were still running. Re-read it once the campaign ends.
 - `readTime` in the frontmatter was not recomputed.
 - All nine keep `draft: true`. Merging to `main` is Brad's call.
+
+### Length pass 2026-09-27
+
+Prose words are counted without the frontmatter, fenced code blocks and table lines, with the rest
+split on whitespace (headings, list items, inline code and link targets count). This one-liner
+reproduces every number below:
+
+```bash
+awk 'NR==1&&/^---$/{f=1;next} f&&/^---$/{f=0;next} f{next} /^[ \t]*(```|~~~)/{c=!c;next} !c && !/^[ \t]*\|/' FILE | wc -w
+```
+
+It gives the same 2,575, 2,414, 2,078 and 2,501 as the list above for articles 3, 7, 8 and 9.
+Before is blog commit `ad27608`, after is `5af7849`.
+
+| Plan article | Range | Before | After | readTime |
+| --- | --- | ---: | ---: | --- |
+| 1 `al-outside-vs-code` | 1,800 to 2,200 | 1,946 | 1,946 | 9 -> 12 |
+| 2 `tree-sitter-grammar-for-al` | 1,600 to 2,000 | 1,639 | 1,639 | 9 -> 11 |
+| 3 `one-engine-four-transports` | 1,800 to 2,200 | 2,575 | 2,249 | 10 -> 14 |
+| 4 `native-app-emitter` | 2,000 to 2,400 | 2,393 | 2,393 | 11 -> 16 |
+| 5 `running-bc-tests-locally` | 1,800 to 2,200 | 2,063 | 2,063 | 10 -> 13 |
+| 6 `symbols-without-the-compiler` | 1,500 to 1,900 | 1,730 | 1,730 | 8 -> 13 |
+| 7 `mcp-and-the-claude-code-plugin` | 1,800 to 2,200 | 2,414 | 2,257 | 10 -> 14 |
+| 8 `zed-extension-and-release-integrity` | 1,200 to 1,600 | 2,078 | 1,675 | 8 -> 12 |
+| 9 `what-an-ai-review-campaign-actually-looks-like` | 2,000 to 2,500 | 2,501 | 2,399 | 12 -> 15 |
+
+After the pass, 3 is 2.2 percent over its range, 7 is 2.6 percent over and 8 is 4.7 percent over.
+Article 9 is 101 words under its top, so the end-of-campaign re-read has room. The other five were
+in range and were not touched beyond `readTime`. The cuts were repeated points, opening and closing
+sentences that restated a section, sentences that explained a code comment or table shown beside
+them, and three second examples: the round 1 `grep -r` answer and the `.range` fallback in article 7,
+and the catalog-test merge failure on the 21st in article 9. No number, command, file name or
+sourced claim was removed. Headings, links, frontmatter (apart from `readTime`), code blocks and
+tables are unchanged. Unsloppify and humanizer ran over the changed passages without adding words.
+
+`readTime` uses the site's own rule, `getReadingTime` in `src/lib/utils.ts`: whitespace-separated
+words of the article body after the frontmatter, code and tables included, divided by 200 and
+rounded up. Nothing in the site calls that function. The pages show the frontmatter value, and the
+fallback in `ArticleHero.astro` and `BlogCard.astro` estimates from the description only. The prose
+count at the same rate would give 1 to 9: 10, 9, 12, 12, 11, 9, 12, 9, 12.
+
+`pnpm validate` passes: lint 0 errors and the same 11 warnings in site components, `astro check`
+0 errors, 0 warnings and 3 hints across 176 files, build of 14 pages and the Pagefind index complete.
+
+Blog commits on `campaign/2026-09-rewrite`, pushed to origin (`ad27608..5af7849`): `a4ed76d` (3),
+`eec69ab` (7), `8f0b9c9` (8), `3b8dadc` (9), `5af7849` (`readTime` for all nine).

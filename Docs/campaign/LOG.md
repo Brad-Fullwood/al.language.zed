@@ -648,3 +648,11 @@ Append-only. Newest entry last.
   items 5 to 7, round 12 review over `4c429ac5..7b607e40`, the daemon `app.json` reload, and the
   mutants formatting run. Gates on 7b607e40 in progress.
 - Gates on 7b607e40: 68 suites with tests, 5387 passed, 0 failed. Pushed.
+
+## 2026-09-27 18:05 BST: blog length pass
+
+- Blog branch `campaign/2026-09-rewrite` at 5af7849 (pushed): articles 3, 7, 8 and 9 trimmed from 2,575,
+  2,414, 2,078 and 2,501 prose words to 2,249, 2,257, 1,675 and 2,399 (repeated points, section
+  lead-ins, sentences that restated a code block or table, three second examples), no number, command,
+  file name or sourced claim removed. `readTime` recomputed for all nine with the site's
+  `getReadingTime` rule. `pnpm validate` passes. `findings/blog-progress.md` has the counts and method.

@@ -21,7 +21,7 @@ worktree: branch deleted, the split is re-queued. Three merged worktrees removed
 
 Gates on 7b607e40 in progress.
 
-Agents in flight (dispatched 17:58):
+Agents in flight (dispatched 17:50):
 
 - Security round 6 fixes, trust (SEC6-1, SEC6-2), Opus: `.claude/worktrees/agent-fix-r6sec-trust`,
   `campaign/fix-r6sec-trust`. Ends with `## Fix pass complete`.
@@ -39,11 +39,8 @@ Agents in flight (dispatched 17:58):
   `campaign/test-mutants` (fast-forwarded to 7b607e40). Ends with `## Mutation pass complete`.
 - Queued batch 3 (the workspace pass clear without a currency check from `ghost-race-2.md`, the
   doubled "not trusted" notice from `pack-native --validate`, the `DotNetPackages` decision), Opus,
-  dispatched 18:10: `.claude/worktrees/agent-queued-3`, `campaign/fix-queued-3`. Ends with
+  dispatched 17:53: `.claude/worktrees/agent-queued-3`, `campaign/fix-queued-3`. Ends with
   `## Fix pass complete`.
-- Blog length pass (articles 3, 7, 8, 9 to their planned ranges, `readTime` for all nine), Opus,
-  dispatched 18:05 on the blog branch `campaign/2026-09-rewrite`, appends `### Length pass 2026-09-27`
-  to `findings/blog-progress.md` in this checkout (uncommitted). Ends with `## Length pass complete`.
 
 Merge order when they finish: the two security fix branches, the app.json fix, mutants, then the
 two reviews' findings to fix agents. Gates on each merge, `cargo test -p al-test-harness
@@ -76,7 +73,7 @@ Queued:
 - al-dap and al-publish post to different BC dev endpoints (needs a live server to settle).
 - desloppify fix batches (`findings/desloppify.md` section 4), file splits after the owning fix branch merges.
 - Workstream E (tests): coverage by crate, property tests for parser and interpreter, `cargo mutants` on al-runtime and al-analysis. Start when a build slot frees.
-- Blog: done for now (re-read 13:10). Before publishing: timings on a quiet machine, article 9's final re-read when the campaign ends, `readTime`, four articles over the word range. Merge to `main` is Brad's call.
+- Blog: done for now (length pass 18:05). Before publishing: timings on a quiet machine, article 9's final re-read when the campaign ends. Merge to `main` is Brad's call.
 - `pack-native --validate` on a new untrusted project prints the "not trusted" notice twice.
 - Plugin: `package-diff` with two versions in `.alpackages`, five skills untested against `.alpackages`, a tagged release that publishes `binary-checksums.txt` so the download hook's success path runs for real.
 - Windows named pipe owner check (documented, no Windows machine in the campaign).
@@ -121,7 +118,7 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 | F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review fixed 10 of 11 plus three items found while fixing. 2026-09-26: the seven shared query files are byte-identical in both places and the Makefile checks it. Corpus round 2 merged 2026-09-27: grammar cc31863 (12 commits, corpus tests for every construct the interpreter runs, GR2-1 scanner fix), pointer and `extension.toml` rev moved (4c1b0ae6). GR2-2, GR2-3, GR2-5 fixed in the interpreter (8f70b75e). GR2-4 fixed 2026-09-27: grammar a108400, pointer b3d5121b, interpreter test 217af726. Corpus round 3 merged 2026-09-27 (`findings/grammar-corpus-r3.md`, grammar 142aba6, pointer 4c429ac5): six corpus files (List and Dictionary, glued signs, keyword names, case labels, round 8 and 9 shapes, every node kind the interpreter matches), GR3-1 fixed in the grammar (`X:=-1` parses as `X := -1`), 119 corpus tests | GR3-2 and GR3-3 in the interpreter (agent on `campaign/fix-r10-b`), then a query drift check over the new node shapes |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Plugin, daemon projection, free-ids, compact answers merged. Persisted dependency source index merged 2026-09-26: second start 23.6 s to 1.25 s, peak memory 2.8 GB to 371 MB, and the follow-up (builder fixture hash in the key, shared store with a 1 GiB limit, sorted rows). Plugin leftovers merged 2026-09-26 (cf0f794c): `plugin/evals/` with 12 ground-truth cases and `make plugin-evals`, a SessionStart hook that downloads and checksum-verifies a release archive | Round 5 runs merged 2026-09-27: `bc-test-locally`, `bc-upgrade-impact`, `bc-cop-fixer` and a `.alpackages` symbol lookup all right, three defects fixed on the way. Round 6 runs in flight (the five skills against `.alpackages`, `package-diff` with two versions). Round 6 runs merged 2026-09-27 (b2c38e6a): all right on the first try. Agent on the stale `app.json` defect it found. Left: a release with `binary-checksums.txt` |
 | H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | Done 2026-09-26: every user doc checked against the code and given a plain-wording pass (`findings/docs-review.md`). Re-checked 2026-09-27 against the round 8 merges (6516172a): six claims corrected in `native-test-runtime.md` and `debugging-dap.md`, eleven docs read with nothing to change Re-check 3 merged 2026-09-27 (aaa3ca37): 13 claims corrected in six docs, twelve read with nothing to change | Re-check after the round 11 fixes and security round 6 merge |
-| I | Blog: replace the six articles with a new series on the current project, unsloppify each | Nine articles written, fact-passed, unsloppified and re-read after the security round on blog branch `campaign/2026-09-rewrite` (pushed), `pnpm validate` passes, all `draft: true` | Article 9 final re-read at campaign end, quiet-machine timings, `readTime`, then merge to `main` (Brad) |
+| I | Blog: replace the six articles with a new series on the current project, unsloppify each | Nine articles written, fact-passed, unsloppified and re-read after the security round on blog branch `campaign/2026-09-rewrite` (pushed), `pnpm validate` passes, all `draft: true`. Length pass 2026-09-27 (blog 5af7849): articles 3, 7, 8 and 9 trimmed to within 5 percent of their ranges, `readTime` recomputed for all nine with the site's own `getReadingTime` rule (all words at 200 a minute, so 11 to 16 minutes, the prose-only numbers are in `blog-progress.md`) | Article 9 final re-read at campaign end, quiet-machine timings, `readTime`, then merge to `main` (Brad) |
 
 ### G: AI tooling detail
 
