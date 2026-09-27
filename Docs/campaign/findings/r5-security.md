@@ -107,4 +107,4 @@ Scratch tests for SEC5-1 to SEC5-6 are in `.campaign/sec5-scratch-tests.patch` i
 ## Review complete
 
 Nine findings: no high, seven medium (SEC5-1, SEC5-2, SEC5-4, SEC5-5, SEC5-7, SEC5-8, SEC5-9), two low (SEC5-3, SEC5-6).
-All open. One Windows-only candidate is noted under item 3 and was not verified.
+All nine fixed on `campaign/fix-r5-security`. One Windows-only candidate is noted under item 3 and was not verified.
