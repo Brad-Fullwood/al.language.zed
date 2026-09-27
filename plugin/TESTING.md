@@ -148,6 +148,58 @@ recorded in the table above. Nothing about triggering changed: every run
 loaded the right skill on its first turn. What changed is how many calls each
 answer took and how much of the result reached the context.
 
+**Round 5: the two skills and the agent `ROADMAP.md` had marked as never run,
+plus the first run against a real `.alpackages`.** Four new questions, each
+with its right answer established directly through `al-explorer` first. The
+`.alpackages` project is not the bundled fixture: `al-explorer new` scaffolded
+one in a temp directory and `download-symbols --source nuget` pulled Base
+Application 28.0.46665.48632 plus System Application, System, Application and
+Business Foundation from the public feed, the same method `LOG.md`'s
+2026-09-24 08:00 entry used. The table shows the final, correct run for each
+question. The two that took more than one try are described below it.
+
+| # | Skill or agent | Question | Answer | Right? | Tool calls | Bytes | Wall time |
+| - | - | - | - | - | - | -: | -: |
+| 1 | `bc-test-locally` | Which tests in this extension can run locally without a BC tenant? | Both (`Pure Logic Test.TestAddition`, `TestStringConcat`), via the interpreter | right, first try | Skill, Bash | 247 | 12.1 s |
+| 2 | `bc-upgrade-impact` | What does this extension depend on, and are any of those dependencies missing? | 5 Microsoft packages (Base Application, System Application, System, Application, Business Foundation), all missing from `.alpackages` | right, third try | Skill, Bash (failed), ToolSearch, MCP `al_depgraph` | 2,170 | 20.7 s |
+| 3 | `bc-cop-fixer` | Fix the lint diagnostics in src/HelloWorld.al. | Removed the unused local variable `x`, leaving zero diagnostics | right, first try | Skill, Agent (nested: Bash x4, Edit) | 2,684 | 44.1 s |
+| 4 | `bc-symbol-lookup` (against `.alpackages`) | How many fields does the Customer table (table 18) have in this project, and which package defines it? | 172 fields (165 on the base table, 7 from the "Serv. Customer" table extension), Base Application | right, second try | Skill, Bash x2 | 345 | 14.9 s |
+
+Question 2 took two wrong tries before it loaded the skill at all. Ground
+truth from `deps-graph` direct: 5 missing packages, every one implicit,
+none named in the fixture's empty `dependencies` array. First try: no Skill
+call, the session grepped the `.al` source, tried a hallucinated `al build`
+and `al symbolsearch`, and answered with dependency names it invented from
+object references in the code. Second try, after widening the skill's own
+frontmatter description to lead with "what does this extension depend on" and
+to name the implicit-dependency gotcha: still no Skill call, the session read
+`app.json`, saw an empty array, and answered "no dependencies, nothing
+missing". The description was not what routed this question: the
+`SessionStart` hook (`al-session-context.sh`) prints a routing table with one
+line per skill before anything else, and its line for this skill read only
+"What a dependency upgrade breaks", narrower than the question asked. Widened
+that line to add "What an extension depends on, whether a dependency is
+missing". Third try: loaded the skill, ran `deps-graph` (through a typo'd bare
+`al_explorer`, which failed, then the MCP tool directly once the Bash call
+came back "command not found"), and reported all 5 missing packages.
+
+Question 4 exposed a second defect, in `bc-symbol-lookup`. Ground truth:
+Customer (table 18) is in Base Application, 165 fields on the base table, and
+a "Serv. Customer" table extension, also in Base Application, adds 7 more:
+172 total, read from `composed`'s `all_fields`. First try loaded the skill,
+read `by-id`'s `fields`, and reported 165 with no check for an extension: the
+same undercount `b82c2b01` already fixed for the Item table, found on the
+predecessor agent's `.alpackages` run before it died. Checking `composed
+--limit 20 --fields name,package,fields` by hand, the skill's own worked
+example, showed neither flag changes its size at all: about 240 KB with or
+without them, because `composed` returns one merged object, not a list of
+rows, and the projection has nothing to act on. Rewrote the "how many fields"
+recipe to lead with `composed | jq` (a 106-byte projection carrying
+`fieldCount`, `baseFieldCount` and `extensionCount`) and to check
+`extensionCount` before trusting `by-id`, and corrected the stale example that
+had claimed `--limit`/`--fields` shrink `composed`'s output. Second try: 172
+fields, Base Application, correct.
+
 ## Downloading al-lsp and al-explorer
 
 `plugin/scripts/al-fetch-release.sh`, called from the `SessionStart` hook
@@ -239,11 +291,21 @@ agent carries a `name` and a `description`.
 
 ## Not covered
 
-- A project with `.alpackages`. The fixture has none, so no agent run exercised
-  a base-app lookup or the dependency source index, and the package-side byte
-  counts above predate the daemon changes.
-- `bc-test-locally` and `bc-upgrade-impact` have no agent run yet. Their
-  commands were each verified by hand against the fixture. `bc-upgrade-impact`
-  needs a project with two versions of an app in `.alpackages` to be worth an
-  agent run at all.
-- `bc-cop-fixer` has no agent run yet.
+- `bc-upgrade-impact`'s `package-diff`. Round 5's `.alpackages` project has one
+  version of each Microsoft package, not two, so nothing exercised the diff
+  path or `obsolete --used` against a real deprecation timeline. Needs a
+  project with two versions of the same app in `.alpackages`.
+- `bc-base-app-source`, `bc-event-map`, `bc-impact-check`, `bc-workspace-health`
+  and `bc-object-id-allocator` against a project with `.alpackages`. Round 5
+  ran only `bc-symbol-lookup`'s field-count question there. The package-side
+  byte counts in the "Fixture" section above are still the pre-daemon-changes
+  reconstruction, not a measured agent run.
+- The `.alpackages` project Round 5 used is scaffolded fresh in a temp
+  directory each time (`al-explorer new` plus `download-symbols --source
+  nuget`), not checked into this repository, because a downloaded Base
+  Application `.app` is several megabytes of Microsoft's own binary. A
+  repeatable fixture for `plugin/evals/` still needs a different strategy (see
+  `plugin/ROADMAP.md`).
+- No tagged release publishes `binary-checksums.txt` yet, so the download
+  hook's success path still has not run against this repository's own release
+  process end to end.
