@@ -205,21 +205,22 @@ pub fn cmd_pack_native(
     // Our native compiler identifies itself in the manifest's <Build>.
     let compiler_version = concat!("al-explorer/", env!("CARGO_PKG_VERSION"));
     let timestamp = al_emit::now_timestamp();
-    let config = match al_project::trust::evaluate(&dir) {
-        Ok(evaluated) => {
-            if let Some(advisory) = evaluated.decision.advisory() {
-                eprintln!("{advisory}");
-            }
-            evaluated.config
-        }
+    // Evaluated once for the whole command, so the advisory prints once and
+    // `--validate` compiles with the same settings.
+    let settings = match al_project::trust::evaluate(&dir) {
+        Ok(evaluated) => evaluated,
         Err(error) => {
             return report_error(&format!("cannot load AL project settings: {error}"), json);
         }
     };
+    if let Some(advisory) = settings.decision.advisory() {
+        eprintln!("{advisory}");
+    }
+    let config = &settings.config;
     // Discover dependency packages independently of app.json parsing. The
     // native verifier owns the manifest contract and must be allowed to return
     // its structured ALN010x diagnostics for malformed manifests.
-    let dependency_packages = match al_project::project::configured_symbol_packages(&dir, &config) {
+    let dependency_packages = match al_project::project::configured_symbol_packages(&dir, config) {
         Ok(selection) => selection.packages,
         Err(error) => {
             return report_error(
@@ -277,7 +278,7 @@ pub fn cmd_pack_native(
     // This keeps syntax/project failures fast and makes `--validate` an
     // explicit compatibility oracle rather than the primary verifier.
     if validate {
-        if let Some(code) = validate_with_alc(&dir, analyzers, json) {
+        if let Some(code) = validate_with_alc(&dir, &settings, analyzers, json) {
             return code;
         }
     }
@@ -413,29 +414,17 @@ fn validation_analyzer_entries(
 /// should proceed. Runs in a temp copy of the project so alc's output never
 /// pollutes the user's tree.
 ///
-/// alc runs with the project's own analyzers and compilation settings. It used
-/// to get no analyzer list, which the build service reads as every installed
-/// analyzer, so a project that plain alc compiles failed on cop errors from
-/// analyzers it never enabled.
+/// alc runs with the project's own analyzers and compilation settings, from
+/// `settings`, the trust evaluation the caller read and reported for `dir`. It
+/// used to get no analyzer list, which the build service reads as every
+/// installed analyzer, so a project that plain alc compiles failed on cop
+/// errors from analyzers it never enabled.
 fn validate_with_alc(
     dir: &std::path::Path,
+    settings: &al_project::trust::TrustEvaluation,
     analyzers: Option<&str>,
     json: bool,
 ) -> Option<ExitCode> {
-    let settings = match al_project::trust::evaluate(dir) {
-        Ok(settings) => settings,
-        Err(error) => {
-            return Some(report_error(
-                &format!("reading the project's AL settings for --validate: {error}"),
-                json,
-            ));
-        }
-    };
-    if !json {
-        if let Some(advisory) = settings.decision.advisory() {
-            eprintln!("{advisory}");
-        }
-    }
     // An analyzer the untrusted repository ships is refused inside
     // `al_project::analyzers::discover_custom_analyzer`, which every compile
     // path shares. It runs here on the real folder, before the copy.
