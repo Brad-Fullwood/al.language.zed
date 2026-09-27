@@ -157,3 +157,14 @@ Second reviewer: 8 findings added.
 - low 0
 
 With the first reviewer's five, the file holds 13: high 4, medium 9, low 0.
+
+## Found while fixing
+
+The round 8 fix agent queued this one. It is not counted above.
+
+### [R8-CG-1] only one `OnValidate` of a table gets call graph edges, so a record call in another field's trigger misses its subscribers
+- where: crates/al-insight/src/calls/edges.rs `populate_call_edges_in_object` and crates/al-insight/src/calls/summary.rs `SourceFileSummary::from_tree` (each looked up one declaration by name through `find_procedure_in_node` in crates/al-insight/src/calls/var_types.rs), crates/al-test/src/router/mod.rs `classify_reachable` (follows the callees of the table's `OnValidate` node)
+- severity: medium
+- scenario: every field of a table declares its own `trigger OnValidate()`, and the graph gives all of them one node, `Table "X".OnValidate`. Its edges came from the one declaration the name lookup found, which is the last `OnValidate` in the table. A table "R8 Two Validates" with `Rec.Modify();` in the `OnValidate` of field Name, an empty `OnValidate` on field City, and an `OnAfterModifyEvent` subscriber that calls `Page.RunModal(0)`: a test that runs `P.Validate(Name, 'x')` routes `InterpRecord`, with no reason naming the page, and fails locally or passes where BC opens a page. The same held for an overloaded procedure name: the summary fixture's `Helper()` and `Helper(Value: Integer)` kept the calls of one of the two.
+- fix: resolve the calls of every declaration with the node's name, in document order, in the tree path and the summary path. The summary then keeps a list of calls per name, which changes what is persisted, so bump `SCHEMA_VERSION`, add two fields with an `OnValidate` each to `summary_fixture.al` and rewrite the snapshot.
+- status: fixed 4143be7a. Both paths resolve every declaration of the name, `ObjectSummary::calls` maps a name to a list, and `SCHEMA_VERSION` is 5. Pinned by the call graph test `every_same_named_trigger_gives_the_node_its_edges`, the router test `modify_in_any_fields_onvalidate_reaches_the_tables_event_subscribers` (the `Modify()` in either field's trigger routes the test to live BC for the page) and `summary_keeps_every_object_of_a_multi_object_file_and_its_effects`, which checks both `OnValidate` entries of the fixture table.
