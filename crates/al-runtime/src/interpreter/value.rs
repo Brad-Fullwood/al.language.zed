@@ -421,8 +421,7 @@ impl Value {
     /// longer than it is a runtime error, the way BC traps an assignment whose
     /// converted value overflows the target.
     ///
-    /// Any other combination overwrites as-is. Shared by both assignment paths
-    /// (`eval_assignment` and the expression-form handler in `eval_expr`).
+    /// Any other combination overwrites as-is.
     pub(crate) fn coerce_into_slot(
         slot: &Value,
         incoming: Value,

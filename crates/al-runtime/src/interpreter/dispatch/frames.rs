@@ -211,8 +211,7 @@ pub(super) fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) ->
 
     let mut cursor2 = param_list.walk();
     for child in param_list.named_children(&mut cursor2) {
-        // Accept both "parameter" and "parameter_declaration" node kinds.
-        if child.kind() != "parameter" && child.kind() != "parameter_declaration" {
+        if child.kind() != "parameter" {
             continue;
         }
         let name_node =
@@ -242,11 +241,7 @@ pub(super) fn collect_params(proc_node: tree_sitter::Node<'_>, source: &[u8]) ->
             }
         }
 
-        let type_node = child_by_field_or_kind(
-            child,
-            "type",
-            &["type_reference", "type", "builtin_type", "primitive_type"],
-        );
+        let type_node = child_by_field_or_kind(child, "type", &["type_reference"]);
         let type_name = type_node
             .and_then(|n| n.utf8_text(source).ok())
             .map(|t| t.trim().to_string())

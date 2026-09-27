@@ -18,11 +18,10 @@
 //! | `case_statement`              | CASE expr OF … END                  |
 //! | `begin_end_block`             | BEGIN … END                         |
 //! | `statement_list`              | sequence of statements              |
-//! | `assignment_statement`        | x := expr                           |
 //! | `exit_statement`              | EXIT [( expr )]                     |
 //! | `expression_statement`        | expr;  (side-effects only)          |
 //! | `asserterror_statement`       | ASSERTERROR stmt                    |
-//! | anything else                 | treated as an expression node       |
+//! | anything else                 | an expression, `x := expr` included |
 //!
 //! ## Error propagation
 //!
@@ -96,7 +95,6 @@ fn eval_stmt_inner(
         "foreach_statement" => eval_foreach(node, source, stack, ctx),
         "repeat_statement" => eval_repeat(node, source, stack, ctx),
         "case_statement" => eval_case(node, source, stack, ctx),
-        "assignment_statement" => eval_assignment(node, source, stack, ctx),
         "exit_statement" => eval_exit(node, source, stack, ctx),
         // Handle the grammar's dedicated `break` and `continue` nodes.
         "break_statement" => Eval::Break,
@@ -385,7 +383,7 @@ fn eval_foreach(
     ctx: &mut DispatchCtx,
 ) -> Eval {
     let var_node = node
-        .child_by_field_name("variable")
+        .child_by_field_name("iterator")
         .or_else(|| named_stmt_child(node, 0));
     let list_node = node
         .child_by_field_name("collection")
@@ -501,7 +499,7 @@ fn eval_repeat(
 
 fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
     let selector_node = match node
-        .child_by_field_name("subject")
+        .child_by_field_name("value")
         .or_else(|| named_stmt_child(node, 0))
     {
         Some(n) => n,
@@ -523,7 +521,7 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     let arms: Vec<Node> = children
         .iter()
         .copied()
-        .filter(|child| matches!(child.kind(), "case_arm" | "case_branch"))
+        .filter(|child| child.kind() == "case_branch")
         .collect();
     for (index, arm) in arms.iter().enumerate() {
         ctx.cov_ensure_path(
@@ -606,66 +604,6 @@ fn eval_case(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Di
     }
 }
 
-fn eval_assignment(
-    node: Node<'_>,
-    source: &[u8],
-    stack: &mut ScopeStack,
-    ctx: &mut DispatchCtx,
-) -> Eval {
-    let lhs_node = match node
-        .child_by_field_name("target")
-        .or_else(|| named_stmt_child(node, 0))
-    {
-        Some(n) => n,
-        None => return Eval::Error(error_info("assignment: missing LHS")),
-    };
-    let rhs_node = match node
-        .child_by_field_name("value")
-        .or_else(|| named_stmt_child(node, 1))
-    {
-        Some(n) => n,
-        None => return Eval::Error(error_info("assignment: missing RHS")),
-    };
-
-    let rhs_val = match eval_expr(rhs_node, source, stack, ctx) {
-        Eval::Normal(v) => v,
-        other => return other,
-    };
-
-    // Record field assignment (`Rec."Field" := value`) — handled before the
-    // plain-identifier path so the receiver record isn't overwritten wholesale.
-    if let Some(result) = records::try_field_assign(lhs_node, source, &rhs_val, stack, ctx) {
-        return result;
-    }
-
-    let lhs_name = match lhs_node.utf8_text(source) {
-        Ok(t) => t.unquote_identifier().to_ascii_lowercase(),
-        Err(_) => return Eval::Error(error_info("assignment: invalid LHS identifier")),
-    };
-
-    let capacity = stack.declared_text_length(&lhs_name);
-    if let Some(slot) = stack.lookup_mut(&lhs_name) {
-        // Preserve the slot's declared type (Code caselessness / integer width)
-        // rather than adopting the RHS's — see `coerce_into_slot`.
-        match Value::coerce_into_slot(slot, rhs_val, capacity) {
-            Ok(value) => *slot = value,
-            Err(message) => return Eval::Error(error_info(&message)),
-        }
-    } else if let Some(result) = records::implicit_field_set(&lhs_name, &rhs_val, stack, ctx) {
-        // Table code: a bare field name of the implicit record.
-        return result;
-    } else {
-        // AL has no implicit declaration: assigning to an unknown name is a
-        // compile error in BC, so a typo'd LHS must fail loudly instead of
-        // silently creating a fresh variable.
-        return Eval::Error(error_info(format!(
-            "assignment to unbound identifier '{lhs_name}' — variables must be declared"
-        )));
-    }
-
-    Eval::Normal(Value::Empty)
-}
-
 fn eval_exit(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut DispatchCtx) -> Eval {
     if let Some(expr) = named_stmt_child(node, 0) {
         // The AL grammar represents `exit(value)` as:
@@ -732,13 +670,6 @@ fn eval_expression_stmt(
 ) -> Eval {
     let effective = resolve_to_call_node(node);
     match effective.kind() {
-        "member_access_expression" | "method_call_expression" | "call_expression" => {
-            // Mark statement position: a `Rec.Get(...)`/`Rec.FindFirst()` miss
-            // must raise here (BC) instead of silently yielding false. The
-            // record dispatcher consumes and resets the marker.
-            ctx.stmt_position = true;
-            eval_call(effective, source, stack, ctx)
-        }
         // The AL grammar expresses bare calls as `postfix_expression`:
         //   primary_expression + call_suffix   → ForwardCall(args)
         //   primary_expression + member_call_suffix → Recv.Call(args)
@@ -746,6 +677,9 @@ fn eval_expression_stmt(
         // We detect calls by checking for a call_suffix / member_call_suffix child.
         "postfix_expression" => {
             if is_call_postfix(effective) {
+                // Mark statement position: a `Rec.Get(...)`/`Rec.FindFirst()` miss
+                // must raise here (BC) instead of silently yielding false. The
+                // record dispatcher consumes and resets the marker.
                 ctx.stmt_position = true;
                 eval_call(effective, source, stack, ctx)
             } else {
@@ -1189,24 +1123,12 @@ fn extract_call_parts<'a>(
 
     let args_node = parts
         .iter()
-        .find(|(named, c)| {
-            *named
-                && matches!(
-                    c.kind(),
-                    "argument_list" | "call_arguments" | "procedure_call_arguments"
-                )
-        })
+        .find(|(named, c)| *named && c.kind() == "argument_list")
         .map(|(_, c)| *c);
 
     let name_parts: Vec<String> = parts
         .iter()
-        .filter(|(named, c)| {
-            *named
-                && !matches!(
-                    c.kind(),
-                    "argument_list" | "call_arguments" | "procedure_call_arguments"
-                )
-        })
+        .filter(|(named, c)| *named && c.kind() != "argument_list")
         .filter_map(|(_, c)| c.utf8_text(source).ok())
         .map(|t| t.unquote_identifier().into_owned())
         .collect();
@@ -1226,10 +1148,7 @@ pub(crate) fn find_argument_list(node: Node<'_>) -> Option<Node<'_>> {
     let mut cursor = node.walk();
     let mut found = None;
     for child in node.named_children(&mut cursor) {
-        if matches!(
-            child.kind(),
-            "argument_list" | "call_arguments" | "procedure_call_arguments"
-        ) {
+        if child.kind() == "argument_list" {
             found = Some(child);
             break;
         }
