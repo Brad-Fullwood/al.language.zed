@@ -698,8 +698,8 @@ pub fn deny_privileged(config: &mut AlConfig) {
 /// after the last request or never while an editor keeps it busy. Revocation
 /// is the user saying stop, so it has to take effect.
 ///
-/// This is six `stat` calls, so it can run per request. A change in any of
-/// them means the decision has to be made again.
+/// This is up to seven `stat` calls, so it can run per request. A change in
+/// any of them means the decision has to be made again.
 #[must_use]
 pub fn inputs_fingerprint(project_root: &Path) -> u64 {
     let mut hasher = Sha256::new();
