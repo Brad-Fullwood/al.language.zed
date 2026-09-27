@@ -67,6 +67,13 @@ in the main checkout, beside the round 8 patch. Every cargo command ran one crat
 - fix: resolve al-lsp the way al-explorer does (beside the binary, then PATH), skip with a message naming the missing or mismatched al-lsp, keep stderr on a failure and print it under the case, and have the README name both binaries in the build step.
 - status: open
 
+### [R9-CU-2] `Clear` is routed to the LibraryVariableStorage stub, so it resets nothing and empties the test's variable storage
+- where: crates/al-runtime/src/interpreter/dispatch/routing.rs:88-94 (an unqualified call is resolved against every stub catalog by name before the global builtins), crates/al-runtime/src/stubs/library_variable_storage.rs:409 and :182-186 (`clear` empties the LibraryVariableStorage queue and returns Empty), crates/al-runtime/src/interpreter/dispatch/routing.rs:336-383 (`supports_global_builtin` has `ClearLastError` and no `Clear`), crates/al-test/src/router/ast.rs:569-572 (the router counts a name any catalog resolves as a stub, so such a test stays local)
+- severity: medium
+- scenario: `Clear(X)` is the system method that resets a variable of any type. Locally the unqualified name matches the `LibraryVariableStorage` stub's `clear`, so `Clear(N)` on an Integer holding 5 leaves 5, `Clear(T)` on a Text holding `x` leaves `x`, and `Clear(C)` on a codeunit variable leaves its instance: `C.Bump(); C.Bump(); Clear(C); C.Bump(); exit(C.Get())` returns 3, where BC returns 1, since the Clear page on Learn says "only the reference to the codeunit is deleted" and the next call runs on a new instance. Each such call also empties the test's LibraryVariableStorage queue, so a handler that dequeues a value after a `Clear(SomeVar)` in the code under test fails locally with an empty queue. `ClearAll()` and a misspelt name answer "procedure not found", so `Clear` is caught by the catalog fallback alone. Confirmed with scratch procedures (`ClearInteger`, `ClearText`, `ClearResets`, `ClearAllCall`). The codeunit-instance work (9a9ce662) makes `Clear(Cu)` the documented way to drop an instance, so what used to be a silent no-op now changes a test's result.
+- fix: resolve an unqualified call against the global builtins first and against a stub catalog only for a qualified receiver, add `Clear` as a builtin that resets the variable to its type's default (`instance: None` for a codeunit value, a fresh view for a record, an empty node for a JSON value), and have the router's `is_stub` follow the same rule so a test that calls a global the runtime does not model goes to live BC.
+- status: open
+
 ## Audit triage spot-check
 
 Ten `fixed` rows of `audit-backlog-triage.md` whose evidence names no commit and no file:line, spread
@@ -84,3 +91,15 @@ over its sections, each read against the code at a0e85e0b.
 | 257: xlf refresh picks the first `*.g.xlf` | holds | crates/al-lsp/src/server/daemon/build_dispatch/xliff.rs:142 errors on several generated files |
 | 305: dev-watch.sh empty array under `set -u` | holds | scripts/dev-watch.sh:16 `set -euo pipefail`, :78 `${BRIDGE_BUILD_ARGS[@]+"${BRIDGE_BUILD_ARGS[@]}"}` |
 | 308: `make clean` fails without dotnet | holds | Makefile:427-437, `clean` guards `dotnet clean` with `command -v dotnet` |
+
+## Review complete
+
+7 findings.
+
+- high 1: R9-RT-1
+- medium 2: R9-CU-2, R9-PLUGIN-1
+- low 4: R9-CU-1, R9-PLUGIN-2, R9-PLUGIN-3, R9-CACHE-1
+
+The round 8 `fixed` statuses hold except the sentence in R8-ROUTE-2 about the router reason naming
+the object kind, which 6b4be394 removed with the rule (R9-RT-1). Scratch tests are in
+`.campaign/r9-scratch-tests.patch`, uncommitted.
