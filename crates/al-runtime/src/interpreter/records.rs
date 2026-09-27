@@ -2470,6 +2470,11 @@ pub(crate) fn dispatch_list_method(
             "List.{method} with the list itself as an argument is not supported by the local runtime"
         ));
     }
+    if let ("contains" | "indexof" | "lastindexof" | "remove", [needle]) =
+        (lower.as_str(), args.as_slice())
+    {
+        return search_list(&list, &lower, needle);
+    }
     let mut items = list.lock();
     match lower.as_str() {
         "addrange" if !args.is_empty() => {
@@ -2497,19 +2502,7 @@ pub(crate) fn dispatch_list_method(
             Eval::Normal(Value::Empty)
         }
         "reverse" => eval_error("List.Reverse expects no arguments"),
-        "lastindexof" => match args.as_slice() {
-            [needle] => {
-                let position = items.iter().rposition(|item| item == needle);
-                match position.map(|position| i64::try_from(position + 1)) {
-                    Some(Ok(position)) => Eval::Normal(Value::Integer(position)),
-                    Some(Err(_)) => {
-                        eval_error("List.LastIndexOf result exceeds the supported Integer range")
-                    }
-                    None => Eval::Normal(Value::Integer(0)),
-                }
-            }
-            _ => eval_error("List.LastIndexOf expects exactly one value"),
-        },
+        "lastindexof" => eval_error("List.LastIndexOf expects exactly one value"),
         "add" if args.len() == 1 => {
             items.push(args[0].clone());
             Eval::Normal(Value::Boolean(true))
@@ -2532,25 +2525,8 @@ pub(crate) fn dispatch_list_method(
             Ok(index) => Eval::Normal(items[index].clone()),
             Err(error) => eval_error(error),
         },
-        "contains" => match args.as_slice() {
-            [needle] => Eval::Normal(Value::Boolean(items.iter().any(|item| item == needle))),
-            _ => eval_error("List.Contains expects exactly one value"),
-        },
-        "indexof" => match args.as_slice() {
-            [needle] => {
-                let position = items.iter().position(|item| item == needle);
-                match position {
-                    Some(position) => match i64::try_from(position + 1) {
-                        Ok(position) => Eval::Normal(Value::Integer(position)),
-                        Err(_) => {
-                            eval_error("List.IndexOf result exceeds the supported Integer range")
-                        }
-                    },
-                    None => Eval::Normal(Value::Integer(0)),
-                }
-            }
-            _ => eval_error("List.IndexOf expects exactly one value"),
-        },
+        "contains" => eval_error("List.Contains expects exactly one value"),
+        "indexof" => eval_error("List.IndexOf expects exactly one value"),
         "removeat" => match list_index("List.RemoveAt", &args, items.len()) {
             Ok(index) => {
                 items.remove(index);
@@ -2558,17 +2534,7 @@ pub(crate) fn dispatch_list_method(
             }
             Err(error) => eval_error(error),
         },
-        "remove" => match args.as_slice() {
-            [needle] => {
-                if let Some(pos) = items.iter().position(|item| item == needle) {
-                    items.remove(pos);
-                    Eval::Normal(Value::Boolean(true))
-                } else {
-                    Eval::Normal(Value::Boolean(false))
-                }
-            }
-            _ => eval_error("List.Remove expects exactly one value"),
-        },
+        "remove" => eval_error("List.Remove expects exactly one value"),
         "set" if args.len() == 2 => match list_index("List.Set", &args[..1], items.len()) {
             Ok(index) => {
                 items[index] = args[1].clone();
@@ -2609,6 +2575,53 @@ pub(crate) fn dispatch_list_method(
             _ => eval_error("List.Insert expects an Integer index and one value"),
         },
         other => eval_error(format!("unsupported List method: {other}")),
+    }
+}
+
+/// `Contains`, `IndexOf`, `LastIndexOf` and `Remove`: find `needle` among
+/// the elements of `list`.
+///
+/// Comparing two lists or dictionaries locks each to read it, and through a
+/// cycle (`A.Add(B); B.Add(A)`) that includes `list`. A `std::sync::Mutex`
+/// locked twice on one thread waits for good, so when `needle` holds a list
+/// or dictionary the elements are compared as a copy, with `list` unlocked.
+fn search_list(list: &Collection<Vec<Value>>, method: &str, needle: &Value) -> Eval {
+    let find = |items: &[Value]| {
+        if method == "lastindexof" {
+            items.iter().rposition(|item| item == needle)
+        } else {
+            items.iter().position(|item| item == needle)
+        }
+    };
+    let position = if holds_collection(needle) {
+        find(&list.snapshot())
+    } else {
+        find(&list.lock())
+    };
+    match (method, position) {
+        ("contains", position) => Eval::Normal(Value::Boolean(position.is_some())),
+        ("remove", Some(position)) => {
+            list.lock().remove(position);
+            Eval::Normal(Value::Boolean(true))
+        }
+        ("remove", None) => Eval::Normal(Value::Boolean(false)),
+        (_, None) => Eval::Normal(Value::Integer(0)),
+        (_, Some(position)) => match i64::try_from(position + 1) {
+            Ok(position) => Eval::Normal(Value::Integer(position)),
+            Err(_) => eval_error("List.IndexOf result exceeds the supported Integer range"),
+        },
+    }
+}
+
+/// Whether comparing `value` with another value can lock a List or
+/// Dictionary: whether it is one or holds one.
+fn holds_collection(value: &Value) -> bool {
+    match value {
+        Value::List(_) | Value::Dict(_) => true,
+        Value::Variant(inner) => holds_collection(inner),
+        Value::Array(items) => items.iter().any(holds_collection),
+        Value::Range { start, end } => holds_collection(start) || holds_collection(end),
+        _ => false,
     }
 }
 

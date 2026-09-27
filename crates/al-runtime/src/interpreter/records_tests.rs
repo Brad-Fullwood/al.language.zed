@@ -6574,26 +6574,56 @@ const CYCLIC_COLLECTIONS: &str = r#"codeunit 50390 "Cyclic Collections"
         D2.Set(1, D2);
         exit(D1 = D2);
     end;
+
+    procedure SearchListInACycle(): Text
+    var
+        A: List of [Integer];
+        B: List of [Integer];
+        N: List of [Integer];
+        E: List of [Integer];
+    begin
+        A.Add(B);
+        B.Add(A);
+        N.Add(E);
+        exit(Format(B.Contains(N)) + '/' + Format(B.IndexOf(N)) + '/' + Format(B.LastIndexOf(N)) + '/' + Format(B.Remove(N)) + '/' + Format(B.Count()));
+    end;
+
+    procedure FindListInACycle(): Text
+    var
+        A: List of [Integer];
+        B: List of [Integer];
+        N: List of [Integer];
+        E: List of [Integer];
+    begin
+        A.Add(B);
+        B.Add(A);
+        N.Add(E);
+        E.Add(N);
+        exit(Format(B.Contains(N)) + '/' + Format(B.IndexOf(N)) + '/' + Format(B.LastIndexOf(N)) + '/' + Format(B.Remove(N)) + '/' + Format(B.Count()));
+    end;
 }
 "#;
 
 /// Run `proc` of [`CYCLIC_COLLECTIONS`] on a thread with the interpreter's
 /// stack, as the test backend does, so a test measures the runtime's own
-/// guards and not the 2 MiB stack of a test thread.
+/// guards and not the 2 MiB stack of a test thread. A procedure that has not
+/// returned after 60 seconds fails the test, and its thread is left behind.
 fn run_cyclic(proc: &'static str) -> Eval {
+    let (done, result) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
         .spawn(move || {
-            run(
+            let _ = done.send(run(
                 &[("/ws/Cyclic.al", CYCLIC_COLLECTIONS)],
                 "Cyclic Collections",
                 proc,
                 vec![],
-            )
+            ));
         })
-        .expect("spawn the interpreter thread")
-        .join()
-        .expect("the interpreter thread panicked")
+        .expect("spawn the interpreter thread");
+    result
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .unwrap_or_else(|error| panic!("{proc} did not return: {error}"))
 }
 
 /// Comparing two lists that hold each other walked the cycle in `Value::cmp`
@@ -6602,7 +6632,10 @@ fn run_cyclic(proc: &'static str) -> Eval {
 #[test]
 fn comparing_lists_in_a_cycle_ends() {
     assert_eq!(ok(run_cyclic("ListsInACycle")), Value::Boolean(true));
-    assert_eq!(ok(run_cyclic("ListsInACycleThatDiffer")), Value::Boolean(true));
+    assert_eq!(
+        ok(run_cyclic("ListsInACycleThatDiffer")),
+        Value::Boolean(true)
+    );
 }
 
 /// A dictionary that holds itself, compared with another that holds itself.
@@ -6611,5 +6644,22 @@ fn comparing_dictionaries_that_hold_themselves_ends() {
     assert_eq!(
         ok(run_cyclic("DictionariesHoldingThemselves")),
         Value::Boolean(true)
+    );
+}
+
+/// `Contains`, `IndexOf`, `LastIndexOf` and `Remove` compared the elements
+/// while the receiver was locked, and through a cycle the comparison locked
+/// the receiver again, so the thread waited on itself for good. They now
+/// compare a copy of the elements when the value sought holds a list or
+/// dictionary.
+#[test]
+fn searching_a_list_in_a_cycle_returns() {
+    assert_eq!(
+        ok(run_cyclic("SearchListInACycle")),
+        Value::Text("No/0/0/No/1".into())
+    );
+    assert_eq!(
+        ok(run_cyclic("FindListInACycle")),
+        Value::Text("Yes/1/1/Yes/0".into())
     );
 }
