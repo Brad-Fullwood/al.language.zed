@@ -531,13 +531,16 @@ fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<Privile
     settings
 }
 
-/// The DLL inside the project each configured analyzer name resolves to when
+/// The DLL inside the project each configured analyzer entry resolves to when
 /// the project is trusted, with its hash.
 ///
-/// Trust is what lets a name, the user's or the repository's, resolve to a
-/// file the repository ships under `.netpackages`, `packages` or a relative
-/// probing path. Recording the file's hash means a commit that replaces it
-/// makes the record stale, rather than loading new code under the old record.
+/// Trust is what lets an entry, the user's or the repository's, resolve to a
+/// file the repository ships: a name finds a copy under `.netpackages`,
+/// `packages` or a relative probing path, and a path names the file itself.
+/// Recording the file's hash means a commit that replaces it makes the record
+/// stale, rather than loading new code under the old record. `config` holds
+/// the entries of `~/.config/al-lsp/settings.json` too, which
+/// [`privileged_changes`] leaves out as the user's own.
 fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<PrivilegedSetting> {
     let root = canonical_root(project_root);
     let mut settings = Vec::new();
@@ -568,8 +571,8 @@ fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<Privil
     settings
 }
 
-/// Whether `decision` lists `found`, the file inside the project a bare
-/// analyzer name resolved to, with the hash it has now.
+/// Whether `decision` lists `found`, the file inside the project an analyzer
+/// entry resolved to, with the hash it has now.
 ///
 /// [`project_analyzer_copies`] records a copy under the relative path it sits
 /// at, so only that entry can match: a settings value has a settings file as

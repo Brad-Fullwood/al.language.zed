@@ -218,13 +218,15 @@ repository ships and is refused the same way. The name was the user's, but the r
 chose which file answered to it, and that file is loaded into alc and into the language
 server's semantic bridge.
 
-In a trusted project, a copy found inside the project for a name loads only when the trust
-record lists that file with the hash it has now. The record learns names from the project's
-settings files and `~/.config/al-lsp/settings.json`, and lists the copy each of them resolves
-to. A name written only in Zed or VS Code user settings, or passed to `al-explorer build` as a
-flag, is not in the record, so a copy of it that a later commit adds under `.netpackages` is
-refused, with a message naming the file, where it used to be found ahead of the NuGet cache
-and loaded. To use a project copy, name the analyzer in the project's settings or in
+In a trusted project, a file inside the project that an analyzer entry resolves to, the copy
+found for a name or the file a path names, loads only when the trust record lists that file
+with the hash it has now. The record learns entries from the project's settings files and
+`~/.config/al-lsp/settings.json`, and lists the file each of them resolves to. An entry
+written only in Zed or VS Code user settings, or passed to `al-explorer build` as a flag, is
+not in the record. So a copy of a name that a later commit adds under `.netpackages`, or a
+file it adds at a path such as `./tools/TeamCop.dll`, is refused with a message naming the
+file. Before, the copy was found ahead of the NuGet cache and the file at the path was loaded.
+To use a file in the project, write the entry in the project's settings or in
 `~/.config/al-lsp/settings.json`. The rule sits in
 `al_project::analyzers::CustomAnalyzerSearch`, which every build, publish, debug launch and
 semantic analysis goes through.

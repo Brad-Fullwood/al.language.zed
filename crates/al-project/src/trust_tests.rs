@@ -1482,6 +1482,133 @@ fn a_name_in_al_lsp_user_settings_resolves_to_its_recorded_copy() {
     assert_eq!(found, root.join(LINTER_COP_COPY).canonicalize().unwrap());
 }
 
+const TEAM_COP: &str = "./tools/TeamCop.dll";
+
+/// A project trusted for one on-premises launch server and nothing else.
+fn project_trusted_for_a_launch_server() -> tempfile::TempDir {
+    let project = project_with_launch(
+        r#"[{"name":"dev","type":"al","request":"launch","environmentType":"OnPrem",
+             "server":"https://bc.corp.example","serverInstance":"BC"}]"#,
+    );
+    grant(project.path()).unwrap();
+    project
+}
+
+/// An analyzer path from Zed user settings reaches the search and not the
+/// record, as a name does. A file a later commit added at that path was
+/// loaded into alc and the semantic bridge under a record that still matched.
+#[test]
+fn a_path_from_zed_user_settings_to_a_file_added_after_the_grant_is_refused() {
+    let _config = ScratchConfig::new();
+    let project = project_trusted_for_a_launch_server();
+    let root = project.path();
+
+    write_file(root, "tools/TeamCop.dll", b"added by a later commit");
+
+    assert_eq!(decide(root).unwrap().state, TrustState::Trusted);
+    let error = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+        .resolve(TEAM_COP)
+        .expect_err("the record does not list the file the path names");
+    assert!(
+        matches!(
+            error,
+            crate::analyzers::AnalyzerDiscoveryError::UnrecordedProjectAnalyzer { .. }
+        ),
+        "{error}"
+    );
+    assert!(error.to_string().contains("does not list"), "{error}");
+}
+
+/// The same path in `~/.config/al-lsp/settings.json`, which the record reads.
+/// The record lists the file the path resolves to, so a file added after the
+/// grant makes it stale and the file is refused.
+#[test]
+fn a_path_from_al_lsp_user_settings_to_a_file_added_after_the_grant_is_refused() {
+    let _config = ScratchConfig::new();
+    let user = AlConfig::default_settings_path().unwrap();
+    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+    std::fs::write(&user, format!(r#"{{"codeAnalyzers": ["{TEAM_COP}"]}}"#)).unwrap();
+    let project = project_trusted_for_a_launch_server();
+    let root = project.path();
+
+    write_file(root, "tools/TeamCop.dll", b"added by a later commit");
+
+    let evaluated = evaluate(root).unwrap();
+    assert_eq!(evaluated.decision.state, TrustState::Stale);
+    assert!(evaluated
+        .config
+        .code_analyzers
+        .contains(&TEAM_COP.to_string()));
+    let error = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+        .resolve(TEAM_COP)
+        .expect_err("the project changed since it was trusted");
+    assert!(
+        matches!(
+            error,
+            crate::analyzers::AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. }
+        ),
+        "{error}"
+    );
+}
+
+/// A path in `~/.config/al-lsp/settings.json` to a file in the project is
+/// listed for review with its hash, loads while the file is unchanged, and
+/// makes the record stale when a commit replaces it.
+#[test]
+fn a_path_from_al_lsp_user_settings_is_listed_for_review_and_loads_its_recorded_file() {
+    let _config = ScratchConfig::new();
+    let user = AlConfig::default_settings_path().unwrap();
+    std::fs::create_dir_all(user.parent().unwrap()).unwrap();
+    std::fs::write(&user, format!(r#"{{"codeAnalyzers": ["{TEAM_COP}"]}}"#)).unwrap();
+    let project = project_with_settings("{}");
+    let root = project.path();
+    write_file(root, "tools/TeamCop.dll", b"the team's reviewed analyzer");
+
+    let granted = grant(root).unwrap();
+
+    assert!(
+        granted.privileged.iter().any(|setting| {
+            setting.key == "al.codeAnalyzers"
+                && setting.source == "tools/TeamCop.dll"
+                && setting
+                    .value
+                    .starts_with("./tools/TeamCop.dll resolves to tools/TeamCop.dll (sha256:")
+        }),
+        "{:?}",
+        granted.privileged
+    );
+    let found = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+        .resolve(TEAM_COP)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        found,
+        root.join("tools/TeamCop.dll").canonicalize().unwrap()
+    );
+
+    write_file(root, "tools/TeamCop.dll", b"replaced by a later commit");
+    assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+}
+
+/// A path the project's own settings write loads once the project is trusted.
+#[test]
+fn a_path_from_the_project_settings_loads_once_the_project_is_trusted() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings(&format!(r#"{{"al.codeAnalyzers": ["{TEAM_COP}"]}}"#));
+    let root = project.path();
+    write_file(root, "tools/TeamCop.dll", b"the team's reviewed analyzer");
+    grant(root).unwrap();
+
+    let found = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+        .resolve(TEAM_COP)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        found,
+        root.join("tools/TeamCop.dll").canonicalize().unwrap()
+    );
+}
+
 /// A file that appears after the project was trusted changes the record
 /// as much as one that is replaced.
 #[test]
