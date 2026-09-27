@@ -592,6 +592,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn per_class_line_rate_counts_covered_procedures_not_untested_ones() {
+        let report = CoverageReport {
+            coverage: vec![TestCoverageEntry {
+                codeunit: "TestCU".to_string(),
+                test_procedure: "TestSomething".to_string(),
+                covers: vec![
+                    CoveredProcedure {
+                        name: "A".to_string(),
+                        object: "MyCodeunit".to_string(),
+                        file: "src/MyCodeunit.al".to_string(),
+                        line: 10,
+                    },
+                    CoveredProcedure {
+                        name: "B".to_string(),
+                        object: "MyCodeunit".to_string(),
+                        file: "src/MyCodeunit.al".to_string(),
+                        line: 20,
+                    },
+                ],
+                unresolved_calls: Vec::new(),
+            }],
+            untested: vec![UntestedProcedure {
+                name: "C".to_string(),
+                object: "MyCodeunit".to_string(),
+                file: "src/MyCodeunit.al".to_string(),
+                line: 30,
+            }],
+        };
+        let xml = run_cobertura(&report);
+        assert_well_formed_xml(&xml);
+        assert!(
+            xml.contains(r#"name="MyCodeunit" filename="src/MyCodeunit.al" line-rate="0.6667""#),
+            "two of the class's three procedures are covered, so its own line-rate must \
+             be 0.6667, not the count of its untested procedures: {xml}"
+        );
+    }
+
     use al_runtime::interpreter::coverage::{
         BranchCoverage, ConditionMcdcCoverage, ConditionObservationCoverage, FileCoverage,
         McdcCoverage, PathCoverage,
@@ -815,6 +853,107 @@ mod tests {
             xml.matches(r#"line-rate="0.5000""#).count(),
             3,
             "the coverage, package and class rates must agree:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn dynamic_branch_rate_and_condition_coverage_use_real_then_and_else_counts() {
+        // Three branches, each exercising a different mix of taken sides:
+        // line 10 took only its else, line 11 took only its then, line 12
+        // took both. That mix is needed to tell `then_taken > 0` and
+        // `else_taken > 0` apart from `== 0`, `< 0` and `>= 0`, which agree
+        // with `> 0` on some inputs but not all.
+        let report = DynamicCoverageReport {
+            files: vec![FileCoverage {
+                file: "src/Cond.al".to_string(),
+                executed_lines: vec![10, 11, 12],
+                branches: vec![
+                    BranchCoverage {
+                        line: 10,
+                        then_taken: 0,
+                        else_taken: 5,
+                        paths: Vec::new(),
+                        mcdc: None,
+                    },
+                    BranchCoverage {
+                        line: 11,
+                        then_taken: 7,
+                        else_taken: 0,
+                        paths: Vec::new(),
+                        mcdc: None,
+                    },
+                    BranchCoverage {
+                        line: 12,
+                        then_taken: 3,
+                        else_taken: 4,
+                        paths: Vec::new(),
+                        mcdc: None,
+                    },
+                ],
+            }],
+        };
+        let xml = run_cobertura_dynamic(&report);
+        assert_well_formed_xml(&xml);
+
+        // 3 branches, 2 sides each: 6 total. Covered sides: line 10's else,
+        // line 11's then, both of line 12's: 1 + 1 + 2 = 4 of 6.
+        assert_eq!(
+            xml.matches(r#"branch-rate="0.6667""#).count(),
+            3,
+            "the coverage, package and class branch-rate must all reflect the real \
+             then/else counts:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"number="10" hits="1" branch="true" condition-coverage="50% (1/2)""#),
+            "line 10 took only its else side, so it must report half coverage:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"number="11" hits="1" branch="true" condition-coverage="50% (1/2)""#),
+            "line 11 took only its then side, so it must also report half coverage:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"number="12" hits="1" branch="true" condition-coverage="100% (2/2)""#),
+            "line 12 took both sides, so it must report full coverage:\n{xml}"
+        );
+    }
+
+    #[test]
+    fn dynamic_mcdc_coverage_percentage_is_a_product_not_a_sum() {
+        let report = DynamicCoverageReport {
+            files: vec![FileCoverage {
+                file: "src/Mcdc.al".to_string(),
+                executed_lines: vec![12],
+                branches: vec![BranchCoverage {
+                    line: 12,
+                    then_taken: 1,
+                    else_taken: 0,
+                    paths: Vec::new(),
+                    mcdc: Some(McdcCoverage {
+                        conditions: vec![
+                            ConditionMcdcCoverage {
+                                index: 0,
+                                covered: true,
+                            },
+                            ConditionMcdcCoverage {
+                                index: 1,
+                                covered: true,
+                            },
+                        ],
+                        observations: vec![ConditionObservationCoverage {
+                            conditions: vec![true, true],
+                            outcome: true,
+                            hits: 1,
+                        }],
+                    }),
+                }],
+            }],
+        };
+        let xml = run_cobertura_dynamic(&report);
+        assert_well_formed_xml(&xml);
+        // Both conditions covered: 2/2 must read 100%, not (2+100)/2 = 51%.
+        assert!(
+            xml.contains(r#"mcdc-coverage="100% (2/2)""#),
+            "both conditions are covered, so mcdc-coverage must read 100%:\n{xml}"
         );
     }
 }
