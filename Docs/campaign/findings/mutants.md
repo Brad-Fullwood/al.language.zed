@@ -55,6 +55,7 @@ None found so far.
 | `al-source/src/documents.rs` | 147 | 76 | 29 | 42 | 0 |
 | `al-runtime/src/mock/filter.rs` | 112 | 97 | 1 | 9 | 5 |
 | `al-syntax/src/lint.rs` | 152 | 128 | 15 | 7 | 2 |
+| `al-symbols/src/composition.rs` | 11 | 9 | 0 | 2 | 0 |
 
 ## Runs
 
@@ -378,3 +379,25 @@ crates/al-syntax/src/lint.rs:537:72: delete ! in lint_missing_set_load_fields
 
 Re-run after 152a9aa6: 152 mutants, 140 caught, 7 unviable, 2 timeout, 3 missed (the three
 equivalents above).
+
+### al-symbols: `crates/al-symbols/src/composition.rs`
+
+```bash
+cargo mutants --in-place -p al-symbols --file crates/al-symbols/src/composition.rs
+```
+
+11 mutants in 4 minutes: 9 caught, 0 missed, 2 unviable, 0 timeout. The 2 unviable mutants
+replace `get_composed` and `compose`, both of which return `ComposedObject`, with
+`Default::default()`. `ComposedObject` does not implement `Default`, so neither
+replacement compiles.
+
+No missed mutants. `compose_warns_only_when_a_field_is_actually_dropped` and
+`compose_warns_only_when_an_enum_value_is_actually_dropped`, the two tests a dead agent
+left uncommitted and this run picked up, plus the pre-existing composition tests
+(`base_choice_prefers_workspace_over_package_regardless_of_load_order`,
+`compose_rejects_conflicting_field_ids_and_names_independently`,
+`compose_deduplicates_fields_with_same_id_and_name`,
+`compose_deduplicates_enum_ordinals_and_names`, and the rest), already exercise every
+viable mutant on the two functions in this file: the workspace-over-package tiebreak in
+`get_composed`, the `!=`/`==` equality checks that route extensions to the right kind, and
+the `is_workspace_entry` boolean itself.
