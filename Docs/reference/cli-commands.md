@@ -97,7 +97,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `compile` | `--project <dir>` | Compile (native default, `al.useOfficialCompiler` → `alc`) |
 | `package` | | Package compiled app into `.app` |
 | `publish` | `--config <name> [--incremental]` | Compile and publish the `.app` to the BC dev endpoint named in `.vscode/launch.json` or `.zed/debug.json`. `--incremental` uses the RAD API |
-| `pack-native` | `--project <dir> --out <path> [--validate [--analyzers <list>]]` | Verified pure-Rust `.app` build. Rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure. Global `--json` returns exact native ranges. `--validate` adds `alc` after native checks, with the project's `al.codeAnalyzers` or the `--analyzers` list (a custom analyzer from an untrusted repository's own folders is refused) |
+| `pack-native` | `--project <dir> --out <path> [--validate [--analyzers <list>]]` | Verified pure-Rust `.app` build. Rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure. Global `--json` returns exact native ranges. `--validate` adds `alc` after native checks, with the project's `al.codeAnalyzers` or the `--analyzers` list (a custom analyzer found in the repository's own folders is refused unless the project is trusted and its trust record lists that file) |
 | `download-symbols` | `--project <dir> --source server\|nuget` | Download dependency symbols |
 | `authenticate [login\|status\|clear]` | `--tenant <tenant>` | BC / Entra authentication and cached-session management |
 
