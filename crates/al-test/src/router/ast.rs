@@ -280,6 +280,34 @@ fn validate_blocker(
         .map(|reason| format!("Validate: {reason}"))
 }
 
+/// Why a JSON `SelectToken` call must run on live BC: its path is a text
+/// literal with a step the local runtime does not follow. A path built at
+/// run time is left to the runtime, which refuses such a step by name.
+pub(super) fn selecttoken_blocker(call: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let arguments = call.child_by_field_name("call")?.utf8_text(source).ok()?;
+    let inner = arguments.trim().strip_prefix('(')?.strip_suffix(')')?;
+    let path = text_literal(first_argument(inner))?;
+    al_runtime::interpreter::json::unsupported_path_step(&path)
+        .map(|reason| format!("SelectToken: {reason}"))
+}
+
+/// The value of `text` when it is one AL text literal (`'a''b'` is `a'b`).
+fn text_literal(text: &str) -> Option<String> {
+    let mut chars = text.strip_prefix('\'')?.chars().peekable();
+    let mut value = String::new();
+    while let Some(c) = chars.next() {
+        if c != '\'' {
+            value.push(c);
+        } else if chars.peek() == Some(&'\'') {
+            chars.next();
+            value.push('\'');
+        } else {
+            return chars.next().is_none().then_some(value);
+        }
+    }
+    None
+}
+
 /// Why `Rename` on table `table` must run on live BC: a field relates to it
 /// in a way the local rename does not follow (the runtime's own
 /// [`al_runtime::interpreter::records::RelationIndex`] decides).
@@ -753,6 +781,18 @@ pub(super) fn classify_call(
                 member_node,
                 reachable,
             );
+        } else if method.eq_ignore_ascii_case("selecttoken") {
+            if let Some(blocker) = selecttoken_blocker(suffix, source) {
+                promote(
+                    decision,
+                    reasons,
+                    RoutingDecision::LiveBc,
+                    &blocker,
+                    file,
+                    member_node,
+                    reachable,
+                );
+            }
         }
     } else if type_name == "textbuilder" {
         if !al_runtime::interpreter::records::supports_textbuilder_method(&method) {

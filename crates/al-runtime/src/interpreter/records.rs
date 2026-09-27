@@ -284,12 +284,14 @@ fn load_table_meta(
     table_name: &str,
 ) -> Result<TableMeta, String> {
     let want = table_name.unquote_identifier();
-    let path = source.find_by_object_name(&want).ok_or_else(|| {
-        format!(
-            "record table '{want}' not found in workspace (native record ops require a workspace \
-             table definition; base-app tables are not modelled)"
-        )
-    })?;
+    let path = source
+        .find_object_of_kind(&want, &["table"])
+        .ok_or_else(|| {
+            format!(
+                "record table '{want}' not found in workspace (native record ops require a \
+                 workspace table definition; base-app tables are not modelled)"
+            )
+        })?;
     let (text, tree) = source.get_cached_parse(&path).ok_or_else(|| {
         format!(
             "record table '{want}' at {} has no cached syntax tree",
@@ -698,7 +700,7 @@ fn enum_member_with_ordinal_zero(
     workspace: &dyn al_types::ProcedureSource,
     type_name: &str,
 ) -> Option<String> {
-    let path = workspace.find_by_object_name(type_name)?;
+    let path = workspace.find_object_of_kind(type_name, &["enum"])?;
     let (text, tree) = workspace.get_cached_parse(&path)?;
     let bytes = text.as_bytes();
     let mut stack = vec![tree.root_node()];
@@ -901,79 +903,169 @@ pub(crate) fn dispatch_record_method(
         return dispatch_rename(table, handle, values, stmt_position, stack, ctx);
     }
 
-    // Insert, Modify and Delete raise the table's OnBefore…Event and
-    // OnAfter…Event for subscribers whatever RunTrigger says.
-    let table_event = match lower.as_str() {
-        "insert" => Some("Insert"),
-        "modify" => Some("Modify"),
-        "delete" => Some("Delete"),
+    let write = match lower.as_str() {
+        "insert" => Some(RecordWrite::Insert),
+        "modify" => Some(RecordWrite::Modify),
+        "delete" => Some(RecordWrite::Delete),
         _ => None,
     };
-    let run_trigger = matches!(values.first(), Some(Value::Boolean(true)));
-    // xRec for the events and the trigger: the row as the table holds it
-    // before a Modify or Delete, the buffer itself for an Insert.
-    // Made only when a subscriber or trigger will see it: copying a
-    // temporary record copies its rows.
-    let stored = lower != "insert";
-    let mut x_rec: Option<Value> = None;
-    // Taken before the operation even when only the OnAfter event has
-    // subscribers: afterwards the stored row already holds the new values.
-    if let Some(operation) = table_event {
-        let observed = ["OnBefore", "OnAfter"].iter().any(|when| {
-            crate::interpreter::dispatch::events::has_subscribers(
-                "table",
-                &table.name,
-                &format!("{when}{operation}Event"),
-                "",
-                ctx,
-            )
-        });
-        if observed {
-            x_rec = Some(x_rec_of(table, handle, stored, ctx));
-        }
+    // Insert(true), Modify(true) and Delete(true) run the table's trigger as
+    // table code. The operation itself then runs without triggers.
+    let run_trigger = write.is_some() && matches!(values.first(), Some(Value::Boolean(true)));
+    if run_trigger {
+        values[0] = Value::Boolean(false);
     }
-    if let Some(operation) = table_event {
-        if let Err(error) = raise_table_event(
+    if lower == "deleteall" {
+        let run_trigger = match optional_boolean("DeleteAll", &values) {
+            Ok(run_trigger) => run_trigger,
+            Err(error) => return eval_error(error),
+        };
+        return write_all(
             table,
             handle,
-            (&mut x_rec, stored),
-            &format!("OnBefore{operation}Event"),
-            run_trigger,
+            (RecordWrite::Delete, run_trigger),
+            None,
             stack,
             ctx,
-        ) {
-            return error;
+        );
+    }
+
+    let operate = |ctx: &mut DispatchCtx| {
+        let key = match ensure_store(ctx, table) {
+            Ok(k) => k,
+            Err(e) => return eval_error(e),
+        };
+
+        // Resolve the field-name argument for field-reference methods.
+        let field_no = if field_methods {
+            let fname = nodes
+                .first()
+                .map(|n| node_text(*n, source))
+                .unwrap_or_default();
+            if fname.is_empty() {
+                return eval_error(format!("{method}: missing field name argument"));
+            }
+            let store = ctx.records.get_mut(&key).expect("store just ensured");
+            match store.resolve_field(&fname) {
+                Ok(field_no) => Some(field_no),
+                Err(error) => return eval_error(format!("{method}: {error}")),
+            }
+        } else {
+            None
+        };
+
+        let store = ctx.records.get_mut(&key).expect("store just ensured");
+        let mut view = store.take_view(handle);
+        let result = run_record_method(
+            store,
+            &mut view,
+            &lower,
+            method,
+            field_no,
+            values,
+            stmt_position,
+        );
+        let store = ctx.records.get_mut(&key).expect("store just ensured");
+        store.put_view(handle, view);
+        result
+    };
+    match write {
+        Some(write) => {
+            write_with_table_code(table, handle, (write, run_trigger), stack, ctx, operate)
+        }
+        None => operate(ctx),
+    }
+}
+
+/// A record write that raises table events and can run a table trigger.
+#[derive(Debug, Clone, Copy)]
+enum RecordWrite {
+    Insert,
+    Modify,
+    Delete,
+}
+
+impl RecordWrite {
+    /// The operation in the event names: `Insert` of `OnBeforeInsertEvent`.
+    fn event(self) -> &'static str {
+        match self {
+            RecordWrite::Insert => "Insert",
+            RecordWrite::Modify => "Modify",
+            RecordWrite::Delete => "Delete",
         }
     }
 
-    // Insert(true), Modify(true) and Delete(true) run the table's trigger
-    // first, on this record. The operation itself then runs without triggers.
-    let trigger = match lower.as_str() {
-        "insert" | "modify" | "delete" if matches!(values.first(), Some(Value::Boolean(true))) => {
-            values[0] = Value::Boolean(false);
-            Some(match lower.as_str() {
-                "insert" => "OnInsert",
-                "modify" => "OnModify",
-                _ => "OnDelete",
-            })
+    fn trigger(self) -> &'static str {
+        match self {
+            RecordWrite::Insert => "OnInsert",
+            RecordWrite::Modify => "OnModify",
+            RecordWrite::Delete => "OnDelete",
         }
-        _ => None,
-    };
-    let trigger = trigger.filter(|trigger| {
-        crate::interpreter::dispatch::table_code::declares(
-            ctx,
-            &table.name,
-            crate::interpreter::dispatch::table_code::TableCode::Trigger(trigger),
-        )
-    });
-    if let Some(trigger) = trigger {
+    }
+
+    /// `xRec` is the row as the table holds it for a Modify or Delete, and
+    /// the buffer itself for an Insert.
+    fn x_rec_is_stored(self) -> bool {
+        !matches!(self, RecordWrite::Insert)
+    }
+
+    /// Whether the table has a subscriber to OnBefore…Event or OnAfter…Event.
+    fn observed(self, table: &TableRef, ctx: &mut DispatchCtx) -> bool {
+        ["OnBefore", "OnAfter"].iter().any(|when| {
+            crate::interpreter::dispatch::events::has_subscribers(
+                "table",
+                &table.name,
+                &format!("{when}{}Event", self.event()),
+                "",
+                ctx,
+            )
+        })
+    }
+}
+
+/// Run `operate`, the `write` of the record on view `handle`, as Business
+/// Central does: OnBefore…Event, the table's trigger when `run_trigger` is
+/// set and the table declares one, the write, then OnAfter…Event when the
+/// write succeeded. Subscribers get the events whatever RunTrigger says.
+fn write_with_table_code(
+    table: &TableRef,
+    handle: u64,
+    (write, run_trigger): (RecordWrite, bool),
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+    operate: impl FnOnce(&mut DispatchCtx) -> Eval,
+) -> Eval {
+    use crate::interpreter::dispatch::table_code::{declares, run_table_code, TableCode};
+
+    let stored = write.x_rec_is_stored();
+    // Made only when a subscriber or trigger will see it: copying a
+    // temporary record copies its rows. Taken before the write even when
+    // only the OnAfter event has subscribers: afterwards the stored row
+    // already holds the new values.
+    let mut x_rec: Option<Value> = None;
+    if write.observed(table, ctx) {
+        x_rec = Some(x_rec_of(table, handle, stored, ctx));
+    }
+    if let Err(error) = raise_table_event(
+        table,
+        handle,
+        (&mut x_rec, stored),
+        &format!("OnBefore{}Event", write.event()),
+        run_trigger,
+        stack,
+        ctx,
+    ) {
+        return error;
+    }
+    let trigger = TableCode::Trigger(write.trigger());
+    if run_trigger && declares(ctx, &table.name, trigger) {
         let x_rec = x_rec
             .get_or_insert_with(|| x_rec_of(table, handle, stored, ctx))
             .clone();
-        if let Some(result) = crate::interpreter::dispatch::table_code::run_table_code(
+        if let Some(result) = run_table_code(
             record_value_on(table, handle),
             x_rec,
-            crate::interpreter::dispatch::table_code::TableCode::Trigger(trigger),
+            trigger,
             Vec::new(),
             stack,
             ctx,
@@ -983,50 +1075,14 @@ pub(crate) fn dispatch_record_method(
             }
         }
     }
-
-    let key = match ensure_store(ctx, table) {
-        Ok(k) => k,
-        Err(e) => return eval_error(e),
-    };
-
-    // Resolve the field-name argument for field-reference methods.
-    let field_no = if field_methods {
-        let fname = nodes
-            .first()
-            .map(|n| node_text(*n, source))
-            .unwrap_or_default();
-        if fname.is_empty() {
-            return eval_error(format!("{method}: missing field name argument"));
-        }
-        let store = ctx.records.get_mut(&key).expect("store just ensured");
-        match store.resolve_field(&fname) {
-            Ok(field_no) => Some(field_no),
-            Err(error) => return eval_error(format!("{method}: {error}")),
-        }
-    } else {
-        None
-    };
-
-    let store = ctx.records.get_mut(&key).expect("store just ensured");
-    let mut view = store.take_view(handle);
-    let result = run_record_method(
-        store,
-        &mut view,
-        &lower,
-        method,
-        field_no,
-        values,
-        stmt_position,
-    );
-    let store = ctx.records.get_mut(&key).expect("store just ensured");
-    store.put_view(handle, view);
+    let result = operate(ctx);
     let succeeded = matches!(result, Eval::Normal(ref value) if *value != Value::Boolean(false));
-    if let (Some(operation), true) = (table_event, succeeded) {
+    if succeeded {
         if let Err(error) = raise_table_event(
             table,
             handle,
             (&mut x_rec, stored),
-            &format!("OnAfter{operation}Event"),
+            &format!("OnAfter{}Event", write.event()),
             run_trigger,
             stack,
             ctx,
@@ -1035,6 +1091,111 @@ pub(crate) fn dispatch_record_method(
         }
     }
     result
+}
+
+/// `DeleteAll([RunTrigger])`, or `ModifyAll(Field, Value[, RunTrigger])`
+/// with `assign` holding the field and its value.
+///
+/// Business Central writes the rows one at a time when the table has
+/// subscribers to the Delete or Modify events, or trigger code
+/// ("AL database methods and performance on SQL Server", ModifyAll and
+/// DeleteAll), and each row then goes through the events and, with
+/// RunTrigger, the trigger, as Delete and Modify do. The rows are written
+/// here one at a time on the caller's view when a subscriber or a trigger
+/// that RunTrigger runs would see them, and in one pass otherwise. The
+/// caller's buffer and filters are as they were afterwards.
+fn write_all(
+    table: &TableRef,
+    handle: u64,
+    (write, run_trigger): (RecordWrite, bool),
+    assign: Option<(FieldNo, Value)>,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    use crate::interpreter::dispatch::table_code::{declares, TableCode};
+
+    let method = match write {
+        RecordWrite::Modify => "ModifyAll",
+        _ => "DeleteAll",
+    };
+    let row_by_row = write.observed(table, ctx)
+        || (run_trigger && declares(ctx, &table.name, TableCode::Trigger(write.trigger())));
+    let key = match ensure_store(ctx, table) {
+        Ok(key) => key,
+        Err(error) => return eval_error(error),
+    };
+    let store = ctx.records.get_mut(&key).expect("store just ensured");
+    let mut view = store.take_view(handle);
+    if !row_by_row {
+        let result = match assign {
+            Some((field, value)) => store
+                .record
+                .modify_all_in(&view, field, value, false)
+                .map(drop),
+            None => store.record.delete_all_in(&mut view, false).map(drop),
+        };
+        store.put_view(handle, view);
+        return match result {
+            Ok(()) => Eval::Normal(Value::Empty),
+            Err(error) => eval_error(format!("{method}: {error}")),
+        };
+    }
+    if let Some((field, _)) = &assign {
+        if store.record.primary_key_fields().contains(field) {
+            store.put_view(handle, view);
+            return eval_error(format!(
+                "{method}: {}",
+                crate::mock::record::RecordError::PrimaryKeyModifyAll(*field)
+            ));
+        }
+    }
+    let rows = store.record.matching_keys_in(&view);
+    let saved = view.clone();
+    store.put_view(handle, view);
+    let restore = |ctx: &mut DispatchCtx| {
+        let mut saved = saved.clone();
+        if matches!(write, RecordWrite::Delete) {
+            saved.clear_cursor();
+        }
+        if let Some(store) = ctx.records.get_mut(&key) {
+            store.put_view(handle, saved);
+        }
+    };
+    for row in rows {
+        let store = ctx.records.get_mut(&key).expect("store just ensured");
+        let mut view = store.take_view(handle);
+        // Code that ran for an earlier row can have removed this one.
+        let loaded = store.record.get_in(&mut view, row).is_ok();
+        if loaded {
+            if let Some((field, value)) = &assign {
+                store.record.field_set_in(&mut view, *field, value.clone());
+            }
+        }
+        store.put_view(handle, view);
+        if !loaded {
+            continue;
+        }
+        let result =
+            write_with_table_code(table, handle, (write, run_trigger), stack, ctx, |ctx| {
+                let store = ctx.records.get_mut(&key).expect("store just ensured");
+                let mut view = store.take_view(handle);
+                let result = match write {
+                    RecordWrite::Modify => store.record.modify_in(&mut view, false),
+                    _ => store.record.delete_in(&mut view, false),
+                };
+                store.put_view(handle, view);
+                match result {
+                    Ok(()) => Eval::Normal(Value::Boolean(true)),
+                    Err(error) => eval_error(format!("{method}: {error}")),
+                }
+            });
+        if result.is_error() {
+            restore(ctx);
+            return result;
+        }
+    }
+    restore(ctx);
+    Eval::Normal(Value::Empty)
 }
 
 /// `Rec.Rename(key values…)`, the new primary key with all its parts.
@@ -1503,18 +1664,6 @@ fn run_record_method(
             }
             Eval::Normal(Value::Boolean(store.record.is_empty_in(view)))
         }
-        "deleteall" => {
-            let run_trigger = match optional_boolean("DeleteAll", &values) {
-                Ok(run_trigger) => run_trigger,
-                Err(error) => return eval_error(error),
-            };
-            // One pass over the table (collect matching keys, remove them)
-            // instead of the O(n² log n) find-first-then-delete loop.
-            match store.record.delete_all_in(view, run_trigger) {
-                Ok(_) => Eval::Normal(Value::Empty),
-                Err(error) => eval_error(format!("DeleteAll: {error}")),
-            }
-        }
         other => eval_error(format!("unsupported record method: {other}")),
     }
 }
@@ -1704,15 +1853,17 @@ pub fn validate_relation(
     table_name: &str,
     field_name: &str,
 ) -> Result<Option<(String, Option<String>)>, String> {
-    let relation = source.find_by_object_name(table_name).and_then(|path| {
-        let (text, tree) = source.get_cached_parse(&path)?;
-        crate::interpreter::dispatch::table_code::table_relation_in(
-            tree.root_node(),
-            text.as_bytes(),
-            table_name,
-            field_name,
-        )
-    });
+    let relation = source
+        .find_object_of_kind(table_name, &["table"])
+        .and_then(|path| {
+            let (text, tree) = source.get_cached_parse(&path)?;
+            crate::interpreter::dispatch::table_code::table_relation_in(
+                tree.root_node(),
+                text.as_bytes(),
+                table_name,
+                field_name,
+            )
+        });
     let Some(relation) = relation else {
         return Ok(None);
     };
@@ -1880,15 +2031,14 @@ fn dispatch_modifyall(
         Ok(value) => value,
         Err(error) => return eval_error(format!("ModifyAll: {error}")),
     };
-    let view = store.take_view(handle);
-    let result = store
-        .record
-        .modify_all_in(&view, field_no, value, run_trigger);
-    store.put_view(handle, view);
-    match result {
-        Ok(_) => Eval::Normal(Value::Empty),
-        Err(error) => eval_error(format!("ModifyAll: {error}")),
-    }
+    write_all(
+        table,
+        handle,
+        (RecordWrite::Modify, run_trigger),
+        Some((field_no, value)),
+        stack,
+        ctx,
+    )
 }
 
 fn dispatch_calcsums(

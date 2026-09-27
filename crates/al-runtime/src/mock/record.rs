@@ -217,6 +217,12 @@ impl RecordView {
         self.current = other.current.clone();
         self.x_rec = other.x_rec.clone();
     }
+
+    /// Drop the iteration set and position, as `DeleteAll` does.
+    pub fn clear_cursor(&mut self) {
+        self.iter_set.clear();
+        self.iter_pos = None;
+    }
 }
 
 /// A rename between [`MockRecord::start_rename_in`] and its finish or
@@ -708,6 +714,12 @@ impl MockRecord {
     }
 
     fn build_iter_set(&self, view: &mut RecordView) {
+        view.iter_set = self.matching_keys_in(view);
+    }
+
+    /// The keys of the rows the view's filters select, in the order of its
+    /// current key.
+    pub fn matching_keys_in(&self, view: &RecordView) -> Vec<PrimaryKey> {
         let mut keys: Vec<PrimaryKey> = self
             .rows
             .iter()
@@ -720,7 +732,7 @@ impl MockRecord {
             })
             .collect();
 
-        let sort_key = view.sort_key.clone();
+        let sort_key = &view.sort_key;
         keys.sort_by(|a, b| {
             let row_a = self.rows.get(a).unwrap();
             let row_b = self.rows.get(b).unwrap();
@@ -731,8 +743,7 @@ impl MockRecord {
         if sort_key.descending {
             keys.reverse();
         }
-
-        view.iter_set = keys;
+        keys
     }
 
     fn load_row_at(&self, view: &mut RecordView, pos: usize) -> Result<(), RecordError> {

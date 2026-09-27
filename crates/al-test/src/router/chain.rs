@@ -183,6 +183,11 @@ pub(super) fn route(
                         step_name(receiver)
                     ));
                 }
+                if matches!(receiver, Step::Json(_)) && lower == "selecttoken" {
+                    if let Some(blocker) = super::ast::selecttoken_blocker(*suffix, source) {
+                        return Err(blocker);
+                    }
+                }
                 records |= receiver == Step::Record;
                 current = method_result(receiver, &lower);
             }

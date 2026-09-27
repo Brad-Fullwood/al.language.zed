@@ -790,7 +790,70 @@ fn record_op_from_method_name() {
         Some(RecordOp::Validate)
     );
     assert_eq!(RecordOp::from_method_name("Rename"), Some(RecordOp::Rename));
+    assert_eq!(
+        RecordOp::from_method_name("DeleteAll"),
+        Some(RecordOp::DeleteAll)
+    );
+    assert_eq!(
+        RecordOp::from_method_name("modifyall"),
+        Some(RecordOp::ModifyAll)
+    );
     assert_eq!(RecordOp::from_method_name("Post"), None);
+}
+
+/// DeleteAll and ModifyAll raise the Delete and Modify events, and
+/// ModifyAll's RunTrigger is its third argument.
+#[test]
+fn deleteall_and_modifyall_are_record_ops_with_their_run_trigger() {
+    let source = r#"codeunit 50100 "Test CU"
+{
+procedure DoWork()
+var
+    Cust: Record "Customer";
+begin
+    Cust.DeleteAll(true);
+    Cust.DeleteAll();
+    Cust.ModifyAll(Name, 'x', true);
+    Cust.ModifyAll(Name, 'x');
+end;
+}
+"#;
+    let result = al_syntax::AlParser::parse_quick(source);
+    let record_ops: Vec<_> = extract_call_sites(&result.tree, source, "DoWork")
+        .into_iter()
+        .filter_map(|site| match site {
+            CallSite::RecordOp {
+                op, run_trigger, ..
+            } => Some((op, run_trigger)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(record_ops.len(), 4, "{record_ops:?}");
+    for expected in [
+        (RecordOp::DeleteAll, true),
+        (RecordOp::DeleteAll, false),
+        (RecordOp::ModifyAll, true),
+        (RecordOp::ModifyAll, false),
+    ] {
+        assert!(
+            record_ops.contains(&expected),
+            "{expected:?} in {record_ops:?}"
+        );
+    }
+    assert_eq!(
+        record_op_event_names(RecordOp::DeleteAll),
+        (
+            "OnBeforeDeleteEvent".to_string(),
+            "OnAfterDeleteEvent".to_string()
+        )
+    );
+    assert_eq!(
+        record_op_event_names(RecordOp::ModifyAll),
+        (
+            "OnBeforeModifyEvent".to_string(),
+            "OnAfterModifyEvent".to_string()
+        )
+    );
 }
 
 #[test]

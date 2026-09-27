@@ -3864,3 +3864,752 @@ fn subscriber_codeunits_with_globals_run_on_a_fresh_instance() {
     // Calls is 1 on both events: 0 * 10 + 1 = 1, then 1 * 10 + 1 = 11.
     assert_eq!(ok(result), Value::Integer(11));
 }
+
+const SAME_NAME_SETUP_PAGE: &str = r#"page 50300 "My Setup"
+{
+    SourceTable = "My Setup";
+
+    layout
+    {
+        area(Content)
+        {
+            field(Stamp; Rec.Stamp) { }
+        }
+    }
+}
+"#;
+
+const SAME_NAME_SETUP_TABLE: &str = r#"table 50300 "My Setup"
+{
+    fields
+    {
+        field(1; "Primary Key"; Code[10]) { }
+        field(2; Stamp; Text[30]) { }
+        field(3; Status; Enum "Setup Status") { }
+    }
+    keys
+    {
+        key(PK; "Primary Key") { }
+    }
+
+    trigger OnInsert()
+    begin
+        Stamp := 'inserted';
+    end;
+}
+"#;
+
+const SAME_NAME_STATUS_TABLE: &str = r#"table 50301 "Setup Status"
+{
+    fields
+    {
+        field(1; Code; Code[10]) { }
+    }
+    keys
+    {
+        key(PK; Code) { }
+    }
+}
+"#;
+
+const SAME_NAME_STATUS_ENUM: &str = r#"enum 50302 "Setup Status"
+{
+    value(0; Draft) { }
+    value(1; Ready) { }
+}
+"#;
+
+const SAME_NAME_HELPER_PAGE: &str = r#"page 50303 "Setup Helper"
+{
+    layout
+    {
+        area(Content)
+        {
+        }
+    }
+}
+"#;
+
+const SAME_NAME_HELPER_CODEUNIT: &str = r#"codeunit 50303 "Setup Helper"
+{
+    procedure Describe(): Text
+    begin
+        exit('helper');
+    end;
+}
+"#;
+
+const SAME_NAME_PROBE: &str = r#"codeunit 50304 "Same Name Probe"
+{
+    procedure InsertRunsTheTablesTrigger(): Text
+    var
+        Setup: Record "My Setup";
+        Helper: Codeunit "Setup Helper";
+    begin
+        Setup.Init();
+        Setup.Insert(true);
+        Setup.FindFirst();
+        exit(Setup.Stamp + '|' + Format(Setup.Status) + '|' + Helper.Describe());
+    end;
+
+    procedure EnumMembersComeFromTheEnum(): Integer
+    var
+        Setup: Record "My Setup";
+    begin
+        Setup.Status := "Setup Status"::Ready;
+        exit(Setup.Status.AsInteger());
+    end;
+}
+"#;
+
+/// A setup table and its card page share a name, and so can a table and an
+/// enum, or a page and a codeunit. The runtime found objects by name alone,
+/// so whichever file was indexed first won: with the page first, every
+/// record operation on the table failed.
+#[test]
+fn objects_are_found_by_kind_when_another_kind_shares_the_name() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/MySetup.Page.al", SAME_NAME_SETUP_PAGE),
+                ("/ws/MySetup.Table.al", SAME_NAME_SETUP_TABLE),
+                ("/ws/SetupStatus.Table.al", SAME_NAME_STATUS_TABLE),
+                ("/ws/SetupStatus.Enum.al", SAME_NAME_STATUS_ENUM),
+                ("/ws/SetupHelper.Page.al", SAME_NAME_HELPER_PAGE),
+                ("/ws/SetupHelper.Codeunit.al", SAME_NAME_HELPER_CODEUNIT),
+                ("/ws/SameNameProbe.al", SAME_NAME_PROBE),
+            ],
+            "Same Name Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("InsertRunsTheTablesTrigger")),
+        Value::Text("inserted|Draft|helper".into())
+    );
+    assert_eq!(ok(call("EnumMembersComeFromTheEnum")), Value::Integer(1));
+}
+
+const BULK_PARENT_TABLE: &str = r#"table 50270 "Bulk Parent"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Status; Text[20]) { }
+        field(3; Touched; Integer) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    trigger OnDelete()
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('OnDelete ' + "No.");
+    end;
+
+    trigger OnModify()
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('OnModify ' + "No." + ' ' + xRec.Status + '>' + Status);
+        Touched := Touched + 1;
+    end;
+}
+"#;
+
+const BULK_CHILD_TABLE: &str = r#"table 50271 "Bulk Child"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; "Parent No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+
+const BULK_LOG_TABLE: &str = r#"table 50272 "Bulk Log Entry"
+{
+    fields
+    {
+        field(1; "Entry No."; Integer) { }
+        field(2; Step; Text[100]) { }
+    }
+    keys
+    {
+        key(PK; "Entry No.") { }
+    }
+}
+"#;
+
+const BULK_LOG: &str = r#"codeunit 50273 "Bulk Log"
+{
+    procedure Add(Step: Text)
+    var
+        Entry: Record "Bulk Log Entry";
+    begin
+        Entry."Entry No." := Entry.Count() + 1;
+        Entry.Step := Step;
+        Entry.Insert();
+    end;
+
+    procedure Read(): Text
+    var
+        Entry: Record "Bulk Log Entry";
+        Seen: Text;
+    begin
+        if Entry.FindSet() then
+            repeat
+                Seen += Entry.Step + '|';
+            until Entry.Next() = 0;
+        exit(Seen);
+    end;
+}
+"#;
+
+const BULK_SUBSCRIBERS: &str = r#"codeunit 50274 "Bulk Subscribers"
+{
+    [EventSubscriber(ObjectType::Table, Database::"Bulk Parent", 'OnBeforeDeleteEvent', '', false, false)]
+    local procedure BeforeDelete(var Rec: Record "Bulk Parent"; RunTrigger: Boolean)
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('BeforeDelete ' + Rec."No." + ' ' + Format(RunTrigger));
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Bulk Parent", 'OnAfterDeleteEvent', '', false, false)]
+    local procedure DeleteChildren(var Rec: Record "Bulk Parent")
+    var
+        Child: Record "Bulk Child";
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('AfterDelete ' + Rec."No.");
+        Child.SetRange("Parent No.", Rec."No.");
+        Child.DeleteAll();
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Bulk Parent", 'OnBeforeModifyEvent', '', false, false)]
+    local procedure RefuseClosing(var Rec: Record "Bulk Parent"; var xRec: Record "Bulk Parent")
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        if Rec.Status = 'Closed' then
+            Error('%1 cannot be closed', Rec."No.");
+        Log.Add('BeforeModify ' + Rec."No." + ' ' + xRec.Status + '>' + Rec.Status);
+    end;
+
+    [EventSubscriber(ObjectType::Table, Database::"Bulk Parent", 'OnAfterModifyEvent', '', false, false)]
+    local procedure AfterModify(var Rec: Record "Bulk Parent")
+    var
+        Log: Codeunit "Bulk Log";
+    begin
+        Log.Add('AfterModify ' + Rec."No.");
+    end;
+}
+"#;
+
+const BULK_PROBE: &str = r#"codeunit 50275 "Bulk Probe"
+{
+    local procedure Seed()
+    var
+        Parent: Record "Bulk Parent";
+        Child: Record "Bulk Child";
+    begin
+        Parent."No." := 'P1';
+        Parent.Status := 'Open';
+        Parent.Insert();
+        Parent."No." := 'P2';
+        Parent.Insert();
+        Parent."No." := 'Q1';
+        Parent.Insert();
+        Child."Entry No." := 1;
+        Child."Parent No." := 'P1';
+        Child.Insert();
+        Child."Entry No." := 2;
+        Child."Parent No." := 'P2';
+        Child.Insert();
+        Child."Entry No." := 3;
+        Child."Parent No." := 'Q1';
+        Child.Insert();
+    end;
+
+    procedure DeleteAllRaisesDeleteEvents(): Text
+    var
+        Parent: Record "Bulk Parent";
+        Child: Record "Bulk Child";
+        Log: Codeunit "Bulk Log";
+    begin
+        Seed();
+        Parent.SetRange("No.", 'P1', 'P2');
+        Parent.DeleteAll();
+        Parent.Reset();
+        exit(Log.Read() + Format(Parent.Count()) + Format(Child.Count()));
+    end;
+
+    procedure DeleteAllTrueRunsOnDelete(): Text
+    var
+        Parent: Record "Bulk Parent";
+        Log: Codeunit "Bulk Log";
+    begin
+        Seed();
+        Parent.SetRange("No.", 'P1');
+        Parent.DeleteAll(true);
+        exit(Log.Read());
+    end;
+
+    procedure ModifyAllRaisesModifyEvents(): Text
+    var
+        Parent: Record "Bulk Parent";
+        Log: Codeunit "Bulk Log";
+    begin
+        Seed();
+        Parent.SetRange("No.", 'P1', 'P2');
+        Parent.ModifyAll(Status, 'Held');
+        Parent.Get('P2');
+        exit(Log.Read() + Parent.Status + Format(Parent.Touched));
+    end;
+
+    procedure ModifyAllTrueRunsOnModify(): Text
+    var
+        Parent: Record "Bulk Parent";
+        Log: Codeunit "Bulk Log";
+    begin
+        Seed();
+        Parent.SetRange("No.", 'P1');
+        Parent.ModifyAll(Status, 'Held', true);
+        Parent.Get('P1');
+        exit(Log.Read() + Parent.Status + Format(Parent.Touched));
+    end;
+
+    procedure ModifyAllGuardRefuses()
+    var
+        Parent: Record "Bulk Parent";
+    begin
+        Seed();
+        Parent.ModifyAll(Status, 'Closed');
+    end;
+}
+"#;
+
+/// Business Central raises OnBeforeDeleteEvent and OnAfterDeleteEvent for
+/// each row of a DeleteAll, and OnBeforeModifyEvent and OnAfterModifyEvent
+/// for each row of a ModifyAll, and runs OnDelete or OnModify when
+/// RunTrigger is true. Both removed or wrote the rows in one pass, so no
+/// subscriber ran, and RunTrigger true failed.
+#[test]
+fn deleteall_and_modifyall_raise_the_table_events_for_each_row() {
+    let call = |proc: &str| {
+        run(
+            &[
+                ("/ws/BulkParent.al", BULK_PARENT_TABLE),
+                ("/ws/BulkChild.al", BULK_CHILD_TABLE),
+                ("/ws/BulkLogEntry.al", BULK_LOG_TABLE),
+                ("/ws/BulkLog.al", BULK_LOG),
+                ("/ws/BulkSubscribers.al", BULK_SUBSCRIBERS),
+                ("/ws/BulkProbe.al", BULK_PROBE),
+            ],
+            "Bulk Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("DeleteAllRaisesDeleteEvents")),
+        Value::Text(
+            "BeforeDelete P1 No|AfterDelete P1|BeforeDelete P2 No|AfterDelete P2|11".into()
+        )
+    );
+    assert_eq!(
+        ok(call("DeleteAllTrueRunsOnDelete")),
+        Value::Text("BeforeDelete P1 Yes|OnDelete P1|AfterDelete P1|".into())
+    );
+    assert_eq!(
+        ok(call("ModifyAllRaisesModifyEvents")),
+        Value::Text(
+            "BeforeModify P1 Open>Held|AfterModify P1|BeforeModify P2 Open>Held|AfterModify P2|Held0"
+                .into()
+        )
+    );
+    assert_eq!(
+        ok(call("ModifyAllTrueRunsOnModify")),
+        Value::Text("BeforeModify P1 Open>Held|OnModify P1 Open>Held|AfterModify P1|Held1".into())
+    );
+    let refused = error_message(call("ModifyAllGuardRefuses"));
+    assert!(refused.contains("P1 cannot be closed"), "{refused}");
+}
+
+const JSON_READFROM_PROBE: &str = r#"codeunit 50276 "Json ReadFrom Probe"
+{
+    procedure ReusedInALoop(): Text
+    var
+        Lines: List of [Text];
+        Line: Text;
+        LineObj: JsonObject;
+        Arr: JsonArray;
+        Out: Text;
+    begin
+        Lines.Add('{"n":1}');
+        Lines.Add('{"n":2}');
+        Lines.Add('{"n":3}');
+        foreach Line in Lines do begin
+            LineObj.ReadFrom(Line);
+            Arr.Add(LineObj);
+        end;
+        Arr.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure LeavesTheParentAlone(): Text
+    var
+        Parent: JsonObject;
+        Child: JsonObject;
+        Out: Text;
+    begin
+        Parent.Add('child', Child);
+        Child.ReadFrom('{"x":1}');
+        Parent.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure TokenFromGetLeavesTheParentAlone(): Text
+    var
+        Parent: JsonObject;
+        Token: JsonToken;
+        Out: Text;
+        Line: Text;
+    begin
+        Parent.ReadFrom('{"child":{"x":1}}');
+        Parent.Get('child', Token);
+        Token.ReadFrom('{"y":2}');
+        Parent.WriteTo(Out);
+        Token.WriteTo(Line);
+        exit(Out + Line);
+    end;
+
+    procedure AnAliasSeesTheNewValue(): Text
+    var
+        A: JsonObject;
+        B: JsonObject;
+        Out: Text;
+    begin
+        A.Add('old', 1);
+        B := A;
+        A.ReadFrom('{"new":2}');
+        B.WriteTo(Out);
+        exit(Out);
+    end;
+}
+"#;
+
+/// ReadFrom wrote the parsed value into the variable's node, which a parent
+/// object or array may hold, so a variable read again in a loop rewrote the
+/// rows already added. Business Central disconnects the variable from its
+/// tree and gives it the new value.
+#[test]
+fn readfrom_gives_the_variable_a_new_value_and_leaves_its_tree_alone() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/JsonReadFrom.al", JSON_READFROM_PROBE)],
+            "Json ReadFrom Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("ReusedInALoop")),
+        Value::Text(r#"[{"n":1},{"n":2},{"n":3}]"#.into())
+    );
+    assert_eq!(
+        ok(call("LeavesTheParentAlone")),
+        Value::Text(r#"{"child":{}}"#.into())
+    );
+    assert_eq!(
+        ok(call("TokenFromGetLeavesTheParentAlone")),
+        Value::Text(r#"{"child":{"x":1}}{"y":2}"#.into())
+    );
+    // `B := A` shares A's reference, so B sees what A reads.
+    assert_eq!(
+        ok(call("AnAliasSeesTheNewValue")),
+        Value::Text(r#"{"new":2}"#.into())
+    );
+}
+
+const JSON_POSITION_PROBE: &str = r#"codeunit 50277 "Json Position Probe"
+{
+    procedure MissesAsExpressions(): Text
+    var
+        Obj: JsonObject;
+        Arr: JsonArray;
+        Token: JsonToken;
+        Seen: Text;
+    begin
+        Obj.Add('a', 1);
+        Arr.Add(1);
+        if not Obj.Get('missing', Token) then
+            Seen += 'get|';
+        if not Obj.ReadFrom('not json') then
+            Seen += 'read|';
+        if not Obj.SelectToken('$.missing', Token) then
+            Seen += 'select|';
+        if not Obj.Add('a', 2) then
+            Seen += 'add|';
+        if not Obj.Replace('missing', 2) then
+            Seen += 'replace|';
+        if not Arr.Get(5, Token) then
+            Seen += 'arrayget|';
+        if not Arr.Insert(5, 2) then
+            Seen += 'insert|';
+        if not Arr.Set(5, 2) then
+            Seen += 'set|';
+        if not Arr.RemoveAt(5) then
+            Seen += 'removeat|';
+        if not Arr.ReadFrom('{"an":"object"}') then
+            Seen += 'shape|';
+        exit(Seen);
+    end;
+
+    procedure GetMiss()
+    var
+        Obj: JsonObject;
+        Token: JsonToken;
+    begin
+        Obj.Add('a', 1);
+        Obj.Get('missing', Token);
+    end;
+
+    procedure ReadFromBadText()
+    var
+        Obj: JsonObject;
+    begin
+        Obj.ReadFrom('not json');
+    end;
+
+    procedure SelectTokenMiss()
+    var
+        Obj: JsonObject;
+        Token: JsonToken;
+    begin
+        Obj.SelectToken('$.missing', Token);
+    end;
+
+    procedure ReplaceMiss()
+    var
+        Obj: JsonObject;
+    begin
+        Obj.Replace('missing', 2);
+    end;
+
+    procedure ArrayGetMiss()
+    var
+        Arr: JsonArray;
+        Token: JsonToken;
+    begin
+        Arr.Get(5, Token);
+    end;
+
+    procedure AssertErrorCatchesAGetMiss(): Text
+    var
+        Obj: JsonObject;
+        Token: JsonToken;
+    begin
+        asserterror Obj.Get('missing', Token);
+        exit('caught');
+    end;
+}
+"#;
+
+/// Business Central raises a failed Get, ReadFrom, SelectToken, Add,
+/// Replace, Insert, Set or RemoveAt as a runtime error when the return
+/// value is not used, and returns false when it is. The local runtime
+/// returned false as a statement and raised in an expression.
+#[test]
+fn json_failures_raise_as_statements_and_return_false_as_expressions() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/JsonPosition.al", JSON_POSITION_PROBE)],
+            "Json Position Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("MissesAsExpressions")),
+        Value::Text("get|read|select|add|replace|arrayget|insert|set|removeat|shape|".into())
+    );
+    for (proc, expected) in [
+        ("GetMiss", "the key 'missing' does not exist"),
+        ("ReadFromBadText", "not valid JSON"),
+        ("SelectTokenMiss", "no token matches"),
+        ("ReplaceMiss", "the key 'missing' does not exist"),
+        ("ArrayGetMiss", "index 5 is outside the JSON array"),
+    ] {
+        let error = error_message(call(proc));
+        assert!(error.contains(expected), "{proc}: {error}");
+    }
+    assert_eq!(
+        ok(call("AssertErrorCatchesAGetMiss")),
+        Value::Text("caught".into())
+    );
+}
+
+const JSON_DEFAULT_PROBE: &str = r#"codeunit 50278 "Json Default Probe"
+{
+    procedure MissingKeysGiveDefaults(): Text
+    var
+        Obj: JsonObject;
+    begin
+        Obj.Add('a', 'x');
+        exit('[' + Obj.GetText('missing', true) + '|' + Obj.GetCode('missing', true) + '|' +
+            Format(Obj.GetInteger('missing', true)) + '|' + Format(Obj.GetBigInteger('missing', true)) + '|' +
+            Format(Obj.GetDecimal('missing', true)) + '|' + Format(Obj.GetBoolean('missing', true)) + '|' +
+            Obj.GetText('a', true) + ']');
+    end;
+
+    procedure MissingKeyWithoutDefault(): Text
+    var
+        Obj: JsonObject;
+    begin
+        exit(Obj.GetText('missing', false));
+    end;
+}
+"#;
+
+/// JsonObject's typed getters take DefaultIfNotFound (runtime 15.0): with
+/// true, a missing key gives the type's default value. The local runtime
+/// raised an error.
+#[test]
+fn json_object_getters_honour_default_if_not_found() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/JsonDefault.al", JSON_DEFAULT_PROBE)],
+            "Json Default Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("MissingKeysGiveDefaults")),
+        Value::Text("[||0|0|0|No|x]".into())
+    );
+    let error = error_message(call("MissingKeyWithoutDefault"));
+    assert!(
+        error.contains("the key 'missing' does not exist"),
+        "{error}"
+    );
+}
+
+const JSON_PATH_PROBE: &str = r#"codeunit 50279 "Json Path Probe"
+{
+    local procedure Company(var Doc: JsonObject)
+    begin
+        Doc.ReadFrom('{"company":{"boss":"Diana","employees":[{"id":"Marcy","salary":8.95},{"id":"John","salary":7,"bonus":1},{"id":"Diana","salary":10.95}]}}');
+    end;
+
+    procedure FilterFromTheLearnExample(): Decimal
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+        EmployeeId: Text;
+    begin
+        Company(Doc);
+        EmployeeId := 'John';
+        Doc.SelectToken('$.company.employees[?(@.id==''' + EmployeeId + ''')].salary', Token);
+        exit(Token.AsValue().AsDecimal());
+    end;
+
+    procedure RecursiveDescent(): Text
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+    begin
+        Doc.ReadFrom('{"a":{"b":{"c":"deep"}}}');
+        if not Doc.SelectToken('$..c', Token) then
+            exit('not found');
+        exit(Token.AsValue().AsText());
+    end;
+
+    procedure Filters(): Text
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+        Seen: Text;
+    begin
+        Company(Doc);
+        Doc.SelectToken('$.company.employees[?(@.salary > 8 && @.salary < 10)].id', Token);
+        Seen := Token.AsValue().AsText();
+        Doc.SelectToken('$.company.employees[?(@.bonus)].id', Token);
+        Seen += '|' + Token.AsValue().AsText();
+        Doc.SelectToken('$.company.employees[?(@.id == $.company.boss)].salary', Token);
+        Seen += '|' + Format(Token.AsValue().AsDecimal());
+        Doc.SelectToken('$.company.employees[?(@.id == ''Nobody'' || @.salary >= 10.95)].id', Token);
+        Seen += '|' + Token.AsValue().AsText();
+        Doc.SelectToken('$..employees[2].id', Token);
+        Seen += '|' + Token.AsValue().AsText();
+        if not Doc.SelectToken('$..id', Token) then
+            Seen += '|many';
+        if not Doc.SelectToken('$.company.employees[*].id', Token) then
+            Seen += '|wildcard many';
+        Doc.SelectToken('$.company.*[1].id', Token);
+        exit(Seen + '|' + Token.AsValue().AsText());
+    end;
+
+    procedure SeveralMatchesAsAStatement()
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+    begin
+        Company(Doc);
+        Doc.SelectToken('$..id', Token);
+    end;
+
+    procedure UnsupportedStep(): Text
+    var
+        Doc: JsonObject;
+        Token: JsonToken;
+    begin
+        Company(Doc);
+        if not Doc.SelectToken('$.company.employees[0:2]', Token) then
+            exit('not found');
+        exit('found');
+    end;
+}
+"#;
+
+/// SelectToken read only member and index steps: a filter failed as
+/// "not an array index" and `..` found nothing. Business Central selects
+/// with filters and recursive descent, and fails unless exactly one token
+/// matches.
+#[test]
+fn selecttoken_follows_filters_and_recursive_descent() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/JsonPath.al", JSON_PATH_PROBE)],
+            "Json Path Probe",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(
+        ok(call("FilterFromTheLearnExample")),
+        Value::Decimal(dec!(7))
+    );
+    assert_eq!(ok(call("RecursiveDescent")), Value::Text("deep".into()));
+    assert_eq!(
+        ok(call("Filters")),
+        Value::Text("Marcy|John|10.95|Diana|Diana|many|wildcard many|John".into())
+    );
+    let several = error_message(call("SeveralMatchesAsAStatement"));
+    assert!(several.contains("matches 3 tokens"), "{several}");
+    let unsupported = error_message(call("UnsupportedStep"));
+    assert!(
+        unsupported.contains("'[0:2]'") && unsupported.contains("not supported"),
+        "{unsupported}"
+    );
+}

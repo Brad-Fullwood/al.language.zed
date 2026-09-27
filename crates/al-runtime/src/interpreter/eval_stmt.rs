@@ -921,7 +921,7 @@ pub(crate) fn eval_call_parts(
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
                 let result = crate::interpreter::json::dispatch_json_method(
-                    &recv, &proc_name, args, stack, ctx,
+                    &recv, &proc_name, args, statement, stack, ctx,
                 );
                 apply_var_writebacks(args_node, source, stack, ctx);
                 return result;

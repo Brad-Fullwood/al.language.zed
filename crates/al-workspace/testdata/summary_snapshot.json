@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "summary": {
     "files": [
       {
@@ -299,15 +299,17 @@
                     }
                   },
                   {
-                    "MemberCall": {
-                      "object": "Entry",
-                      "method": "DeleteAll"
+                    "RecordOp": {
+                      "variable": "Entry",
+                      "op": "DeleteAll",
+                      "run_trigger": false
                     }
                   },
                   {
-                    "MemberCall": {
-                      "object": "Entry",
-                      "method": "ModifyAll"
+                    "RecordOp": {
+                      "variable": "Entry",
+                      "op": "ModifyAll",
+                      "run_trigger": true
                     }
                   },
                   {
