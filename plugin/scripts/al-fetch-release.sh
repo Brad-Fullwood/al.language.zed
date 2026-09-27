@@ -256,10 +256,26 @@ done
 
 chmod +x "$stage_dir/al-explorer" "$stage_dir/al-lsp"
 
-mkdir -p "$data_dir"
-rm -rf "${bin_dir:?}.new"
-mv "$stage_dir" "$bin_dir.new"
-rm -rf "${bin_dir:?}"
-mv "$bin_dir.new" "$bin_dir"
+# Each step has to name itself on failure, or a broken step here reports
+# "installed" over binaries that never moved. The old bin_dir is removed only
+# after the verified stage is fully in place at bin_dir.new, so a failure
+# between here and the last mv leaves either the old install or the new one
+# staged at bin_dir.new, never neither.
+install_step() {
+	# $1 = what this step does, for the refusal message. Remaining args = the
+	# command.
+	local doing="$1"
+	shift
+	if ! "$@"; then
+		report "could not $doing; nothing was installed"
+		exit 0
+	fi
+}
+
+install_step "create $data_dir" mkdir -p "$data_dir"
+install_step "clear a stale $bin_dir.new left from an earlier attempt" rm -rf "${bin_dir:?}.new"
+install_step "stage the verified binaries at $bin_dir.new" mv "$stage_dir" "$bin_dir.new"
+install_step "remove the old $bin_dir to make room for $bin_dir.new" rm -rf "${bin_dir:?}"
+install_step "move the verified binaries from $bin_dir.new into $bin_dir" mv "$bin_dir.new" "$bin_dir"
 
 report "installed al-lsp and al-explorer $AL_PIN_RELEASE_TAG into $bin_dir, verified against $BINARY_CHECKSUMS_ASSET. Add it to PATH this session to call them directly: export PATH=\"$bin_dir:\$PATH\" (every al-bc skill and the MCP server already find it there through al-bin.sh)"

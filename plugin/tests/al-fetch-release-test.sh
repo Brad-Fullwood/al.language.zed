@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 #
-# Regression test for R9-PLUGIN-1 (Docs/campaign/findings/r9-session-review.md):
-# al-fetch-release.sh installed a symlink or a directory named al-lsp or
-# al-explorer as if it were the verified file.
+# Regression tests for al-fetch-release.sh
+# (Docs/campaign/findings/r9-session-review.md):
 #
-# Serves a small archive over a local python3 -m http.server: curl in
+#   R9-PLUGIN-1: installed a symlink or a directory named al-lsp or
+#                al-explorer as if it were the verified file.
+#   R9-PLUGIN-2: reported "installed" when a step of the install
+#                (mkdir/mv/rm) failed, and nothing was installed.
+#
+# Serves small archives over a local python3 -m http.server: curl in
 # al-fetch-release.sh restricts --proto to https/http, so a file:// URL
 # would be refused before any of this ran.
 #
@@ -150,7 +154,38 @@ scenario_directory_member() {
 	pass "a directory named al-lsp is refused, not installed"
 }
 
+# ── R9-PLUGIN-2: a failed install step is named, not reported installed ──
+scenario_failed_install_step() {
+	local stage="$work/stage-good" blocker="$work/blocker-file" data out rc
+	rm -rf "$stage"
+	mkdir -p "$stage"
+	printf 'explorer-bytes\n' >"$stage/al-explorer"
+	printf 'lsp-bytes\n' >"$stage/al-lsp"
+	chmod +x "$stage/al-explorer" "$stage/al-lsp"
+	(cd "$stage" && tar -czf "$serve_dir/$asset_name" al-explorer al-lsp)
+	{
+		printf '%s  %s/al-explorer\n' "$(sha256_of "$stage/al-explorer")" "$asset_name"
+		printf '%s  %s/al-lsp\n' "$(sha256_of "$stage/al-lsp")" "$asset_name"
+	} >"$serve_dir/binary-checksums.txt"
+
+	# A regular file where a directory needs to go: mkdir -p fails on any
+	# platform, without relying on permission bits (which root ignores).
+	rm -f "$blocker"
+	printf 'not a directory\n' >"$blocker"
+	data="$blocker/data"
+
+	out="$(run_fetch "$data" 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] || fail "failed install step: al-fetch-release.sh exited $rc, its contract is always 0. Output: $out"
+	if printf '%s\n' "$out" | grep -qF "installed al-lsp and al-explorer"; then
+		fail "failed install step: reported installed although $data could not be created. Output: $out"
+	fi
+	printf '%s\n' "$out" | grep -qF "could not create $data" ||
+		fail "failed install step: expected a refusal naming the 'create $data' step. Output: $out"
+	pass "a failed install step is named and nothing is reported installed"
+}
+
 scenario_symlink_member
 scenario_directory_member
+scenario_failed_install_step
 
 printf 'al-fetch-release-test: all scenarios passed\n'
