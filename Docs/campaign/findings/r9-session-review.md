@@ -51,7 +51,7 @@ in the main checkout, beside the round 8 patch. Every cargo command ran one crat
 - severity: low
 - scenario: `CLAUDE_PLUGIN_DATA=/proc/version/nope` (a path that cannot be created) with a valid archive whose two members match the listing: the script prints "installed al-lsp and al-explorer v0.2.2 into /proc/version/nope/bin, verified against binary-checksums.txt", exits 0, and nothing is installed. Reproduced against the local server. That line reaches the session's context through al-session-context.sh, so the agent is told the binaries are in place. `rm -rf "${bin_dir:?}"` at :240 also runs when the `mv` into `$bin_dir.new` failed, so a directory holding one binary from an earlier attempt is removed and nothing replaces it.
 - fix: chain the install steps with `&&` and report a refusal that names the failed step, and remove the old directory only after the new one is in place.
-- status: open
+- status: fixed bee999973bf2d7a33e62463380d0acdf24f93895
 
 ### [R9-CACHE-1] the summary cache hashes the package before it summarizes it, so a package rewritten in between is saved under the old bytes' key
 - where: crates/al-workspace/src/lib.rs:918 (`PackageKey::of(app_path)` reads and hashes the `.app`), :941 (`build()` opens `app_path` again and summarizes what is there now), :945 (`disk.save(&key, &summary)` pairs the two)
