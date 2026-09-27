@@ -1629,6 +1629,11 @@ fn executable_path_privileges(
 /// a user-level value from a worktree one. al-lsp can tell, because it can read
 /// the repository's files, so the refusal lands here. Removing the variable
 /// makes the whole process fall back to `dotnet` from `PATH`.
+///
+/// A settings file that does not parse leaves nothing to decide with, so a
+/// host inside the project is dropped then too. The function used to return
+/// before deciding, and a trusted project whose runtime a later commit replaced
+/// kept its `dotnet` while the daemon denied every other privileged value.
 pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
     let configured = std::env::var(crate::toolchain::DOTNET_PATH_ENV).ok()?;
     let configured = configured.trim().to_string();
@@ -1636,7 +1641,24 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
         return None;
     }
 
-    let (ask, decision) = inspect(project_root).ok()?;
+    let (ask, decision) = match inspect(project_root) {
+        Ok(read) => read,
+        Err(error) => {
+            if !stays_inside_project(Path::new(&configured), project_root) {
+                return None;
+            }
+            std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
+            return Some(format!(
+                "Ignoring the dotnet host '{}': it is inside this project, and the project's \
+                 settings could not be read to decide whether it is trusted ({}). Falling back \
+                 to 'dotnet' from PATH. To use it, fix that file, and the user runs this in a \
+                 terminal: {TRUST_COMMAND} --show {}",
+                one_line(&configured),
+                one_line(&error.to_string()),
+                one_line(&canonical_root(project_root).display().to_string())
+            ));
+        }
+    };
     if decision.state.is_trusted() {
         return None;
     }

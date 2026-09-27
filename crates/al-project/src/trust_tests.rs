@@ -1681,8 +1681,80 @@ fn a_replaced_runtime_beside_a_project_dotnet_is_dropped_before_the_next_spawn()
     );
 }
 
-/// A host outside the project is not re-decided, so a build pays one path
-/// check for it.
+/// A settings file that stops parsing makes the decision fail, and the check
+/// before a spawn returned before it decided. `AL_DOTNET_PATH` kept naming the
+/// project's `dotnet` while the runtime beside it changed, and the next build
+/// ran it.
+#[test]
+fn a_project_dotnet_is_dropped_before_a_spawn_when_a_settings_file_stops_parsing() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings(r#"{"al.dotnetPath": "./tools/dotnet/dotnet"}"#);
+    let root = project.path();
+    write_file(root, "tools/dotnet/dotnet", b"reviewed muxer");
+    write_file(
+        root,
+        "tools/dotnet/host/fxr/8.0.0/libhostfxr.so",
+        b"reviewed hostfxr",
+    );
+    let dotnet = root.join("tools/dotnet/dotnet");
+    let _dotnet = EnvVar::set(crate::toolchain::DOTNET_PATH_ENV, &dotnet);
+    grant(root).unwrap();
+    assert_eq!(enforce_dotnet_path_before_spawn(root), None);
+
+    // The later commit: .zed/settings.json keeps the dotnetPath that Zed
+    // exports, .vscode/settings.json stops parsing, the runtime changes.
+    std::fs::create_dir_all(root.join(".zed")).unwrap();
+    std::fs::write(
+        root.join(".zed/settings.json"),
+        r#"{"lsp":{"al-lsp":{"settings":{"dotnetPath":"./tools/dotnet/dotnet"}}}}"#,
+    )
+    .unwrap();
+    std::fs::write(root.join(".vscode/settings.json"), "{").unwrap();
+    write_file(
+        root,
+        "tools/dotnet/host/fxr/8.0.0/libhostfxr.so",
+        b"replaced by git pull",
+    );
+
+    assert!(decide(root).is_err(), "the decision cannot be read");
+    let advisory = enforce_dotnet_path_before_spawn(root)
+        .expect("a project dotnet that cannot be decided is dropped");
+    assert!(advisory.contains(".vscode/settings.json"), "{advisory}");
+    assert!(advisory.contains("could not be read"), "{advisory}");
+    assert!(!advisory.contains("sha256"), "{advisory}");
+    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+    assert_eq!(
+        crate::toolchain::dotnet_command(Path::new("alc.dll")).get_program(),
+        "dotnet"
+    );
+}
+
+/// The same for a project that was never trusted.
+#[test]
+fn an_untrusted_project_dotnet_is_dropped_when_its_settings_do_not_parse() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings("{");
+    let root = project.path();
+    std::fs::create_dir_all(root.join(".zed")).unwrap();
+    std::fs::write(
+        root.join(".zed/settings.json"),
+        r#"{"lsp":{"al-lsp":{"settings":{"dotnetPath":"./tools/dotnet/dotnet"}}}}"#,
+    )
+    .unwrap();
+    write_file(root, "tools/dotnet/dotnet", b"repository muxer");
+    let _dotnet = EnvVar::set(
+        crate::toolchain::DOTNET_PATH_ENV,
+        &root.join("tools/dotnet/dotnet"),
+    );
+
+    let advisory = enforce_dotnet_path_before_spawn(root)
+        .expect("a project dotnet that cannot be decided is dropped");
+    assert!(advisory.contains(".vscode/settings.json"), "{advisory}");
+    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+}
+
+/// A host outside the project is not decided again, so a build pays one
+/// path check for it.
 #[test]
 fn a_dotnet_outside_the_project_is_not_decided_before_a_spawn() {
     let _config = ScratchConfig::new();

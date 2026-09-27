@@ -155,8 +155,9 @@ hashes. So a `dotnet` inside the project is decided again before each spawn: eve
 `al-explorer build`) and the `--official-lsp` start. A `git pull` that replaces
 `host/fxr/<version>/libhostfxr.so` makes the project stale, `AL_DOTNET_PATH` is dropped, and
 the build runs `dotnet` from `PATH`. Before, the process kept the variable until the
-fingerprint moved, and the next build ran the new library. A `dotnet` outside the project
-costs one path check.
+fingerprint moved, and the next build ran the new library. When a settings file stops parsing
+there is nothing to decide with, so a `dotnet` inside the project is dropped the same way, with
+a message naming the file. A `dotnet` outside the project costs one path check.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
 outside every repository, mode 0600, written through a temp file and a rename. Each entry
