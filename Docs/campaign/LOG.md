@@ -462,3 +462,31 @@ Append-only. Newest entry last.
   test's var section moved back above the subscriber (the queued GR2-1 item), a `pack-native`
   refusal test that compares the folder as the user named it, and a `clippy.toml`. Fast-forwarded
   onto them. They go through the next gate run and the round 10 review.
+
+## 2026-09-27 08:36 BST: security round 5 complete, plugin round 5 merged, GR2-4 in the grammar
+
+- Security round 5 complete (`findings/r5-security.md`, merged c41346e9): 9 findings, 7 medium, 2
+  low, all nine coverage items ticked. New this session: the legacy proxy forwards an online
+  scenario whose `applicationFamily` puts another host in front of Microsoft's domain, reproduced
+  with the deployment library sending a bearer token to a local TLS listener (SEC5-7), an analyzer
+  name from Zed user settings resolves to a project copy the record never lists (SEC5-8), and a
+  `.alpackages` link added after trust widens the daemon's containment to the link's target
+  (SEC5-9, `/` as a root accepts `$HOME/.bashrc`). One Windows-only candidate (a UNC path resolved
+  while deciding trust opens an SMB connection) is noted under item 3, unverified. A fix agent is
+  on all nine (`campaign/fix-r5-security`).
+- Plugin runs round 5 merged: four Haiku runs (`bc-test-locally`, `bc-upgrade-impact`,
+  `bc-cop-fixer`, a `.alpackages` symbol lookup on a scaffolded project with Base Application 28
+  symbols) all right, after three fixes: `bc-upgrade-impact` never fired on a dependency question
+  (its description and the SessionStart routing note), `by-id` undercounts fields when an
+  extension is loaded, and `composed --limit --fields` does not shrink its output (recipe now
+  pipes through `jq`). `make plugin-validate` OK, `make plugin-evals` 12 of 12.
+- GR2-4 fixed in the grammar (`campaign/gr2-4`, three commits on cc31863): the scanner reads a
+  signed case label as alc does (blanks after the minus, `::` and member access, stops before `:`
+  and `..`, and does not run where a binary operator is valid, which also fixes `Y := A -1;` as the
+  last statement of a case arm, an ERROR before). The `operator` regex stops before a sign after a
+  dot so `-5..-2` is four tokens. The grammar route (an optional unary minus) was tried and
+  rejected: the lexer picked the unary token at the end of an arm without a semicolon. Agent gates:
+  103 of 103 corpus tests, 46,389 of 46,389 corpus files, crate and generator tests, package,
+  wasm, drift. Merged into the grammar's `campaign/2026-09-21`, orchestrator gates running.
+- The interactive session's four commits carry `Co-Authored-By: Claude` and `Claude-Session:`
+  trailers, which `~/.claude/CLAUDE.md` forbids. They are pushed, so left as they are.
