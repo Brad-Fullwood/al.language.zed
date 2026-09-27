@@ -973,6 +973,19 @@ pub(crate) fn dispatch_record_method(
         Some(write) => {
             write_with_table_code(table, handle, (write, run_trigger), stack, ctx, operate)
         }
+        // Reset also clears the AL variables the table declares.
+        None if lower == "reset" => {
+            let result = operate(ctx);
+            if !result.is_error() {
+                crate::interpreter::dispatch::table_code::reset_record_globals(
+                    &table.name,
+                    handle,
+                    stack,
+                    ctx,
+                );
+            }
+            result
+        }
         None => operate(ctx),
     }
 }
@@ -1112,7 +1125,7 @@ fn write_all(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    use crate::interpreter::dispatch::table_code::{declares, TableCode};
+    use crate::interpreter::dispatch::table_code::{declares, without_record_globals, TableCode};
 
     let method = match write {
         RecordWrite::Modify => "ModifyAll",
@@ -1161,41 +1174,47 @@ fn write_all(
             store.put_view(handle, saved);
         }
     };
-    for row in rows {
-        let store = ctx.records.get_mut(&key).expect("store just ensured");
-        let mut view = store.take_view(handle);
-        // Code that ran for an earlier row can have removed this one.
-        let loaded = store.record.get_in(&mut view, row).is_ok();
-        if loaded {
-            if let Some((field, value)) = &assign {
-                store.record.field_set_in(&mut view, *field, value.clone());
-            }
-        }
-        store.put_view(handle, view);
-        if !loaded {
-            continue;
-        }
-        let result =
-            write_with_table_code(table, handle, (write, run_trigger), stack, ctx, |ctx| {
-                let store = ctx.records.get_mut(&key).expect("store just ensured");
-                let mut view = store.take_view(handle);
-                let result = match write {
-                    RecordWrite::Modify => store.record.modify_in(&mut view, false),
-                    _ => store.record.delete_in(&mut view, false),
-                };
-                store.put_view(handle, view);
-                match result {
-                    Ok(()) => Eval::Normal(Value::Boolean(true)),
-                    Err(error) => eval_error(format!("{method}: {error}")),
+    let each_row = |ctx: &mut DispatchCtx| {
+        for row in rows {
+            let store = ctx.records.get_mut(&key).expect("store just ensured");
+            let mut view = store.take_view(handle);
+            // Code that ran for an earlier row can have removed this one.
+            let loaded = store.record.get_in(&mut view, row).is_ok();
+            if loaded {
+                if let Some((field, value)) = &assign {
+                    store.record.field_set_in(&mut view, *field, value.clone());
                 }
-            });
-        if result.is_error() {
-            restore(ctx);
-            return result;
+            }
+            store.put_view(handle, view);
+            if !loaded {
+                continue;
+            }
+            let result =
+                write_with_table_code(table, handle, (write, run_trigger), stack, ctx, |ctx| {
+                    let store = ctx.records.get_mut(&key).expect("store just ensured");
+                    let mut view = store.take_view(handle);
+                    let result = match write {
+                        RecordWrite::Modify => store.record.modify_in(&mut view, false),
+                        _ => store.record.delete_in(&mut view, false),
+                    };
+                    store.put_view(handle, view);
+                    match result {
+                        Ok(()) => Eval::Normal(Value::Boolean(true)),
+                        Err(error) => eval_error(format!("{method}: {error}")),
+                    }
+                });
+            if result.is_error() {
+                return result;
+            }
+            // Each row's table code starts with the table's globals at
+            // their defaults.
+            ctx.record_globals.remove(&handle);
         }
-    }
+        Eval::Normal(Value::Empty)
+    };
+    let result = without_record_globals(handle, ctx, each_row);
     restore(ctx);
-    Eval::Normal(Value::Empty)
+    result
 }
 
 /// `Rec.Rename(key values…)`, the new primary key with all its parts.

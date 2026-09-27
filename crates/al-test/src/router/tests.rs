@@ -1666,8 +1666,9 @@ end;
 
 /// A label is a constant: a table or helper codeunit whose only globals
 /// are labels has no state and runs locally. A table with a real global
-/// variable runs locally too: only a SingleInstance codeunit with globals
-/// goes to live BC.
+/// variable runs locally too, since the runtime keeps a table's globals with
+/// the record variable as BC does: only a SingleInstance codeunit with
+/// globals goes to live BC.
 #[test]
 fn label_globals_are_not_object_state() {
     let workspace = Workspace::new();

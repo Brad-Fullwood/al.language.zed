@@ -4927,3 +4927,172 @@ fn subscribers_bound_by_object_id_run() {
         Value::Text("by id".into())
     );
 }
+
+const KEPT_MEMBER: &str = r#"table 50420 "Kept Member"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Name; Text[50])
+        {
+            trigger OnValidate()
+            begin
+                if not HideDialog then
+                    Error('dialog shown');
+            end;
+        }
+        field(3; Stamp; Text[10]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    var
+        Strict: Boolean;
+        HideDialog: Boolean;
+        Inserted: Integer;
+
+    trigger OnInsert()
+    begin
+        if Strict then
+            Error('strict insert');
+        Inserted += 1;
+    end;
+
+    trigger OnModify()
+    begin
+        if Strict then
+            Error('strict modify');
+        Stamp := 'S';
+    end;
+
+    procedure SetStrict()
+    begin
+        Strict := true;
+    end;
+
+    procedure SetHideDialog(Hide: Boolean)
+    begin
+        HideDialog := Hide;
+    end;
+
+    procedure InsertedCount(): Integer
+    begin
+        exit(Inserted);
+    end;
+
+    procedure StrictAfterReset(): Boolean
+    begin
+        Strict := true;
+        Reset();
+        exit(Strict);
+    end;
+}
+"#;
+
+const KEPT_PROBE: &str = r#"codeunit 50421 "Kept Probe"
+{
+    procedure HideDialogReachesOnValidate(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Member.SetHideDialog(true);
+        Member.Validate(Name, 'x');
+        exit(Member.Name);
+    end;
+
+    procedure StrictReachesOnInsert(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.SetStrict();
+        asserterror Member.Insert(true);
+        exit(GetLastErrorText());
+    end;
+
+    procedure TriggerStateIsKept(): Integer
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.Insert(true);
+        Member."No." := 'B';
+        Member.Insert(true);
+        exit(Member.InsertedCount());
+    end;
+
+    procedure EachVariableHasItsOwn(): Integer
+    var
+        Strict: Record "Kept Member";
+        Plain: Record "Kept Member";
+    begin
+        Strict.SetStrict();
+        Plain."No." := 'A';
+        Plain.Insert(true);
+        exit(10 * Plain.InsertedCount() + Strict.InsertedCount());
+    end;
+
+    procedure ResetClearsThem(): Integer
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.Insert(true);
+        Member.SetStrict();
+        Member.Reset();
+        Member."No." := 'B';
+        Member.Insert(true);
+        exit(Member.InsertedCount());
+    end;
+
+    procedure ResetInTableCodeClearsThem(): Boolean
+    var
+        Member: Record "Kept Member";
+    begin
+        exit(Member.StrictAfterReset());
+    end;
+
+    procedure ModifyAllStartsThemFresh(): Text
+    var
+        Member: Record "Kept Member";
+    begin
+        Member."No." := 'A';
+        Member.Insert();
+        Member.SetStrict();
+        Member.ModifyAll(Name, 'y', true);
+        Member.Get('A');
+        exit(Member.Name + Member.Stamp);
+    end;
+}
+"#;
+
+/// Business Central keeps a table's global variables with the record
+/// variable, so a setter such as `SetHideValidationDialog` reaches a trigger
+/// that runs later. Each call used to start them fresh. Record.Reset clears
+/// them, and ModifyAll runs its triggers with them at their defaults.
+#[test]
+fn table_globals_are_kept_with_the_record_variable() {
+    let call = |proc: &str| {
+        ok(run(
+            &[
+                ("/ws/KeptMember.al", KEPT_MEMBER),
+                ("/ws/KeptProbe.al", KEPT_PROBE),
+            ],
+            "Kept Probe",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(call("HideDialogReachesOnValidate"), Value::Text("x".into()));
+    assert_eq!(
+        call("StrictReachesOnInsert"),
+        Value::Text("strict insert".into())
+    );
+    assert_eq!(call("TriggerStateIsKept"), Value::Integer(2));
+    assert_eq!(call("EachVariableHasItsOwn"), Value::Integer(10));
+    assert_eq!(call("ResetClearsThem"), Value::Integer(1));
+    assert_eq!(call("ResetInTableCodeClearsThem"), Value::Boolean(false));
+    assert_eq!(call("ModifyAllStartsThemFresh"), Value::Text("yS".into()));
+}
