@@ -276,7 +276,24 @@ fn summary_keeps_every_object_of_a_multi_object_file_and_its_effects() {
     };
     assert_eq!(effect_names(&summary.objects[0]), ["Ship"]);
     assert_eq!(effect_names(&summary.objects[1]), ["OnAfterShip", "Ship"]);
-    assert_eq!(effect_names(&summary.objects[3]), ["OnInsert"]);
+    assert_eq!(
+        effect_names(&summary.objects[3]),
+        ["OnInsert", "OnValidate", "OnValidate"]
+    );
+    // Each field's OnValidate keeps its own calls, in document order.
+    let validates = &summary.objects[3].calls["onvalidate"];
+    assert_eq!(validates.len(), 2);
+    assert!(matches!(
+        validates[0].call_sites.as_slice(),
+        [CallSite::RecordOp {
+            op: RecordOp::Modify,
+            ..
+        }]
+    ));
+    assert!(matches!(
+        validates[1].call_sites.as_slice(),
+        [CallSite::BareCall { name }] if name == "TestField"
+    ));
 
     let dispatcher = &summary.objects[2];
     let try_post = dispatcher

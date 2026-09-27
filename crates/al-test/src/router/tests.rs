@@ -1296,6 +1296,127 @@ end;
     );
 }
 
+/// A table procedure's event with IncludeSender passes the record to a
+/// subscriber's `Sender` parameter, which the local runtime does, so the
+/// test stays local.
+#[test]
+fn table_publisher_with_a_sender_subscriber_runs_locally() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/TablePub.Table.al"),
+        r#"table 50280 "Table Pub"
+{
+fields
+{
+    field(1; "No."; Code[20]) { }
+    field(2; Note; Text[50]) { }
+}
+keys { key(PK; "No.") { } }
+
+procedure Stamp()
+begin
+    OnStamp(5);
+end;
+
+[IntegrationEvent(true, false)]
+local procedure OnStamp(Times: Integer)
+begin
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/TablePubSub.Codeunit.al"),
+        r#"codeunit 50281 "Table Pub Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"Table Pub", 'OnStamp', '', false, false)]
+local procedure OnStampSub(var Sender: Record "Table Pub"; Times: Integer)
+begin
+    Sender.Note := 'stamped';
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/TablePubTests.Codeunit.al"),
+        r#"codeunit 50282 "Table Pub Tests"
+{
+Subtype = Test;
+[Test]
+procedure StampRunsTheSubscriber()
+var
+    Pub: Record "Table Pub";
+begin
+    Pub."No." := 'P1';
+    Pub.Insert();
+    Pub.Stamp();
+    if Pub.Note <> 'stamped' then
+        Error('subscriber did not run');
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_eq!(
+        result.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        result.reasons
+    );
+}
+
+/// A subscriber that names its publisher by a bare object ID is reached like
+/// one bound by name, so what it does decides the route.
+#[test]
+fn subscribers_bound_by_object_id_are_reached() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/IdPub.Codeunit.al"),
+        r#"codeunit 50290 "Id Pub"
+{
+procedure Post()
+begin
+    OnPost();
+end;
+
+[IntegrationEvent(false, false)]
+local procedure OnPost()
+begin
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/IdSub.Codeunit.al"),
+        r#"codeunit 50291 "Id Sub"
+{
+[EventSubscriber(ObjectType::Codeunit, 50290, 'OnPost', '', false, false)]
+local procedure OnPostById()
+begin
+    Page.RunModal(0);
+end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/IdTests.Codeunit.al"),
+        r#"codeunit 50292 "Id Tests"
+{
+Subtype = Test;
+[Test]
+procedure Posts()
+var
+    P: Codeunit "Id Pub";
+begin
+    P.Post();
+end;
+}"#
+        .to_string(),
+    );
+    let result = classify_all(&workspace).unwrap().remove(0);
+    assert_reaches_the_subscriber(&result);
+}
+
 /// Validate checks the field's TableRelation, which the local runtime can
 /// do only for a plain relation to a workspace table.
 #[test]
@@ -1838,6 +1959,74 @@ fn bare_deleteall_in_table_code_reaches_the_tables_event_subscribers() {
     assert_reaches_the_subscriber(&result);
 }
 
+/// Each field's `OnValidate` shares one call-graph node, which took its
+/// edges from one of them. A `Modify()` in the other field's trigger did
+/// not reach the Modify subscriber, which opens a page, and the test
+/// stayed local.
+#[test]
+fn modify_in_any_fields_onvalidate_reaches_the_tables_event_subscribers() {
+    for (first, second, validated) in [("Rec.Modify();", "", "Name"), ("", "Rec.Modify();", "City")]
+    {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TwoValidates.Table.al"),
+            format!(
+                r#"table 50213 "R8 Two Validates"
+{{
+fields
+{{
+    field(1; "No."; Code[20]) {{ }}
+    field(2; Name; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {first}
+        end;
+    }}
+    field(3; City; Text[50])
+    {{
+        trigger OnValidate()
+        begin
+            {second}
+        end;
+    }}
+}}
+keys {{ key(PK; "No.") {{ }} }}
+}}"#
+            ),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TwoValidatesSub.Codeunit.al"),
+            r#"codeunit 50214 "R8 Two Validates Sub"
+{
+[EventSubscriber(ObjectType::Table, Database::"R8 Two Validates", 'OnAfterModifyEvent', '', false, false)]
+local procedure OnModified(var Rec: Record "R8 Two Validates"; var xRec: Record "R8 Two Validates"; RunTrigger: Boolean)
+begin
+    Page.RunModal(0);
+end;
+}"#
+            .to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/TwoValidatesTests.Codeunit.al"),
+            format!(
+                r#"codeunit 50215 "R8 Two Validates Tests"
+{{
+Subtype = Test;
+[Test]
+procedure Runs()
+var P: Record "R8 Two Validates";
+begin
+    P.Validate({validated}, 'x');
+end;
+}}"#
+            ),
+        );
+        let result = classify_all(&workspace).unwrap().remove(0);
+        assert_reaches_the_subscriber(&result);
+    }
+}
+
 /// A workspace with table "R8 Renamed", a table whose field relates to it
 /// through `relation`, and a test codeunit whose test runs `test_body`.
 /// "R8 Renamed" has a procedure `RenameTo` that renames the record itself.
@@ -1924,4 +2113,66 @@ fn rename_with_a_conditional_relation_to_the_table_routes_to_live_bc() {
             result.reasons
         );
     }
+}
+
+/// A variable named `Page` or `Report` parses as an object keyword. The
+/// router took `Page := ...` for the platform's Page and `Report.Append`
+/// for a report call, and sent the test to live BC.
+#[test]
+fn variables_named_after_object_keywords_stay_local() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/Kw.Codeunit.al"),
+        r#"codeunit 50300 "Kw Tests"
+{
+Subtype = Test;
+[Test]
+procedure Reads()
+var
+    Value: Text;
+    Code: Code[10];
+    Report: TextBuilder;
+    Page: Integer;
+begin
+    Value := 'abc';
+    Code := Value;
+    Report.Append(Value);
+    Page := Report.Length + StrLen(Code);
+    if Value.ToUpper() <> Code then
+        Error('x');
+end;
+
+[Test]
+procedure OpensAPage()
+begin
+    Page.RunModal(0);
+end;
+}"#
+        .to_string(),
+    );
+    let results = classify_all(&workspace).unwrap();
+    let reads = results
+        .iter()
+        .find(|result| result.method_name == "Reads")
+        .expect("Reads classification");
+    assert!(
+        !reads
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("Page") || reason.message.contains("Report")),
+        "{:?}",
+        reads.reasons
+    );
+    let opens = results
+        .iter()
+        .find(|result| result.method_name == "OpensAPage")
+        .expect("OpensAPage classification");
+    assert!(
+        opens
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("calls Page.RunModal")),
+        "{:?}",
+        opens.reasons
+    );
 }

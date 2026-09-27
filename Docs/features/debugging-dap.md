@@ -111,8 +111,11 @@ and convert BC's 0-based line/column to DAP's 1-based ones.
 ### Engineering details worth knowing
 
 - **Breakpoint serialization:** the breakpoint mutex is held across remove→add→store so
-  concurrent `setBreakpoints` can't orphan BC breakpoints. AL file paths resolve to (ObjectType,
-  ObjectId) via the workspace index.
+  concurrent `setBreakpoints` can't orphan BC breakpoints. Each breakpoint resolves to (ObjectType,
+  ObjectId) from its own line, the last object declared at or above it, via the workspace index, so
+  a file that declares more than one object sets every breakpoint on the right one. A
+  `setBreakpoints` call clears a file's previously tracked breakpoints even when none of its
+  requested lines resolve to an object.
 - **Per-operation timeouts:** `IsAlive` 5 s, `StopDebugging`/`TerminateSession` 10 s,
   breakpoints and step/continue (`SetBreakpointResponse`) 30 s, stack and variables 30 s,
   `Attach`/`DebugAdapterConfigurationDone` 120 s, any other hub method 60 s.

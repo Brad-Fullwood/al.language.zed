@@ -100,6 +100,8 @@ pub(crate) fn build_event_catalog(index: &SymbolIndex) -> EventCatalog {
                 } else if attr.name.eq_ignore_ascii_case("EventSubscriber") {
                     let (target_type, target_name, target_event) =
                         parse_subscriber_args(&attr.arguments);
+                    let target_name = publisher_name_for_id(index, &target_type, &target_name)
+                        .unwrap_or(target_name);
                     catalog.subscribers.push(SubscriberRef {
                         object: Arc::clone(&entry),
                         method_index,
@@ -243,6 +245,23 @@ fn parse_subscriber_args(arguments: &[String]) -> (String, String, String) {
         .unwrap_or_default();
 
     (target_type, target_name, target_event)
+}
+
+/// The name of the publisher a subscriber names by bare object ID
+/// (`[EventSubscriber(ObjectType::Codeunit, 50100, ...)]`), when the index
+/// holds an object of that kind and ID.
+fn publisher_name_for_id(index: &SymbolIndex, target_type: &str, target: &str) -> Option<String> {
+    let id = target.trim().parse::<i32>().ok()?;
+    let kind = target_type
+        .rsplit_once("::")
+        .map_or(target_type, |(_, kind)| kind)
+        .trim()
+        .parse::<super::model::ObjectKind>()
+        .ok()?;
+    index
+        .get_by_id(kind, id)
+        .first()
+        .map(|entry| entry.name.clone())
 }
 
 fn clean_quotes(s: &str) -> String {
@@ -467,6 +486,23 @@ mod tests {
 
         index.add_entries(&make_codeunit_with_events());
         assert_eq!(get_events(&index, "").publishers.len(), 2);
+    }
+
+    /// A subscriber may name its publisher by a bare object ID. Its target
+    /// was reported as the ID, so a query by the publisher's name missed it.
+    #[test]
+    fn subscriber_bound_by_object_id_reports_the_publisher_name() {
+        let index = SymbolIndex::new();
+        let mut entries = make_codeunit_with_events();
+        entries[1].methods[0].attributes[0].arguments[1] = "50100".to_string();
+        index.add_entries(&entries);
+
+        let results = get_events(&index, "Sales Event Publisher");
+        assert_eq!(results.subscribers.len(), 1);
+        assert_eq!(
+            results.subscribers[0].target_object_name,
+            "Sales Event Publisher"
+        );
     }
 
     #[test]

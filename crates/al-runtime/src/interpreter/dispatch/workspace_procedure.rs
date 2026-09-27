@@ -504,6 +504,23 @@ fn raise_published_event(
         .and_then(|kind| kind.utf8_text(source).ok())
         .unwrap_or("codeunit")
         .to_string();
+    // With IncludeSender the subscriber's `sender` is the publishing
+    // codeunit, or for a table procedure the record it runs on, which a
+    // `var Sender: Record "X"` parameter shares.
+    let sender = if !super::events::includes_sender(proc_node, source) {
+        None
+    } else if kind.eq_ignore_ascii_case("table") {
+        stack
+            .top()
+            .filter(|frame| frame.implicit_record)
+            .and_then(|frame| frame.get("Rec"))
+            .cloned()
+    } else {
+        Some(Value::Codeunit {
+            object_name: object_name.to_string(),
+            instance: None,
+        })
+    };
     let names: Vec<&str> = params.iter().map(|param| param.name.as_str()).collect();
     let mut values: Vec<Value> = params
         .iter()
@@ -522,6 +539,7 @@ fn raise_published_event(
         "",
         &names,
         &mut values,
+        sender.as_ref(),
         stack,
         ctx,
     )?;
