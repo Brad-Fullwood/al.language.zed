@@ -245,3 +245,117 @@ commit, so those claims were already correct and are not repeated here.
 
 None. Every changed area named in the task had a matching commit and code path to confirm the claim
 against.
+
+## Re-check 2026-09-27, round 9
+
+Branch `campaign/docs-recheck-3`, based on `campaign/2026-09-21` at 4c429ac5. Checked the round 9
+runtime fixes (aaa4097d, 93bdfb9a, 1b10dafe, e6551978, 6280a560, 217af726), the List and Dictionary
+commits (af3a36cd, 404f2fb4, b2577ceb), the round 8 last batch (merge 8f70b75e: 95f1905b, 985d68a6,
+f2cec26c, a59621d8, 4143be7a), the security round 5 fixes (merge 68f0bbe8, every status in
+`r5-security.md`) and grammar 142aba6 against the docs listed below, with the same method as the
+round 8 re-check. The runtime claims were also run with the release `al-explorer` built at 12:53 on
+a copy of `crates/al-test-harness/data/test_al_project` in `/tmp`: a probe table with globals, a
+probe subscriber and ten probe tests passed locally (table globals kept and cleared by `Reset`,
+`ModifyAll` rows sharing one copy, `Clear` on a codeunit, a record and a temporary record, a
+subscriber on its own instance, a table publisher's `Sender`, `X:=-1`, a `-5..-3:` case label, a
+List shared by assignment), and `test-classify` sent `GetRange(1, 1, Part)` to live BC with the
+reason `calls List.GetRange with a var result list`.
+
+### Docs read, with a claim corrected
+
+- `Docs/features/native-test-runtime.md:50-52`. Old claim: dispatch runs "receiver-specific stubs
+  → catalog stubs → built-in globals → real workspace procedures". What the code does
+  (e6551978, `dispatch/routing.rs`): a call on an object tries that codeunit's stub, then workspace
+  procedures. A bare call tries the builtins, then the running object's procedures, and a stub
+  catalog answers only a call on its own codeunit. Fixed in 0738d54c.
+- `Docs/features/native-test-runtime.md:54`. Old claim: "`var` scalar parameter write-back", with
+  variables as the only target. What the code does (e6551978, `apply_var_writebacks`): a record
+  field argument such as `Rec.Name` also takes the value back. Fixed in 0738d54c.
+- `Docs/features/native-test-runtime.md:56-57`. Old claim: "an event subscriber's codeunit runs on
+  a fresh instance each time it fires". What the code does (1b10dafe, `globals_for_call`): a fresh
+  instance also while another instance of the codeunit is running, and a `SingleInstance`
+  codeunit's subscriber joins its one instance. Added the `SingleInstance` exception. Fixed in
+  0738d54c.
+- `Docs/features/native-test-runtime.md:71-76`. Old claim: the builtin catalog left out `Clear`.
+  What the code does (e6551978, `cleared`): `Clear` is a builtin that sets the variable to its
+  type's default. A codeunit variable gets a new instance, a JSON variable a new empty node, and a
+  record a new view with fields, filters and table globals reset. Database rows stay and a
+  temporary record's rows go with the old view. Fixed in 0738d54c.
+- `Docs/features/native-test-runtime.md:83-84`. Old claim: the List bullet listed `GetRange` with
+  no word on its three-argument form. What the code does (b2577ceb, `router/ast.rs`
+  `argument_count`): `GetRange(Index, Count, var Result)` routes the test to live BC. Fixed in
+  0738d54c.
+- `Docs/features/native-test-runtime.md:138-140`. Old claim: the DeleteAll and ModifyAll bullet
+  said nothing about table globals. What the code does (aaa4097d, 93bdfb9a,
+  `without_record_globals`): the rows' triggers share one copy of the globals that starts from the
+  defaults, and the record's own globals come back afterwards. Fixed in 0738d54c.
+- `Docs/features/native-test-runtime.md:157-159`. Old claim: the table code bullet said nothing
+  about table globals. What the code does (aaa4097d, `run_table_code`, `reset_record_globals`): a
+  record variable keeps its table's globals between table code calls, and `Reset` sets them back to
+  their defaults. Fixed in 0738d54c.
+- `Docs/features/native-test-runtime.md:162-164`. Old claim: the Events bullet did not mention
+  `Sender`. What the code does (95f1905b, `raise_published_event`): a publisher whose
+  `IncludeSender` argument is true passes its codeunit, or for a table procedure the record it runs
+  on, as `Sender`, and a write to a `var Sender` changes that record. Fixed in 0738d54c.
+- `Docs/features/analysis-and-insight.md:26-28`. Old claim: `Insert`, `Modify`, `Delete` and
+  `Validate` produce table event edges, with the others left out. What the code does
+  (`calls/edges.rs` `record_op_event_names` and the bare call branch, from 958d81a5 in round 8):
+  `Rename`, `ModifyAll` and `DeleteAll` produce edges too, and so do `Rec`, `xRec` and a bare record
+  method in table code. Fixed in 5103c5a8.
+- `Docs/features/analysis-and-insight.md:31-32`. Old claim: none on a name declared more than once.
+  What the code does (4143be7a, `populate_call_edges_in_object`): each field's `OnValidate` and each
+  overload share one node, which gets the calls of every declaration. Fixed in 5103c5a8.
+- `Docs/features/project-trust.md:59-60`. Old claim: the record lists linked package folders
+  "from any settings file". What the code does (63083381, `linked_package_folders` over the
+  configuration `read_repository` builds): the folders come from the project's settings files and
+  `~/.config/al-lsp/settings.json`. Zed user settings are not read. Fixed in 1c56a732.
+- `Docs/features/project-trust.md:140-142`. Old claim: the fingerprint stamps "the launch file",
+  "six `stat` calls". What the code does (`inputs_fingerprint`, since b41668e1): it stamps both
+  `.zed/debug.json` and `.vscode/launch.json`, up to seven `stat` calls. Fixed in 1c56a732.
+- `Docs/features/semantic-bridge.md:125-128`. Old claim: the project's folders are searched only
+  when the project is trusted, with nothing on the record check. What the code does (2411d08c,
+  `CustomAnalyzerSearch::resolve`): in a trusted project a copy found there loads only when the
+  trust record lists that file with its current hash. Fixed in c4ca2fd0.
+- `Docs/reference/cli-commands.md:100`. Old claim: `pack-native --validate` refuses "a custom
+  analyzer from an untrusted repository's own folders". What the code does (2411d08c,
+  `validation_analyzer_entries` through `CustomAnalyzerSearch`): it also refuses a copy in a trusted
+  project whose record does not list it, which covers a name passed with `--analyzers`. Fixed in
+  c4ca2fd0.
+- `Docs/reference/settings.md:74`. Old claim: `al.compilationOptions` is 🔒, which reads as
+  "applies once trusted". What the code does (427f83ff, `is_path_option`, `grant_refusal`): a
+  repository entry that names a file alc loads from makes an existing record stale and
+  `al-explorer trust` refuses the project. Fixed in 201bb309.
+
+### Docs read, nothing to change
+
+- `Docs/features/project-trust.md`, apart from the two rows above: the round 5 merge rewrote it,
+  and its claims on symbolic links and neighbour hashing (`with_project_contents`,
+  `collect_files`), the 50,000 entry cap, the refused `compilationOptions` switches, project copies
+  of analyzer names, the proxy's on-premises rule and `applicationFamily` check
+  (`proxy_debug_config`, `launch_servers`) and the check before each `dotnet` spawn
+  (`enforce_dotnet_path_before_spawn`, the `--official-lsp` start) match the code.
+- `Docs/features/debugging-dap.md`: it names the `--dap-legacy` proxy and makes no claim about the
+  proxy's trust judgement.
+- `Docs/current-limitations.md`: its native test runtime and `dotnetPath` sections stay at a level
+  these fixes do not contradict.
+- `Docs/features/symbol-and-package-engine.md`: it does not describe the package source summary
+  cache that 6280a560 fixed.
+- `Docs/features/parsing-and-syntax.md` and `Docs/gaps-and-future-work.md`: no claim on operator
+  lexing, and the corpus count 46,389/46,389 still holds at 142aba6.
+- `Docs/reference/daemon-methods.md`, `Docs/reference/mcp-tools.md`, `Docs/features/cli-and-tui.md`:
+  nothing on these areas beyond names and links.
+- `README.md` and `ROADMAP.md`: summary level, not contradicted.
+- `plugin/skills/bc-test-locally/SKILL.md`: CLI and JSON usage only. `plugin/README.md` does not
+  exist.
+
+### Left for the sibling branch
+
+- `Docs/features/native-test-runtime.md:86`, the `Keys` order sentence, and `:87-88`, the bullet
+  that List and Dictionary are references: a fix agent is changing both. The List bullet above them
+  (`:83-84`) now ends with the `GetRange` routing sentence, so a merge touches the lines next to
+  theirs.
+
+### Code comments that disagree with the code (not changed)
+
+- `crates/al-project/src/trust.rs:701`, the `inputs_fingerprint` doc comment: "This is six `stat`
+  calls". The function stamps up to seven paths since both launch files were added.
