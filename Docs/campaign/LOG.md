@@ -538,4 +538,5 @@ Append-only. Newest entry last.
   GR3-2, GR3-3, Opus), text (plugin prose and comments, Sonnet), the mutants continuation on the
   formatting module (Sonnet), and the docs re-check after the round 9 merges (Opus). Three idle
   worktrees were repointed onto the new branches to reuse their build directories.
-- Superproject gates on 4c429ac5 in progress.
+- Superproject gates on 4c429ac5 green: 92 suites, 5331 passed, 0 failed (the harness suite ran on the
+  release binaries built in the same run). Pushed 13:12 (ccdf471b). CI on 68f0bbe8: all six jobs green.

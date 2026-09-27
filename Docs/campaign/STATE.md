@@ -19,7 +19,7 @@ and its findings file uncommitted in the main checkout: grammar gates green (119
 fast-forwarded to 142aba6 and pushed, pointer and `extension.toml` rev moved (4c429ac5). The
 mutants agent had uncommitted `indent.rs` tests. `campaign/fix-r5-security` was already merged.
 
-Superproject gates run on 4c429ac5 (`.campaign/gate-status.txt`). Push once green.
+Superproject gates on 4c429ac5 green (92 suites, 5331 passed, 0 failed), pushed 13:12.
 
 Agents in flight (dispatched 13:02):
 
