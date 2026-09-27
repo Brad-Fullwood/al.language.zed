@@ -329,8 +329,11 @@ fn value_param_does_not_propagate() {
     assert_eq!(ok(r), Value::Integer(10));
 }
 
+/// alc refuses a literal in a `var` position (AL0130, "A 'var' argument must
+/// be an assignable variable"). The runtime has no place to write the value
+/// back and reports it. It dropped the value and returned 15.
 #[test]
-fn var_param_non_lvalue_arg_is_not_written_back() {
+fn a_literal_passed_to_a_var_parameter_is_an_error() {
     let cu = r#"codeunit 50192 "VarLit Tests"
 {
     procedure Bump(var n: Integer): Integer
@@ -346,7 +349,8 @@ fn var_param_non_lvalue_arg_is_not_written_back() {
 }
 "#;
     let r = run(&[("/ws/VarLit.al", cu)], "VarLit Tests", "Run", vec![]);
-    assert_eq!(ok(r), Value::Integer(15));
+    let message = error_message(r);
+    assert!(message.contains("'10'"), "{message}");
 }
 
 #[test]
@@ -5676,9 +5680,10 @@ const SIGNED_CASE_RANGES: &str = r#"codeunit 50434 "Signed Ranges"
 }
 "#;
 
-/// Grammar a108400 scans `-5..-3:` as a `signed_case_label`, `..`, a unary
-/// minus and an integer, where it made `-5..` one token before, and accepts
-/// `- 2:` with a space after the minus (GR2-4).
+/// The grammar reads a signed case label as one token, so `-5..-3:` is four
+/// tokens: the label `-5`, `..`, a minus and `3`. Before grammar a108400 it
+/// read `-5..` as one token. A label may have a space after its minus
+/// (`- 2:`).
 #[test]
 fn negative_range_labels_and_a_spaced_minus_match() {
     let call = |x: i64| {
@@ -6360,4 +6365,70 @@ fn clear_resets_the_variable_to_its_default() {
         call("OwnProcedureNamedLikeAStub"),
         Value::Text("own".into())
     );
+}
+
+const VAR_ELEMENT_PROBE: &str = r#"codeunit 50956 "Var Element Probe"
+{
+    procedure ClearElement(): Integer
+    var
+        Amounts: array[3] of Integer;
+    begin
+        Amounts[2] := 5;
+        Clear(Amounts[2]);
+        exit(Amounts[2]);
+    end;
+
+    procedure EvaluateElement(): Integer
+    var
+        Amounts: array[3] of Integer;
+    begin
+        Evaluate(Amounts[1], '7');
+        exit(Amounts[1]);
+    end;
+
+    procedure BumpElement(): Integer
+    var
+        Amounts: array[3] of Integer;
+        I: Integer;
+    begin
+        I := 3;
+        Bump(Amounts[1]);
+        Bump(Amounts[I]);
+        Bump(Amounts[I]);
+        exit(10 * Amounts[1] + Amounts[3]);
+    end;
+
+    procedure BumpQuotedName(): Integer
+    var
+        "Line Count": Integer;
+    begin
+        Bump("Line Count");
+        exit("Line Count");
+    end;
+
+    local procedure Bump(var N: Integer)
+    begin
+        N += 1;
+    end;
+}
+"#;
+
+/// An array element passed to a `var` parameter of `Clear`, `Evaluate` or a
+/// workspace procedure takes the value back through the path `A[i] := value`
+/// uses, and so does a quoted variable name with a space in it. The write
+/// back skipped both and they kept their old values.
+#[test]
+fn an_array_element_passed_to_a_var_parameter_takes_the_value_back() {
+    let call = |proc: &str| {
+        ok(run(
+            &[("/ws/VarElementProbe.al", VAR_ELEMENT_PROBE)],
+            "Var Element Probe",
+            proc,
+            vec![],
+        ))
+    };
+    assert_eq!(call("ClearElement"), Value::Integer(0));
+    assert_eq!(call("EvaluateElement"), Value::Integer(7));
+    assert_eq!(call("BumpElement"), Value::Integer(12));
+    assert_eq!(call("BumpQuotedName"), Value::Integer(1));
 }

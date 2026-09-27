@@ -32,10 +32,11 @@
 use al_syntax::IdentifierText;
 use tree_sitter::Node;
 
-use super::error_info;
+use super::{error_info, eval_error};
 use crate::interpreter::chain;
 use crate::interpreter::dispatch::{dispatch_call_scoped, DispatchCtx, MAX_AST_DEPTH};
 use crate::interpreter::eval_expr::eval_expr;
+use crate::interpreter::indexing;
 use crate::interpreter::records;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{ErrorInfo, Value};
@@ -950,13 +951,9 @@ fn first_error(result: Eval, written: Option<Eval>) -> Eval {
 /// After a workspace procedure returns, propagate the final values of its
 /// `var` (by-reference) parameters back into the caller's argument variables.
 /// `dispatch_workspace_procedure` populates `ctx.var_writebacks` with
-/// `(arg_index, final_value)`; here we map each index to its argument
-/// expression and, when that argument is a plain variable reference or a
-/// record field (`Rec.Name`, or a bare field name in table code), write the
-/// value there. Other arguments (literals, computed expressions) are
-/// skipped: they have no slot to write back to, matching AL, which only
-/// permits lvalues in `var` argument positions. `Some` carries the error of
-/// a field write the field's type refuses.
+/// `(arg_index, final_value)`, and each value is written to its argument
+/// expression by [`write_var_argument`]. `Some` carries the error of a write
+/// that failed.
 #[must_use]
 fn apply_var_writebacks(
     args_node: Option<Node<'_>>,
@@ -974,21 +971,45 @@ fn apply_var_writebacks(
         let Some(node) = arg_nodes.get(idx) else {
             continue;
         };
-        let written = match simple_lvalue_name(*node, source) {
-            Some(name) => match stack.lookup_mut(&name) {
-                Some(slot) => {
-                    *slot = val;
-                    None
-                }
-                None => records::implicit_field_set(&name, &val, stack, ctx),
-            },
-            None => records::try_field_assign(*node, source, &val, stack, ctx),
-        };
-        if let Some(error @ Eval::Error(_)) = written {
+        if let error @ Eval::Error(_) = write_var_argument(*node, source, val, stack, ctx) {
             return Some(error);
         }
     }
     None
+}
+
+/// Write `value` to the argument `node` of a `var` parameter: a variable, an
+/// array element or a character of a Text (`A[i]`, as `A[i] := value` writes
+/// it), a record field (`Rec.Name`), or a bare field name in table code. AL
+/// accepts only these in a `var` position (alc AL0130), and any other
+/// argument is an error that names it.
+fn write_var_argument(
+    node: Node<'_>,
+    source: &[u8],
+    value: Value,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    if let Some((name, suffix)) = indexing::indexed_variable(node, source) {
+        let replace = |_current: Value, value: Value| Eval::Normal(value);
+        return indexing::write_element(&name, suffix, source, value, &replace, stack, ctx);
+    }
+    let written = match simple_lvalue_name(node, source) {
+        Some(name) => match stack.lookup_mut(&name) {
+            Some(slot) => {
+                *slot = value;
+                return Eval::Normal(Value::Empty);
+            }
+            None => records::implicit_field_set(&name, &value, stack, ctx),
+        },
+        None => records::try_field_assign(node, source, &value, stack, ctx),
+    };
+    written.unwrap_or_else(|| {
+        eval_error(format!(
+            "the local runtime cannot write the var argument '{}' back",
+            node.utf8_text(source).unwrap_or_default().trim()
+        ))
+    })
 }
 
 /// Return the lowercased variable name if `node` is a plain variable reference
@@ -998,6 +1019,13 @@ fn apply_var_writebacks(
 /// cannot corrupt a caller variable by matching the wrong slot.
 fn simple_lvalue_name(node: Node<'_>, source: &[u8]) -> Option<String> {
     let text = node.utf8_text(source).ok()?.trim();
+    // A quoted name may hold spaces and punctuation (`"Line Count"`).
+    if let Some(quoted) = text
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        return (!quoted.is_empty() && !quoted.contains('"')).then(|| quoted.to_ascii_lowercase());
+    }
     let inner = text.unquote_identifier();
     if inner.is_empty() {
         return None;
