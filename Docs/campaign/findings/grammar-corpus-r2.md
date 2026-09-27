@@ -109,7 +109,7 @@ from `target/debug` on a scratch project to check what the interpreter does with
   ```
   `- 2:` gives `(ERROR [7, 12] - [7, 13])` for the minus and a label `2`. `-Level::Gold.AsInteger()` gives `(signed_case_label)` for `-Level`, then `(binary_operator (operator))` for `::` and a unary expression for the rest. The AL compiler 17.0.34 accepts both. Neither form occurs in the Microsoft corpus, and the interpreter cannot run either (GR2-3). When the branch consumes only the `-`, the scan also goes on to read a word after it, which is the same kind of read-ahead as GR2-1.
 - fix: after the `-`, skip blanks before the label text and read past `::`, and end the scan when only the `-` was consumed. Or give `case_label_expression` an optional unary minus and drop the external token, which also settles GR2-3.
-- status: open
+- status: fixed in grammar a108400, interpreter test 217af726. `negative_range_labels_and_a_spaced_minus_match` runs `-5..-3:`, `- 2:` and `-10..- 8:` labels and each matches.
 
 ### [GR2-5] the interpreter binds an EventSubscriber only in the `Type::Name` form, and its own fixture uses `Codeunit::50170`, which is not AL
 - where: crates/al-runtime/src/interpreter/dispatch/events.rs:256 (`publisher.split_once("::")?` drops a subscriber whose ObjectId is a plain integer), :110 (the lookup by ID, reached only through `Codeunit::<number>`), crates/al-runtime/src/interpreter/records_tests.rs:3162
