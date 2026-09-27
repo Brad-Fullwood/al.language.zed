@@ -908,10 +908,19 @@ impl Workspace {
         app_path: &Path,
         disk_readable: bool,
     ) -> Result<LoadedPackageSummary, DependencySourceError> {
-        let build = || {
+        self.cached_package_summary(app_path, disk_readable, || {
             PackageSourceSummary::build(app_path, || self.dependency_source_progress.indexed_file())
                 .map(Arc::new)
-        };
+        })
+    }
+
+    /// [`Self::package_source_summary`] with `build` summarizing the package.
+    fn cached_package_summary(
+        &self,
+        app_path: &Path,
+        disk_readable: bool,
+        build: impl Fn() -> Result<Arc<PackageSourceSummary>, DependencySourceError>,
+    ) -> Result<LoadedPackageSummary, DependencySourceError> {
         let Some(disk) = self.source_summary_cache.get() else {
             return build().map(LoadedPackageSummary::built);
         };
@@ -941,6 +950,28 @@ impl Workspace {
         // and an entry for it would only take disk space.
         if summary.files.is_empty() {
             return Ok(LoadedPackageSummary::built(summary));
+        }
+        // The key was taken before the build read the package. A package
+        // replaced in between (a symbol download, a dependency build) would
+        // pair the old bytes' key with the new bytes' summary, so the key is
+        // taken again and the entry saved only when the two agree.
+        match PackageKey::of(app_path) {
+            Ok(after) if after == key => {}
+            Ok(_) => {
+                tracing::debug!(
+                    package = %app_path.display(),
+                    "source summary cache: the package changed while it was summarized; not saving"
+                );
+                return Ok(LoadedPackageSummary::built(summary));
+            }
+            Err(error) => {
+                tracing::debug!(
+                    package = %app_path.display(),
+                    %error,
+                    "source summary cache: cannot hash the package again; not saving"
+                );
+                return Ok(LoadedPackageSummary::built(summary));
+            }
         }
         if let Err(error) = disk.save(&key, &summary) {
             tracing::warn!(
