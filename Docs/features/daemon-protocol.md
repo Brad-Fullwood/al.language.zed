@@ -93,6 +93,15 @@ path uses LSP handlers directly and does not go through the daemon. See
 - **Startup:** a workspace file the document store rejects (over `maxDocumentSizeBytes`,
   unreadable, or without a file URI) is skipped with a warning, and daemon and MCP startup
   continue.
+- **Changes on disk:** before each request the daemon reads what changed in the project since
+  the last one. A metadata walk re-reads each `.al` file whose size or mtime moved and drops
+  deleted ones. `app.json`, `.zed/debug.json` and `.vscode/launch.json` are hashed by content and
+  read into the project again when the hash changed, so an edit to `application` or a dependency
+  reaches the next `deps` or `download-symbols`. A manifest that no longer parses leaves the one
+  read before in use, with a warning in the log. The trust inputs are fingerprinted the same way
+  (see [project trust](project-trust.md)). The symbol package folders are listed at startup and
+  after a `download-symbols` that fetched a package, so a changed `al.packageCachePath` or
+  `al.appLocalFolderPaths` takes effect after `al-explorer daemon-shutdown`.
 - **Per-connection ordering:** requests on one connection are served one at a time, in order, which
   matches the shipped synchronous client (`DaemonClient` sends one request and waits for its
   response). A client that wants concurrent work, or cheap queries while a build runs, opens a

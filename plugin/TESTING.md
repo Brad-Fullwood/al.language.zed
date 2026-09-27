@@ -253,8 +253,8 @@ its bash blocks already prefixes `al-explorer` with `al-bin.sh`, and Haiku
 just did not follow that consistently once it went looking for where the
 field was used.
 
-One binary defect, recorded here rather than fixed (fixes to `al-explorer`
-itself are out of scope for this plugin round): `download-symbols` answered
+One binary defect, recorded here during this round (fixes to `al-explorer`
+itself were out of scope for it) and fixed since: `download-symbols` answered
 from a stale in-memory `app.json`. After editing `application` from
 `25.0.0.0` to `26.0.0.0` on disk, re-running `download-symbols --source
 nuget` against the same live daemon reported all five packages "already
@@ -271,6 +271,12 @@ a fresh daemon did the next `download-symbols` call read the edited
 `app.json` and fetch 26.0.30643.38226. `al-explorer --json packages` before
 the restart still reported every package at version 25, straight from the
 daemon's live state, the same manifest `download-symbols` had used.
+
+Fixed: before each request the daemon hashes the content of `app.json`,
+`.zed/debug.json` and `.vscode/launch.json` and reads them into its project
+again when the hash changed, so the next `download-symbols` after the edit
+asks for `26.0.0.0` without a restart (`a_running_daemon_sees_an_app_json_edit`
+in `crates/al-test-harness/tests/cli_smoke.rs`).
 
 ## Downloading al-lsp and al-explorer
 

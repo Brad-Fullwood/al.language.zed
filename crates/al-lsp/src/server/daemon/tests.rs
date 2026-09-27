@@ -1091,6 +1091,70 @@ mod dispatch_tests {
         );
     }
 
+    /// Every request reads `app.json` and the debug configuration files again
+    /// when they changed, so `deps` and `status` answer from the files on disk
+    /// rather than from what the daemon loaded at startup.
+    #[tokio::test]
+    async fn requests_read_project_files_edited_after_the_project_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        set_test_project_root(&ws, dir.path());
+        let shutdown = Notify::new();
+        let write_manifest = |application: &str| {
+            std::fs::write(
+                dir.path().join("app.json"),
+                serde_json::json!({
+                    "id": "00000000-0000-0000-0000-000000000000",
+                    "name": "On Disk",
+                    "publisher": "Tests",
+                    "version": "1.0.0.0",
+                    "application": application
+                })
+                .to_string(),
+            )
+            .unwrap();
+        };
+        let deps = |id: u64| {
+            let ws = std::sync::Arc::clone(&ws);
+            let shutdown = &shutdown;
+            async move {
+                let result = dispatch_request(&ws, Request::new(id, "deps", None), shutdown)
+                    .await
+                    .result
+                    .expect("deps answers");
+                let base_application = result["all"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|dependency| dependency["name"] == "Base Application")
+                    .map(|dependency| dependency["version"].clone());
+                (result["project"]["name"].clone(), base_application)
+            }
+        };
+
+        write_manifest("25.0.0.0");
+        assert_eq!(
+            deps(1).await,
+            (
+                serde_json::json!("On Disk"),
+                Some(serde_json::json!("25.0.0.0"))
+            )
+        );
+        write_manifest("26.0.0.0");
+        assert_eq!(deps(2).await.1, Some(serde_json::json!("26.0.0.0")));
+
+        std::fs::create_dir_all(dir.path().join(".zed")).unwrap();
+        std::fs::write(dir.path().join(".zed").join("debug.json"), "{ not json").unwrap();
+        let status = dispatch_request(&ws, Request::new(3, "status", None), &shutdown)
+            .await
+            .result
+            .expect("status answers");
+        let error = status["launchConfigError"]
+            .as_str()
+            .expect("the unreadable debug.json is reported");
+        assert!(error.contains("debug.json"), "{error}");
+    }
+
     /// A client whose request is blocked on the dependency source index needs
     /// to be able to see that from a second connection, or a timeout carries
     /// no reason and the natural response is a retry into the next one.

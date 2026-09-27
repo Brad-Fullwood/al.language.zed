@@ -889,6 +889,7 @@ pub(crate) async fn dispatch_request(
     shutdown: &Notify,
 ) -> Response {
     refresh_trust(workspace).await;
+    al_workspace::refresh_project_files(workspace).await;
     refresh_workspace_files(workspace).await;
     let method = req.method.clone();
     let params = req.params.clone().unwrap_or(serde_json::Value::Null);

@@ -438,6 +438,61 @@ fn a_per_file_command_sees_an_edit_made_after_the_daemon_started() {
     );
 }
 
+/// The daemon read `app.json` once at startup. After `application` was edited
+/// on disk, `download-symbols` against the same daemon still asked for the old
+/// minimum versions and reported the old packages as already present, until
+/// `daemon-shutdown`. `deps` reads the same in-memory manifest through
+/// `AlProject::all_dependencies`. Both edits keep the file's length, the case
+/// a size and mtime comparison can miss.
+#[test]
+fn a_running_daemon_sees_an_app_json_edit() {
+    let project = isolated_test_project();
+    let deps = || {
+        let output = run_al_in(project.path(), &["--json", "deps"]);
+        assert!(output.status.success(), "deps failed: {output:?}");
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("deps returns JSON");
+        let base_application = value["all"]
+            .as_array()
+            .expect("deps lists every dependency")
+            .iter()
+            .find(|dependency| dependency["name"] == "Base Application")
+            .map(|dependency| dependency["version"].clone());
+        (value["project"]["version"].clone(), base_application)
+    };
+    let before = deps();
+
+    let manifest = project.path().join("app.json");
+    let text = std::fs::read_to_string(&manifest).expect("read app.json");
+    let edited = text
+        .replace(
+            "\"application\": \"26.5.0.0\"",
+            "\"application\": \"27.0.0.0\"",
+        )
+        .replace("\"version\": \"1.0.0.0\"", "\"version\": \"2.0.0.0\"");
+    assert_eq!(edited.len(), text.len(), "both edits keep the length");
+    assert_ne!(edited, text, "the fixture app.json has no field to edit");
+    std::fs::write(&manifest, edited).expect("rewrite app.json");
+    let after = deps();
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert_eq!(
+        before,
+        (
+            serde_json::json!("1.0.0.0"),
+            Some(serde_json::json!("26.5.0.0"))
+        )
+    );
+    assert_eq!(
+        after,
+        (
+            serde_json::json!("2.0.0.0"),
+            Some(serde_json::json!("27.0.0.0"))
+        ),
+        "the edited app.json"
+    );
+}
+
 /// `test-run <id>` without `--name` left the daemon filling `codeunitName`
 /// with the ID as a string, and the interpreter then used "50145" as the
 /// current object, so an unqualified call to a sibling procedure failed with
