@@ -7137,3 +7137,120 @@ fn a_keys_list_converts_what_it_adds_to_the_key_type() {
         Value::Text("found".into())
     );
 }
+
+/// An array element passed to a `var` parameter, with an index the callee
+/// moves or an index expression with a side effect. Business Central binds
+/// the reference before the call, so the write back lands on the element
+/// the caller named and the index runs once.
+const VAR_ELEMENT_INDEX: &str = r#"codeunit 50993 "Var Element Index"
+{
+    var
+        I: Integer;
+
+    procedure IndexReadAfterCallee(): Text
+    var
+        Amounts: array[3] of Integer;
+    begin
+        I := 1;
+        BumpAndMoveIndex(Amounts[I]);
+        exit(Format(Amounts[1]) + '/' + Format(Amounts[2]));
+    end;
+
+    local procedure BumpAndMoveIndex(var N: Integer)
+    begin
+        I := 2;
+        N += 1;
+    end;
+
+    procedure IndexEvaluatedTwice(): Text
+    var
+        Amounts: array[3] of Integer;
+    begin
+        I := 0;
+        Bump(Amounts[NextIndex()]);
+        exit(Format(Amounts[1]) + '/' + Format(Amounts[2]) + '/' + Format(I));
+    end;
+
+    local procedure NextIndex(): Integer
+    begin
+        I += 1;
+        exit(I);
+    end;
+
+    local procedure Bump(var N: Integer)
+    begin
+        N += 1;
+    end;
+
+    procedure ListGetIntoSideEffectIndex(): Text
+    var
+        L: List of [Integer];
+        Slots: array[3] of Integer;
+    begin
+        L.Add(9);
+        I := 0;
+        L.Get(1, Slots[NextIndex()]);
+        exit(Format(Slots[1]) + '/' + Format(Slots[2]) + '/' + Format(I));
+    end;
+
+    procedure CharOfTextThroughVar(): Text
+    var
+        T: Text;
+    begin
+        T := 'abc';
+        I := 1;
+        UpperAndMoveIndex(T[I]);
+        exit(T);
+    end;
+
+    local procedure UpperAndMoveIndex(var C: Char)
+    begin
+        I := 3;
+        C := 'X';
+    end;
+}
+"#;
+
+fn run_var_element(proc: &str) -> Eval {
+    run(
+        &[("/ws/VarElementIndex.al", VAR_ELEMENT_INDEX)],
+        "Var Element Index",
+        proc,
+        vec![],
+    )
+}
+
+/// `Bump(Amounts[I])` where the callee sets `I := 2` before writing its
+/// parameter still writes `Amounts[1]`, for an array element and for a
+/// character of a Text.
+#[test]
+fn a_var_array_element_is_written_where_the_caller_indexed_it() {
+    assert_eq!(
+        ok(run_var_element("IndexReadAfterCallee")),
+        Value::Text("1/0".into())
+    );
+    assert_eq!(
+        ok(run_var_element("CharOfTextThroughVar")),
+        Value::Text("Xbc".into())
+    );
+}
+
+/// `Bump(Amounts[NextIndex()])` runs `NextIndex` once: the element it names
+/// is bumped and the counter stays at 1.
+#[test]
+fn the_index_of_a_var_array_element_runs_once() {
+    assert_eq!(
+        ok(run_var_element("IndexEvaluatedTwice")),
+        Value::Text("1/0/1".into())
+    );
+}
+
+/// `L.Get(1, Slots[NextIndex()])` runs `NextIndex` once on the List path
+/// too: the value lands in `Slots[1]` and the counter stays at 1.
+#[test]
+fn a_list_get_var_result_runs_its_element_index_once() {
+    assert_eq!(
+        ok(run_var_element("ListGetIntoSideEffectIndex")),
+        Value::Text("9/0/1".into())
+    );
+}
