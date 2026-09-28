@@ -66,15 +66,9 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // collapsed to the property's own level.
     let mut in_property_continuation = false;
 
-    // Track case...of nesting for label indentation
-    let mut case_depth: i32 = 0;
-
-    // Whether we are inside a case label body (indent +1 for label body)
-    let mut in_case_label_body = false;
-
-    // Track begin/end nesting depth within case label bodies.
-    // When > 0, an `end;` closes a begin block, not the case label body.
-    let mut case_begin_depth: i32 = 0;
+    // Open `case` statements, innermost last. A branch's statement can be
+    // another `case`, so each one keeps its own branch state.
+    let mut case_stack: Vec<CaseFrame> = Vec::new();
 
     // Block comments do not consume pending single-statement indentation.
     let mut in_block_comment = false;
@@ -172,6 +166,19 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             }
         }
 
+        // A `begin` on the line after a case's bare `else` takes the `else`'s
+        // level, as it does after an `if`'s `else`. The body's level comes
+        // back after the block's `end`, for the `else`'s later statements.
+        if !code.is_empty() {
+            if let Some(frame) = case_stack.last_mut().filter(|frame| frame.after_bare_else) {
+                frame.after_bare_else = false;
+                if code_lower == "begin" && frame.in_body {
+                    indent_level = (indent_level - 1).max(0);
+                    frame.else_block_open = true;
+                }
+            }
+        }
+
         // `begin` after single-statement openers (if...then begin written separately)
         // drains the single-stmt stack since begin starts a block. An opener
         // that ends in `begin` itself (`if B then begin`) is the statement an
@@ -193,8 +200,9 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // Use the code portion (comment stripped) and reject disqualifying
         // characters only when they occur OUTSIDE a string, so a quoted label
         // like `'a;b':` is still a label because its semicolon is quoted.
+        let case_frames_at_start = case_stack.len();
         let label_code = code.as_str();
-        let is_case_label = case_depth > 0
+        let is_case_label = !case_stack.is_empty()
             && label_code.ends_with(':')
             && !label_code.ends_with("::")
             // The colon must directly follow the last non-space character —
@@ -205,14 +213,38 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                 label_code.trim_end_matches(':'),
                 &[';', '=', '(', ')'],
             );
-        if is_case_label && in_case_label_body {
-            // Drain any single-stmt from within the previous label body
-            if single_stmt_depth > 0 {
-                indent_level = (indent_level - single_stmt_depth).max(0);
-                single_stmt_depth = 0;
+        if is_case_label {
+            if let Some(frame) = case_stack.last_mut().filter(|frame| frame.in_body) {
+                // Drain any single-stmt from within the previous label body
+                if single_stmt_depth > 0 {
+                    indent_level = (indent_level - single_stmt_depth).max(0);
+                    single_stmt_depth = 0;
+                }
+                indent_level = (indent_level - 1).max(0);
+                frame.in_body = false;
             }
-            indent_level = (indent_level - 1).max(0);
-            in_case_label_body = false;
+        }
+
+        // The case's own `else` sits at the level of the labels: it closes
+        // the open branch body like a label does. An `else` is the case's
+        // when the innermost case has no `begin` block open and no `if` in
+        // the branch still waits for its `else`.
+        let is_case_else = starts_else
+            && case_stack
+                .last()
+                .is_some_and(|frame| frame.begin_depth == 0 && frame.open_ifs == 0);
+        if is_case_else {
+            // A slot still pending here belongs to an opener that takes no
+            // `else` (`for`, `while`) or to text mid-edit. The case's `else`
+            // ends that statement.
+            let pending = single_stmt_depth + pending_else;
+            indent_level = (indent_level - pending).max(0);
+            single_stmt_depth = 0;
+            pending_else = 0;
+            if let Some(frame) = case_stack.last_mut().filter(|frame| frame.in_body) {
+                indent_level = (indent_level - 1).max(0);
+                frame.in_body = false;
+            }
         }
 
         let is_close = code_lower == "}"
@@ -221,6 +253,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             || code_lower.starts_with("end;")
             || code_lower.starts_with("end ");
 
+        // The block after a case's bare `else` closed on this line.
+        let mut resume_else_body = false;
         if is_close {
             if single_stmt_depth > 0 {
                 indent_level = (indent_level - single_stmt_depth).max(0);
@@ -231,21 +265,26 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                 indent_level = (indent_level - 1).max(0);
                 in_var_section = false;
             }
-            // Inside case label body: determine if this end; closes a begin
-            // block within the label, or the label body / case itself
-            if in_case_label_body && case_begin_depth > 0 {
-                // This end; closes a begin block within the case label body
-                case_begin_depth -= 1;
-            } else if in_case_label_body {
-                // No nested begin — this end; closes the case block itself
-                indent_level = (indent_level - 1).max(0);
-                in_case_label_body = false;
-                if case_depth > 0 {
-                    case_depth -= 1;
+            // Inside a case: determine if this end; closes a begin block
+            // within the case, or the label body / case itself
+            if let Some(frame) = case_stack.last_mut() {
+                if frame.begin_depth > 0 {
+                    // This end; closes a begin block within the case
+                    frame.begin_depth -= 1;
+                    if frame.begin_depth == 0 && frame.else_block_open {
+                        frame.else_block_open = false;
+                        resume_else_body = true;
+                    }
+                } else if frame.in_body {
+                    // No nested begin: this end; closes the case block itself
+                    indent_level = (indent_level - 1).max(0);
+                    case_stack.pop();
+                } else if code_lower != "}" {
+                    // Case block close with no body open: after `1: X;`
+                    // labels, `else X;` or `else begin ... end;`. An `end`
+                    // with no `;` closes a case that an `else` follows.
+                    case_stack.pop();
                 }
-            } else if case_depth > 0 && (code_lower == "end;" || code_lower.starts_with("end;")) {
-                // Case block close without label body
-                case_depth -= 1;
             }
             indent_level = (indent_level - 1).max(0);
         }
@@ -286,6 +325,25 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         };
         result.push_str(&transformed);
         result.push('\n');
+
+        // Keep count of the `if` statements in the innermost case's open
+        // branch that a later `else` could belong to. An `if` inside a
+        // `begin` block of the branch does not count: the block ends first.
+        if case_stack.len() == case_frames_at_start {
+            if let Some(frame) = case_stack.last_mut().filter(|frame| frame.begin_depth == 0) {
+                let (pairs_else, opens_if) = else_and_if(&code_lower);
+                if pairs_else {
+                    frame.open_ifs = (frame.open_ifs - 1).max(0);
+                }
+                if opens_if {
+                    frame.open_ifs += 1;
+                }
+            }
+        }
+
+        if resume_else_body {
+            indent_level += 1;
+        }
 
         let net_parens = count_net_parens(&code);
         if net_parens > 0 && paren_depth == 0 {
@@ -400,8 +458,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             indent_level += 1;
         } else if code_lower == "begin" || code_lower.ends_with(" begin") {
             indent_level += 1;
-            if in_case_label_body {
-                case_begin_depth += 1;
+            if let Some(frame) = case_stack.last_mut() {
+                frame.begin_depth += 1;
             }
         } else if code_lower == "var" {
             indent_level += 1;
@@ -412,18 +470,31 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             // `else` without `begin` on same line — next stmt is single-stmt
             if !code_lower.ends_with(" begin") {
                 indent_level += 1;
-                single_stmt_depth += 1 + pending_else;
-                pending_else = 0;
+                if let Some(frame) = case_stack
+                    .last_mut()
+                    .filter(|_| is_case_else && code_lower == "else")
+                {
+                    // A case `else` can hold several statements, each one
+                    // level under it, like a branch body.
+                    frame.in_body = true;
+                    frame.after_bare_else = true;
+                } else {
+                    single_stmt_depth += 1 + pending_else;
+                    pending_else = 0;
+                }
             }
-        } else if code_lower.starts_with("case ") && code_lower.ends_with(" of") {
+        } else if opens_case {
             indent_level += 1;
-            case_depth += 1;
+            case_stack.push(CaseFrame::default());
         }
 
         // Case labels: indent the body after a label (separate from single-stmt)
         if is_case_label {
             indent_level += 1;
-            in_case_label_body = true;
+            if let Some(frame) = case_stack.last_mut() {
+                frame.in_body = true;
+                frame.open_ifs = 0;
+            }
         }
 
         // Single-statement openers: if...then, for...do, while...do, with...do
@@ -431,6 +502,14 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         if is_single_stmt_opener && !code_lower.ends_with(" begin") {
             indent_level += 1;
             single_stmt_depth += 1;
+        }
+
+        // A `;` outside any `begin` block of the branch ends the branch's
+        // statement, and with it every `if` still waiting for an `else`.
+        if code.ends_with(';') {
+            if let Some(frame) = case_stack.last_mut().filter(|frame| frame.begin_depth == 0) {
+                frame.open_ifs = 0;
+            }
         }
     }
 
@@ -464,6 +543,41 @@ enum BlockKind {
     Begin,
     /// `repeat ... until`.
     Repeat,
+}
+
+/// The branch state of one open `case` statement.
+#[derive(Debug, Default)]
+struct CaseFrame {
+    /// A label line or a bare case `else` line opened a branch body one
+    /// level under it.
+    in_body: bool,
+    /// `begin` blocks open inside this case and outside any case nested in
+    /// it, including one opened on a label line (`1: begin`). An `end` at 0
+    /// closes the case itself.
+    begin_depth: i32,
+    /// `if` statements in the open branch that a later `else` could still
+    /// belong to. An `else` at 0 is the case's own.
+    open_ifs: i32,
+    /// The last code line was the case's bare `else`.
+    after_bare_else: bool,
+    /// A `begin` block on the line after the bare `else` is open. It sits at
+    /// the `else`'s level, one level left of the `else`'s body.
+    else_block_open: bool,
+}
+
+/// Whether a line's `else` pairs with an earlier `if`, and whether the line
+/// opens an `if` that a later `else` could pair with. `end else if A then`
+/// does both.
+fn else_and_if(code_lower: &str) -> (bool, bool) {
+    let rest = code_lower
+        .strip_prefix("end ")
+        .map_or(code_lower, str::trim_start);
+    let (pairs_else, rest) = match rest.strip_prefix("else") {
+        Some(after) if after.is_empty() || after.starts_with(' ') => (true, after.trim_start()),
+        _ => (false, rest),
+    };
+    let opens_if = rest == "if" || rest.starts_with("if ") || rest.starts_with("if(");
+    (pairs_else, opens_if)
 }
 
 /// `if B then begin`, `while B do begin`: an opener whose statement is the
@@ -835,6 +949,243 @@ end;
 }
 "#;
         assert_eq!(fmt(input), expected);
+    }
+
+    /// Formats `expected` once as it stands and once with every line's
+    /// indentation removed, and requires both runs to give `expected`.
+    fn assert_layout(expected: &str) {
+        assert_eq!(fmt(expected), expected, "already formatted input changed");
+        let flat: String = expected
+            .lines()
+            .map(|line| format!("{}\n", line.trim_start()))
+            .collect();
+        assert_eq!(fmt(&flat), expected, "flat input formatted differently");
+    }
+
+    /// A branch's statement is a `case` with no `begin` around it. The inner
+    /// `case` sits one level under its label and its own labels one level
+    /// under it. The inner case's first label used to close the outer
+    /// branch, which put it and the inner `end;` one level too shallow.
+    #[test]
+    fn a_case_that_is_a_branch_statement_indents_its_labels_under_it() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case X of
+            1:
+                case Y of
+                    2:
+                        Message('a');
+                end;
+        end;
+    end;
+}
+",
+        );
+    }
+
+    /// The same nesting with the inner branch's statement in a `begin` block.
+    #[test]
+    fn a_nested_case_whose_branch_is_a_begin_block_keeps_its_levels() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case X of
+            1:
+                case Y of
+                    2:
+                        begin
+                            Message('a');
+                        end;
+                    3:
+                        Message('b');
+                end;
+            4:
+                Message('c');
+        end;
+    end;
+}
+",
+        );
+    }
+
+    /// A label with `begin` on its own line, `1: begin`. The `end;` closes
+    /// that block, so the next label and its statement keep their levels.
+    /// That `end;` used to close the whole case, which put `2:` and its
+    /// statement on one level. Microsoft's formatter moves `begin` to a line
+    /// of its own. This formatter keeps the lines as written and indents the
+    /// block the way it indents `if A then begin`.
+    #[test]
+    fn a_begin_on_a_label_line_is_closed_by_its_own_end() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case X of
+            1: begin
+                Message('a');
+            end;
+            2:
+                Message('b');
+        end;
+        Message('c');
+    end;
+}
+",
+        );
+    }
+
+    /// A case `else` sits at the level of the case labels and its statement
+    /// one level under it. It used to sit at the level of the branch body
+    /// above it.
+    #[test]
+    fn a_case_else_sits_at_the_level_of_the_labels() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case X of
+            1:
+                Message('a');
+            else
+                Message('b');
+        end;
+    end;
+}
+",
+        );
+    }
+
+    /// The same `else` after a branch whose statement is a `begin` block.
+    #[test]
+    fn a_case_else_after_a_begin_block_sits_at_the_level_of_the_labels() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case X of
+            1:
+                begin
+                    Message('a');
+                end;
+            else
+                Message('b');
+        end;
+    end;
+}
+",
+        );
+    }
+
+    /// An `else` inside a branch belongs to the branch's `if` while that
+    /// `if` has no `else` yet and no `;` has ended it. Branch 3 has no `;`
+    /// and no `if`, so the `else` after it is the case's.
+    #[test]
+    fn an_else_inside_a_case_branch_stays_with_its_if() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case X of
+            1:
+                if A then
+                    Message('a')
+                else
+                    Message('b');
+            2:
+                if A then begin
+                    Message('c');
+                end
+                else if B then
+                    Message('d')
+                else
+                    Message('e');
+            3:
+                Message('f')
+            else
+                Message('g');
+        end;
+    end;
+}
+",
+        );
+    }
+
+    /// A case `else` can hold several statements, each one level under it.
+    /// `else begin` puts its block's `end;` at the level of the labels. An
+    /// inner case's `else` and the outer case's `else` each sit at their own
+    /// case's label level.
+    #[test]
+    fn a_case_else_holds_a_statement_list_or_a_block() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        if A then
+            case X of
+                1:
+                    case Y of
+                        2:
+                            Message('a');
+                        else begin
+                            Message('b');
+                        end;
+                    end;
+                else
+                    Message('c');
+                    Message('d');
+            end;
+        Message('e');
+    end;
+}
+",
+        );
+    }
+
+    /// A `begin` on the line after a case's bare `else` takes the `else`'s
+    /// level, as it does after an `if`'s `else`. The block's statements and
+    /// its `end;` then sit where Microsoft's formatter puts them after it
+    /// joins the two lines into `else begin`, and so does `Message('e')`, a
+    /// later statement of the `else`: one level under the `else`. A comment
+    /// line between `else` and `begin` keeps the level of a statement under
+    /// the `else`, as it does after an `if`'s `else`.
+    #[test]
+    fn a_begin_on_the_line_after_a_case_else_takes_the_else_level() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        if A then
+            Message('a')
+        else
+        begin
+            Message('b');
+        end;
+        case X of
+            1:
+                Message('c');
+            else
+                // A comment line is not the `else`'s statement.
+            begin
+                Message('d');
+            end;
+                Message('e');
+        end;
+        Message('f');
+    end;
+}
+",
+        );
     }
 
     #[test]
