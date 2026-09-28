@@ -12,9 +12,8 @@ use std::collections::HashMap;
 
 use al_syntax::IdentifierText;
 
-use super::{
-    load_table_meta, object_name_of, parse_field_def, section_body, sections_with_keyword,
-};
+use super::table_meta::load_table_meta;
+use super::{object_name_of, parse_field_def, section_body, sections_with_keyword};
 use crate::interpreter::dispatch::table_code::{field_relation, relation_target};
 
 /// A field whose plain `TableRelation` names another table.
