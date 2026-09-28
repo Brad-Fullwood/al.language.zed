@@ -7606,3 +7606,186 @@ fn comparing_lists_nested_100000_deep_in_al_returns() {
         Value::Boolean(true)
     );
 }
+
+/// Copies of one large text kept in a List, a Dictionary, an array and a
+/// JsonArray, the shapes of the findings R13-RT-3 and SEC7-3. Each procedure
+/// catches the error and returns how many copies it had kept.
+const MANY_TEXTS: &str = r#"codeunit 50462 "Many Texts"
+{
+    procedure Doubled(): Text
+    var
+        T: Text;
+        I: Integer;
+    begin
+        T := 'x';
+        for I := 1 to 25 do
+            T := T + T;
+        exit(T);
+    end;
+
+    procedure InList(): Integer
+    var
+        L: List of [Text];
+        T: Text;
+        I: Integer;
+    begin
+        T := PadStr('', 16000000, 'x');
+        asserterror for I := 1 to 64 do
+            L.Add(T);
+        exit(L.Count());
+    end;
+
+    procedure InDictionary(): Integer
+    var
+        D: Dictionary of [Integer, Text];
+        T: Text;
+        I: Integer;
+    begin
+        T := PadStr('', 16000000, 'x');
+        asserterror for I := 1 to 64 do
+            D.Add(I, T);
+        exit(D.Count());
+    end;
+
+    procedure InArray(): Integer
+    var
+        Arr: array[32] of Text;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        asserterror for I := 1 to 32 do
+            Arr[I] := T;
+        exit(I - 1);
+    end;
+
+    procedure InJsonArray(): Integer
+    var
+        J: JsonArray;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        asserterror for I := 1 to 32 do
+            J.Add(T);
+        exit(J.Count());
+    end;
+
+    procedure InTextBuilders(): Integer
+    var
+        Builders: List of [TextBuilder];
+        B: TextBuilder;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        asserterror for I := 1 to 32 do begin
+            Clear(B);
+            B.Append(T);
+            Builders.Add(B);
+        end;
+        exit(Builders.Count());
+    end;
+
+    procedure Uncaught()
+    var
+        L: List of [Text];
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        for I := 1 to 32 do
+            L.Add(T);
+    end;
+
+    procedure AddAndRemove(): Integer
+    var
+        L: List of [Text];
+        D: Dictionary of [Integer, Text];
+        Arr: array[2] of Text;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        // Six copies of 32 MiB each time round, 1.5 GiB in all.
+        for I := 1 to 8 do begin
+            L.Add(T);
+            L.RemoveAt(1);
+            D.Set(1, T);
+            Arr[1] := T;
+            KeepInALocalList(T);
+            L.Add(T);
+            Clear(L);
+        end;
+        exit(L.Count());
+    end;
+
+    local procedure KeepInALocalList(T: Text)
+    var
+        Local: List of [Text];
+    begin
+        Local.Add(T);
+        Local.Add(T);
+    end;
+}
+"#;
+
+/// A test that keeps many copies of a text each under the one-value cap took
+/// memory at a gigabyte a second (R13-RT-3, SEC7-3). The copies a test's
+/// Lists, Dictionaries, arrays, TextBuilders and JSON values hold now count
+/// toward one total, and the addition that passes it is an AL error.
+#[test]
+fn copies_of_a_large_text_stop_at_the_test_budget() {
+    use crate::interpreter::value::MAX_HELD_BYTES;
+    // One procedure at a time, so the test holds one budget's worth.
+    for (procedure, text_bytes) in [
+        ("InList", 16_000_000),
+        ("InDictionary", 16_000_000),
+        ("InArray", 32 << 20),
+        ("InJsonArray", 32 << 20),
+        ("InTextBuilders", 32 << 20),
+    ] {
+        let kept = ok(run_on_interpreter_stack(
+            MANY_TEXTS,
+            "Many Texts",
+            procedure,
+            vec![],
+        ));
+        let Value::Integer(kept) = kept else {
+            panic!("{procedure} returned {kept:?}");
+        };
+        let kept = usize::try_from(kept).expect("a count");
+        assert!(kept >= 1, "{procedure} kept {kept}");
+        assert!(
+            kept * text_bytes <= MAX_HELD_BYTES,
+            "{procedure} kept {kept} copies of {text_bytes} bytes"
+        );
+    }
+    let message = error_message(run_on_interpreter_stack(
+        MANY_TEXTS,
+        "Many Texts",
+        "Uncaught",
+        vec![],
+    ));
+    assert!(message.contains("List.Add would make"), "{message}");
+    assert!(
+        message.contains("limit of 256 MiB for one test"),
+        "{message}"
+    );
+}
+
+/// Removing an element, replacing it, clearing a list and dropping a local
+/// list give their bytes back, so a test that passes a large text through
+/// its collections many times stays under the budget.
+#[test]
+fn removed_and_dropped_elements_leave_the_test_budget() {
+    assert_eq!(
+        ok(run_on_interpreter_stack(
+            MANY_TEXTS,
+            "Many Texts",
+            "AddAndRemove",
+            vec![],
+        )),
+        Value::Integer(0)
+    );
+}

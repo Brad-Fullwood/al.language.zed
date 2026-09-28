@@ -5,7 +5,9 @@
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::eval_error;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::{check_collection_len, check_text_size, Collection, Value};
+use crate::interpreter::value::{
+    check_collection_len, check_text_size, element_bytes, entry_bytes, Collection, Value,
+};
 
 /// True if `method` is a `List of [T]` method implemented by the local runtime.
 pub fn supports_list_method(method: &str) -> bool {
@@ -83,7 +85,36 @@ pub(crate) fn dispatch_list_method(
     {
         return eval_error(error);
     }
-    match lower.as_str() {
+    // The bytes the call adds: the new element, or for Set the new element
+    // in place of the old one.
+    let adding = match (lower.as_str(), args.as_slice()) {
+        ("addrange", _) => args.iter().map(element_bytes).sum(),
+        ("add", [value]) | ("insert", [_, value]) | ("set", [_, value, ..]) => element_bytes(value),
+        _ => 0,
+    };
+    if let Err(error) = list.charge(&format!("List.{method}"), adding) {
+        return eval_error(error);
+    }
+    let result = list_method_on(&list, &lower, args, statement, &mut items, ctx);
+    // A call that did not add what it was charged for, such as Set with an
+    // index out of range, gives the bytes back.
+    if !matches!(result, Eval::Normal(Value::Boolean(true) | Value::Empty)) {
+        list.release(adding);
+    }
+    result
+}
+
+/// The List methods that read or change the locked `items`. The caller has
+/// counted the bytes an addition makes.
+fn list_method_on(
+    list: &Collection<Vec<Value>>,
+    lower: &str,
+    args: Vec<Value>,
+    statement: bool,
+    items: &mut Vec<Value>,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    match lower {
         "addrange" if !args.is_empty() => {
             items.extend(args);
             Eval::Normal(Value::Empty)
@@ -98,7 +129,7 @@ pub(crate) fn dispatch_list_method(
         },
         "removerange" => match list_range("List.RemoveRange", &args, items.len()) {
             Ok(range) => {
-                items.drain(range);
+                list.release(items.drain(range).map(|item| element_bytes(&item)).sum());
                 Eval::Normal(Value::Boolean(true))
             }
             Err(_) if !statement => Eval::Normal(Value::Boolean(false)),
@@ -136,7 +167,7 @@ pub(crate) fn dispatch_list_method(
         "indexof" => eval_error("List.IndexOf expects exactly one value"),
         "removeat" => match list_index("List.RemoveAt", &args, items.len()) {
             Ok(index) => {
-                items.remove(index);
+                list.release(element_bytes(&items.remove(index)));
                 Eval::Normal(Value::Boolean(true))
             }
             Err(error) => eval_error(error),
@@ -144,7 +175,8 @@ pub(crate) fn dispatch_list_method(
         "remove" => eval_error("List.Remove expects exactly one value"),
         "set" if args.len() == 2 => match list_index("List.Set", &args[..1], items.len()) {
             Ok(index) => {
-                items[index] = args[1].clone();
+                let old = std::mem::replace(&mut items[index], args[1].clone());
+                list.release(element_bytes(&old));
                 Eval::Normal(Value::Boolean(true))
             }
             Err(error) => eval_error(error),
@@ -152,6 +184,7 @@ pub(crate) fn dispatch_list_method(
         "set" if args.len() == 3 => match list_index("List.Set", &args[..1], items.len()) {
             Ok(index) => {
                 let old = std::mem::replace(&mut items[index], args[1].clone());
+                list.release(element_bytes(&old));
                 ctx.var_writebacks.push((2, old));
                 Eval::Normal(Value::Boolean(true))
             }
@@ -208,7 +241,8 @@ fn search_list(list: &Collection<Vec<Value>>, method: &str, needle: &Value) -> E
     match (method, position) {
         ("contains", position) => Eval::Normal(Value::Boolean(position.is_some())),
         ("remove", Some(position)) => {
-            list.lock().remove(position);
+            let removed = list.lock().remove(position);
+            list.release(element_bytes(&removed));
             Eval::Normal(Value::Boolean(true))
         }
         ("remove", None) => Eval::Normal(Value::Boolean(false)),
@@ -621,7 +655,7 @@ pub(crate) fn dispatch_textbuilder_method(
             text.len().saturating_add(added),
         )
     };
-    match (lower.as_str(), args.as_slice()) {
+    let result = match (lower.as_str(), args.as_slice()) {
         ("append", [value]) => {
             let value = as_text(value);
             if let Err(error) = grow_by(text, value.len()) {
@@ -707,7 +741,12 @@ pub(crate) fn dispatch_textbuilder_method(
         _ => eval_error(format!(
             "TextBuilder.{method} with these arguments is not supported by the local runtime"
         )),
+    };
+    // The builder's text counts toward the test's total as it is now.
+    if let Err(error) = builder.recount(&format!("TextBuilder.{method}"), text.len()) {
+        return eval_error(error);
     }
+    result
 }
 
 /// True if `method` is a `Dictionary of [K, V]` method implemented by the
@@ -868,6 +907,10 @@ pub(crate) fn dispatch_dict_method(
                         eval_error("Dictionary.Add: the key already exists")
                     }
                     indexmap::map::Entry::Vacant(slot) => {
+                        let bytes = entry_bytes(slot.key(), key, value);
+                        if let Err(error) = dict.charge("Dictionary.Add", bytes) {
+                            return eval_error(error);
+                        }
                         slot.insert((key.clone(), value.clone()));
                         Eval::Normal(Value::Empty)
                     }
@@ -877,23 +920,28 @@ pub(crate) fn dispatch_dict_method(
             _ => eval_error("Dictionary.Add expects exactly a key and a value"),
         },
         "set" => match args.as_slice() {
-            [key, value] => match dict_key(key) {
+            [key, value, rest @ ..] if rest.len() <= 1 => match dict_key(key) {
                 Ok(key_text) => {
-                    entries.insert(key_text, (key.clone(), value.clone()));
-                    Eval::Normal(Value::Empty)
-                }
-                Err(error) => eval_error(error),
-            },
-            // True and the old value when the key was there, false when the
-            // value was added.
-            [key, value, _] => match dict_key(key) {
-                Ok(key_text) => match entries.insert(key_text, (key.clone(), value.clone())) {
-                    Some((_, old)) => {
-                        ctx.var_writebacks.push((2, old));
-                        Eval::Normal(Value::Boolean(true))
+                    if let Err(error) =
+                        dict.charge("Dictionary.Set", entry_bytes(&key_text, key, value))
+                    {
+                        return eval_error(error);
                     }
-                    None => Eval::Normal(Value::Boolean(false)),
-                },
+                    let old = entries.insert(key_text.clone(), (key.clone(), value.clone()));
+                    if let Some((old_key, old_value)) = &old {
+                        dict.release(entry_bytes(&key_text, old_key, old_value));
+                    }
+                    match (rest, old) {
+                        ([], _) => Eval::Normal(Value::Empty),
+                        // True and the old value when the key was there,
+                        // false when the value was added.
+                        (_, Some((_, old))) => {
+                            ctx.var_writebacks.push((2, old));
+                            Eval::Normal(Value::Boolean(true))
+                        }
+                        (_, None) => Eval::Normal(Value::Boolean(false)),
+                    }
+                }
                 Err(error) => eval_error(error),
             },
             _ => eval_error(
@@ -922,9 +970,13 @@ pub(crate) fn dispatch_dict_method(
         },
         "remove" => match args.as_slice() {
             [key] => match dict_key(key) {
-                Ok(key_text) => {
-                    Eval::Normal(Value::Boolean(entries.shift_remove(&key_text).is_some()))
-                }
+                Ok(key_text) => match entries.shift_remove(&key_text) {
+                    Some((old_key, old_value)) => {
+                        dict.release(entry_bytes(&key_text, &old_key, &old_value));
+                        Eval::Normal(Value::Boolean(true))
+                    }
+                    None => Eval::Normal(Value::Boolean(false)),
+                },
                 Err(error) => eval_error(error),
             },
             _ => eval_error("Dictionary.Remove expects exactly one key"),

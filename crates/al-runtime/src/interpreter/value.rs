@@ -13,6 +13,8 @@
 //!  * structured: Option, Record, RecordRef, Variant, Array, List, Dict,
 //!    Blob, Stream, ErrorInfo
 
+use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub use rust_decimal::Decimal;
@@ -27,23 +29,45 @@ pub type DictEntries = indexmap::IndexMap<String, (Value, Value)>;
 ///
 /// Values cross to the test runner's thread, hence `Arc<Mutex>`. Hold one
 /// guard at a time: locking the same contents twice deadlocks.
+///
+/// The contents count toward the test's [`MAX_HELD_BYTES`]: the bytes they
+/// held when made, and what the methods that add to them charge, until the
+/// last handle drops.
 #[derive(Debug, Default)]
-pub struct Shared<T: Contents>(Arc<Mutex<T>>);
+pub struct Shared<T: Contents>(Arc<SharedContents<T>>);
+
+#[derive(Debug, Default)]
+struct SharedContents<T> {
+    contents: Mutex<T>,
+    /// The bytes these contents have added to the test's total.
+    held: AtomicUsize,
+}
 
 /// What a [`Shared`] handle holds: a List's values, a Dictionary's entries
 /// or a TextBuilder's text.
 pub trait Contents {
     /// Move the values these contents hold into `into`.
     fn take_values(&mut self, into: &mut Vec<Value>);
+
+    /// The bytes the contents take, as [`MAX_HELD_BYTES`] counts them.
+    fn held_bytes(&self) -> usize;
 }
 
 impl Contents for String {
     fn take_values(&mut self, _into: &mut Vec<Value>) {}
+
+    fn held_bytes(&self) -> usize {
+        self.len()
+    }
 }
 
 impl Contents for Vec<Value> {
     fn take_values(&mut self, into: &mut Vec<Value>) {
         into.append(self);
+    }
+
+    fn held_bytes(&self) -> usize {
+        self.iter().map(element_bytes).sum()
     }
 }
 
@@ -53,6 +77,12 @@ impl Contents for DictEntries {
             into.push(key);
             into.push(value);
         }
+    }
+
+    fn held_bytes(&self) -> usize {
+        self.iter()
+            .map(|(key_text, (key, value))| entry_bytes(key_text, key, value))
+            .sum()
     }
 }
 
@@ -77,11 +107,13 @@ impl<T: Contents> Drop for Shared<T> {
 }
 
 impl<T: Contents> Shared<T> {
-    /// Move the values the contents hold into `into` when this is the last
-    /// handle to them.
+    /// Move the values the contents hold into `into`, and take their bytes
+    /// off the test's total, when this is the last handle to them.
     fn take_values_if_last(&mut self, into: &mut Vec<Value>) {
-        if let Some(contents) = Arc::get_mut(&mut self.0) {
-            contents
+        if let Some(shared) = Arc::get_mut(&mut self.0) {
+            release_held_bytes(std::mem::take(shared.held.get_mut()));
+            shared
+                .contents
                 .get_mut()
                 .unwrap_or_else(PoisonError::into_inner)
                 .take_values(into);
@@ -90,14 +122,58 @@ impl<T: Contents> Shared<T> {
 }
 
 impl<T: Contents> Shared<T> {
+    /// New contents, whose bytes count toward the test's total. The total
+    /// is checked at the next operation that adds to it.
     pub fn new(contents: T) -> Self {
-        Self(Arc::new(Mutex::new(contents)))
+        let held = contents.held_bytes();
+        add_held_bytes(held);
+        Self(Arc::new(SharedContents {
+            contents: Mutex::new(contents),
+            held: AtomicUsize::new(held),
+        }))
     }
 
     /// The contents, locked until the guard drops.
     pub fn lock(&self) -> MutexGuard<'_, T> {
         // A panic while locked leaves the contents as they were. Use them.
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        self.0
+            .contents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Count `bytes` more for these contents, or refuse when the test's
+    /// total would pass [`MAX_HELD_BYTES`]. `operation` names what adds
+    /// them, for the message.
+    pub(crate) fn charge(&self, operation: &str, bytes: usize) -> Result<(), String> {
+        hold_bytes(operation, bytes)?;
+        self.0.held.fetch_add(bytes, AtomicOrdering::Relaxed);
+        Ok(())
+    }
+
+    /// Count `bytes` fewer for these contents, at most what they count.
+    pub(crate) fn release(&self, bytes: usize) {
+        let before = self
+            .0
+            .held
+            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |held| {
+                Some(held.saturating_sub(bytes))
+            })
+            .unwrap_or_else(|held| held);
+        release_held_bytes(before.min(bytes));
+    }
+
+    /// Count the contents as `bytes`, what a TextBuilder's text takes after
+    /// a method changed it, and refuse when the test's total is past
+    /// [`MAX_HELD_BYTES`].
+    pub(crate) fn recount(&self, operation: &str, bytes: usize) -> Result<(), String> {
+        let before = self.0.held.swap(bytes, AtomicOrdering::Relaxed);
+        if bytes <= before {
+            release_held_bytes(before - bytes);
+            return Ok(());
+        }
+        add_held_bytes(bytes - before);
+        check_held_bytes(operation)
     }
 
     /// Whether both handles name the same contents.
@@ -163,6 +239,17 @@ impl<T: Contents> Collection<T> {
     /// Whether both values name the same contents.
     pub fn same(&self, other: &Self) -> bool {
         self.contents.same(&other.contents)
+    }
+
+    /// Count `bytes` more for the contents, or refuse when the test's total
+    /// would pass [`MAX_HELD_BYTES`].
+    pub(crate) fn charge(&self, operation: &str, bytes: usize) -> Result<(), String> {
+        self.contents.charge(operation, bytes)
+    }
+
+    /// Count `bytes` fewer for the contents.
+    pub(crate) fn release(&self, bytes: usize) {
+        self.contents.release(bytes);
     }
 
     /// The address of the contents, the same for every copy of the value.
@@ -581,6 +668,112 @@ pub const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
 /// Dictionary. The runtime uses the array limit for all three: a value takes
 /// 56 bytes before any text it holds, so a full list of numbers takes 53 MiB.
 pub const MAX_COLLECTION_LEN: usize = 1_000_000;
+
+/// The most bytes the Lists, Dictionaries, arrays, TextBuilders and JSON
+/// values of one test hold together in the local test runtime.
+///
+/// [`MAX_TEXT_BYTES`] and [`MAX_COLLECTION_LEN`] bound one value, and a
+/// test that copies a large text into many elements used to take memory at
+/// a gigabyte a second. The runtime counts the bytes of each element as it
+/// is added (56 for the value and the bytes of any text it holds), takes
+/// them off when the element is removed or the last handle to its List or
+/// Dictionary drops, and refuses an addition past this total. An array
+/// element counts the text assigned to it, and a JSON node counts from when
+/// it is made until the test ends.
+///
+/// The total is kept per thread, and the test runner runs each test on a
+/// thread of its own.
+pub const MAX_HELD_BYTES: usize = 256 * 1024 * 1024;
+
+thread_local! {
+    /// The bytes the test running on this thread holds, as
+    /// [`MAX_HELD_BYTES`] counts them.
+    static HELD_BYTES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The bytes the test running on this thread holds, as [`MAX_HELD_BYTES`]
+/// counts them.
+pub(crate) fn held_bytes() -> usize {
+    HELD_BYTES.with(Cell::get)
+}
+
+/// Add `bytes` to the test's total, or refuse when the total would pass
+/// [`MAX_HELD_BYTES`]. `operation` names what adds them, for the message.
+pub(crate) fn hold_bytes(operation: &str, bytes: usize) -> Result<(), String> {
+    let total = held_bytes().saturating_add(bytes);
+    if bytes > 0 && total > MAX_HELD_BYTES {
+        return Err(over_held_budget(operation, total));
+    }
+    HELD_BYTES.with(|held| held.set(total));
+    Ok(())
+}
+
+/// Add `bytes` to the test's total without checking it.
+pub(crate) fn add_held_bytes(bytes: usize) {
+    HELD_BYTES.with(|held| held.set(held.get().saturating_add(bytes)));
+}
+
+/// Refuse when the test's total is past [`MAX_HELD_BYTES`].
+pub(crate) fn check_held_bytes(operation: &str) -> Result<(), String> {
+    let total = held_bytes();
+    if total > MAX_HELD_BYTES {
+        return Err(over_held_budget(operation, total));
+    }
+    Ok(())
+}
+
+/// Take `bytes` off the test's total.
+pub(crate) fn release_held_bytes(bytes: usize) {
+    HELD_BYTES.with(|held| held.set(held.get().saturating_sub(bytes)));
+}
+
+fn over_held_budget(operation: &str, total: usize) -> String {
+    format!(
+        "{operation} would make the Lists, Dictionaries, arrays, TextBuilders and JSON values \
+         of this test hold {total} bytes, over the local test runtime's limit of {} MiB for \
+         one test",
+        MAX_HELD_BYTES / (1024 * 1024)
+    )
+}
+
+/// The bytes of text or data `value` owns, as [`MAX_HELD_BYTES`] counts an
+/// array element. An array counts its elements and the text they hold.
+pub(crate) fn owned_bytes(value: &Value) -> usize {
+    fn text_bytes(value: &Value) -> usize {
+        match value {
+            Value::Text(text) | Value::Code(text) | Value::Guid(text) => text.len(),
+            Value::Blob(bytes) => bytes.len(),
+            _ => 0,
+        }
+    }
+    let mut value = value;
+    while let Value::Variant(inner) = value {
+        value = inner;
+    }
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .map(|item| std::mem::size_of::<Value>().saturating_add(text_bytes(item)))
+            .sum(),
+        other => text_bytes(other),
+    }
+}
+
+/// The bytes `value` takes as an element of a List or Dictionary: the value
+/// itself and what it owns. A List, Dictionary or TextBuilder element is a
+/// handle, and its contents count on their own.
+pub(crate) fn element_bytes(value: &Value) -> usize {
+    std::mem::size_of::<Value>().saturating_add(owned_bytes(value))
+}
+
+/// The bytes one Dictionary entry takes: its normalised key text, key and
+/// value.
+pub(crate) fn entry_bytes(key_text: &str, key: &Value, value: &Value) -> usize {
+    key_text
+        .len()
+        .saturating_add(element_bytes(key))
+        .saturating_add(element_bytes(value))
+}
 
 /// Refuse a text of `bytes` bytes that is longer than [`MAX_TEXT_BYTES`].
 /// `operation` names what would build it, for the message.

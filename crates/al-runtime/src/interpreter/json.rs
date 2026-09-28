@@ -22,7 +22,7 @@ use rust_decimal::prelude::*;
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::eval_error;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{self, Value};
 
 /// The declared JSON type of a variable or value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -78,9 +78,28 @@ pub struct JsonArena {
     targets: HashMap<usize, usize>,
 }
 
+/// The bytes a node takes as [`value::MAX_HELD_BYTES`] counts them: the
+/// node, its place in the arena, and its keys, child ids or text.
+fn node_bytes(node: &Node) -> usize {
+    const ARENA_ENTRY: usize =
+        std::mem::size_of::<(usize, Node)>() + 2 * std::mem::size_of::<usize>();
+    ARENA_ENTRY.saturating_add(match node {
+        Node::Object(entries) => entries
+            .iter()
+            .map(|(key, _)| std::mem::size_of::<(String, usize)>().saturating_add(key.len()))
+            .sum(),
+        Node::Array(items) => items.len().saturating_mul(std::mem::size_of::<usize>()),
+        Node::Scalar(Scalar::Text(text)) => text.len(),
+        Node::Scalar(_) => 0,
+    })
+}
+
 impl JsonArena {
+    /// Add `node` to the arena. Its bytes count toward the test's total until
+    /// the test ends, and the operation that adds it checks the total.
     fn push(&mut self, node: Node) -> usize {
         let id = fresh_id();
+        value::add_held_bytes(node_bytes(&node));
         self.nodes.insert(id, node);
         id
     }
@@ -107,7 +126,16 @@ impl JsonArena {
     }
 
     fn set(&mut self, id: usize, node: Node) {
-        self.nodes.insert(id, node);
+        let bytes = node_bytes(&node);
+        let before = self
+            .nodes
+            .insert(id, node)
+            .map_or(0, |old| node_bytes(&old));
+        if bytes >= before {
+            value::add_held_bytes(bytes - before);
+        } else {
+            value::release_held_bytes(before - bytes);
+        }
     }
 
     fn deep_copy(&mut self, id: usize) -> usize {
@@ -161,6 +189,7 @@ impl JsonArena {
             other => self.push(Node::Scalar(scalar_of(other)?)),
         };
         self.attached.insert(id);
+        value::check_held_bytes("Adding a value to a JsonObject or JsonArray")?;
         Ok(id)
     }
 
@@ -998,6 +1027,7 @@ fn run(
                 )));
             }
             let imported = arena.import(&parsed)?;
+            value::check_held_bytes(&format!("{}.ReadFrom", kind.name()))?;
             arena.targets.insert(handle, imported);
             return Ok(Value::Boolean(true));
         }
@@ -1024,6 +1054,7 @@ fn run(
         }
         "clone" => {
             let copy = arena.deep_copy(node);
+            value::check_held_bytes(&format!("{}.Clone", kind.name()))?;
             return Ok(arena.reference(kind, copy));
         }
         "astoken" => return Ok(arena.reference(JsonKind::Token, node)),

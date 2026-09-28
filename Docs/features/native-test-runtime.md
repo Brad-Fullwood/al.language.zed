@@ -28,8 +28,12 @@ The tree-walking interpreter executes tree-sitter AL trees on a thread with a 64
 call depth at 512 frames and statement and expression nesting at 2560 levels each, and checks for
 cancellation and the deadline in loops. A test that exceeds the call cap fails with a message saying
 the limit belongs to the local runner and suggesting a live BC run. One Text, Code or TextBuilder
-value holds at most 64 MiB, and one List, Dictionary or array at most 1,000,000 elements. An
-operation that would grow a value past either limit is an AL error that fails the test.
+value holds at most 64 MiB, and one List, Dictionary or array at most 1,000,000 elements. The
+Lists, Dictionaries, arrays, TextBuilders and JSON values of one test hold at most 256 MiB together:
+an element counts 56 bytes and the bytes of the text it holds from when it is added until it is
+removed or its List or Dictionary is dropped, an array element counts the text assigned to it, and
+a JSON node counts until the test ends. An operation that would grow a value past one of these
+limits is an AL error that fails the test.
 
 **Values (`interpreter/value.rs`):** Integer, BigInteger, Decimal, Boolean, Char, Text, Code,
 TextBuilder, Date/Time/DateTime/Duration, Guid, Option, Variant, Record, RecordRef, Codeunit, Array,
