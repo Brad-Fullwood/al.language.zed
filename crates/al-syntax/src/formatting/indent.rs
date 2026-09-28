@@ -492,6 +492,16 @@ mod tests {
         format_al(text, &FormatOptions::default())
     }
 
+    /// The leading whitespace of the first line of `formatted` that reads
+    /// `code` once trimmed.
+    fn indent_of<'a>(formatted: &'a str, code: &str) -> &'a str {
+        let line = formatted
+            .lines()
+            .find(|line| line.trim() == code)
+            .unwrap_or_else(|| panic!("no line `{code}` in\n{formatted}"));
+        &line[..line.len() - line.trim_start().len()]
+    }
+
     /// A block that is itself the statement of a single-statement opener:
     /// `if R.FindSet() then repeat ... until`, `if A then if B then begin
     /// ... end else begin ... end;`, a `case` under `if`, a `repeat` inside
@@ -730,16 +740,23 @@ end;
         assert_eq!(fmt(input), expected);
     }
 
-    /// The choice between an immediate and a deferred close when a block
-    /// opened by `if B then begin` gives back its carried slot: `end;`
-    /// subtracts the saved indent right away, where `end` with no `;` holds
-    /// it for an `else`. Observed through the outer `if`'s matching `else`,
-    /// which aligns with the outer `if`.
+    /// A `case` branch whose statement is `if A then if B then begin ...
+    /// end`, then `;` and the case's `else`. The `;` finishes the branch, so
+    /// `end;` gives back the outer `if`'s indent on its own line, and the
+    /// `else` sits where it sits after a branch that is a single call. After
+    /// an `end` with no `;` the `else` would belong to `if B`, which is why
+    /// the formatter holds the indent there. The test compares the two
+    /// layouts, so it holds whatever column the formatter gives a case's
+    /// `else`.
     #[test]
-    fn a_semicolon_terminated_close_applies_its_carried_slot_immediately() {
-        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif A then\nif B then begin\nX;\nend;\nelse\nY;\nend;\n}";
-        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if A then\n            if B then begin\n                X;\n            end;\n        else\n            Y;\n    end;\n}\n";
-        assert_eq!(fmt(input), expected);
+    fn an_end_with_a_semicolon_gives_back_the_outer_if_indent_at_once() {
+        let nested = fmt("codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\ncase X of\n1:\nif A then\nif B then begin\nMessage('a');\nend;\nelse\nMessage('b');\nend;\nend;\n}");
+        let single = fmt("codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\ncase X of\n1:\nMessage('a');\nelse\nMessage('b');\nend;\nend;\n}");
+        assert_eq!(
+            indent_of(&nested, "else"),
+            indent_of(&single, "else"),
+            "the case's `else` moved after a nested block\n{nested}"
+        );
     }
 
     #[test]
