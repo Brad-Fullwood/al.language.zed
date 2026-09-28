@@ -5597,6 +5597,57 @@ fn variables_named_after_keywords_can_be_indexed() {
     assert_eq!(ok(result), Value::Text("xbc|B|5".into()));
 }
 
+const QUOTED_LOOP_VARIABLES: &str = r#"codeunit 50291 "Quoted Loop"
+{
+    procedure QuotedLoop(): Text
+    var
+        "My Index": Integer;
+        T: Text;
+    begin
+        for "My Index" := 1 to 3 do
+            T += Format("My Index");
+        exit(T);
+    end;
+
+    procedure QuotedDownto(): Text
+    var
+        "I": Integer;
+        T: Text;
+    begin
+        for "I" := 3 downto 1 do
+            T += Format("I");
+        exit(T);
+    end;
+
+    procedure KeywordNamed(): Integer
+    var
+        Value: Integer;
+        Sum: Integer;
+    begin
+        for Value := 1 to 2 do
+            Sum += Value;
+        exit(Sum);
+    end;
+}
+"#;
+
+/// A quoted name and a name that is also a keyword can be the `for` loop
+/// variable, as they can be the `foreach` variable.
+#[test]
+fn a_quoted_name_can_be_the_for_loop_variable() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/QuotedLoop.al", QUOTED_LOOP_VARIABLES)],
+            "Quoted Loop",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(ok(call("QuotedLoop")), Value::Text("123".into()));
+    assert_eq!(ok(call("QuotedDownto")), Value::Text("321".into()));
+    assert_eq!(ok(call("KeywordNamed")), Value::Integer(3));
+}
+
 const SIGNED_CASE_LABELS: &str = r#"codeunit 50286 "Signed Labels"
 {
     procedure ByInteger(X: Integer): Integer
