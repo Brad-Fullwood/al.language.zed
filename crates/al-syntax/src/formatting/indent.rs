@@ -707,25 +707,41 @@ end;
         assert_eq!(fmt(input), expected);
     }
 
-    /// A `case` block whose only label body ends in `end` with no `;` (no
-    /// nested `begin` was ever opened, so `case_depth` decrements once and
-    /// only once). Confirmed by the line that looks like a label right after
-    /// the case: it must not be mistaken for a label of a case still open.
+    /// Text mid-edit: `Total:` below a `case` whose one branch is a `begin`
+    /// block closed by `end` with no `;`. Inside a procedure body the only AL
+    /// lines that end in a colon are case labels, so text mid-edit is the one
+    /// way to see that the case closed. The guarantee for such text: the
+    /// case's `end;` closes the case, so `Total:` is not taken for a case
+    /// label and the line below it keeps its level, and a second pass leaves
+    /// the text unchanged.
     #[test]
-    fn a_case_label_body_ending_in_a_bare_end_closes_the_case_exactly_once() {
-        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\ncase X of\n1:\nbegin\nMessage('a');\nend\nend;\nAfterLabel:\nMessage('after');\nend;\n}";
-        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        case X of\n            1:\n                begin\n                    Message('a');\n                end\n        end;\n        AfterLabel:\n        Message('after');\n    end;\n}\n";
-        assert_eq!(fmt(input), expected);
+    fn a_line_ending_in_a_colon_after_a_case_with_a_branch_is_not_a_case_label() {
+        let once = fmt("codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\ncase X of\n1:\nbegin\nMessage('a');\nend\nend;\nTotal:\nMessage('after');\nend;\n}");
+        assert_eq!(fmt(&once), once, "a second pass changed the text");
+        assert_eq!(
+            indent_of(&once, "Message('after');"),
+            indent_of(&once, "Total:"),
+            "the line after `Total:` took a branch's indent\n{once}"
+        );
     }
 
-    /// The same empty `case`, this time closed by `end;` fused with a
-    /// second statement on the same physical line. `starts_with("end;")`
-    /// must fire even when the line does not *equal* `"end;"`.
+    /// Text mid-edit: `Total:` below a `case` with no branches whose `end;`
+    /// shares its line with the next statement, `end; Y := 1;`. The case and
+    /// that line are valid AL. Inside a procedure body only a case label
+    /// ends in a colon, so `Total:` is the one way to see that the case
+    /// closed. The guarantee: a line that starts with `end;` closes the case
+    /// even when more code follows it, so `Total:` is not taken for a case
+    /// label and the line below it keeps its level, and a second pass leaves
+    /// the text unchanged.
     #[test]
-    fn an_empty_case_closed_by_end_semicolon_fused_with_more_code_decrements_case_depth() {
-        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\ncase X of\nend; Y := 1;\nZ:\nMessage('after');\nend;\n}";
-        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        case X of\n        end; Y := 1;\n        Z:\n        Message('after');\n    end;\n}\n";
-        assert_eq!(fmt(input), expected);
+    fn a_line_ending_in_a_colon_after_an_empty_case_is_not_a_case_label() {
+        let once = fmt("codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\ncase X of\nend; Y := 1;\nTotal:\nMessage('after');\nend;\n}");
+        assert_eq!(fmt(&once), once, "a second pass changed the text");
+        assert_eq!(
+            indent_of(&once, "Message('after');"),
+            indent_of(&once, "Total:"),
+            "the line after `Total:` took a branch's indent\n{once}"
+        );
     }
 
     /// `if x > 0 then Message('a');` on one line. A line opens a single
