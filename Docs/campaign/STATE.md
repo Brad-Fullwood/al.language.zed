@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 23:10 BST. Paused, see `CHECKPOINT-2026-09-27.md`. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-28 02:45 BST. Resumed. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,23 +8,26 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Nothing. Brad paused the campaign at 22:41 BST on 2026-09-27 (`CHECKPOINT-2026-09-27.md`).
-`.campaign/STOP` is in place. The six agents of the 17:50 session were dead; their work was
-recovered, merged or saved as patches (details in the checkpoint), gates on a075b62c green
-(96 suites, 5417 passed, 0 failed), pull request 32 merged into `dev`, every other campaign branch
-deleted locally and on origin. The grammar's campaign branch is merged into its `dev` (82e89f8),
-the superproject pointer stays at 142aba6. The blog rewrite is on the blog's `main` (5af7849),
-all nine articles still `draft: true`.
+Resumed 2026-09-28 02:25 BST by the watchdog after `.campaign/STOP` was removed. The local branch
+was fast-forwarded to 402d5c84 (the runtime session's close-out and `HANDOFF-tree-sitter.md`).
+Five agents dispatched at 02:40 BST, each in a worktree under `../al.language.zed-worktrees/<name>`
+on branch `campaign/<name>`:
 
-To resume: `rm .campaign/STOP`, then the resume protocol in `README.md`. First units: the ten
-round 12 findings (`findings/r12-session-review.md`, coverage item 1a still unticked) and
-SEC6-6 to SEC6-8 (`findings/r6-security.md`) to fix agents, then the grammar pointer move to
-82e89f8 with the full gates. The campaign window ends 2026-09-28; after that
-`systemctl --user disable --now al-campaign-watchdog.timer`.
+- `fix-r12-runtime`: R12-LIST-1, R12-LIST-2, R12-RT-2, R12-RT-1 (al-runtime).
+- `fix-r12-router-text`: R12-KW-1, R12-MERGE-1, R12-TEXT-1, R12-MUT-1.
+- `fix-daemon`: SEC6-6, then R12-DAEMON-1.
+- `fix-sec6-output`: SEC6-8, the dotnet advisory display cap from `CHECKPOINT-2026-09-27-close.md`,
+  SEC6-7.
+- `grammar`: `HANDOFF-tree-sitter.md` items 1 and 2 (R12-GR-1 and the `argument` field), the
+  pointer move, item 3 if time allows.
 
-PR 30 was merged into `dev` on 2026-09-25 (afec75d1) and PR 32 on 2026-09-27. CI runs on pushes
-to `main` and `dev` and on pull requests, so the next campaign push needs a new draft pull request
-against `dev` for CI to run on it.
+An agent with no live process and unmerged commits on its branch is recovered by the resume
+protocol. Coverage item 1a of the round 12 review is still unticked.
+
+The campaign window ends 2026-09-28. After that: `systemctl --user disable --now
+al-campaign-watchdog.timer`. PR 30 was merged into `dev` on 2026-09-25 (afec75d1) and PR 32 on
+2026-09-27 (b749cfbe). CI runs on pushes to `main` and `dev` and on pull requests, so this session
+opens a draft pull request from `campaign/2026-09-21` against `dev` with its first push.
 
 Queued:
 
