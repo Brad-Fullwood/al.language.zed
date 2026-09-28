@@ -45,4 +45,5 @@ tempfile = { workspace = true }
 libc = { workspace = true }
 
 [dev-dependencies]
+regex = { workspace = true }
 serial_test = "3"
