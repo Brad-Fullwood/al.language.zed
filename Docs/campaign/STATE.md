@@ -20,7 +20,7 @@ from the 03:41 session (two commits and an uncommitted wording pass, committed 3
 branch `campaign/article-9-reread`, pushed. The review scratch tests are saved as
 `.campaign/r13-scratch-tests-2.patch` and `.campaign/sec7-scratch-tests.patch`.
 
-Seven agents dispatched at 13:57 BST:
+Eight agents dispatched at 13:57 and 14:05 BST:
 
 - `campaign/fix-sec7-1` (dir `docs-recheck-4`): SEC7-1 continued from the dead agent's two commits
   and its uncommitted source tree test (`crates/al-explorer/tests/cli_text_escaping.rs`).
@@ -36,8 +36,9 @@ Seven agents dispatched at 13:57 BST:
 - Blog `campaign/article-9-reread`: article 9's final re-read, facts re-measured at the current
   tip, length, `readTime`, `pnpm validate`, push.
 
-The worktree `test-snapshot` holds branch `campaign/docs-recheck-5` at 83820e8d for the docs
-re-check over the merges since 8bb95bcc, not yet dispatched.
+- `campaign/docs-recheck-5` (dir `test-snapshot`, from 83820e8d, dispatched 14:05): docs re-check
+  5 over the merges since 8bb95bcc (the daemon's package folder reload, the two splits, the
+  snapshot traits, the query fixes).
 
 ## Close-out (the window ends tonight)
 
