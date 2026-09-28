@@ -1531,10 +1531,9 @@ mod tests {
         assert!(matches!(watched, Watched::Panicked));
     }
 
-    /// `B.Contains(N)` with `A.Add(B); B.Add(A); N.Add(E)` locked `B` twice
-    /// on the interpreter thread, and the run waited on that thread for good
-    /// (SEC6-4). The runtime now compares a copy of `B`'s elements, and the
-    /// runner would stop waiting at the deadline plus [`DEADLINE_GRACE`].
+    /// `B.Contains(N)` with `A.Add(B); B.Add(A); N.Add(E)` compares a copy of
+    /// `B`'s elements, so it takes the lock once, and the runner stops waiting
+    /// at the deadline plus [`DEADLINE_GRACE`].
     #[tokio::test]
     async fn a_test_searching_a_list_in_a_cycle_ends_within_its_deadline() {
         let source = r#"codeunit 50392 "Cycle Tests"
