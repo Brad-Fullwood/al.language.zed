@@ -932,7 +932,7 @@ fn path_refusal_advice(declared: Option<&Dispatcher>, mut response: Response) ->
                     "; this method rewrites the file it names, so it takes a path inside the \
                      project and nothing else",
                 ),
-                PathUse::Named | PathUse::None => {}
+                PathUse::Named | PathUse::NamedWrite | PathUse::None => {}
             }
         }
     }
@@ -960,16 +960,26 @@ pub(crate) enum PathUse {
     /// Rewrites the file its `uri`/`file` names, through
     /// [`file_uri_from_params`], which takes no `text`.
     Write,
-    /// Reads, writes or compares a path named by a parameter the method reads
-    /// itself (`xlf`, `generated`, `project`, `from`, `to`, `dir`, `file`,
-    /// `path`, `outputDir`, `snapshotPath`, `pathA`, `pathB`, `outputPath`,
-    /// `junitOut`, `coberturaOut`, `files`), each resolved through
-    /// `containment::resolve_param_within_project` or, for a report or
-    /// snapshot it writes, `containment::resolve_output_param_within_project`.
-    /// Both refuse with `PATH_NOT_AUTHORIZED` in the same words. The XLIFF
-    /// methods took any absolute path for a release because the registry had
-    /// no way to say they took one at all.
+    /// Reads or compares a path named by a parameter the method reads itself
+    /// (`xlf`, `generated`, `from`, `to`, `file`, `path`, `snapshotPath`,
+    /// `pathA`, `pathB`, `files`), each resolved through
+    /// `containment::resolve_param_within_project`. That boundary is the
+    /// project root, the package cache and the folder of every resolved `.app`,
+    /// and a trusted project keeps those folders where they resolve, outside
+    /// the project included. The XLIFF methods took any absolute path for a
+    /// release because the registry had no way to say they took one at all.
     Named,
+    /// Creates or rewrites a path named by a parameter the method reads itself
+    /// (`project`, `xlf` of `xlf.refresh`, `dir`, `outputDir`, `outputPath`,
+    /// `junitOut`, `coberturaOut`), each resolved under the project root only,
+    /// through `containment::resolve_write_param_within_project` or
+    /// `containment::resolve_output_param_within_project`. A method that also
+    /// reads a named path, as `profiling analyze` reads `path`, is declared by
+    /// its write. Both resolvers refuse with `PATH_NOT_AUTHORIZED` in the words
+    /// the read one uses. `xlf.refresh`, `newProject`, `snapshot` and
+    /// `profiling` took the read resolver for a release and wrote into a
+    /// trusted project's package folders outside it.
+    NamedWrite,
 }
 
 impl PathUse {
@@ -1021,6 +1031,9 @@ macro_rules! declared_path {
     (named) => {
         PathUse::Named
     };
+    (named_write) => {
+        PathUse::NamedWrite
+    };
     (authorized) => {
         PathUse::None
     };
@@ -1036,6 +1049,9 @@ macro_rules! declared_credential {
     (named) => {
         CredentialUse::Caller
     };
+    (named_write) => {
+        CredentialUse::Caller
+    };
     (authorized) => {
         CredentialUse::Authorized
     };
@@ -1044,10 +1060,10 @@ macro_rules! declared_credential {
 /// Build [`DISPATCHERS`] and the method match from one list of arms.
 ///
 /// The capabilities in brackets are the ones [`PathUse`] and [`CredentialUse`]
-/// define: `read`, `write`, `named`, `authorized`. An arm that declares none reaches
-/// neither a caller-named path nor a credential. A path use and `authorized`
-/// combine, as `[named, authorized]` on a method that writes a caller-named
-/// file and can also spend a credential.
+/// define: `read`, `write`, `named`, `named_write`, `authorized`. An arm that
+/// declares none reaches neither a caller-named path nor a credential. A path
+/// use and `authorized` combine, as `[named_write, authorized]` on a method
+/// that writes a caller-named file and can also spend a credential.
 macro_rules! dispatch_table {
     (
         ($workspace:ident, $method:ident, $id:ident, $params:ident, $shutdown:ident)
@@ -1224,7 +1240,7 @@ dispatch_table! {
         "compile" [] => build_dispatch::dispatch_compile(workspace, id).await,
         "package" [] => build_dispatch::dispatch_package(workspace, id).await,
         "publish" [authorized] => build_dispatch::dispatch_publish(workspace, id, &params).await,
-        "newProject" [named] => build_dispatch::dispatch_new_project(workspace, id, &params),
+        "newProject" [named_write] => build_dispatch::dispatch_new_project(workspace, id, &params),
         "errorCodes" [] => build_dispatch::dispatch_error_codes(workspace, id).await,
         "builtinTypes" [] => build_dispatch::dispatch_builtin_types(workspace, id).await,
         "setup" [] => build_dispatch::dispatch_setup(workspace, id),
@@ -1234,17 +1250,17 @@ dispatch_table! {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
         },
         "debug" [authorized] => debug_dispatch::dispatch_debug(workspace, id, &params).await,
-        "snapshot" [named, authorized] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
-        "profiling" [named, authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
-        "xlf.generate" [named] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
-        "xlf.refresh" [named] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
+        "snapshot" [named_write, authorized] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
+        "profiling" [named_write, authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
+        "xlf.generate" [named_write] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
+        "xlf.refresh" [named_write] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
         "xlf.untranslated" [named] => build_dispatch::dispatch_xlf_untranslated(workspace, id, &params),
         "xlf.suggest" [named] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
         "tests.discover" [] => build_dispatch::dispatch_tests_discover(workspace, id),
         "tests.run" [authorized] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
         "tests.coverage" [] => build_dispatch::dispatch_tests_coverage(workspace, id),
-        "tests.run_batch" [named, authorized] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
-        "tests.run_auto" [named, authorized] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
+        "tests.run_batch" [named_write, authorized] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
+        "tests.run_auto" [named_write, authorized] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
         "tests.last_results" [] => {
             build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
         },
@@ -1253,7 +1269,7 @@ dispatch_table! {
         "tests.snapshot_validate" [named] => {
             build_dispatch::dispatch_tests_snapshot_validate(workspace, id, &params).await
         },
-        "tests.snapshot_capture" [named, authorized] => {
+        "tests.snapshot_capture" [named_write, authorized] => {
             build_dispatch::dispatch_tests_snapshot_capture(workspace, id, &params).await
         },
         "tests.snapshot_replay" [named, authorized] => {

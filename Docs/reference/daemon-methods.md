@@ -179,9 +179,12 @@ Every path parameter is resolved inside the loaded project: its root, the packag
 directory each resolved `.app` came from. That covers `uri` and `file`, and the paths methods take
 under other names, which are `xlf`, `generated`, `project`, `from`, `to`, `dir`, `path`,
 `outputDir`, `snapshotPath`, `pathA`, `pathB`, `outputPath`, `junitOut`, `coberturaOut` and
-`files`. A report or snapshot a method writes (`junitOut`, `coberturaOut`, `outputPath`) must
-resolve under the project root itself. Anything else is refused with `-32002`, whose message names
-the path and the project root. The same dispatchers answer MCP's `al_call`, where the caller may
+`files`. A path a method creates or rewrites must resolve under the project root itself: `project`
+of `xlf.generate`, `xlf` of `xlf.refresh`, `dir` of `newProject`, `outputDir` of `snapshot` and
+`profiling`, and `junitOut`, `coberturaOut` and `outputPath`. A trusted project whose package folder
+resolves outside the project can read that folder through these methods and write nothing there.
+Anything else is refused with `-32002`, whose message names the path and the project root.
+`xlf.refresh` also refuses an `xlf` whose name does not end in `.xlf`. The same dispatchers answer MCP's `al_call`, where the caller may
 be an agent and the path may be anything it asks for, so the boundary holds for every caller.
 
 A read-only single-file method (`parse`, `lint`, `metrics`, `hover`, `definition`, `references`,

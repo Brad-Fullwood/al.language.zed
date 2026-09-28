@@ -132,7 +132,9 @@ focused submodules:
 - `mod.rs` itself answers `diag`, `ping`, `status`, `handshake` and `shutdown`. The
   `dispatch_table!` list there declares, for every method, whether it reads or rewrites a path the
   caller names and whether it can spend a Business Central credential, and generates the dispatch
-  match from that list.
+  match from that list. A path in a parameter of the method's own is `named` when the method only
+  reads it and `named_write` when it creates or rewrites it, and a `named_write` path resolves under
+  the project root only.
 - `debug_dispatch.rs`: stateful `debug` session control (start, breakpoint, stack/variables/globals,
   expand/eval, continue/step, history, stop), used by both CLI and MCP `al_debug`.
 

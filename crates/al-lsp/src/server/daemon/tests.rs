@@ -388,7 +388,8 @@ mod dispatch_tests {
     ///
     /// Each case carries the other parameters its method needs, so the request
     /// reaches the path check. The cases cover exactly the methods the dispatch
-    /// table declares `named`: a method declared without a case fails here, and
+    /// table declares `named` or `named_write`: a method declared without a
+    /// case fails here, and
     /// so does a case whose method stopped declaring its path.
     #[tokio::test]
     async fn every_named_path_dispatcher_refuses_a_path_outside_the_project() {
@@ -520,7 +521,7 @@ mod dispatch_tests {
             .collect::<BTreeSet<_>>();
         let declared = DISPATCHERS
             .iter()
-            .filter(|dispatcher| dispatcher.path == PathUse::Named)
+            .filter(|dispatcher| matches!(dispatcher.path, PathUse::Named | PathUse::NamedWrite))
             .map(|dispatcher| dispatcher.method)
             .collect::<BTreeSet<_>>();
         assert_eq!(

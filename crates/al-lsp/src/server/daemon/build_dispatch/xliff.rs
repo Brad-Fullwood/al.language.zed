@@ -241,10 +241,27 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
             "'xlf' must be an absolute path",
         );
     }
-    let xlf_path = match containment::resolve_param_within_project(workspace, "xlf", &xlf_path) {
-        Ok(path) => path,
-        Err(rejection) => return rejection.into_response(id),
-    };
+    // The refresh replaces this file, so it resolves under the project root
+    // only, and it has to be a language file: the package folders a trusted
+    // project reads from may sit outside the project and hold any file.
+    let xlf_path =
+        match containment::resolve_write_param_within_project(workspace, "xlf", &xlf_path) {
+            Ok(path) => path,
+            Err(rejection) => return rejection.into_response(id),
+        };
+    if !xlf_path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("xlf"))
+    {
+        return rpc_error(
+            id,
+            al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
+            &format!(
+                "'xlf' must name a .xlf file, and '{}' does not",
+                containment::display_path(&xlf_path)
+            ),
+        );
+    }
 
     let generated_path = if let Some(g) = params.get("generated").and_then(|v| v.as_str()) {
         std::path::PathBuf::from(g)
@@ -688,6 +705,45 @@ mod tests {
         let err = resp.error.expect("err");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
         assert!(err.message.contains("xlf"));
+    }
+
+    /// The refresh replaces the file `xlf` names with generated XLIFF, so a
+    /// project file of any other kind is refused and keeps its bytes, and so
+    /// is a `.xlf` link to one.
+    #[tokio::test]
+    async fn xlf_refresh_refuses_a_file_that_is_not_xliff() {
+        let ws = empty_ws();
+        let dir = tempfile::tempdir().unwrap();
+        crate::server::daemon::set_test_project_root(&ws, dir.path());
+        let generated = dir.path().join("App.g.xlf");
+        std::fs::write(
+            &generated,
+            xliff_doc("App", "en-US", &[("T1", "Hello", None)]),
+        )
+        .unwrap();
+        let readme = dir.path().join("README.md");
+        std::fs::write(&readme, "# App").unwrap();
+        let mut names = vec![readme.clone()];
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("de-DE.xlf");
+            std::os::unix::fs::symlink(&readme, &link).unwrap();
+            names.push(link);
+        }
+
+        for xlf in names {
+            let params = serde_json::json!({
+                "xlf": xlf.to_str().unwrap(),
+                "generated": generated.to_str().unwrap(),
+            });
+            let error = dispatch_xlf_refresh(&ws, 1, &params)
+                .await
+                .error
+                .unwrap_or_else(|| panic!("{} was refreshed", xlf.display()));
+            assert_eq!(error.code, error_codes::INVALID_PARAMS, "{error:?}");
+            assert!(error.message.contains(".xlf file"), "{error:?}");
+        }
+        assert_eq!(std::fs::read_to_string(&readme).unwrap(), "# App");
     }
 
     #[tokio::test]

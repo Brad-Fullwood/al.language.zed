@@ -142,7 +142,8 @@ pub(in crate::server::daemon) fn dispatch_new_project(
     }
     // Scaffolding writes app.json, src/ and .vscode/ under `dir`, so an
     // unconstrained `dir` creates files anywhere the daemon's user can write.
-    let dir = match crate::server::daemon::containment::resolve_param_within_project(
+    // The package folders a trusted project reads from are left out too.
+    let dir = match crate::server::daemon::containment::resolve_write_param_within_project(
         workspace, "dir", &dir,
     ) {
         Ok(dir) => dir,
