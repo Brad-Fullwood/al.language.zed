@@ -212,7 +212,11 @@ access, PureLogic fails with a capability error instead of running it against th
   any of them is classified like any other reachable code. Calls on typed collections are told
   apart from record calls. A member of a record variable written without parentheses that is not
   a field of its table (`R.LockTable;`) is classified as the method call it is, so an unsupported
-  method selects LiveBc as `R.LockTable();` does. Supported workspace records select InterpRecord.
+  method selects LiveBc as `R.LockTable();` does. A member of a codeunit or interface variable
+  written without parentheses (`Lib.Restore;`) takes the rule of the call with them, so a codeunit
+  the workspace does not declare, a method it lacks and any interface method select LiveBc, while
+  a workspace method or a method a native stub answers stays local. Supported workspace records
+  select InterpRecord.
   A reachable `SingleInstance` codeunit with variable globals still selects LiveBc unless it is the
   test's own codeunit, because its state outlives one test on BC while the local run starts each
   test afresh. Dependency bodies without native stubs and all other platform-bound behavior select

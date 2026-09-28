@@ -445,11 +445,13 @@ fn record_method_route(
     }
 }
 
-/// A member of a record variable written without parentheses (`R.Insert;`,
-/// `if R.FindFirst then`, `R.LockTable;`). The runtime reads it as a field
-/// when the table declares one of that name and runs it as a call otherwise,
-/// so the router asks the same question: a field adds no reason, and a call
-/// takes the rule `R.Insert()` takes.
+/// A member written without parentheses (`R.Insert;`, `if R.FindFirst then`,
+/// `R.LockTable;`, `Lib.Restore;`). On a record variable the runtime reads it
+/// as a field when the table declares one of that name and runs it as a call
+/// otherwise, so the router asks the same question: a field adds no reason,
+/// and a call takes the rule `R.Insert()` takes. On a codeunit or interface
+/// variable the runtime always runs it as a call, so it takes the rule the
+/// call with parentheses takes.
 #[allow(clippy::too_many_arguments)]
 fn classify_bare_member(
     workspace: &Workspace,
@@ -472,7 +474,27 @@ fn classify_bare_member(
     let Some(decl) = resolver.resolve_type(receiver, syntax_position(primary, source)) else {
         return;
     };
-    if !decl.type_name.eq_ignore_ascii_case("record") {
+    let type_name = decl.type_name.to_ascii_lowercase();
+    if type_name == "codeunit" || type_name == "interface" {
+        let blocker = if type_name == "codeunit" {
+            codeunit_method_blocker(workspace, decl.type_subtype.as_deref(), &member)
+        } else {
+            Some(unverified_type_message(receiver, &member, &decl.type_name))
+        };
+        if let Some(message) = blocker {
+            promote(
+                decision,
+                reasons,
+                RoutingDecision::LiveBc,
+                &message,
+                file,
+                member_node,
+                reachable,
+            );
+        }
+        return;
+    }
+    if type_name != "record" {
         return;
     }
     let Some(table) = decl.type_subtype.as_deref() else {
@@ -847,38 +869,14 @@ pub(super) fn classify_call(
             );
         }
     } else if type_name == "codeunit" {
-        let subtype = decl.type_subtype.as_deref().unwrap_or("").trim();
-        let has_local_body = (!subtype.is_empty())
-            .then(|| {
-                workspace
-                    .file_index
-                    .object_path_of_kind(subtype, &["codeunit"])
-            })
-            .flatten()
-            .and_then(|path| {
-                workspace
-                    .file_index
-                    .get_cached_parse(&path)
-                    .map(|parsed| (path, parsed))
-            })
-            .is_some_and(|(path, (text, tree))| {
-                let scope = object_scope(workspace, &path, &tree, subtype);
-                find_callable_node(scope, text.as_bytes(), &method).is_some()
-            });
-        let has_stub = !subtype.is_empty() && al_runtime::stubs::is_supported(subtype, &method);
-        if !has_local_body && !has_stub {
+        if let Some(message) =
+            codeunit_method_blocker(workspace, decl.type_subtype.as_deref(), &method)
+        {
             promote(
                 decision,
                 reasons,
                 RoutingDecision::LiveBc,
-                &format!(
-                    "calls Codeunit '{}'.{method} without an executable workspace body or native stub",
-                    if subtype.is_empty() {
-                        "<unspecified>"
-                    } else {
-                        subtype
-                    }
-                ),
+                &message,
                 file,
                 member_node,
                 reachable,
@@ -990,15 +988,59 @@ pub(super) fn classify_call(
             decision,
             reasons,
             RoutingDecision::LiveBc,
-            &format!(
-                "calls {receiver}.{method} on type '{}' outside the verified local runtime capability set",
-                decl.type_name
-            ),
+            &unverified_type_message(&receiver, &method, &decl.type_name),
             file,
             member_node,
             reachable,
         );
     }
+}
+
+/// The reason for a call on a type the local runtime has no verified method
+/// set for.
+fn unverified_type_message(receiver: &str, method: &str, type_name: &str) -> String {
+    format!(
+        "calls {receiver}.{method} on type '{type_name}' outside the verified local runtime capability set"
+    )
+}
+
+/// The reason a method of a codeunit variable cannot run locally, or `None`
+/// when a workspace body or a native stub answers it.
+fn codeunit_method_blocker(
+    workspace: &Workspace,
+    subtype: Option<&str>,
+    method: &str,
+) -> Option<String> {
+    let subtype = subtype.unwrap_or("").trim();
+    let has_local_body = (!subtype.is_empty())
+        .then(|| {
+            workspace
+                .file_index
+                .object_path_of_kind(subtype, &["codeunit"])
+        })
+        .flatten()
+        .and_then(|path| {
+            workspace
+                .file_index
+                .get_cached_parse(&path)
+                .map(|parsed| (path, parsed))
+        })
+        .is_some_and(|(path, (text, tree))| {
+            let scope = object_scope(workspace, &path, &tree, subtype);
+            find_callable_node(scope, text.as_bytes(), method).is_some()
+        });
+    let has_stub = !subtype.is_empty() && al_runtime::stubs::is_supported(subtype, method);
+    if has_local_body || has_stub {
+        return None;
+    }
+    Some(format!(
+        "calls Codeunit '{}'.{method} without an executable workspace body or native stub",
+        if subtype.is_empty() {
+            "<unspecified>"
+        } else {
+            subtype
+        }
+    ))
 }
 
 pub(super) fn split_type_reference(raw: &str) -> (String, Option<String>) {

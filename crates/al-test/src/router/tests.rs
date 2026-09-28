@@ -2423,3 +2423,134 @@ end;
         messages("ExtensionFieldRead")
     );
 }
+
+/// The same rule holds for a codeunit or interface variable. `X.DoWork;`
+/// runs as a call, so the router gives it the decision and reason
+/// `X.DoWork();` gets. A codeunit the workspace does not declare, a method a
+/// workspace codeunit lacks and any method of an interface go to live BC with
+/// either spelling. A method a stub catalog answers and a workspace method
+/// stay local with either spelling.
+#[test]
+fn a_codeunit_or_interface_method_without_parentheses_routes_as_the_call_with_them() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/BareHelper.Codeunit.al"),
+        r#"codeunit 50992 "Bare Helper"
+{
+    procedure Ping()
+    begin
+    end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/BareShape.Interface.al"),
+        r#"interface "Bare Shape"
+{
+    procedure Area()
+}"#
+        .to_string(),
+    );
+    let cases = [
+        (
+            "Undeclared",
+            "X: Codeunit \"Some Base App Codeunit\";",
+            "X.DoWork",
+        ),
+        ("MissingMethod", "H: Codeunit \"Bare Helper\";", "H.Pong"),
+        (
+            "StubMethod",
+            "V: Codeunit \"Library - Variable Storage\";",
+            "V.AssertEmpty",
+        ),
+        ("WorkspaceMethod", "H: Codeunit \"Bare Helper\";", "H.Ping"),
+        ("InterfaceMethod", "S: Interface \"Bare Shape\";", "S.Area"),
+    ];
+    for (index, (name, decl, call)) in cases.iter().enumerate() {
+        for (suffix, parens, body) in [
+            ("With", 51000, format!("{call}();")),
+            ("Without", 51100, format!("{call};")),
+        ] {
+            let id = parens + index;
+            workspace.file_index.add_file(
+                std::path::PathBuf::from(format!("/tmp/{name}{suffix}.Codeunit.al")),
+                format!(
+                    r#"codeunit {id} "{name}{suffix}"
+{{
+Subtype = Test;
+[Test]
+procedure {name}{suffix}()
+var {decl}
+begin
+    {body}
+end;
+}}"#
+                ),
+            );
+        }
+    }
+    let results = classify_all(&workspace).unwrap();
+    let result = |name: &str| {
+        results
+            .iter()
+            .find(|result| result.method_name == name)
+            .unwrap_or_else(|| panic!("no classification for {name}"))
+    };
+    let messages = |name: &str| -> Vec<&str> {
+        result(name)
+            .reasons
+            .iter()
+            .map(|reason| reason.message.as_str())
+            .collect()
+    };
+
+    for (name, _, call) in cases {
+        let with = format!("{name}With");
+        let without = format!("{name}Without");
+        assert_eq!(
+            result(&without).decision,
+            result(&with).decision,
+            "{call}: {:?} against {:?}",
+            messages(&without),
+            messages(&with)
+        );
+        assert_eq!(
+            messages(&without),
+            messages(&with),
+            "{call}: the reasons differ with and without parentheses"
+        );
+    }
+
+    let live = |name: &str, needle: &str| {
+        for suffix in ["With", "Without"] {
+            let name = format!("{name}{suffix}");
+            assert_eq!(result(&name).decision, RoutingDecision::LiveBc, "{name}");
+            assert!(
+                messages(&name)
+                    .iter()
+                    .any(|message| message.contains(needle)),
+                "{name}: {:?}",
+                messages(&name)
+            );
+        }
+    };
+    live(
+        "Undeclared",
+        "calls Codeunit 'Some Base App Codeunit'.DoWork without an executable workspace body or native stub",
+    );
+    live(
+        "MissingMethod",
+        "calls Codeunit 'Bare Helper'.Pong without an executable workspace body or native stub",
+    );
+    live(
+        "InterfaceMethod",
+        "calls S.Area on type 'Interface' outside the verified local runtime capability set",
+    );
+    for name in ["StubMethod", "WorkspaceMethod"] {
+        for suffix in ["With", "Without"] {
+            let name = format!("{name}{suffix}");
+            assert_eq!(result(&name).decision, RoutingDecision::Interp, "{name}");
+            assert!(messages(&name).is_empty(), "{name}: {:?}", messages(&name));
+        }
+    }
+}
