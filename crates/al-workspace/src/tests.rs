@@ -1084,6 +1084,70 @@ mod workspace_lifecycle_tests {
         );
     }
 
+    /// Collects everything a `tracing_subscriber::fmt` subscriber writes.
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+        type Writer = CapturedLog;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The daemon's stderr and file logs are read with `cat` or in an editor
+    /// panel, so the manifest name must reach them with its escape sequences
+    /// written out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_project_discovered_log_line_escapes_control_characters_in_the_manifest_name() {
+        let log = CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(log.clone())
+            .with_ansi(false)
+            .finish();
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let workspace = make_workspace();
+        let dir = unique_tempdir("escapedname");
+        std::fs::write(
+            dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "Test\u{1b}[31m App\u{7}",
+                "publisher": "Tester",
+                "version": "1.0.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        initialize_core_workspace(&workspace, &dir)
+            .await
+            .expect("valid project must initialize");
+
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        let line = text
+            .lines()
+            .find(|line| line.contains("workspace: project discovered"))
+            .unwrap_or_else(|| panic!("no project discovered line in: {text}"));
+        assert!(
+            line.contains(r"name=Test\u{1b}[31m App\u{7}"),
+            "got: {line:?}"
+        );
+        assert!(!line.chars().any(char::is_control), "got: {line:?}");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn initialize_core_workspace_loads_configured_local_package_folder() {
         let workspace = make_workspace();

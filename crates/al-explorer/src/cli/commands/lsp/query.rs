@@ -28,40 +28,46 @@ pub fn cmd_search(query: &str, limit: Option<usize>, json: bool) -> ExitCode {
                     eprintln!("No results for '{query}'");
                     return ExitCode::SUCCESS;
                 }
-                println!(
-                    "{:<18} {:>6}  {:<34} {:<24} SOURCE",
-                    "KIND", "ID", "NAME", "PACKAGE"
-                );
-                println!("{}", "-".repeat(105));
-                for e in entries {
-                    let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                    let id = e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let pkg = e.get("package").and_then(|v| v.as_str()).unwrap_or("?");
-                    let source = e
-                        .get("source_availability")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown")
-                        .replace('_', " ");
-                    // Interfaces & co. have no developer-visible object ID —
-                    // symbol packages put an internal compiler hash in the
-                    // Id slot. Render blank instead of the hash or -1.
-                    let id_text = if id > 0 && kind_has_numeric_id(kind) {
-                        id.to_string()
-                    } else {
-                        String::new()
-                    };
-                    println!(
-                        "{:<18} {:>6}  {:<34} {:<24} {}",
-                        kind, id_text, name, pkg, source
-                    );
-                }
+                print!("{}", search_table_text(entries));
                 eprintln!("\n{} results", entries.len());
             }
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// The table `search` prints, a header and one row per entry.
+fn search_table_text(entries: &[serde_json::Value]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<18} {:>6}  {:<34} {:<24} SOURCE",
+        "KIND", "ID", "NAME", "PACKAGE"
+    );
+    let _ = writeln!(out, "{}", "-".repeat(105));
+    for e in entries {
+        let kind = text_field(e, "kind", "?");
+        let id = e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
+        let name = text_field(e, "name", "?");
+        let pkg = text_field(e, "package", "?");
+        let source = text_field(e, "source_availability", "unknown").replace('_', " ");
+        // Interfaces & co. have no developer-visible object ID —
+        // symbol packages put an internal compiler hash in the
+        // Id slot. Render blank instead of the hash or -1.
+        let id_text = if id > 0 && kind_has_numeric_id(&kind) {
+            id.to_string()
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "{:<18} {:>6}  {:<34} {:<24} {}",
+            kind, id_text, name, pkg, source
+        );
+    }
+    out
 }
 
 pub fn cmd_object(kind: &str, name: &str, wait_for_members: bool, json: bool) -> ExitCode {
@@ -497,36 +503,8 @@ pub fn cmd_packages(json: bool) -> ExitCode {
                     eprintln!("No packages loaded (is .alpackages/ empty?)");
                     return ExitCode::SUCCESS;
                 }
-                println!(
-                    "{:<34} {:<22} {:<15} {:>8}  SOURCE E/O/M",
-                    "NAME", "PUBLISHER", "VERSION", "OBJECTS"
-                );
-                println!("{}", "-".repeat(105));
-                let mut total_objects = 0u64;
-                for p in pkgs {
-                    let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let publisher = p.get("publisher").and_then(|v| v.as_str()).unwrap_or("?");
-                    let version = p.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-                    let count = p.get("object_count").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let source = p.get("source_availability");
-                    let embedded = source
-                        .and_then(|value| value.get("embedded_source"))
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or(0);
-                    let outline = source
-                        .and_then(|value| value.get("generated_outline"))
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or(0);
-                    let metadata = source
-                        .and_then(|value| value.get("metadata_only"))
-                        .and_then(|value| value.as_u64())
-                        .unwrap_or(0);
-                    total_objects += count;
-                    println!(
-                        "{:<34} {:<22} {:<15} {:>8}  {embedded}/{outline}/{metadata}",
-                        name, publisher, version, count
-                    );
-                }
+                let (table, total_objects) = packages_table_text(pkgs);
+                print!("{table}");
                 eprintln!("\n{} packages, {} total objects", pkgs.len(), total_objects);
             }
             ExitCode::SUCCESS
@@ -535,30 +513,78 @@ pub fn cmd_packages(json: bool) -> ExitCode {
     }
 }
 
+/// The table `packages` prints, and the sum of the packages' object counts.
+fn packages_table_text(pkgs: &[serde_json::Value]) -> (String, u64) {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<34} {:<22} {:<15} {:>8}  SOURCE E/O/M",
+        "NAME", "PUBLISHER", "VERSION", "OBJECTS"
+    );
+    let _ = writeln!(out, "{}", "-".repeat(105));
+    let mut total_objects = 0u64;
+    for p in pkgs {
+        let name = text_field(p, "name", "?");
+        let publisher = text_field(p, "publisher", "?");
+        let version = text_field(p, "version", "?");
+        let count = p.get("object_count").and_then(|v| v.as_u64()).unwrap_or(0);
+        let source = p.get("source_availability");
+        let embedded = source
+            .and_then(|value| value.get("embedded_source"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let outline = source
+            .and_then(|value| value.get("generated_outline"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        let metadata = source
+            .and_then(|value| value.get("metadata_only"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        total_objects += count;
+        let _ = writeln!(
+            out,
+            "{:<34} {:<22} {:<15} {:>8}  {embedded}/{outline}/{metadata}",
+            name, publisher, version, count
+        );
+    }
+    (out, total_objects)
+}
+
 pub fn cmd_deps(json: bool) -> ExitCode {
     run_command("deps", None, json, None, |result| {
-        if let Some(proj) = result.get("project") {
-            let name = proj.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-            let publisher = proj
-                .get("publisher")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let version = proj.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-            println!("Project: {name} by {publisher} v{version}");
-        }
-        if let Some(deps) = result.get("explicit").and_then(|v| v.as_array()) {
-            println!("\nExplicit dependencies ({}):", deps.len());
-            for d in deps {
-                let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let publisher = d.get("publisher").and_then(|v| v.as_str()).unwrap_or("?");
-                let version = d.get("version").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("  {name} by {publisher} v{version}");
-            }
-        }
-        if let Some(all) = result.get("all").and_then(|v| v.as_array()) {
-            println!("\nAll dependencies (including implicit): {}", all.len());
-        }
+        print!("{}", deps_text(result));
     })
+}
+
+/// The text `deps` prints: the project, its explicit dependencies, the total.
+fn deps_text(result: &serde_json::Value) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    if let Some(proj) = result.get("project") {
+        let name = text_field(proj, "name", "?");
+        let publisher = text_field(proj, "publisher", "?");
+        let version = text_field(proj, "version", "?");
+        let _ = writeln!(out, "Project: {name} by {publisher} v{version}");
+    }
+    if let Some(deps) = result.get("explicit").and_then(|v| v.as_array()) {
+        let _ = writeln!(out, "\nExplicit dependencies ({}):", deps.len());
+        for d in deps {
+            let name = text_field(d, "name", "?");
+            let publisher = text_field(d, "publisher", "?");
+            let version = text_field(d, "version", "?");
+            let _ = writeln!(out, "  {name} by {publisher} v{version}");
+        }
+    }
+    if let Some(all) = result.get("all").and_then(|v| v.as_array()) {
+        let _ = writeln!(
+            out,
+            "\nAll dependencies (including implicit): {}",
+            all.len()
+        );
+    }
+    out
 }
 
 #[cfg(test)]
@@ -577,6 +603,84 @@ mod exit_status_tests {
         assert_eq!(
             event_source_exit_code(&serde_json::json!({"path": "/tmp/publisher.al"})),
             ExitCode::SUCCESS
+        );
+    }
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{deps_text, packages_table_text, search_table_text};
+
+    const CRAFTED_NAME: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
+    const ESCAPED_NAME: &str = r"Bad\u{1b}[31m Name\u{1b}[0m";
+
+    fn assert_no_raw_control(text: &str) {
+        assert!(
+            !text.chars().any(|ch| ch.is_control() && ch != '\n'),
+            "a control character reached the terminal text: {text:?}"
+        );
+    }
+
+    #[test]
+    fn a_search_row_prints_an_object_and_package_name_escaped() {
+        let rows = [serde_json::json!({
+            "kind": "Codeunit",
+            "id": 50150,
+            "name": CRAFTED_NAME,
+            "package": "Dep\u{1b}[2J\u{1b}[H",
+            "source_availability": "workspace"
+        })];
+        let text = search_table_text(&rows);
+        assert_no_raw_control(&text);
+        assert!(text.contains(ESCAPED_NAME), "got: {text}");
+        assert!(text.contains(r"Dep\u{1b}[2J\u{1b}[H"), "got: {text}");
+    }
+
+    #[test]
+    fn a_package_row_prints_its_name_publisher_and_version_escaped() {
+        let rows = [serde_json::json!({
+            "name": CRAFTED_NAME,
+            "publisher": "Pub\u{1b}]0;pwned\u{7}lisher",
+            "version": "1.0\u{1b}[H",
+            "object_count": 2
+        })];
+        let (text, total) = packages_table_text(&rows);
+        assert_eq!(total, 2);
+        assert_no_raw_control(&text);
+        assert!(text.contains(ESCAPED_NAME), "got: {text}");
+        assert!(
+            text.contains(r"Pub\u{1b}]0;pwned\u{7}lisher"),
+            "got: {text}"
+        );
+        assert!(text.contains(r"1.0\u{1b}[H"), "got: {text}");
+    }
+
+    #[test]
+    fn deps_prints_the_manifest_and_dependency_names_escaped() {
+        let result = serde_json::json!({
+            "project": {
+                "name": "Test\u{1b}[31m App\u{7}",
+                "publisher": "Pub\u{1b}]0;pwned\u{7}lisher",
+                "version": "1.0.0.0"
+            },
+            "explicit": [{
+                "name": "Dep\u{1b}[2J\u{1b}[H Missing",
+                "publisher": "X",
+                "version": "1.0.0.0"
+            }],
+            "all": []
+        });
+        let text = deps_text(&result);
+        assert_no_raw_control(&text);
+        assert!(
+            text.contains(
+                r"Project: Test\u{1b}[31m App\u{7} by Pub\u{1b}]0;pwned\u{7}lisher v1.0.0.0"
+            ),
+            "got: {text}"
+        );
+        assert!(
+            text.contains(r"  Dep\u{1b}[2J\u{1b}[H Missing by X v1.0.0.0"),
+            "got: {text}"
         );
     }
 }

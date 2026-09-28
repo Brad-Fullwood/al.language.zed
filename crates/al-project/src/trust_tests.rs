@@ -104,6 +104,20 @@ fn printing_escapes_without_merging_two_values_in_the_digest() {
     assert_ne!(digest_of(&[newline]), digest_of(&[literal]));
 }
 
+#[test]
+fn terminal_escaping_keeps_long_text_whole_and_escapes_the_same_characters_as_one_line() {
+    let long = format!("Bad\u{1b}[31m Name{}\u{1b}[0m\u{2028}", "x".repeat(200));
+    let escaped = escape_controls(&long);
+    assert!(!escaped.chars().any(char::is_control), "got: {escaped:?}");
+    assert!(escaped.starts_with(r"Bad\u{1b}[31m Name"), "got: {escaped}");
+    assert!(escaped.ends_with(r"\u{1b}[0m\u{2028}"), "got: {escaped}");
+    assert!(!escaped.contains('…'));
+    assert_eq!(
+        escape_controls("Pub\u{1b}]0;pwned\u{7}lisher\u{9b}"),
+        one_line("Pub\u{1b}]0;pwned\u{7}lisher\u{9b}")
+    );
+}
+
 /// `binary.path = /bin/sh` reads as harmless on the line the user is shown.
 /// The arguments are the setting, so trust granted over the path must go
 /// stale when they change.

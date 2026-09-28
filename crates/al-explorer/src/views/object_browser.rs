@@ -567,3 +567,34 @@ mod mouse_hit_testing_tests {
         assert!(matches!(app.active_pane, ActivePane::Search));
     }
 }
+
+#[cfg(test)]
+mod terminal_output_tests {
+    use super::*;
+    use crate::App;
+
+    /// ratatui drops a grapheme that holds a control character before it
+    /// reaches a cell (`Span::styled_graphemes` and `Buffer::set_stringn`), so
+    /// a package name's escape sequence is never written to the terminal.
+    #[test]
+    fn a_control_character_in_a_package_name_does_not_reach_a_terminal_cell() {
+        let mut app = App::new();
+        app.packages = vec!["Pkg\u{1b}]0;pwned\u{7}\u{1b}[2J Name".to_string()];
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| render_object_browser(frame, frame.area(), &mut app))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert!(
+            buffer
+                .content()
+                .iter()
+                .all(|cell| !cell.symbol().chars().any(char::is_control)),
+            "a cell holds a control character"
+        );
+        let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(screen.contains("Pkg]0;pwned[2J Name"), "got: {screen}");
+    }
+}
