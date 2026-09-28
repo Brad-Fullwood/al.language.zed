@@ -764,4 +764,7 @@ Append-only. Newest entry last.
   deleted locally.
 - Seven agents dispatched at 13:57 (see `STATE.md`): SEC7-1, R12-MUT-1, round 13 from item 3,
   security round 7 from item 1, the R13 trust fixes with SEC7-2, the R13 runtime fixes with
-  SEC7-3, article 9. Gates on 83820e8d running.
+  SEC7-3, article 9. Docs re-check 5 dispatched at 14:05.
+- Gates on 83820e8d green (`.campaign/gates-83820e8d.log`): fmt, clippy, clippy semantic, rustdoc,
+  125 suites, 5822 passed, 0 failed, 20 ignored, harness green. `findings/grammar-query-drift.md`
+  committed with the result.
