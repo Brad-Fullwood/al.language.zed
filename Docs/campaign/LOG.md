@@ -847,3 +847,18 @@ Append-only. Newest entry last.
 - R13-CLI-1 was already covered by the SEC7-1 branch and R13-DAEMON-1 by the SEC7-7 commit,
   so both are marked fixed (682b831f) with the other fourteen.
 - Seven agents dispatched at 23:52 for the twelve findings still open (see `STATE.md`).
+
+## 2026-09-29 00:05 BST: gates green, pushed, checkpoint written, the router fix merged
+
+- Gates on 41ab5260 green (`.campaign/gates-41ab5260.log`, 23:47 to 23:54): fmt, clippy, clippy
+  semantic, rustdoc, 95 suites, 5537 passed, 0 failed, harness 354 passed. Pushed 219fccbb, CI
+  on PR 33 started.
+- `CHECKPOINT-2026-09-28.md` written (f612bb24): the counts since the 2026-09-27 close, the state
+  at the close, what the day delivered, every open item with its file, the resume steps.
+- Two reviewers dispatched at 23:58 (round 14 over 73ed8751..f4eb117a, security round 8 over the
+  SEC7 fixes and the queued round 8 items), see `STATE.md`.
+- Merged: `fix-r13-router` (81c47204, R13-ROUTER-1: `classify_bare_member` sends a Codeunit or
+  Interface receiver's member through the rule the call with parentheses takes, one test over
+  five receiver shapes with and without parentheses, `native-test-runtime.md` states the rule).
+  The agent read that a bare member on a Page, Report, XmlPort, Query, JSON, Text, Dictionary,
+  List or Enum receiver still returns silently, queued for round 14. Gates on f612bb24 running.
