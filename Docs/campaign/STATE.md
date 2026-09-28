@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-28 14:00 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-28 18:55 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,38 +8,42 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Headless session started 13:49 BST on 2026-09-28 by the watchdog. The 08:43 session merged
-`fix-r12-daemon` (fc04be15, gates green in `.campaign/gates-fc04be15.log`: 5801 passed, 0 failed,
-20 ignored, harness green) and reached the session limit about 09:56 without pushing. Every
-attempt from 09:56 to 13:39 was limited (reset 13:40). Recovered at 13:52: fc04be15 pushed,
-`slop-splits-5` (the `eval_expr.rs` split, 4031a145) merged bd40b490, `test-snapshot` (snapshot
-capture behind debugger and runner traits, 926 lines of unit tests, the mutants run) merged
-fc24b434, `grammar-queries` (pointer at baf782b, AL-Tree-Sitter `dev`: the query drift fixes over
-the corpus round 3 and 4 shapes, the folds doc line) merged 83820e8d. The blog's article 9 re-read
-from the 03:41 session (two commits and an uncommitted wording pass, committed 35e6756) is on blog
-branch `campaign/article-9-reread`, pushed. The review scratch tests are saved as
-`.campaign/r13-scratch-tests-2.patch` and `.campaign/sec7-scratch-tests.patch`.
+Headless session started 18:42 BST on 2026-09-28 by the watchdog (the 18:31 tick found Fable and
+Opus limited, reset 18:40). The 13:49 session's eight agents were dead with nothing pushed, and its
+gates on 34e8f8de stopped in the test stage (fmt, clippy, clippy semantic and rustdoc green, 38
+suites passed, then the session ended).
+Recovered at 18:50: `docs-recheck-5` (four docs commits, no completion note) merged 7717215c, gates
+running. The uncommitted work in the other worktrees stayed in place for the agents re-dispatched
+onto them: `fix-sec7-1` (eight commits, `build.rs` half converted), `fix-r13-runtime` (R13-RT-2
+committed 8495e4e1, the R13-RT-1 tests written and failing), `fix-r13-trust` (R13-TRUST-1 and
+R13-TRUST-2 committed, SEC7-2 half done: a byte budget, a hash memo, `O_NONBLOCK`), `sec7-review`
+(item 1 ticked, SEC7-1 to SEC7-5 recorded) and `r13-review` (items 1 to 4 ticked, seven findings,
+R13-LSP-1 new). `fix-formatter-case` had no work. The reviewers' scratch tests are saved as
+`.campaign/sec7-scratch-tests-3.patch` and `.campaign/r13-scratch-tests-3.patch`. The blog's
+article 9 checkout held an uncommitted wording pass.
 
-Eight agents dispatched at 13:57 and 14:05 BST:
+Eight agents dispatched at 18:55 BST, each told to stop by 21:30 with its work committed:
 
-- `campaign/fix-sec7-1` (dir `docs-recheck-4`): SEC7-1 continued from the dead agent's two commits
-  and its uncommitted source tree test (`crates/al-explorer/tests/cli_text_escaping.rs`).
-- `campaign/fix-formatter-case` (dir `fix-r12-router-text`, from 34e8f8de, dispatched 14:32): the
-  two `case` layout bugs the R12-MUT-1 agent found (a case `else` one level too deep, a nested
-  `case` with no `begin` one level too shallow).
-- `campaign/r13-review` (dir `r13-review`): round 13 from coverage item 3 (items 1 and 2 done, six
-  findings: R13-TRUST-1, R13-TRUST-2, R13-RT-1 to R13-RT-4).
-- `campaign/sec7-review` (dir `fix-sec6-output`): security round 7, all six coverage items open,
-  SEC7-1 to SEC7-3 recorded.
-- `campaign/fix-r13-trust` (dir `slop-splits-5`, from 83820e8d): R13-TRUST-1, R13-TRUST-2, SEC7-2,
-  the `trust.rs` stat count comment.
-- `campaign/fix-r13-runtime` (dir `fix-daemon`, from 83820e8d): R13-RT-1 to R13-RT-4 and SEC7-3.
-- Blog `campaign/article-9-reread`: article 9's final re-read, facts re-measured at the current
-  tip, length, `readTime`, `pnpm validate`, push.
+- `campaign/fix-sec7-1` (dir `docs-recheck-4`): SEC7-1, the renderers left (`build.rs`, `debug.rs`,
+  `lsp/env.rs`), the source tree test, the `cat -v` check.
+- `campaign/fix-r13-runtime` (dir `fix-daemon`): R13-RT-1, R13-RT-3 with SEC7-3 (one test budget),
+  R13-RT-4, the SEC7-5 depth cap over the R13-RT-2 fix.
+- `campaign/fix-r13-trust` (dir `slop-splits-5`): SEC7-2 (in progress), the `trust.rs` stat count
+  comment, SEC7-4.
+- `campaign/fix-formatter-case` (dir `fix-r12-router-text`, from 7717215c): the two `case` layout
+  bugs (a case `else` at the branch body's level, a nested `case` without `begin` one level too
+  shallow).
+- `campaign/fix-r13-lsp` (dir `test-snapshot`, from 7717215c): R13-LSP-1, the language server reads
+  `app.json` and the launch files again after an edit.
+- `campaign/sec7-review` (dir `fix-sec6-output`): security round 7 items 2 to 6, new findings from
+  SEC7-6.
+- `campaign/r13-review` (dir `r13-review`): round 13 items 5 to 16.
+- Blog `campaign/article-9-reread`: the wording pass checked against the campaign files (the usage
+  limit count), `pnpm validate`, commit, push.
 
-- `campaign/docs-recheck-5` (dir `test-snapshot`, from 83820e8d, dispatched 14:05): docs re-check
-  5 over the merges since 8bb95bcc (the daemon's package folder reload, the two splits, the
-  snapshot traits, the query fixes).
+Statuses to mark at merge time: SEC7-1 to SEC7-5 in `r7-security.md` (on `campaign/sec7-review`),
+R13-TRUST-1, R13-TRUST-2, R13-RT-1 to R13-RT-4 and R13-LSP-1 in `r13-session-review.md` (on
+`campaign/r13-review`). SEC7-5 and R13-RT-2 are one fix (8495e4e1).
 
 ## Close-out (the window ends tonight)
 

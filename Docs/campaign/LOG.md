@@ -774,3 +774,31 @@ Append-only. Newest entry last.
   and failed. The agent found two layout bugs on the way (a case `else` indented at the branch
   body's level, a nested `case` without `begin` one level too shallow): fix agent dispatched on
   `campaign/fix-formatter-case`. Gates on 34e8f8de running.
+
+## 2026-09-28 18:55 BST: resume, one branch merged, eight agents dispatched
+
+- The 13:49 session's eight agents were dead by 18:42 with no branch pushed. Its gates on 34e8f8de
+  stopped in the test stage: fmt, clippy, clippy semantic and rustdoc green, 38 suites and 4031
+  tests passed, then the session hit its limit (reset 18:40, the watchdog's 18:31 tick found Fable
+  and Opus limited).
+- Merged: `docs-recheck-5` (7717215c, four docs corrected against the merges since 8bb95bcc:
+  `daemon-protocol.md` says requests on one connection run as their own tasks, up to eight at once,
+  and the package stamp covers trust per folder, `native-test-runtime.md` names the `eval_expr` and
+  `records` module directories, `language-assets.md` says what each query file captures at baf782b
+  and which are written by hand, `README.md` says where each language package file comes from). No
+  completion note, so the docs the agent did not reach are unknown. Gates on 7717215c running.
+- Kept in place for the re-dispatched agents: `fix-sec7-1` (eight commits over the insight,
+  language, quality, reports, tests, query and project renderers and the CLI warnings, `build.rs`
+  half converted and uncommitted), `fix-r13-runtime` (8495e4e1 fixes R13-RT-2, which is also
+  SEC7-5's shape, and the R13-RT-1 tests are written and failing), `fix-r13-trust` (33ec6447
+  R13-TRUST-1, 1f2e61cf R13-TRUST-2, SEC7-2 half done and uncommitted: a byte budget, a memo so
+  each tree is hashed once, `O_NONBLOCK` through `libc`), `sec7-review` (item 1 ticked, SEC7-1 to
+  SEC7-5 recorded, SEC7-4 is the outside path spelled as text and SEC7-5 the JSON self add),
+  `r13-review` (items 1 to 4 ticked, R13-LSP-1 new: the language server reads `app.json` at
+  initialization and `al.reindex` only). `fix-formatter-case` had no work and was moved to
+  7717215c. `test-snapshot` now holds `campaign/fix-r13-lsp`.
+- Scratch tests saved: `.campaign/sec7-scratch-tests-3.patch` (620 lines), `.campaign/r13-scratch-tests-3.patch` (669 lines).
+- Eight agents dispatched at 18:55 (see `STATE.md`): SEC7-1, the R13 runtime items with SEC7-3 and
+  SEC7-5, SEC7-2 and SEC7-4 with the trust comment, the two formatter `case` bugs, R13-LSP-1,
+  security round 7 items 2 to 6, round 13 items 5 to 16, article 9. Each stops by 21:30 so the
+  close-out can merge, run the gates and write the checkpoint before the window ends.
