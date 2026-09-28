@@ -21,7 +21,7 @@
 //! refuses a call whose stdin is not a terminal. No daemon method and no MCP
 //! tool can grant it or supply a privileged value inline.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -71,8 +71,8 @@ const LAUNCH_SERVER_KEY: &str = "launch configuration server";
 const UNREADABLE_LAUNCH_KEY: &str = "unreadable launch file";
 
 /// The key of the value that stands in for a path whose files the record
-/// cannot hash: a tree that holds a symbolic link, or more than
-/// `MAX_HASHED_ENTRIES` entries.
+/// cannot hash: a tree that holds a symbolic link, more than
+/// `MAX_HASHED_ENTRIES` entries, or more than `MAX_HASHED_BYTES` bytes.
 ///
 /// The loader follows a link and reads a tree of any size, so a hash that
 /// skipped either would vouch for files it never read. The path and the reason
@@ -264,8 +264,9 @@ impl TrustDecision {
     ///
     /// A launch file the parser rejects names servers that a person reviewing
     /// the values cannot see, so a record over it would vouch for them unread.
-    /// A path whose tree holds a symbolic link or too many entries loads files
-    /// the record did not hash, so a record over it would vouch for those.
+    /// A path whose tree holds a symbolic link, too many entries or too many
+    /// bytes loads files the record did not hash, so a record over it would
+    /// vouch for those.
     #[must_use]
     pub fn grant_refusal(&self) -> Option<String> {
         if let Some(unreadable) = self
@@ -301,12 +302,13 @@ impl TrustDecision {
             .find(|setting| setting.key == UNHASHABLE_PATH_KEY)?;
         Some(format!(
             "{} (from {}). The trust record hashes every file a privileged path loads, and it \
-             does not follow a symbolic link or walk more than {MAX_HASHED_ENTRIES} entries, so \
-             it cannot vouch for this path. Nothing was recorded. Replace the link with the \
-             file it names, or move the file into a directory of its own, then run \
-             {TRUST_COMMAND} again.",
+             does not follow a symbolic link, walk more than {MAX_HASHED_ENTRIES} entries or \
+             read more than {} MiB of one file or directory, so it cannot vouch for this path. \
+             Nothing was recorded. Replace the link with the file it names, or move the file \
+             into a directory of its own, then run {TRUST_COMMAND} again.",
             one_line(&unhashable.value),
-            one_line(&unhashable.source)
+            one_line(&unhashable.source),
+            hashed_bytes_budget() / (1024 * 1024)
         ))
     }
 
@@ -486,6 +488,7 @@ fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), Con
     };
 
     let mut ask = RepositoryAsk::default();
+    let mut hashes = Hashes::default();
     for relative in [".vscode/settings.json", ".zed/settings.json"] {
         let path = project_root.join(relative);
         let Some(value) = crate::config::read_editor_settings_file(&path)? else {
@@ -499,12 +502,23 @@ fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), Con
                 message: one_line(&issues.join(", ")),
             });
         }
-        ask.absorb(privileged_changes(&before, &config, project_root, relative));
-        ask.absorb(executable_path_privileges(&value, relative, project_root));
+        ask.absorb(privileged_changes(
+            &before,
+            &config,
+            project_root,
+            relative,
+            &mut hashes,
+        ));
+        ask.absorb(executable_path_privileges(
+            &value,
+            relative,
+            project_root,
+            &mut hashes,
+        ));
     }
     ask.settings.extend(launch_privileges(project_root));
     ask.settings
-        .extend(project_analyzer_copies(&config, project_root));
+        .extend(project_analyzer_copies(&config, project_root, &mut hashes));
     ask.settings
         .extend(linked_package_folders(&config, project_root));
     Ok((config, ask))
@@ -576,7 +590,11 @@ fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<Privile
 /// stale, rather than loading new code under the old record. `config` holds
 /// the entries of `~/.config/al-lsp/settings.json` too, which
 /// [`privileged_changes`] leaves out as the user's own.
-fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<PrivilegedSetting> {
+fn project_analyzer_copies(
+    config: &AlConfig,
+    project_root: &Path,
+    hashes: &mut Hashes,
+) -> Vec<PrivilegedSetting> {
     let root = canonical_root(project_root);
     let mut settings = Vec::new();
     for entry in &config.code_analyzers {
@@ -588,7 +606,7 @@ fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<Privil
         let relative = shown_within(&found, &root);
         let mut unhashable = None;
         let contents =
-            file_and_neighbours_sha256(&found, &root, Beside::Assemblies, &mut unhashable);
+            file_and_neighbours_sha256(hashes, &found, &root, Beside::Assemblies, &mut unhashable);
         let value = format!("{} resolves to {relative}", entry.trim());
         if let Some(reason) = unhashable {
             settings.push(PrivilegedSetting::new(
@@ -616,8 +634,13 @@ fn project_analyzer_copies(config: &AlConfig, project_root: &Path) -> Vec<Privil
 pub(crate) fn lists_project_copy(decision: &TrustDecision, found: &Path) -> bool {
     let relative = shown_within(found, &decision.root);
     let mut unhashable = None;
-    let contents =
-        file_and_neighbours_sha256(found, &decision.root, Beside::Assemblies, &mut unhashable);
+    let contents = file_and_neighbours_sha256(
+        &mut Hashes::default(),
+        found,
+        &decision.root,
+        Beside::Assemblies,
+        &mut unhashable,
+    );
     if unhashable.is_some() {
         return false;
     }
@@ -1022,6 +1045,7 @@ enum Beside {
 /// or `PATH` looks up, so it stays as written. A value that is a path however
 /// it is spelled goes to [`with_path_contents`].
 fn with_project_contents(
+    hashes: &mut Hashes,
     value: &str,
     project_root: &Path,
     beside: Beside,
@@ -1032,7 +1056,7 @@ fn with_project_contents(
     if !is_path {
         return value.to_string();
     }
-    with_path_contents(value, project_root, beside, unhashable)
+    with_path_contents(hashes, value, project_root, beside, unhashable)
 }
 
 /// [`with_project_contents`] for a value that names a path however it is
@@ -1040,6 +1064,7 @@ fn with_project_contents(
 /// same directory as `./tools`, and the search walks it, so a record that
 /// held `tools` as text alone let the files under it change.
 fn with_path_contents(
+    hashes: &mut Hashes,
     value: &str,
     project_root: &Path,
     beside: Beside,
@@ -1061,9 +1086,11 @@ fn with_path_contents(
     let mut problem = None;
     let contents = match std::fs::metadata(&resolved) {
         Ok(metadata) if metadata.is_file() => {
-            file_and_neighbours_sha256(&resolved, &root, beside, &mut problem)
+            file_and_neighbours_sha256(hashes, &resolved, &root, beside, &mut problem)
         }
-        Ok(metadata) if metadata.is_dir() => tree_sha256(&resolved, &root, &mut problem),
+        Ok(metadata) if metadata.is_dir() => {
+            tree_sha256(hashes, &resolved, Tree::Below, &root, &mut problem)
+        }
         _ => "not present".to_string(),
     };
     if let Some(reason) = problem {
@@ -1091,12 +1118,23 @@ fn with_path_contents(
 /// `file` is already resolved, so its directory is the one the loader reads.
 /// `root` is the canonical project root, for the paths a reason names.
 fn file_and_neighbours_sha256(
+    hashes: &mut Hashes,
     file: &Path,
     root: &Path,
     beside: Beside,
     unhashable: &mut Option<String>,
 ) -> String {
-    let own = file_sha256(file).unwrap_or_else(|| "unreadable".to_string());
+    let own = match hashes.file(file, hashed_bytes_budget()) {
+        FileHash::Hashed { sha256, .. } => sha256,
+        FileHash::Unreadable => "unreadable".to_string(),
+        FileHash::Larger(_) => {
+            return not_hashed(
+                &Unhashable::TooManyBytes(file.to_path_buf()),
+                root,
+                unhashable,
+            );
+        }
+    };
     let Some(directory) = file.parent() else {
         return own;
     };
@@ -1104,31 +1142,63 @@ fn file_and_neighbours_sha256(
         Beside::Nothing => own,
         Beside::Assemblies => format!(
             "{own}; its directory: {}",
-            tree_sha256(directory, root, unhashable)
+            tree_sha256(hashes, directory, Tree::Below, root, unhashable)
         ),
         Beside::DotnetRuntime => format!(
             "{own}; its runtime: {}",
-            runtime_tree_sha256(directory, root, unhashable)
+            tree_sha256(hashes, directory, Tree::Runtime, root, unhashable)
         ),
     }
 }
 
-/// `sha256:<hex>` of a file's bytes.
+/// `sha256:<hex>` of a file's bytes, or `None` when it cannot be read or
+/// holds more than the byte budget.
 fn file_sha256(path: &Path) -> Option<String> {
-    let mut file = std::fs::File::open(path).ok()?;
-    let mut hasher = Sha256::new();
-    std::io::copy(&mut file, &mut hasher).ok()?;
-    Some(format!("sha256:{:x}", hasher.finalize()))
+    match file_hash(path, hashed_bytes_budget()) {
+        FileHash::Hashed { sha256, .. } => Some(sha256),
+        FileHash::Unreadable | FileHash::Larger(_) => None,
+    }
 }
 
 /// The most entries one tree is walked for, the same order of limit analyzer
 /// discovery applies. A tree over it cannot be recorded.
 const MAX_HASHED_ENTRIES: usize = 50_000;
 
+/// The most bytes one hash reads: one file, or every file of one tree
+/// together. A file or tree over it cannot be recorded.
+///
+/// A link the repository ships can lead the hash to a file of any size, such
+/// as `/proc/self/pagemap`, which the kernel serves at 256 GiB, and every
+/// trust decision reads the record's files before the project is trusted.
+const MAX_HASHED_BYTES: u64 = 256 * 1024 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    /// The byte budget of the hashes this thread takes, so a test reaches it
+    /// without hashing `MAX_HASHED_BYTES`.
+    pub(crate) static HASHED_BYTES_BUDGET: std::cell::Cell<u64> =
+        const { std::cell::Cell::new(MAX_HASHED_BYTES) };
+    /// How many bytes this thread's hashes read.
+    pub(crate) static HASHED_BYTES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The byte budget of one hash.
+fn hashed_bytes_budget() -> u64 {
+    #[cfg(test)]
+    let budget = HASHED_BYTES_BUDGET.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let budget = MAX_HASHED_BYTES;
+    budget
+}
+
 /// Why a tree cannot be hashed.
+#[derive(Clone)]
 enum Unhashable {
     /// The walk of this directory passed `MAX_HASHED_ENTRIES`.
     TooManyEntries(PathBuf),
+    /// This file, or the files of this directory together, hold more than
+    /// `MAX_HASHED_BYTES`.
+    TooManyBytes(PathBuf),
     /// A symbolic link. The loader follows it and the walk does not, so a
     /// commit could change what it names without changing anything hashed.
     Link(PathBuf),
@@ -1141,6 +1211,11 @@ impl Unhashable {
                 "{} holds more than {MAX_HASHED_ENTRIES} entries",
                 shown_within(directory, root)
             ),
+            Unhashable::TooManyBytes(path) => format!(
+                "{} holds more than {} MiB",
+                shown_within(path, root),
+                hashed_bytes_budget() / (1024 * 1024)
+            ),
             Unhashable::Link(path) => {
                 format!("{} is a symbolic link", shown_within(path, root))
             }
@@ -1148,26 +1223,185 @@ impl Unhashable {
     }
 }
 
-/// One hash over every regular file below `dir`, by relative path and
-/// content, with the count, or the reason it cannot be hashed.
-fn tree_sha256(dir: &Path, root: &Path, unhashable: &mut Option<String>) -> String {
-    let mut files = Vec::new();
-    match collect_files(dir, true, &mut files) {
-        Ok(()) => format!("{} files, {}", files.len(), files_sha256(dir, files)),
-        Err(reason) => not_hashed(&reason, root, unhashable),
+/// Which files below a directory one tree hash covers.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Tree {
+    /// Every regular file below the directory.
+    Below,
+    /// Every file beside a `dotnet` muxer and every file below its `host`
+    /// and `shared` directories.
+    Runtime,
+}
+
+/// What reading one file for a hash gave.
+#[derive(Clone)]
+enum FileHash {
+    /// `sha256:<hex>` of the file's bytes, and how many bytes it holds.
+    Hashed { sha256: String, bytes: u64 },
+    /// The file could not be opened or read, or it is not a regular file.
+    Unreadable,
+    /// The file holds more than this many bytes, the limit it was read under.
+    Larger(u64),
+}
+
+/// The hashes one read of the repository took, so a file or a tree that
+/// several values name is read once.
+///
+/// An analyzer path is hashed with its directory for the settings value and
+/// again for the copy [`project_analyzer_copies`] records, and a probing path
+/// often names the same directory. Each of them used to read every byte
+/// again, so a large file beside the analyzer cost every decision several
+/// times over.
+#[derive(Default)]
+struct Hashes {
+    files: HashMap<PathBuf, FileHash>,
+    trees: HashMap<(PathBuf, Tree), Result<String, Unhashable>>,
+}
+
+impl Hashes {
+    /// The hash of the file at `path`, reading at most `limit` bytes of it.
+    fn file(&mut self, path: &Path, limit: u64) -> FileHash {
+        match self.files.get(path) {
+            Some(FileHash::Hashed { bytes, .. }) if *bytes > limit => {
+                return FileHash::Larger(limit);
+            }
+            // Read under a smaller limit, so the file may fit this one.
+            Some(FileHash::Larger(read_under)) if *read_under < limit => {}
+            Some(FileHash::Larger(_)) => return FileHash::Larger(limit),
+            Some(known) => return known.clone(),
+            None => {}
+        }
+        let hashed = file_hash(path, limit);
+        self.files.insert(path.to_path_buf(), hashed.clone());
+        hashed
+    }
+
+    /// `<count> files, sha256:<hex>` over the `shape` tree at `dir`, by
+    /// relative path and content, or the reason it cannot be hashed.
+    fn tree(&mut self, dir: &Path, shape: Tree) -> Result<String, Unhashable> {
+        let key = (dir.to_path_buf(), shape);
+        if let Some(known) = self.trees.get(&key) {
+            return known.clone();
+        }
+        let hashed = self.hash_tree(dir, shape);
+        self.trees.insert(key, hashed.clone());
+        hashed
+    }
+
+    fn hash_tree(&mut self, dir: &Path, shape: Tree) -> Result<String, Unhashable> {
+        let mut files = Vec::new();
+        collect_files(dir, shape == Tree::Below, &mut files)?;
+        if shape == Tree::Runtime {
+            collect_files(&dir.join("host"), true, &mut files)?;
+            collect_files(&dir.join("shared"), true, &mut files)?;
+        }
+        let budget = hashed_bytes_budget();
+        let too_large = || Unhashable::TooManyBytes(dir.to_path_buf());
+        // The lengths the walk saw refuse a large tree before any file is
+        // opened. Counting while reading catches a file that reports less.
+        let listed = files
+            .iter()
+            .fold(0u64, |total, (_, bytes)| total.saturating_add(*bytes));
+        if listed > budget {
+            return Err(too_large());
+        }
+        files.sort();
+        let mut read = 0u64;
+        let mut hasher = Sha256::new();
+        for (file, _) in &files {
+            let relative = file.strip_prefix(dir).unwrap_or(file);
+            hasher.update(relative.as_os_str().as_encoded_bytes());
+            hasher.update([0u8]);
+            match self.file(file, budget.saturating_sub(read)) {
+                FileHash::Hashed { sha256, bytes } => {
+                    read += bytes;
+                    hasher.update(sha256.as_bytes());
+                }
+                FileHash::Unreadable => {}
+                FileHash::Larger(_) => return Err(too_large()),
+            }
+            hasher.update([0u8]);
+        }
+        Ok(format!(
+            "{} files, sha256:{:x}",
+            files.len(),
+            hasher.finalize()
+        ))
     }
 }
 
-/// One hash over every file beside a `dotnet` muxer and every file below its
-/// `host` and `shared` directories, with the count, or the reason it cannot
-/// be hashed.
-fn runtime_tree_sha256(dir: &Path, root: &Path, unhashable: &mut Option<String>) -> String {
-    let mut files = Vec::new();
-    let collected = collect_files(dir, false, &mut files)
-        .and_then(|()| collect_files(&dir.join("host"), true, &mut files))
-        .and_then(|()| collect_files(&dir.join("shared"), true, &mut files));
-    match collected {
-        Ok(()) => format!("{} files, {}", files.len(), files_sha256(dir, files)),
+/// Read the file at `path` into a hash, at most `limit` bytes of it.
+///
+/// A file whose length is over `limit` is refused before it is opened, and
+/// one that reports less, as `/proc` files report none, stops at `limit`.
+fn file_hash(path: &Path, limit: u64) -> FileHash {
+    match std::fs::metadata(path) {
+        Ok(metadata) if !metadata.is_file() => return FileHash::Unreadable,
+        Ok(metadata) if metadata.len() > limit => return FileHash::Larger(limit),
+        Ok(_) => {}
+        Err(_) => return FileHash::Unreadable,
+    }
+    let Some(mut file) = open_regular_file(path) else {
+        return FileHash::Unreadable;
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    let mut bytes = 0u64;
+    // Whole buffers, since `/proc/self/pagemap` refuses a read that is not a
+    // multiple of eight bytes, so a read cut to the byte past `limit` failed
+    // where the file was over it.
+    loop {
+        let read = match std::io::Read::read(&mut file, &mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return FileHash::Unreadable,
+        };
+        #[cfg(test)]
+        HASHED_BYTES_READ.with(|total| total.set(total.get() + read as u64));
+        bytes += read as u64;
+        if bytes > limit {
+            return FileHash::Larger(limit);
+        }
+        hasher.update(&buffer[..read]);
+    }
+    FileHash::Hashed {
+        sha256: format!("sha256:{:x}", hasher.finalize()),
+        bytes,
+    }
+}
+
+/// `path` opened for reading, when it is a regular file once open.
+///
+/// On Unix the open does not wait. A file swapped for a FIFO after it was
+/// checked opens at once and is refused here, where a plain open blocked
+/// until something wrote to the FIFO.
+fn open_regular_file(path: &Path) -> Option<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).ok()?;
+    file.metadata()
+        .ok()
+        .filter(std::fs::Metadata::is_file)
+        .map(|_| file)
+}
+
+/// One hash over the `shape` tree at `dir`, with the count, or the reason it
+/// cannot be hashed.
+fn tree_sha256(
+    hashes: &mut Hashes,
+    dir: &Path,
+    shape: Tree,
+    root: &Path,
+    unhashable: &mut Option<String>,
+) -> String {
+    match hashes.tree(dir, shape) {
+        Ok(text) => text,
         Err(reason) => not_hashed(&reason, root, unhashable),
     }
 }
@@ -1181,14 +1415,19 @@ fn not_hashed(reason: &Unhashable, root: &Path, unhashable: &mut Option<String>)
     text
 }
 
-/// Push every regular file in `dir` onto `files`, below `dir` too when
-/// `recursive`. A directory that cannot be read adds nothing.
+/// Push every regular file in `dir` onto `files` with the length the walk
+/// saw, below `dir` too when `recursive`. A directory that cannot be read
+/// adds nothing.
 ///
 /// `Err` for a symbolic link anywhere in the walk, and when the walk passes
 /// `MAX_HASHED_ENTRIES`. The walk used to skip a link and to return a fixed
 /// text past the cap, so a link beside an analyzer, or a file in a tree of
 /// 50,001 entries, could change under a record that still matched.
-fn collect_files(dir: &Path, recursive: bool, files: &mut Vec<PathBuf>) -> Result<(), Unhashable> {
+fn collect_files(
+    dir: &Path,
+    recursive: bool,
+    files: &mut Vec<(PathBuf, u64)>,
+) -> Result<(), Unhashable> {
     let mut stack = vec![dir.to_path_buf()];
     let mut inspected = 0usize;
     while let Some(directory) = stack.pop() {
@@ -1212,25 +1451,12 @@ fn collect_files(dir: &Path, recursive: bool, files: &mut Vec<PathBuf>) -> Resul
                     stack.push(path);
                 }
             } else if file_type.is_file() {
-                files.push(path);
+                let bytes = entry.metadata().map_or(0, |metadata| metadata.len());
+                files.push((path, bytes));
             }
         }
     }
     Ok(())
-}
-
-/// `sha256:<hex>` over each file's path relative to `base` and its content.
-fn files_sha256(base: &Path, mut files: Vec<PathBuf>) -> String {
-    files.sort();
-    let mut hasher = Sha256::new();
-    for file in &files {
-        let relative = file.strip_prefix(base).unwrap_or(file);
-        hasher.update(relative.as_os_str().as_encoded_bytes());
-        hasher.update([0u8]);
-        hasher.update(file_sha256(file).unwrap_or_default().as_bytes());
-        hasher.update([0u8]);
-    }
-    format!("sha256:{:x}", hasher.finalize())
 }
 
 /// The privileged values `candidate` gained over `base`.
@@ -1239,6 +1465,7 @@ fn privileged_changes(
     candidate: &AlConfig,
     project_root: &Path,
     source: &str,
+    hashes: &mut Hashes,
 ) -> RepositoryAsk {
     let mut ask = RepositoryAsk::default();
     let record = |ask: &mut RepositoryAsk, key: &str, value: String| {
@@ -1259,7 +1486,13 @@ fn privileged_changes(
             .analyzers
             .iter()
             .map(|entry| {
-                with_project_contents(entry, project_root, Beside::Assemblies, &mut unhashable)
+                with_project_contents(
+                    hashes,
+                    entry,
+                    project_root,
+                    Beside::Assemblies,
+                    &mut unhashable,
+                )
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -1310,6 +1543,7 @@ fn privileged_changes(
             .iter()
             .map(|path| {
                 with_path_contents(
+                    hashes,
                     &path.display().to_string(),
                     project_root,
                     Beside::Assemblies,
@@ -1624,6 +1858,7 @@ fn executable_path_privileges(
     value: &serde_json::Value,
     source: &str,
     project_root: &Path,
+    hashes: &mut Hashes,
 ) -> RepositoryAsk {
     let mut ask = RepositoryAsk::default();
     let settings = value
@@ -1649,6 +1884,7 @@ fn executable_path_privileges(
         ask.executable_paths.push(path.to_string());
         let mut unhashable = Vec::new();
         let recorded = with_project_contents(
+            hashes,
             path,
             project_root,
             if key == "al.dotnetPath" {

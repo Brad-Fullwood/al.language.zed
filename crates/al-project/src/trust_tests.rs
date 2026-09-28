@@ -1418,6 +1418,181 @@ fn an_analyzer_tree_over_the_entry_cap_blocks_a_grant() {
     assert_eq!(decide(root).unwrap().state, TrustState::Untrusted);
 }
 
+const MIB: u64 = 1024 * 1024;
+
+/// Run `work` on a thread of its own and wait at most `seconds` for it, so a
+/// hash that reads without end fails the test instead of hanging the suite.
+fn within_seconds<T: Send + 'static>(seconds: u64, work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = sender.send(work());
+    });
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(seconds))
+        .unwrap_or_else(|_| panic!("did not return within {seconds} s"))
+}
+
+/// Sets the byte budget of the hashes on this thread and restores it after.
+struct HashedBytesBudget(u64);
+
+impl HashedBytesBudget {
+    fn set(budget: u64) -> Self {
+        Self(HASHED_BYTES_BUDGET.with(|current| current.replace(budget)))
+    }
+}
+
+impl Drop for HashedBytesBudget {
+    fn drop(&mut self) {
+        HASHED_BYTES_BUDGET.with(|current| current.set(self.0));
+    }
+}
+
+/// The reasons `decision` records under `path the record cannot hash`.
+fn unhashable_reasons(decision: &TrustDecision) -> Vec<&str> {
+    decision
+        .privileged
+        .iter()
+        .filter(|setting| setting.key == UNHASHABLE_PATH_KEY)
+        .map(|setting| setting.value.as_str())
+        .collect()
+}
+
+/// A file the link reaches beside the analyzer was read to its end, twice per
+/// decision, before the project was trusted. A sparse file of 2 GiB kept
+/// `decide` and the analyzer search busy for minutes, from the repository's
+/// files and a file another user put at the target.
+#[cfg(unix)]
+#[test]
+fn a_large_file_beside_a_linked_analyzer_blocks_a_grant_without_being_read() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    write_file(outside.path(), "x/TeamCop.dll", b"analyzer");
+    std::fs::File::create(outside.path().join("x/big.bin"))
+        .unwrap()
+        .set_len(2 * 1024 * MIB)
+        .unwrap();
+    let project = project_with_settings(r#"{"al.codeAnalyzers": ["./tools/x/TeamCop.dll"]}"#);
+    let root = project.path().to_path_buf();
+    link(&root, "tools", outside.path().to_str().unwrap());
+
+    let (decision, resolved) = within_seconds(10, move || {
+        let decision = decide(&root).unwrap();
+        let resolved = crate::analyzers::CustomAnalyzerSearch::new(&root, &[])
+            .resolve("./tools/x/TeamCop.dll");
+        (decision, resolved)
+    });
+
+    assert_eq!(decision.state, TrustState::Untrusted);
+    let reasons = unhashable_reasons(&decision);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.ends_with("x holds more than 256 MiB")),
+        "{reasons:?}"
+    );
+    let refusal = decision
+        .grant_refusal()
+        .expect("a tree over the byte budget cannot be recorded");
+    assert!(refusal.contains("256 MiB"), "{refusal}");
+    assert!(
+        matches!(
+            resolved,
+            Err(crate::analyzers::AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. })
+        ),
+        "{resolved:?}"
+    );
+}
+
+/// `pagemap` reports no length, and the kernel serves 256 GiB of it for a
+/// 47 bit address space, so only counting what is read stops the hash. The
+/// repository alone chose it, through `tools -> /proc/self`.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_linked_pagemap_is_read_up_to_the_byte_budget_and_blocks_a_grant() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings(r#"{"al.codeAnalyzers": ["./tools/pagemap"]}"#);
+    link(project.path(), "tools", "/proc/self");
+    let root = project.path().to_path_buf();
+
+    let decision = within_seconds(10, move || {
+        let _budget = HashedBytesBudget::set(MIB);
+        decide(&root).unwrap()
+    });
+
+    assert_eq!(decision.state, TrustState::Untrusted);
+    let reasons = unhashable_reasons(&decision);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.ends_with("/pagemap holds more than 1 MiB")),
+        "{reasons:?}"
+    );
+    assert!(decision.grant_refusal().is_some());
+}
+
+/// A file over the budget that a later commit adds beside a trusted analyzer
+/// makes the record stale, as a tree over the entry cap does.
+#[test]
+fn a_file_over_the_byte_budget_added_after_the_grant_makes_the_record_stale() {
+    let _config = ScratchConfig::new();
+    let _budget = HashedBytesBudget::set(MIB);
+    let project = project_with_settings(r#"{"al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#);
+    let root = project.path();
+    write_file(root, "tools/TeamCop.dll", b"reviewed analyzer");
+    grant(root).unwrap();
+
+    write_file(root, "tools/big.bin", &vec![0u8; 2 * MIB as usize]);
+
+    let decision = decide(root).unwrap();
+    assert_eq!(decision.state, TrustState::Stale);
+    let refusal = decision
+        .grant_refusal()
+        .expect("a tree over the byte budget cannot be recorded");
+    assert!(refusal.contains("./tools/TeamCop.dll"), "{refusal}");
+    assert!(refusal.contains("1 MiB"), "{refusal}");
+    assert!(matches!(grant(root), Err(GrantError::Refused(_))));
+}
+
+/// `with_project_contents` and `project_analyzer_copies` hashed the same
+/// analyzer and its directory, and the probing path named that directory
+/// again, so one decision read each file five times.
+#[test]
+fn one_decision_reads_each_file_it_hashes_once() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings(
+        r#"{"al.assemblyProbingPaths": ["./tools"], "al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#,
+    );
+    let root = project.path();
+    write_file(root, "tools/TeamCop.dll", &[1u8; 1000]);
+    write_file(root, "tools/TeamCop.Rules.dll", &[2u8; 24]);
+
+    HASHED_BYTES_READ.with(|read| read.set(0));
+    decide(root).unwrap();
+
+    assert_eq!(HASHED_BYTES_READ.with(std::cell::Cell::get), 1024);
+}
+
+/// A file swapped for a FIFO between the walk and the open blocked the open
+/// until something wrote to the FIFO, which another user can arrange in a
+/// loop. `open_regular_file` is the open that follows the check, so it is
+/// called on the FIFO directly, as the swap would leave it.
+#[cfg(unix)]
+#[test]
+fn a_fifo_is_refused_without_blocking_the_hash() {
+    let directory = tempfile::tempdir().unwrap();
+    let fifo = directory.path().join("TeamCop.dll");
+    let name = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).unwrap();
+    // Safety: `name` is a NUL terminated path that outlives the call.
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+
+    let (hashed, opened) = within_seconds(5, move || {
+        (file_sha256(&fifo), open_regular_file(&fifo).is_some())
+    });
+
+    assert_eq!(hashed, None);
+    assert!(!opened);
+}
+
 /// Sets an environment variable for one test and restores it after.
 struct EnvVar {
     name: &'static str,

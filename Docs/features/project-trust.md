@@ -209,13 +209,23 @@ dedicated key to use instead: `al.codeAnalyzers`, `al.assemblyProbingPaths`, `al
 or `al.packageCachePath`, which record what they name. Switches that name no input, such as
 `/nowarn:` or `/target:`, are recorded as text as before.
 
-A tree the record cannot hash is not recorded. The walk does not follow a symbolic link
-inside the tree, because the loader does and a commit could change the target without
-changing any file the walk reads. It also stops after 50,000 entries. A path whose tree holds
-a link or more entries than that is recorded as `path the record cannot hash`, with the path
-and the reason, so an existing record goes stale, and `al-explorer trust` refuses to record
-the project until the link is replaced by the file it names or the file moves to a directory
-of its own.
+A tree the record cannot hash is not recorded. The walk does not follow a symbolic link inside
+the tree, because the loader does and a commit could change the target without changing any
+file the walk reads. It also stops after 50,000 entries, and one hash reads at most 256 MiB, of
+one file or of every file in one tree together. A file whose length is over that is refused
+before it is opened, and a file that reports a smaller length, as `/proc` files report none,
+stops once the count of bytes read passes it. A path whose tree holds a link, more entries or
+more bytes than that is recorded as `path the record cannot hash`, with the path and the
+reason, such as `/tmp/bc-tools holds more than 256 MiB`, so an existing record goes stale, and
+`al-explorer trust` refuses to record the project until the link is replaced by the file it
+names or the file moves to a directory of its own. Before, every byte was read, so a link to
+`/proc/self` or to a large sparse file kept each trust decision reading for minutes, before the
+project was trusted.
+
+The hash opens each file without waiting (`O_NONBLOCK` on Unix) and reads it only when it is a
+regular file once open, so a file swapped for a FIFO or a device after the walk is recorded as
+unreadable. Before, the open of a FIFO blocked until something wrote to it. One decision hashes
+each file and each tree once, however many values name it.
 
 ## Settings you wrote yourself
 
