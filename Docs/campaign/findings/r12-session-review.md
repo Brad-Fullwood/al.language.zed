@@ -97,7 +97,7 @@ for the orchestrator to save as a patch.
 - severity: low
 - scenario: the sibling of the `app.json` defect the round 6 run queued (`plugin/TESTING.md`, "answered from a stale in-memory app.json"). With a daemon running for a project, copy `Microsoft_Base Application_26.0.30643.38226.app` into `.alpackages` by hand, by `git pull`, or through the VS Code AL extension's own download, then run `al-explorer --json packages`: the answer is the set read at startup, and `composed`, `by-id` and `package-diff` keep answering from it, since nothing stamps the package folders between requests. `download-symbols` after the copy reports the package present only if its own manifest check finds the file, and the index it then refreshes is the first time the file is read. The same holds for `al.packageCachePath` changed in `.vscode/settings.json`: `refresh_trust` puts the new folder in `config` and the index built from the old folder stays. Read from the code, not run [UNVERIFIED: a copy into `.alpackages` of a running daemon's project followed by `al-explorer --json packages` would verify it].
 - fix: on the branch that reloads `app.json` (`campaign/fix-daemon-appjson`), fingerprint the package folders too (the folder's mtime and each `.app` name and size, as `inputs_fingerprint` stamps the trust inputs) and re-stage the package index when the fingerprint moves, so `app.json`, the folders from settings and their contents refresh on one path.
-- status: open
+- status: fixed 3d2d2ffd
 
 ### [R12-TEXT-1] comments and test headers in the diff that break the writing rules in `~/.claude/CLAUDE.md`
 - where: the lines below, all added in `4c429ac5..7b607e40`
