@@ -12,7 +12,7 @@ use tree_sitter::Node;
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{self, owned_bytes, Value};
 use crate::interpreter::{error_info, eval_error};
 
 /// The variable name and `index_suffix` of `Name[index]`, looking through the
@@ -184,10 +184,18 @@ pub(crate) fn write_element_at(
     match slot {
         Value::Array(items) => {
             let at = (index - 1) as usize;
-            match Value::coerce_into_slot(&items[at], value, None) {
-                Ok(value) => items[at] = value,
+            let value = match Value::coerce_into_slot(&items[at], value, None) {
+                Ok(value) => value,
                 Err(message) => return eval_error(message),
+            };
+            // The element's text counts toward the test's total in place of
+            // the text it held.
+            if let Err(message) = value::hold_bytes("Array element assignment", owned_bytes(&value))
+            {
+                return eval_error(message);
             }
+            value::release_held_bytes(owned_bytes(&items[at]));
+            items[at] = value;
         }
         Value::Text(text) | Value::Code(text) => {
             let mut replacement = match value {

@@ -6655,26 +6655,31 @@ const CYCLIC_COLLECTIONS: &str = r#"codeunit 50390 "Cyclic Collections"
 }
 "#;
 
-/// Run `proc` of [`CYCLIC_COLLECTIONS`] on a thread with the interpreter's
-/// stack, as the test backend does, so a test measures the runtime's own
-/// guards and not the 2 MiB stack of a test thread. A procedure that has not
-/// returned after 60 seconds fails the test, and its thread is left behind.
-fn run_cyclic(proc: &'static str) -> Eval {
+/// Run `proc` of the codeunit `object` in `source` on a thread with the
+/// interpreter's stack, as the test backend does, so a test measures the
+/// runtime's own guards and not the 2 MiB stack of a test thread. A procedure
+/// that has not returned after 60 seconds fails the test, and its thread is
+/// left behind.
+fn run_on_interpreter_stack(
+    source: &'static str,
+    object: &'static str,
+    proc: &'static str,
+    args: Vec<Value>,
+) -> Eval {
     let (done, result) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
         .spawn(move || {
-            let _ = done.send(run(
-                &[("/ws/Cyclic.al", CYCLIC_COLLECTIONS)],
-                "Cyclic Collections",
-                proc,
-                vec![],
-            ));
+            let _ = done.send(run(&[("/ws/Stack.al", source)], object, proc, args));
         })
         .expect("spawn the interpreter thread");
     result
         .recv_timeout(std::time::Duration::from_secs(60))
         .unwrap_or_else(|error| panic!("{proc} did not return: {error}"))
+}
+
+fn run_cyclic(proc: &'static str) -> Eval {
+    run_on_interpreter_stack(CYCLIC_COLLECTIONS, "Cyclic Collections", proc, vec![])
 }
 
 /// Comparing two lists that hold each other walked the cycle in `Value::cmp`
@@ -7429,4 +7434,475 @@ fn an_overload_is_chosen_by_the_object_of_its_codeunit_argument() {
         ok(run_subtype_overload("ByCodeunitOverload")),
         Value::Text("b:b|a:a".into())
     );
+}
+
+/// JSON values added to themselves or to a value they hold, the shapes of
+/// the round 13 finding R13-RT-2.
+const JSON_SELF_ADD: &str = r#"codeunit 50460 "Json Self Add"
+{
+    procedure ArrayAddedToItself(): Text
+    var
+        JA: JsonArray;
+        Out: Text;
+    begin
+        JA.Add(1);
+        JA.Add(JA);
+        JA.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure ArrayAddedToItselfTwice(): Text
+    var
+        JA: JsonArray;
+        Out: Text;
+    begin
+        JA.Add(1);
+        JA.Add(JA);
+        JA.Add(JA);
+        JA.WriteTo(Out);
+        exit(Format(JA.Count()) + ' ' + Out);
+    end;
+
+    procedure ObjectAddedToItself(): Text
+    var
+        JO: JsonObject;
+        Out: Text;
+    begin
+        JO.Add('a', 1);
+        JO.Add('self', JO);
+        JO.Replace('a', JO);
+        JO.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure ParentAddedToItsChild(): Text
+    var
+        JO: JsonObject;
+        JA: JsonArray;
+        Out: Text;
+        Child: Text;
+    begin
+        JO.Add('a', JA);
+        JA.Add(JO);
+        JA.Insert(0, JO);
+        JO.WriteTo(Out);
+        JA.WriteTo(Child);
+        exit(Out + ' ' + Child);
+    end;
+
+    procedure ArraySetToItself(): Text
+    var
+        JA: JsonArray;
+        Out: Text;
+    begin
+        JA.Add(1);
+        JA.Add(2);
+        JA.Set(1, JA);
+        JA.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure RootAddedToADeepChild(): Text
+    var
+        JO: JsonObject;
+        Mid: JsonObject;
+        Inner: JsonArray;
+        Token: JsonToken;
+        Deep: JsonArray;
+        Out: Text;
+    begin
+        Mid.Add('inner', Inner);
+        JO.Add('outer', Mid);
+        JO.SelectToken('$.outer.inner', Token);
+        Deep := Token.AsArray();
+        Deep.Add(JO);
+        JO.WriteTo(Out);
+        exit(Out);
+    end;
+}
+"#;
+
+fn run_json_self_add(proc: &'static str) -> Eval {
+    run_on_interpreter_stack(JSON_SELF_ADD, "Json Self Add", proc, vec![])
+}
+
+/// `JA.Add(JA)` put the array's own node among its items, so the next
+/// `Add` or `WriteTo` walked the cycle until the stack overflowed and the
+/// process aborted. A JSON value added to itself, or to a value it holds,
+/// is now copied first, as a value that already has a parent is.
+#[test]
+fn a_json_value_added_to_itself_is_added_as_a_copy() {
+    assert_eq!(
+        ok(run_json_self_add("ArrayAddedToItself")),
+        Value::Text("[1,[1]]".into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("ArrayAddedToItselfTwice")),
+        Value::Text("3 [1,[1],[1,[1]]]".into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("ObjectAddedToItself")),
+        Value::Text(r#"{"a":{"a":1,"self":{"a":1}},"self":{"a":1}}"#.into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("ArraySetToItself")),
+        Value::Text("[1,[1,2]]".into())
+    );
+}
+
+/// A root added to its child, and through a token to its grandchild, is
+/// added as a copy of the root as it was before the call.
+#[test]
+fn a_json_value_added_to_a_value_it_holds_is_added_as_a_copy() {
+    assert_eq!(
+        ok(run_json_self_add("ParentAddedToItsChild")),
+        Value::Text(r#"{"a":[{"a":[{"a":[]}]},{"a":[]}]} [{"a":[{"a":[]}]},{"a":[]}]"#.into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("RootAddedToADeepChild")),
+        Value::Text(r#"{"outer":{"inner":[{"outer":{"inner":[]}}]}}"#.into())
+    );
+}
+
+/// Lists nested one level per loop iteration, the shape of the round 13
+/// finding R13-RT-1.
+const DEEP_CHAINS: &str = r#"codeunit 50461 "Deep Chains"
+{
+    procedure CompareChains(Depth: Integer): Boolean
+    var
+        Cur: List of [Integer];
+        Prev: List of [Integer];
+        Other: List of [Integer];
+        OtherPrev: List of [Integer];
+        I: Integer;
+    begin
+        Cur.Add(1);
+        Other.Add(1);
+        for I := 1 to Depth do begin
+            Prev := Cur;
+            Clear(Cur);
+            Cur.Add(Prev);
+            OtherPrev := Other;
+            Clear(Other);
+            Other.Add(OtherPrev);
+        end;
+        exit(Cur = Other);
+    end;
+}
+"#;
+
+/// `Prev := Cur; Clear(Cur); Cur.Add(Prev)` in a loop nests a list one level
+/// per iteration, and comparing two such chains 40,000 deep overflowed the
+/// interpreter's stack and aborted the process.
+#[test]
+fn comparing_lists_nested_100000_deep_in_al_returns() {
+    assert_eq!(
+        ok(run_on_interpreter_stack(
+            DEEP_CHAINS,
+            "Deep Chains",
+            "CompareChains",
+            vec![Value::Integer(100_000)],
+        )),
+        Value::Boolean(true)
+    );
+}
+
+/// Copies of one large text kept in a List, a Dictionary, an array and a
+/// JsonArray, the shapes of the findings R13-RT-3 and SEC7-3. Each procedure
+/// catches the error and returns how many copies it had kept.
+const MANY_TEXTS: &str = r#"codeunit 50462 "Many Texts"
+{
+    procedure Doubled(): Text
+    var
+        T: Text;
+        I: Integer;
+    begin
+        T := 'x';
+        for I := 1 to 25 do
+            T := T + T;
+        exit(T);
+    end;
+
+    procedure InList(): Integer
+    var
+        L: List of [Text];
+        T: Text;
+        I: Integer;
+    begin
+        T := PadStr('', 16000000, 'x');
+        asserterror for I := 1 to 64 do
+            L.Add(T);
+        exit(L.Count());
+    end;
+
+    procedure InDictionary(): Integer
+    var
+        D: Dictionary of [Integer, Text];
+        T: Text;
+        I: Integer;
+    begin
+        T := PadStr('', 16000000, 'x');
+        asserterror for I := 1 to 64 do
+            D.Add(I, T);
+        exit(D.Count());
+    end;
+
+    procedure InArray(): Integer
+    var
+        Arr: array[32] of Text;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        asserterror for I := 1 to 32 do
+            Arr[I] := T;
+        exit(I - 1);
+    end;
+
+    procedure InJsonArray(): Integer
+    var
+        J: JsonArray;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        asserterror for I := 1 to 32 do
+            J.Add(T);
+        exit(J.Count());
+    end;
+
+    procedure InTextBuilders(): Integer
+    var
+        Builders: List of [TextBuilder];
+        B: TextBuilder;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        asserterror for I := 1 to 32 do begin
+            Clear(B);
+            B.Append(T);
+            Builders.Add(B);
+        end;
+        exit(Builders.Count());
+    end;
+
+    procedure Uncaught()
+    var
+        L: List of [Text];
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        for I := 1 to 32 do
+            L.Add(T);
+    end;
+
+    procedure AddAndRemove(): Integer
+    var
+        L: List of [Text];
+        D: Dictionary of [Integer, Text];
+        Arr: array[2] of Text;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        // Six copies of 32 MiB each time round, 1.5 GiB in all.
+        for I := 1 to 8 do begin
+            L.Add(T);
+            L.RemoveAt(1);
+            D.Set(1, T);
+            Arr[1] := T;
+            KeepInALocalList(T);
+            L.Add(T);
+            Clear(L);
+        end;
+        exit(L.Count());
+    end;
+
+    local procedure KeepInALocalList(T: Text)
+    var
+        Local: List of [Text];
+    begin
+        Local.Add(T);
+        Local.Add(T);
+    end;
+}
+"#;
+
+/// A test that keeps many copies of a text each under the one-value cap took
+/// memory at a gigabyte a second (R13-RT-3, SEC7-3). The copies a test's
+/// Lists, Dictionaries, arrays, TextBuilders and JSON values hold now count
+/// toward one total, and the addition that passes it is an AL error.
+#[test]
+fn copies_of_a_large_text_stop_at_the_test_budget() {
+    use crate::interpreter::value::MAX_HELD_BYTES;
+    // One procedure at a time, so the test holds one budget's worth.
+    for (procedure, text_bytes) in [
+        ("InList", 16_000_000),
+        ("InDictionary", 16_000_000),
+        ("InArray", 32 << 20),
+        ("InJsonArray", 32 << 20),
+        ("InTextBuilders", 32 << 20),
+    ] {
+        let kept = ok(run_on_interpreter_stack(
+            MANY_TEXTS,
+            "Many Texts",
+            procedure,
+            vec![],
+        ));
+        let Value::Integer(kept) = kept else {
+            panic!("{procedure} returned {kept:?}");
+        };
+        let kept = usize::try_from(kept).expect("a count");
+        assert!(kept >= 1, "{procedure} kept {kept}");
+        assert!(
+            kept * text_bytes <= MAX_HELD_BYTES,
+            "{procedure} kept {kept} copies of {text_bytes} bytes"
+        );
+    }
+    let message = error_message(run_on_interpreter_stack(
+        MANY_TEXTS,
+        "Many Texts",
+        "Uncaught",
+        vec![],
+    ));
+    assert!(message.contains("List.Add would make"), "{message}");
+    assert!(
+        message.contains("limit of 256 MiB for one test"),
+        "{message}"
+    );
+}
+
+/// Removing an element, replacing it, clearing a list and dropping a local
+/// list give their bytes back, so a test that passes a large text through
+/// its collections many times stays under the budget.
+#[test]
+fn removed_and_dropped_elements_leave_the_test_budget() {
+    assert_eq!(
+        ok(run_on_interpreter_stack(
+            MANY_TEXTS,
+            "Many Texts",
+            "AddAndRemove",
+            vec![],
+        )),
+        Value::Integer(0)
+    );
+}
+
+/// `Outer.Contains(Other)` where Outer holds a list of 50,000 numbers 50,000
+/// times and Other differs from it in the last number compares 2.5 billion
+/// elements in one statement. The deadline and the cancel flag were read only
+/// between loop iterations, so the test ran on for many minutes after the
+/// runner gave up on it (R13-RT-4). The search now stops at the element
+/// where the cancel flag is raised.
+#[test]
+fn a_cancel_request_stops_list_contains_on_a_list_of_lists() {
+    use crate::interpreter::scope::{CallFrame, ScopeStack};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    let (done, result) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+        .spawn(move || {
+            let inner: Vec<Value> = (1..=50_000).map(Value::Integer).collect();
+            let mut other = inner.clone();
+            other[49_999] = Value::Integer(0);
+            let inner = Value::list(inner);
+            let outer = Value::list(vec![inner; 50_000]);
+            let mut frame = CallFrame::new("Test", "Test");
+            frame.bind("Outer", outer);
+            let mut stack = ScopeStack::new();
+            stack.push(frame);
+            let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
+            ctx.set_cancel(flag);
+            let _ = done.send(crate::interpreter::records::dispatch_list_method(
+                "Outer",
+                "Contains",
+                vec![Value::list(other)],
+                false,
+                &mut stack,
+                &mut ctx,
+            ));
+        })
+        .expect("spawn the interpreter thread");
+    std::thread::sleep(Duration::from_millis(300));
+    let cancelled_at = Instant::now();
+    cancel.store(true, Ordering::Relaxed);
+    let message = error_message(
+        result
+            .recv_timeout(Duration::from_secs(30))
+            .expect("Contains returns once the test is cancelled"),
+    );
+    assert_eq!(message, "interpreter cancelled in List.contains");
+    assert!(
+        cancelled_at.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        cancelled_at.elapsed()
+    );
+}
+
+/// The three shapes of the security finding SEC7-5, each of which ended the
+/// test binary with a stack overflow before `child_for` copied a JSON value
+/// added to itself.
+const JSON_SELF_WRITE: &str = r#"codeunit 50463 "Json Self Write"
+{
+    procedure ArrayAddedToItself(): Integer
+    var
+        J: JsonArray;
+        T: Text;
+    begin
+        J.Add(J);
+        J.WriteTo(T);
+        exit(StrLen(T));
+    end;
+
+    procedure ObjectAddedToItself(): Integer
+    var
+        O: JsonObject;
+        T: Text;
+    begin
+        O.Add('self', O);
+        O.WriteTo(T);
+        exit(StrLen(T));
+    end;
+
+    procedure ArrayAddedAsItsOwnToken(): Integer
+    var
+        J: JsonArray;
+        K: JsonToken;
+        T: Text;
+    begin
+        K := J.AsToken();
+        J.Add(K);
+        J.WriteTo(T);
+        exit(StrLen(T));
+    end;
+}
+"#;
+
+/// `J.Add(J)`, `O.Add('self', O)` and `J.Add(J.AsToken())` each add a copy,
+/// and `WriteTo` returns the text of one level: `[[]]` and
+/// `{"self":{}}`.
+#[test]
+fn a_json_value_written_after_it_was_added_to_itself_returns() {
+    for (procedure, length) in [
+        ("ArrayAddedToItself", 4),
+        ("ObjectAddedToItself", 11),
+        ("ArrayAddedAsItsOwnToken", 4),
+    ] {
+        assert_eq!(
+            ok(run_on_interpreter_stack(
+                JSON_SELF_WRITE,
+                "Json Self Write",
+                procedure,
+                vec![],
+            )),
+            Value::Integer(length),
+            "{procedure}"
+        );
+    }
 }

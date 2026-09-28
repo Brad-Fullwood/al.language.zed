@@ -25,11 +25,17 @@ discover [Test] tests ──► router classifies each test ──► backend ex
 ## The interpreter (`crates/al-runtime`)
 
 The tree-walking interpreter executes tree-sitter AL trees on a thread with a 64 MiB stack. It caps
-call depth at 512 frames and statement and expression nesting at 2560 levels each, and checks for
-cancellation and the deadline in loops. A test that exceeds the call cap fails with a message saying
+call depth at 512 frames and statement and expression nesting at 2560 levels each. It checks for
+cancellation and the deadline at each loop iteration, and for cancellation at each element a
+comparison or a List search visits. A test that exceeds the call cap fails with a message saying
 the limit belongs to the local runner and suggesting a live BC run. One Text, Code or TextBuilder
-value holds at most 64 MiB, and one List, Dictionary or array at most 1,000,000 elements. An
-operation that would grow a value past either limit is an AL error that fails the test.
+value holds at most 64 MiB, and one List, Dictionary or array at most 1,000,000 elements. The
+Lists, Dictionaries, arrays, TextBuilders and JSON values of one test hold at most 256 MiB together:
+a List or Dictionary element counts 56 bytes and the bytes of the text it holds from when it is
+added until it is removed or its List or Dictionary is dropped, a TextBuilder counts its text, an
+array element counts the text assigned to it until the test ends or another text replaces it, and
+a JSON node counts until the test ends. An operation that would grow a value past one of these
+limits is an AL error that fails the test.
 
 **Values (`interpreter/value.rs`):** Integer, BigInteger, Decimal, Boolean, Char, Text, Code,
 TextBuilder, Date/Time/DateTime/Duration, Guid, Option, Variant, Record, RecordRef, Codeunit, Array,
@@ -109,7 +115,10 @@ Instance methods that run locally:
 - JSON: `JsonObject`, `JsonArray`, `JsonToken` and `JsonValue` are references, as in AL. `B := A`
   shares one node, a token from `Get` changes its parent, and `ReadFrom` gives the variable a new
   node and leaves the old one where it was, so an alias made before the `ReadFrom` still sees the
-  old value. Objects support `Add`, `Get`, `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the
+  old value. `Add`, `Insert`, `Set` and `Replace` add a copy of a value that already sits in an
+  object or array, and of the container itself or a value that holds it (`JA.Add(JA)`), so a JSON
+  value never holds itself. `WriteTo`, `Clone` and the copy `Add` makes fail with an error on a value
+  nested more than 10,000 levels deep. Objects support `Add`, `Get`, `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the
   typed getters, where `GetText`, `GetInteger` and the rest honour a second `DefaultIfNotFound`
   argument. Arrays support `Add`, `Get` (0-based), `Count`, `Insert`, `Set`, `RemoveAt`, `IndexOf`.
   Tokens support `IsObject`/`AsObject` and the like. Values support `AsText`, `AsInteger`,
@@ -213,7 +222,8 @@ access, PureLogic fails with a capability error instead of running it against th
 - **Entry points:** single-codeunit, batch, automatic/MCP, and TUI runs use the same router.
 - **Backends:** InterpMode executes the test bodies with per-test deadlines (30 s by default) and
   parallel codeunit support. A test body still running 5 s after its deadline fails with a message
-  saying the runner stopped waiting for it, and the run goes on to the next test. LiveBcMode calls
+  saying the runner stopped waiting for it, and the run goes on to the next test. The runner then
+  raises the test's cancel flag, so the body stops at its next check. LiveBcMode calls
   `POST /dev/tests/{codeunit}/run` with basic/bearer/Windows authentication.
 - **Lifecycle/handlers:** initialize, test, and cleanup share one per-test record context. Cleanup
   always runs. MessageHandler, ConfirmHandler, StrMenuHandler, and HyperlinkHandler execute locally

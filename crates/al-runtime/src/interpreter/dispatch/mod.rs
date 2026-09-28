@@ -50,6 +50,25 @@ use crate::interpreter::records::RecordStore;
 use crate::interpreter::scope::CallFrame;
 use crate::interpreter::value::{ErrorInfo, Value};
 
+thread_local! {
+    /// The cancel flag of the test running on this thread, for the steps
+    /// that have no [`DispatchCtx`] to read it from, such as comparing two
+    /// values.
+    static THREAD_CANCEL: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Whether the cancel flag [`DispatchCtx::set_cancel`] gave this thread is
+/// raised. A comparison or search that reads it stops early, and the step
+/// that called it ends the test with the cancel error.
+pub(crate) fn thread_cancelled() -> bool {
+    THREAD_CANCEL.with(|flag| {
+        flag.borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+    })
+}
+
 /// Stack size for the thread an interpreted AL body runs on.
 ///
 /// Each interpreted call level is a dispatch→eval_stmt→eval_expr native frame
@@ -278,6 +297,14 @@ impl DispatchCtx {
             Some(d) => std::time::Instant::now() >= d,
             None => false,
         }
+    }
+
+    /// Watch `flag` for a cancel request: loops read it at each iteration,
+    /// and comparisons and list searches on this thread read it at each
+    /// element.
+    pub fn set_cancel(&mut self, flag: Arc<std::sync::atomic::AtomicBool>) {
+        THREAD_CANCEL.with(|thread_flag| *thread_flag.borrow_mut() = Some(Arc::clone(&flag)));
+        self.cancel = Some(flag);
     }
 
     /// True when an external cancel signal has been raised. Cheap atomic
