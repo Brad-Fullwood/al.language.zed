@@ -2,10 +2,11 @@
 #
 # Called from the SessionStart hook (al-session-context.sh) when al-bin.sh
 # would otherwise fail: neither al-lsp nor al-explorer is on PATH or in the
-# plugin's own cache directory. Downloads the platform release archive,
-# verifies every file it contains against the release's published
-# binary-checksums.txt, and only then installs it. Nothing reaches the
-# install directory before its digest matches.
+# plugin's own cache directory. Downloads the release's binary-checksums.txt,
+# checks its SHA-256 against the digest pinned below beside the release tag,
+# then downloads the platform release archive, verifies every file it
+# contains against that listing, and only then installs it. Nothing reaches
+# the install directory before its digest matches.
 #
 # A message always goes to stderr. When there is something the calling
 # session should know (installed, or refused for an actionable reason), the
@@ -37,9 +38,30 @@ BINARY_CHECKSUMS_ASSET="binary-checksums.txt"
 # Bump this only after cutting a release built from a release.yml that
 # publishes binary-checksums.txt (see BINARY_CHECKSUMS_ASSET in src/lib.rs and
 # the "Collect per-binary checksums" step in .github/workflows/release.yml).
-# v0.2.2 predates that asset, so a download against it refuses below at the
-# "release does not publish" step rather than skipping verification.
 AL_PIN_RELEASE_TAG="${AL_PIN_RELEASE_TAG:-v0.2.2}"
+
+# The SHA-256 of the binary-checksums.txt that AL_PIN_RELEASE_TAG published.
+# A tag names a release, and anyone with write access to the repository can
+# upload the release's assets again or move the tag, so the tag alone pins no
+# bytes. This digest pins the listing, and the listing pins every file in the
+# archive. A listing whose digest differs is refused before the archive is
+# fetched.
+#
+# v0.2.2 publishes no binary-checksums.txt, so the pin holds the placeholder
+# "unset" and every download refuses until a release publishes the file and
+# the pin is filled. When bumping the tag, fill the pin from the new release:
+#
+#   gh release download <tag> --repo Brad-Fullwood/al.language.zed \
+#     --pattern binary-checksums.txt --dir /tmp/al-pin
+#   gh attestation verify /tmp/al-pin/binary-checksums.txt \
+#     --repo Brad-Fullwood/al.language.zed
+#   sha256sum /tmp/al-pin/binary-checksums.txt
+#
+# The attestation step checks that the file came out of release.yml, which
+# attests every name in checksums.txt, binary-checksums.txt included. Set
+# AL_PIN_RELEASE_TAG and this pin together: the environment can override
+# both, and a tag override needs the digest of that tag's listing.
+AL_PIN_CHECKSUMS_SHA256="${AL_PIN_CHECKSUMS_SHA256:-unset}"
 
 log() {
 	printf 'al-fetch-release: %s\n' "$1" >&2
@@ -181,10 +203,30 @@ fetch() {
 		-o "$2" "$1"
 }
 
+pin_ok=0
+case "$AL_PIN_CHECKSUMS_SHA256" in
+*[!0-9a-f]*) ;;
+*) [ "${#AL_PIN_CHECKSUMS_SHA256}" -eq 64 ] && pin_ok=1 ;;
+esac
+if [ "$pin_ok" -ne 1 ]; then
+	report "no $BINARY_CHECKSUMS_ASSET digest is pinned for release $AL_PIN_RELEASE_TAG (AL_PIN_CHECKSUMS_SHA256 is '$AL_PIN_CHECKSUMS_SHA256'). The release must publish $BINARY_CHECKSUMS_ASSET and its SHA-256 must be filled into AL_PIN_CHECKSUMS_SHA256 in al-fetch-release.sh. Nothing was downloaded"
+	exit 0
+fi
+
 checksums_path="$work_dir/$BINARY_CHECKSUMS_ASSET"
 checksums_url="$base_url/$BINARY_CHECKSUMS_ASSET"
 if ! fetch "$checksums_url" "$checksums_path" || [ ! -s "$checksums_path" ]; then
 	report "release $AL_PIN_RELEASE_TAG does not publish $BINARY_CHECKSUMS_ASSET ($checksums_url); refusing to install an archive with nothing to verify it against"
+	exit 0
+fi
+
+listing_digest="$(sha256_of "$checksums_path")"
+if [ -z "$listing_digest" ]; then
+	report "no sha256sum or shasum on PATH, so $BINARY_CHECKSUMS_ASSET cannot be checked against the pin. Nothing was installed"
+	exit 0
+fi
+if [ "$listing_digest" != "$AL_PIN_CHECKSUMS_SHA256" ]; then
+	report "$BINARY_CHECKSUMS_ASSET from release $AL_PIN_RELEASE_TAG has SHA-256 $listing_digest, and al-fetch-release.sh pins $AL_PIN_CHECKSUMS_SHA256 for that tag. The listing is not the one pinned, so the archive was not downloaded and nothing was installed"
 	exit 0
 fi
 

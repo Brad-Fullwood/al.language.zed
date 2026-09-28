@@ -165,9 +165,10 @@ next to itself first.
 
 If none of those has both binaries, the `SessionStart` hook tries one more
 thing before `al-bin.sh` has to print installation instructions: it downloads
-the release archive for the current platform, checks every file it contains
-against the release's published `binary-checksums.txt`, and only on a match
-extracts it into `$CLAUDE_PLUGIN_DATA/bin`. It fetches over https only, never
+the pinned release's `binary-checksums.txt`, checks its SHA-256 against the
+digest pinned in the script beside the tag, downloads the release archive for
+the current platform, checks every file it contains against that listing, and
+only on a match extracts it into `$CLAUDE_PLUGIN_DATA/bin`. It fetches over https only, never
 makes anything executable before its digest matches, and never touches the
 network at all once both binaries are found. See `plugin/TESTING.md` for what
 it does on a refusal and how it was tested.

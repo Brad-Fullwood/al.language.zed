@@ -8,6 +8,8 @@
 #   report does not claim anything was installed.
 #   An archive that lacks a file the listing names under the archive's name
 #   is refused.
+#   With no listing digest pinned, or a listing whose digest differs from the
+#   pin, nothing is downloaded past the listing.
 #   A missing or mismatched al-lsp skips an eval case by name, with the
 #   reason al-explorer gave.
 #
@@ -106,13 +108,42 @@ while [ "$i" -lt 50 ]; do
 done
 [ "$ready" -eq 1 ] || fail "local http server on $base_url did not come up"
 
-# $1 = CLAUDE_PLUGIN_DATA for this attempt.
-run_fetch() {
+# $1 = CLAUDE_PLUGIN_DATA for this attempt, $2 = AL_PIN_CHECKSUMS_SHA256.
+run_fetch_pinned() {
 	PATH="$test_path" \
 		CLAUDE_PLUGIN_DATA="$1" \
 		AL_RELEASE_BASE_URL="$base_url" \
 		AL_ALLOW_INSECURE_RELEASE_URL=1 \
+		AL_PIN_CHECKSUMS_SHA256="$2" \
 		bash "$fetch_script"
+}
+
+# $1 = CLAUDE_PLUGIN_DATA for this attempt. Pins the listing being served, so
+# the scenarios that test the archive get past the pin check.
+run_fetch() {
+	run_fetch_pinned "$1" "$(sha256_of "$serve_dir/binary-checksums.txt")"
+}
+
+# How many times the server has been asked for the archive so far.
+archive_requests() {
+	grep -cF "\"GET /$asset_name " "$work/server.log" || true
+}
+
+# $1 = directory to write al-explorer and al-lsp into, $2 = text that sets
+# this release's bytes apart. Serves the pair as the archive and writes the
+# listing for it.
+serve_release() {
+	local stage="$1" marker="$2"
+	rm -rf "$stage"
+	mkdir -p "$stage"
+	printf '#!/bin/sh\necho "explorer %s"\n' "$marker" >"$stage/al-explorer"
+	printf '#!/bin/sh\necho "lsp %s"\n' "$marker" >"$stage/al-lsp"
+	chmod +x "$stage/al-explorer" "$stage/al-lsp"
+	(cd "$stage" && tar -czf "$serve_dir/$asset_name" al-explorer al-lsp)
+	{
+		printf '%s  %s/al-explorer\n' "$(sha256_of "$stage/al-explorer")" "$asset_name"
+		printf '%s  %s/al-lsp\n' "$(sha256_of "$stage/al-lsp")" "$asset_name"
+	} >"$serve_dir/binary-checksums.txt"
 }
 
 # ── a symlinked al-lsp is refused ───────────────────────────────────
@@ -222,6 +253,68 @@ scenario_missing_listed_file() {
 	[ ! -d "$data/bin" ] ||
 		fail "missing listed file: something was installed into $data/bin"
 	pass "an archive that lacks a listed bridge file is refused, not installed"
+}
+
+# ── with no pinned listing digest nothing is downloaded ─────────────
+# The shipped pin is a placeholder until a release publishes
+# binary-checksums.txt, and the script refuses before any request.
+scenario_unpinned_listing() {
+	local data="$work/data-unpinned" out rc before
+	rm -rf "$data"
+	serve_release "$work/stage-unpinned" unpinned
+	before="$(archive_requests)"
+
+	out="$(env -u AL_PIN_CHECKSUMS_SHA256 PATH="$test_path" \
+		CLAUDE_PLUGIN_DATA="$data" \
+		AL_RELEASE_BASE_URL="$base_url" \
+		AL_ALLOW_INSECURE_RELEASE_URL=1 \
+		bash "$fetch_script" 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] || fail "unpinned listing: al-fetch-release.sh exited $rc, its contract is always 0. Output: $out"
+	printf '%s\n' "$out" | grep -qF "must publish binary-checksums.txt and its SHA-256 must be filled into AL_PIN_CHECKSUMS_SHA256" ||
+		fail "unpinned listing: expected a refusal asking for the pin to be filled. Output: $out"
+	[ "$(archive_requests)" = "$before" ] ||
+		fail "unpinned listing: the archive was requested although no listing digest is pinned"
+	[ ! -d "$data/bin" ] ||
+		fail "unpinned listing: something was installed into $data/bin"
+	pass "with no pinned listing digest nothing is downloaded or installed"
+}
+
+# ── a second release under the pinned tag is refused ────────────────
+# Release A installs with its listing pinned. Release D replaces it under the
+# same tag with other binaries and a listing that matches them, which is what
+# deleting and uploading the assets again, or moving the tag, produces. The
+# pin still names A's listing, so D is refused before its archive is fetched.
+scenario_replaced_release() {
+	local data_a="$work/data-release-a" data_d="$work/data-release-d" \
+		pin_a listing_d out rc before
+	rm -rf "$data_a" "$data_d"
+	serve_release "$work/stage-release-a" original
+	pin_a="$(sha256_of "$serve_dir/binary-checksums.txt")"
+
+	out="$(run_fetch_pinned "$data_a" "$pin_a" 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] || fail "replaced release: al-fetch-release.sh exited $rc on release A. Output: $out"
+	[ "$("$data_a/bin/al-lsp")" = "lsp original" ] ||
+		fail "replaced release: the pinned release A did not install. Output: $out"
+
+	serve_release "$work/stage-release-d" REPLACED
+	listing_d="$(sha256_of "$serve_dir/binary-checksums.txt")"
+	[ "$listing_d" != "$pin_a" ] || fail "replaced release: release D's listing matches A's"
+	before="$(archive_requests)"
+
+	out="$(run_fetch_pinned "$data_d" "$pin_a" 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] || fail "replaced release: al-fetch-release.sh exited $rc on release D. Output: $out"
+	printf '%s\n' "$out" | grep -qF "$listing_d" ||
+		fail "replaced release: expected the refusal to name release D's listing digest $listing_d. Output: $out"
+	printf '%s\n' "$out" | grep -qF "$pin_a" ||
+		fail "replaced release: expected the refusal to name the pinned digest $pin_a. Output: $out"
+	if printf '%s\n' "$out" | grep -qF "installed al-lsp and al-explorer"; then
+		fail "replaced release: release D was reported installed. Output: $out"
+	fi
+	[ "$(archive_requests)" = "$before" ] ||
+		fail "replaced release: release D's archive was requested after its listing failed the pin"
+	[ ! -d "$data_d/bin" ] ||
+		fail "replaced release: something was installed into $data_d/bin"
+	pass "a second release under the pinned tag is refused, naming both listing digests"
 }
 
 # run.sh now asks al-explorer itself whether al-lsp is usable (a preflight
@@ -341,6 +434,8 @@ scenario_symlink_member
 scenario_directory_member
 scenario_failed_install_step
 scenario_missing_listed_file
+scenario_unpinned_listing
+scenario_replaced_release
 scenario_missing_al_lsp_eval
 scenario_mismatched_al_lsp_eval
 
