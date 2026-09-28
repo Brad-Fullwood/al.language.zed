@@ -1,5 +1,6 @@
 //! Symbol-lookup and dependency queries: search, object/by-id lookup, events/subscribers, composed objects, packages, and deps.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use crate::cli::commands::*;
@@ -25,7 +26,7 @@ pub fn cmd_search(query: &str, limit: Option<usize>, json: bool) -> ExitCode {
             } else {
                 let entries = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if entries.is_empty() {
-                    eprintln!("No results for '{query}'");
+                    eprintln!("No results for '{}'", terminal_text(query));
                     return ExitCode::SUCCESS;
                 }
                 print!("{}", search_table_text(entries));
@@ -39,7 +40,6 @@ pub fn cmd_search(query: &str, limit: Option<usize>, json: bool) -> ExitCode {
 
 /// The table `search` prints, a header and one row per entry.
 fn search_table_text(entries: &[serde_json::Value]) -> String {
-    use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -132,45 +132,61 @@ pub fn cmd_source(
             if json {
                 print_json(&result);
             } else if list_procedures {
-                let members = result
-                    .get("members")
-                    .and_then(|value| value.as_array())
-                    .map(|value| &value[..])
-                    .unwrap_or(&[]);
-                println!("{} members of '{name}':", members.len());
-                for member in members {
-                    let start = member
-                        .get("startLine")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let end = member.get("endLine").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let signature = member
-                        .get("signature")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    println!("  {start:>6}-{end:<6} {signature}");
-                }
+                print!("{}", source_members_text(name, &result));
             } else {
-                let availability = result
-                    .get("source_availability")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("unknown")
-                    .replace('_', " ");
-                let package = result.get("pkg").and_then(|value| value.as_str());
-                match package {
-                    Some(package) => println!("Source: {availability} ({package})"),
-                    None => println!("Source: {availability}"),
-                }
+                print!("{}", source_origin_text(&result));
                 if let Some(note) = result.get("note").and_then(|value| value.as_str()) {
-                    eprintln!("Note: {note}");
+                    eprintln!("Note: {}", terminal_text(note));
                 }
-                if let Some(code) = result.get("code").and_then(|value| value.as_str()) {
-                    println!("\n{code}");
-                }
+                print!("{}", source_code_text(&result));
             }
             ExitCode::SUCCESS
         }
         Err(error) => report_error(&error, json),
+    }
+}
+
+/// The member list `source --list-procedures` prints.
+fn source_members_text(name: &str, result: &serde_json::Value) -> String {
+    let members = result
+        .get("members")
+        .and_then(|value| value.as_array())
+        .map(|value| &value[..])
+        .unwrap_or(&[]);
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{} members of '{}':",
+        members.len(),
+        terminal_text(name)
+    );
+    for member in members {
+        let start = member
+            .get("startLine")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let end = member.get("endLine").and_then(|v| v.as_u64()).unwrap_or(0);
+        let signature = text_field(member, "signature", "?");
+        let _ = writeln!(out, "  {start:>6}-{end:<6} {signature}");
+    }
+    out
+}
+
+/// The line `source` prints before the code: where the source comes from.
+fn source_origin_text(result: &serde_json::Value) -> String {
+    let availability = text_field(result, "source_availability", "unknown").replace('_', " ");
+    match result.get("pkg").and_then(|value| value.as_str()) {
+        Some(package) => format!("Source: {availability} ({})\n", terminal_text(package)),
+        None => format!("Source: {availability}\n"),
+    }
+}
+
+/// The code `source` prints, after a blank line, with its line breaks and
+/// tabs kept.
+fn source_code_text(result: &serde_json::Value) -> String {
+    match result.get("code").and_then(|value| value.as_str()) {
+        Some(code) => format!("\n{}\n", terminal_lines(code)),
+        None => String::new(),
     }
 }
 
@@ -200,28 +216,29 @@ pub fn cmd_location(name: &str, kind: Option<&str>, package: Option<&str>, json:
             if json {
                 print_json(&result);
             } else {
-                // A package object is materialised as a virtual .al file, so
-                // there is a real path either way.
-                let path = result
-                    .get("path")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("?");
-                let line = result
-                    .get("line")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(1);
-                println!("{path}:{line}");
+                print!("{}", location_text(&result));
                 if let Some(availability) = result
                     .get("source_availability")
                     .and_then(|value| value.as_str())
                 {
-                    eprintln!("Source: {}", availability.replace('_', " "));
+                    eprintln!("Source: {}", terminal_text(availability).replace('_', " "));
                 }
             }
             ExitCode::SUCCESS
         }
         Err(error) => report_error(&error, json),
     }
+}
+
+/// The `path:line` that `location` prints. A package object is materialised
+/// as a virtual .al file, so there is a real path either way.
+fn location_text(result: &serde_json::Value) -> String {
+    let path = text_field(result, "path", "?");
+    let line = result
+        .get("line")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(1);
+    format!("{path}:{line}\n")
 }
 
 pub fn cmd_events(name: &str, json: bool) -> ExitCode {
@@ -237,7 +254,7 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
             } else {
                 let events = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if events.is_empty() {
-                    eprintln!("No event publishers matching '{name}'");
+                    eprintln!("No event publishers matching '{}'", terminal_text(name));
                     return ExitCode::SUCCESS;
                 }
                 // enrich each publisher with its workspace subscribers
@@ -245,20 +262,9 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
                 // extra daemon round-trip per distinct event name, capped.
                 const SUBSCRIBER_LOOKUP_CAP: usize = 25;
                 for (i, e) in events.iter().enumerate() {
-                    let obj_kind = e.get("objectKind").and_then(|v| v.as_str()).unwrap_or("?");
                     let obj_name = e.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
                     let method = e.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
-                    let event_type = e.get("eventType").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("[{event_type}] {obj_kind} \"{obj_name}\".{method}");
-                    if let Some(params) = e.get("parameters").and_then(|v| v.as_array()) {
-                        for p in params {
-                            let pname = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let ptype = p.get("type_name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let is_var = p.get("is_var").and_then(|v| v.as_bool()).unwrap_or(false);
-                            let var_prefix = if is_var { "var " } else { "" };
-                            println!("  {var_prefix}{pname}: {ptype}");
-                        }
-                    }
+                    print!("{}", event_publisher_text(e));
                     if i < SUBSCRIBER_LOOKUP_CAP {
                         let subs = match request_checked(
                             &mut client,
@@ -286,20 +292,7 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
                                     .is_some_and(|t| t.eq_ignore_ascii_case(obj_name))
                             })
                             .collect();
-                        if mine.is_empty() {
-                            println!("  ← no workspace subscribers");
-                        }
-                        for s in mine {
-                            let sobj = s
-                                .get("objectName")
-                                .and_then(|v| v.as_str())
-                                .expect("checked subscriber has objectName");
-                            let smethod = s
-                                .get("methodName")
-                                .and_then(|v| v.as_str())
-                                .expect("checked subscriber has methodName");
-                            println!("  ← subscribed by {sobj}.{smethod}");
-                        }
+                        print!("{}", workspace_subscribers_text(&mine));
                     }
                 }
                 if events.len() > SUBSCRIBER_LOOKUP_CAP {
@@ -321,6 +314,42 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
     }
 }
 
+/// The lines `events` prints for one publisher: the event and its
+/// parameters.
+fn event_publisher_text(event: &serde_json::Value) -> String {
+    let mut out = String::new();
+    let obj_kind = text_field(event, "objectKind", "?");
+    let obj_name = text_field(event, "objectName", "?");
+    let method = text_field(event, "methodName", "?");
+    let event_type = text_field(event, "eventType", "?");
+    let _ = writeln!(out, "[{event_type}] {obj_kind} \"{obj_name}\".{method}");
+    if let Some(params) = event.get("parameters").and_then(|v| v.as_array()) {
+        for p in params {
+            let pname = text_field(p, "name", "?");
+            let ptype = text_field(p, "type_name", "?");
+            let is_var = p.get("is_var").and_then(|v| v.as_bool()).unwrap_or(false);
+            let var_prefix = if is_var { "var " } else { "" };
+            let _ = writeln!(out, "  {var_prefix}{pname}: {ptype}");
+        }
+    }
+    out
+}
+
+/// The lines `events` prints under a publisher for the workspace
+/// subscribers of its event.
+fn workspace_subscribers_text(subscribers: &[&serde_json::Value]) -> String {
+    if subscribers.is_empty() {
+        return "  ← no workspace subscribers\n".to_string();
+    }
+    let mut out = String::new();
+    for s in subscribers {
+        let sobj = text_field(s, "objectName", "?");
+        let smethod = text_field(s, "methodName", "?");
+        let _ = writeln!(out, "  ← subscribed by {sobj}.{smethod}");
+    }
+    out
+}
+
 pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -334,26 +363,10 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
             } else {
                 let subs = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if subs.is_empty() {
-                    eprintln!("No subscribers for '{event}'");
+                    eprintln!("No subscribers for '{}'", terminal_text(event));
                     return ExitCode::SUCCESS;
                 }
-                for s in subs {
-                    let obj = s.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
-                    let method = s.get("methodName").and_then(|v| v.as_str()).unwrap_or("?");
-                    let target_type = s
-                        .get("targetObjectType")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let target_name = s
-                        .get("targetObjectName")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let target_event = s
-                        .get("targetEventName")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    println!("{obj}.{method} → {target_type}::{target_name}.{target_event}");
-                }
+                print!("{}", subscribers_text(subs));
                 eprintln!("\n{} subscribers", subs.len());
                 // be explicit about coverage — Microsoft symbol
                 // packages strip EventSubscriber attributes, so package
@@ -368,6 +381,24 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// The lines `subscribers` prints, one per subscriber and the event it
+/// subscribes to.
+fn subscribers_text(subscribers: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for s in subscribers {
+        let obj = text_field(s, "objectName", "?");
+        let method = text_field(s, "methodName", "?");
+        let target_type = text_field(s, "targetObjectType", "?");
+        let target_name = text_field(s, "targetObjectName", "?");
+        let target_event = text_field(s, "targetEventName", "?");
+        let _ = writeln!(
+            out,
+            "{obj}.{method} → {target_type}::{target_name}.{target_event}"
+        );
+    }
+    out
 }
 
 /// /resolve and show the actual publisher declaration behind the
@@ -389,30 +420,13 @@ pub fn cmd_event_source(file: &str, line: u32, json: bool) -> ExitCode {
                 print_json(&result);
                 return exit_code;
             }
-            let kind = result
-                .get("targetKind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let obj = result
-                .get("targetObject")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            let evt = result
-                .get("targetEvent")
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
-            println!("Publisher: {kind} \"{obj}\" — event {evt}");
-            if let Some(sig) = result.get("signature").and_then(|v| v.as_str()) {
-                println!("  {sig}");
-            }
-            if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
-                let decl_line = result.get("line").and_then(|v| v.as_u64()).unwrap_or(1);
-                println!("  at {path}:{decl_line}");
+            print!("{}", event_source_text(&result));
+            if result.get("path").and_then(|v| v.as_str()).is_some() {
                 if let Some(availability) = result
                     .get("sourceAvailability")
                     .and_then(|value| value.as_str())
                 {
-                    eprintln!("  ({})", availability.replace('_', " "));
+                    eprintln!("  ({})", terminal_text(availability).replace('_', " "));
                 }
                 if result
                     .get("fromPackage")
@@ -424,13 +438,31 @@ pub fn cmd_event_source(file: &str, line: u32, json: bool) -> ExitCode {
                 ExitCode::SUCCESS
             } else {
                 if let Some(note) = result.get("note").and_then(|v| v.as_str()) {
-                    eprintln!("{note}");
+                    eprintln!("{}", terminal_text(note));
                 }
                 ExitCode::FAILURE
             }
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// The lines `event-source` prints: the publisher, its signature and where
+/// it is declared.
+fn event_source_text(result: &serde_json::Value) -> String {
+    let mut out = String::new();
+    let kind = text_field(result, "targetKind", "");
+    let obj = text_field(result, "targetObject", "?");
+    let evt = text_field(result, "targetEvent", "?");
+    let _ = writeln!(out, "Publisher: {kind} \"{obj}\" — event {evt}");
+    if let Some(sig) = result.get("signature").and_then(|v| v.as_str()) {
+        let _ = writeln!(out, "  {}", terminal_text(sig));
+    }
+    if let Some(path) = result.get("path").and_then(|v| v.as_str()) {
+        let decl_line = result.get("line").and_then(|v| v.as_u64()).unwrap_or(1);
+        let _ = writeln!(out, "  at {}:{decl_line}", terminal_text(path));
+    }
+    out
 }
 
 fn event_source_exit_code(result: &serde_json::Value) -> ExitCode {
@@ -462,30 +494,38 @@ pub fn cmd_composed(kind_or_name: &str, name: Option<&str>, json: bool) -> ExitC
             if json {
                 print_json(&result);
             } else {
-                if let Some(base) = result.get("base") {
-                    let bname = base.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let bkind = base.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("Base: {bkind} \"{bname}\"");
-                }
-                if let Some(exts) = result.get("extensions").and_then(|v| v.as_array()) {
-                    println!("Extensions: {}", exts.len());
-                    for ext in exts {
-                        let ename = ext.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let epkg = ext.get("package").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("  - \"{ename}\" ({epkg})");
-                    }
-                }
-                if let Some(fields) = result.get("all_fields").and_then(|v| v.as_array()) {
-                    println!("Total fields: {}", fields.len());
-                }
-                if let Some(methods) = result.get("all_methods").and_then(|v| v.as_array()) {
-                    println!("Total methods: {}", methods.len());
-                }
+                print!("{}", composed_text(&result));
             }
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// The text `composed` prints: the base object, its extensions and the
+/// field and method totals.
+fn composed_text(result: &serde_json::Value) -> String {
+    let mut out = String::new();
+    if let Some(base) = result.get("base") {
+        let bname = text_field(base, "name", "?");
+        let bkind = text_field(base, "kind", "?");
+        let _ = writeln!(out, "Base: {bkind} \"{bname}\"");
+    }
+    if let Some(exts) = result.get("extensions").and_then(|v| v.as_array()) {
+        let _ = writeln!(out, "Extensions: {}", exts.len());
+        for ext in exts {
+            let ename = text_field(ext, "name", "?");
+            let epkg = text_field(ext, "package", "?");
+            let _ = writeln!(out, "  - \"{ename}\" ({epkg})");
+        }
+    }
+    if let Some(fields) = result.get("all_fields").and_then(|v| v.as_array()) {
+        let _ = writeln!(out, "Total fields: {}", fields.len());
+    }
+    if let Some(methods) = result.get("all_methods").and_then(|v| v.as_array()) {
+        let _ = writeln!(out, "Total methods: {}", methods.len());
+    }
+    out
 }
 
 pub fn cmd_packages(json: bool) -> ExitCode {
@@ -515,7 +555,6 @@ pub fn cmd_packages(json: bool) -> ExitCode {
 
 /// The table `packages` prints, and the sum of the packages' object counts.
 fn packages_table_text(pkgs: &[serde_json::Value]) -> (String, u64) {
-    use std::fmt::Write as _;
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -560,7 +599,6 @@ pub fn cmd_deps(json: bool) -> ExitCode {
 
 /// The text `deps` prints: the project, its explicit dependencies, the total.
 fn deps_text(result: &serde_json::Value) -> String {
-    use std::fmt::Write as _;
     let mut out = String::new();
     if let Some(proj) = result.get("project") {
         let name = text_field(proj, "name", "?");
@@ -609,7 +647,11 @@ mod exit_status_tests {
 
 #[cfg(test)]
 mod terminal_text_tests {
-    use super::{deps_text, packages_table_text, search_table_text};
+    use super::{
+        composed_text, deps_text, event_publisher_text, event_source_text, location_text,
+        packages_table_text, search_table_text, source_code_text, source_members_text,
+        source_origin_text, subscribers_text, workspace_subscribers_text,
+    };
 
     const CRAFTED_NAME: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
     const ESCAPED_NAME: &str = r"Bad\u{1b}[31m Name\u{1b}[0m";
@@ -680,6 +722,120 @@ mod terminal_text_tests {
         );
         assert!(
             text.contains(r"  Dep\u{1b}[2J\u{1b}[H Missing by X v1.0.0.0"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn source_and_location_print_a_crafted_name_escaped_and_keep_the_code_lines() {
+        let result = serde_json::json!({
+            "members": [{"startLine": 3, "endLine": 9, "signature": CRAFTED_NAME}]
+        });
+        let text = source_members_text("Sec7\u{1b}[2J", &result);
+        assert_no_raw_control(&text);
+        assert!(
+            text.contains(r"1 members of 'Sec7\u{1b}[2J':"),
+            "got: {text}"
+        );
+        assert!(text.contains(ESCAPED_NAME), "got: {text}");
+
+        let result = serde_json::json!({
+            "source_availability": "embedded_source",
+            "pkg": "Pub\u{1b}]0;pwned\u{7}",
+            "code": "codeunit 50170 \"Bad\u{1b}[31m Name\"\n{\n\tprocedure Run()\n}"
+        });
+        let text = source_origin_text(&result);
+        assert_eq!(text, "Source: embedded source (Pub\\u{1b}]0;pwned\\u{7})\n");
+        let code = source_code_text(&result);
+        assert!(
+            !code.contains('\u{1b}') && code.contains("\n\tprocedure Run()\n"),
+            "got: {code:?}"
+        );
+        assert!(code.contains(r#""Bad\u{1b}[31m Name""#), "got: {code}");
+
+        let text = location_text(&serde_json::json!({"path": CRAFTED_NAME, "line": 4}));
+        assert_eq!(text, format!("{ESCAPED_NAME}:4\n"));
+    }
+
+    #[test]
+    fn events_subscribers_and_event_source_print_crafted_names_escaped() {
+        let publisher = serde_json::json!({
+            "objectKind": "Codeunit",
+            "objectName": CRAFTED_NAME,
+            "methodName": "OnRun\u{1b}[2J",
+            "eventType": "IntegrationEvent",
+            "parameters": [{"name": "Rec\u{1b}[H", "type_name": "Record", "is_var": true}]
+        });
+        let text = event_publisher_text(&publisher);
+        assert_no_raw_control(&text);
+        assert!(
+            text.contains(
+                r#"[IntegrationEvent] Codeunit "Bad\u{1b}[31m Name\u{1b}[0m".OnRun\u{1b}[2J"#
+            ),
+            "got: {text}"
+        );
+        assert!(text.contains(r"  var Rec\u{1b}[H: Record"), "got: {text}");
+
+        let subscriber = serde_json::json!({
+            "objectName": "Sec7 Caller\u{1b}]0;pwned\u{7}",
+            "methodName": "OnAfter",
+            "targetObjectType": "Codeunit",
+            "targetObjectName": CRAFTED_NAME,
+            "targetEventName": "OnRun"
+        });
+        let text = workspace_subscribers_text(&[&subscriber]);
+        assert_eq!(
+            text,
+            "  ← subscribed by Sec7 Caller\\u{1b}]0;pwned\\u{7}.OnAfter\n"
+        );
+        let text = subscribers_text(std::slice::from_ref(&subscriber));
+        assert_no_raw_control(&text);
+        assert!(
+            text.contains(r"Sec7 Caller\u{1b}]0;pwned\u{7}.OnAfter → Codeunit::Bad\u{1b}[31m Name\u{1b}[0m.OnRun"),
+            "got: {text}"
+        );
+
+        let result = serde_json::json!({
+            "targetKind": "Codeunit",
+            "targetObject": CRAFTED_NAME,
+            "targetEvent": "OnRun",
+            "signature": "procedure OnRun\u{1b}[2J()",
+            "path": "/src/Bad\u{1b}[31m.al",
+            "line": 7
+        });
+        let text = event_source_text(&result);
+        assert_no_raw_control(&text);
+        assert!(text.contains(ESCAPED_NAME), "got: {text}");
+        assert!(
+            text.contains(r"  procedure OnRun\u{1b}[2J()"),
+            "got: {text}"
+        );
+        assert!(
+            text.contains(r"  at /src/Bad\u{1b}[31m.al:7"),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn composed_prints_the_base_and_extension_names_escaped() {
+        let result = serde_json::json!({
+            "base": {"name": CRAFTED_NAME, "kind": "Table"},
+            "extensions": [{"name": "Ext\u{1b}[2J", "package": "Pub\u{1b}]0;pwned\u{7}"}],
+            "all_fields": [1, 2],
+            "all_methods": []
+        });
+        let text = composed_text(&result);
+        assert_no_raw_control(&text);
+        assert!(
+            text.contains(r#"Base: Table "Bad\u{1b}[31m Name\u{1b}[0m""#),
+            "got: {text}"
+        );
+        assert!(
+            text.contains(r#"  - "Ext\u{1b}[2J" (Pub\u{1b}]0;pwned\u{7})"#),
+            "got: {text}"
+        );
+        assert!(
+            text.contains("Total fields: 2\nTotal methods: 0\n"),
             "got: {text}"
         );
     }

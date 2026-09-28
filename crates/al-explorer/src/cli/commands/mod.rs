@@ -27,7 +27,10 @@ pub fn set_compact_json(compact: bool) {
 pub fn print_json<T: Serialize>(value: &T) {
     match json_text(value) {
         Ok(json) => println!("{json}"),
-        Err(e) => eprintln!("{{\"error\":\"serialization failed: {e}\"}}"),
+        Err(e) => eprintln!(
+            "{{\"error\":\"serialization failed: {}\"}}",
+            terminal_text(&e.to_string())
+        ),
     }
 }
 
@@ -280,6 +283,31 @@ pub(crate) fn text_field(row: &serde_json::Value, key: &str, default: &str) -> S
             .and_then(serde_json::Value::as_str)
             .unwrap_or(default),
     )
+}
+
+/// A file system path as [`terminal_text`] writes it. A directory name can
+/// hold an escape sequence as well as an object name can.
+pub(crate) fn path_text(path: &std::path::Path) -> String {
+    terminal_text(&path.display().to_string())
+}
+
+/// Text of several lines, such as source code or a DOT graph, as
+/// [`terminal_text`] writes it, with its line breaks and tabs kept.
+pub(crate) fn terminal_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = if let Some(body) = line.strip_suffix("\r\n") {
+            (body, "\r\n")
+        } else if let Some(body) = line.strip_suffix('\n') {
+            (body, "\n")
+        } else {
+            (line, "")
+        };
+        let cells: Vec<String> = body.split('\t').map(terminal_text).collect();
+        out.push_str(&cells.join("\t"));
+        out.push_str(ending);
+    }
+    out
 }
 
 pub fn collect_al_files(dir: &std::path::Path) -> Result<Vec<PathBuf>, String> {
@@ -678,7 +706,8 @@ fn warn_if_not_projected(
     });
     if asked && result.is_array() && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         eprintln!(
-            "warning: --limit, --offset and --fields do not apply to `{method}`; the whole result is shown"
+            "warning: --limit, --offset and --fields do not apply to `{}`; the whole result is shown",
+            terminal_text(method)
         );
     }
 }
@@ -714,7 +743,11 @@ pub fn request_checked(
                 }
                 warn_if_not_projected(method, sent.as_ref(), &result);
                 if let Some(absent) = result.get("absentFields").and_then(|v| v.as_array()) {
-                    let names: Vec<&str> = absent.iter().filter_map(|v| v.as_str()).collect();
+                    let names: Vec<String> = absent
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .map(terminal_text)
+                        .collect();
                     eprintln!(
                         "note: no row has {}; those fields are left out",
                         names.join(", ")
@@ -1258,7 +1291,7 @@ mod subcommand_exit_code_tests {
 
 #[cfg(test)]
 mod terminal_text_tests {
-    use super::{error_text, json_text, lint_diag_line, symbol_entries_text};
+    use super::{error_text, json_text, lint_diag_line, symbol_entries_text, terminal_lines};
 
     const CRAFTED_NAME: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
     const ESCAPED_NAME: &str = r"Bad\u{1b}[31m Name\u{1b}[0m";
@@ -1333,5 +1366,14 @@ mod terminal_text_tests {
         assert_no_raw_control(&line);
         assert!(line.contains(ESCAPED_NAME), "got: {line}");
         assert!(line.starts_with(r"src/Bad\u{1b}[2J.al:3:1"), "got: {line}");
+    }
+
+    #[test]
+    fn multi_line_text_keeps_its_line_breaks_and_tabs_and_escapes_other_controls() {
+        let text = terminal_lines("digraph {\r\n\t\"Bad\u{1b}]0;pwned\u{7}\";\n\u{1b}[2J}");
+        assert_eq!(
+            text,
+            "digraph {\r\n\t\"Bad\\u{1b}]0;pwned\\u{7}\";\n\\u{1b}[2J}"
+        );
     }
 }
