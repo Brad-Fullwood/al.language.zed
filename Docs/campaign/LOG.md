@@ -700,3 +700,25 @@ Append-only. Newest entry last.
 - Runtime session close-out: `CHECKPOINT-2026-09-27-close.md` (its commits, the two CI fixes at
   the pause, open items it touches) and `HANDOFF-tree-sitter.md` (the grammar brief: R12-GR-1, an
   argument field on call arguments, the query drift check, and the steps to move the pointer).
+
+## 2026-09-28 03:55 BST: resume, five agent branches recovered and merged
+
+- The 02:25 interactive session dispatched five agents at 02:40 and reached its usage limit about
+  03:00. Its merge of `fix-r12-runtime` (77308d91: R12-LIST-1, R12-LIST-2, R12-RT-1, R12-RT-2) had
+  green gates in `.campaign/gate-*.log` (96 suites, 5428 passed, 0 failed, harness 29 suites, 353
+  passed) and was not pushed. Pushed.
+- The other four branches were complete or nearly so. `fix-sec6-output` merged d9225520 (SEC6-8:
+  control characters escaped in every text renderer, the dotnet advisory names the settings file
+  before the cap, SEC6-7: the quoting rule in every skill and both agents with a fixture codeunit
+  named `It's Here` and eval case 13). `fix-daemon` merged 5f74977c (SEC6-6: every method with a
+  path parameter declares `named` and refuses through `containment.rs` with one error code, the CLI
+  hint reworded). `fix-r12-router-text` merged a624bdf4 (R12-KW-1: a record member without
+  parentheses routes as the call it is, R12-MERGE-1: the runtime doc paragraphs restored, and the
+  agent's uncommitted R12-TEXT-1 rewording of 49 comment lines committed as 43d98f9e after a check
+  that every flagged line was covered). `grammar` merged 73ed8751 (pointer and `extension.toml` at
+  fc80b85, which is AL-Tree-Sitter `dev`: the `for` iterator is a `name_or_keyword` and each call
+  argument is the field `argument`, interpreter test for a quoted loop variable). R12-DAEMON-1 and
+  R12-MUT-1 were not started; re-dispatched.
+- Findings files updated: eight R12 statuses and SEC6-6 to SEC6-8 fixed. Gates on 73ed8751 running.
+- Seven agents dispatched (see `STATE.md`): R12-MUT-1, R12-DAEMON-1, security round 7, round 13
+  review, the al-runtime file splits, docs re-check 4, the grammar query drift check.
