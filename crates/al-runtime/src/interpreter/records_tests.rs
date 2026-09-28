@@ -7844,3 +7844,65 @@ fn a_cancel_request_stops_list_contains_on_a_list_of_lists() {
         cancelled_at.elapsed()
     );
 }
+
+/// The three shapes of the security finding SEC7-5, each of which ended the
+/// test binary with a stack overflow before `child_for` copied a JSON value
+/// added to itself.
+const JSON_SELF_WRITE: &str = r#"codeunit 50463 "Json Self Write"
+{
+    procedure ArrayAddedToItself(): Integer
+    var
+        J: JsonArray;
+        T: Text;
+    begin
+        J.Add(J);
+        J.WriteTo(T);
+        exit(StrLen(T));
+    end;
+
+    procedure ObjectAddedToItself(): Integer
+    var
+        O: JsonObject;
+        T: Text;
+    begin
+        O.Add('self', O);
+        O.WriteTo(T);
+        exit(StrLen(T));
+    end;
+
+    procedure ArrayAddedAsItsOwnToken(): Integer
+    var
+        J: JsonArray;
+        K: JsonToken;
+        T: Text;
+    begin
+        K := J.AsToken();
+        J.Add(K);
+        J.WriteTo(T);
+        exit(StrLen(T));
+    end;
+}
+"#;
+
+/// `J.Add(J)`, `O.Add('self', O)` and `J.Add(J.AsToken())` each add a copy,
+/// and `WriteTo` returns the text of one level: `[[]]` and
+/// `{"self":{}}`.
+#[test]
+fn a_json_value_written_after_it_was_added_to_itself_returns() {
+    for (procedure, length) in [
+        ("ArrayAddedToItself", 4),
+        ("ObjectAddedToItself", 11),
+        ("ArrayAddedAsItsOwnToken", 4),
+    ] {
+        assert_eq!(
+            ok(run_on_interpreter_stack(
+                JSON_SELF_WRITE,
+                "Json Self Write",
+                procedure,
+                vec![],
+            )),
+            Value::Integer(length),
+            "{procedure}"
+        );
+    }
+}

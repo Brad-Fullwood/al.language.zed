@@ -116,7 +116,8 @@ Instance methods that run locally:
   node and leaves the old one where it was, so an alias made before the `ReadFrom` still sees the
   old value. `Add`, `Insert`, `Set` and `Replace` add a copy of a value that already sits in an
   object or array, and of the container itself or a value that holds it (`JA.Add(JA)`), so a JSON
-  value never holds itself. Objects support `Add`, `Get`, `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the
+  value never holds itself. `WriteTo`, `Clone` and the copy `Add` makes fail with an error on a value
+  nested more than 10,000 levels deep. Objects support `Add`, `Get`, `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the
   typed getters, where `GetText`, `GetInteger` and the rest honour a second `DefaultIfNotFound`
   argument. Arrays support `Add`, `Get` (0-based), `Count`, `Insert`, `Set`, `RemoveAt`, `IndexOf`.
   Tokens support `IsObject`/`AsObject` and the like. Values support `AsText`, `AsInteger`,

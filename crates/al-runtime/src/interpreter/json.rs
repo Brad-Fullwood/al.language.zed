@@ -44,6 +44,20 @@ impl JsonKind {
     }
 }
 
+/// How many levels deep `WriteTo`, `Clone` and the copy `Add` makes walk
+/// into a JSON value, one native frame per level. `child_for` copies a value
+/// added to itself, so the arena holds no cycle. A value nested deeper than
+/// this, or a cycle that reached the arena by another route, is an AL error
+/// in place of a stack overflow that ends the process.
+const MAX_JSON_DEPTH: usize = 10_000;
+
+fn too_deep(operation: &str) -> String {
+    format!(
+        "{operation} nested more than {MAX_JSON_DEPTH} levels deep is past the local test \
+         runtime's limit"
+    )
+}
+
 /// A JSON variable's value: its type and the handle of the node it refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct JsonRef {
@@ -138,31 +152,37 @@ impl JsonArena {
         }
     }
 
-    fn deep_copy(&mut self, id: usize) -> usize {
+    /// A copy of the value `id` and everything it holds.
+    fn deep_copy(&mut self, id: usize) -> Result<usize, String> {
+        self.deep_copy_at(id, 0)
+    }
+
+    fn deep_copy_at(&mut self, id: usize, depth: usize) -> Result<usize, String> {
+        if depth > MAX_JSON_DEPTH {
+            return Err(too_deep("Copying a JSON value"));
+        }
         let node = match self.nodes[&id].clone() {
-            Node::Object(entries) => Node::Object(
-                entries
-                    .into_iter()
-                    .map(|(key, child)| {
-                        let copy = self.deep_copy(child);
-                        self.attached.insert(copy);
-                        (key, copy)
-                    })
-                    .collect(),
-            ),
-            Node::Array(items) => Node::Array(
-                items
-                    .into_iter()
-                    .map(|child| {
-                        let copy = self.deep_copy(child);
-                        self.attached.insert(copy);
-                        copy
-                    })
-                    .collect(),
-            ),
+            Node::Object(entries) => {
+                let mut copies = Vec::with_capacity(entries.len());
+                for (key, child) in entries {
+                    let copy = self.deep_copy_at(child, depth + 1)?;
+                    self.attached.insert(copy);
+                    copies.push((key, copy));
+                }
+                Node::Object(copies)
+            }
+            Node::Array(items) => {
+                let mut copies = Vec::with_capacity(items.len());
+                for child in items {
+                    let copy = self.deep_copy_at(child, depth + 1)?;
+                    self.attached.insert(copy);
+                    copies.push(copy);
+                }
+                Node::Array(copies)
+            }
             scalar => scalar,
         };
-        self.push(node)
+        Ok(self.push(node))
     }
 
     /// The node to place inside the container `parent` for `value`: the
@@ -180,7 +200,7 @@ impl JsonArena {
             }) => {
                 let node = self.target(*handle, *kind);
                 if self.attached.contains(&node) || self.holds(node, parent) {
-                    self.deep_copy(node)
+                    self.deep_copy(node)?
                 } else {
                     node
                 }
@@ -193,12 +213,17 @@ impl JsonArena {
         Ok(id)
     }
 
-    /// Whether `node` is `wanted` or holds it at any depth.
+    /// Whether `node` is `wanted` or holds it at any depth. Each node is
+    /// visited once, so the walk ends on a cycle too.
     fn holds(&self, node: usize, wanted: usize) -> bool {
         let mut pending = vec![node];
+        let mut seen = HashSet::new();
         while let Some(id) = pending.pop() {
             if id == wanted {
                 return true;
+            }
+            if !seen.insert(id) {
+                continue;
             }
             match &self.nodes[&id] {
                 Node::Object(entries) => pending.extend(entries.iter().map(|(_, child)| *child)),
@@ -209,7 +234,10 @@ impl JsonArena {
         false
     }
 
-    fn write(&self, id: usize, out: &mut String) {
+    fn write(&self, id: usize, out: &mut String, depth: usize) -> Result<(), String> {
+        if depth > MAX_JSON_DEPTH {
+            return Err(too_deep("Writing a JSON value"));
+        }
         match &self.nodes[&id] {
             Node::Object(entries) => {
                 out.push('{');
@@ -219,7 +247,7 @@ impl JsonArena {
                     }
                     write_string(key, out);
                     out.push(':');
-                    self.write(*child, out);
+                    self.write(*child, out, depth + 1)?;
                 }
                 out.push('}');
             }
@@ -229,7 +257,7 @@ impl JsonArena {
                     if index > 0 {
                         out.push(',');
                     }
-                    self.write(*child, out);
+                    self.write(*child, out, depth + 1)?;
                 }
                 out.push(']');
             }
@@ -238,12 +266,13 @@ impl JsonArena {
             Node::Scalar(Scalar::Number(n)) => out.push_str(&n.normalize().to_string()),
             Node::Scalar(Scalar::Text(t)) => write_string(t, out),
         }
+        Ok(())
     }
 
-    fn text_of(&self, id: usize) -> String {
+    fn text_of(&self, id: usize) -> Result<String, String> {
         let mut out = String::new();
-        self.write(id, &mut out);
-        out
+        self.write(id, &mut out, 0)?;
+        Ok(out)
     }
 
     fn import(&mut self, parsed: &serde_json::Value) -> Result<usize, String> {
@@ -332,20 +361,24 @@ impl JsonArena {
         }
     }
 
+    /// `node` and every node it holds, in document order. The walk uses a
+    /// stack of nodes to visit and visits each node once, so a deep value
+    /// takes no native stack and a cycle ends the walk.
     fn self_and_descendants(&self, node: usize, out: &mut Vec<usize>) {
-        out.push(node);
-        match &self.nodes[&node] {
-            Node::Object(entries) => {
-                for (_, child) in entries {
-                    self.self_and_descendants(*child, out);
-                }
+        let mut pending = vec![node];
+        let mut seen = HashSet::new();
+        while let Some(id) = pending.pop() {
+            if !seen.insert(id) {
+                continue;
             }
-            Node::Array(items) => {
-                for child in items {
-                    self.self_and_descendants(*child, out);
+            out.push(id);
+            match &self.nodes[&id] {
+                Node::Object(entries) => {
+                    pending.extend(entries.iter().rev().map(|(_, child)| *child));
                 }
+                Node::Array(items) => pending.extend(items.iter().rev().copied()),
+                Node::Scalar(_) => {}
             }
-            Node::Scalar(_) => {}
         }
     }
 
@@ -1000,7 +1033,7 @@ fn run(
     let arena = &mut ctx.json;
     match lower.as_str() {
         "writeto" => {
-            let text = arena.text_of(node);
+            let text = arena.text_of(node)?;
             return Ok(match args {
                 [] => Value::Text(text),
                 _ => {
@@ -1053,7 +1086,7 @@ fn run(
             return Ok(Value::Boolean(true));
         }
         "clone" => {
-            let copy = arena.deep_copy(node);
+            let copy = arena.deep_copy(node)?;
             value::check_held_bytes(&format!("{}.Clone", kind.name()))?;
             return Ok(arena.reference(kind, copy));
         }
@@ -1199,20 +1232,20 @@ fn run(
                     kind,
                 })) => {
                     let node = arena.target(*handle, *kind);
-                    arena.text_of(node)
+                    arena.text_of(node)?
                 }
                 Some(other) => {
                     let probe = arena.child_for(node, other)?;
-                    arena.text_of(probe)
+                    arena.text_of(probe)?
                 }
                 None => return Err("the value is missing".into()),
             };
-            Ok(Value::Integer(
-                items
-                    .iter()
-                    .position(|item| arena.text_of(*item) == wanted)
-                    .map_or(-1, |at| at as i64),
-            ))
+            for (at, item) in items.iter().enumerate() {
+                if arena.text_of(*item)? == wanted {
+                    return Ok(Value::Integer(at as i64));
+                }
+            }
+            Ok(Value::Integer(-1))
         }
         (JsonKind::Array, getter, Node::Array(items)) if getter.starts_with("get") => {
             // The typed getters return the value itself, so a bad index
@@ -1276,7 +1309,67 @@ pub(crate) fn default_for(type_name: &str) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
-    use super::unsupported_path_step;
+    use super::{unsupported_path_step, JsonArena, Node, Scalar, MAX_JSON_DEPTH};
+
+    /// Run `body` on a thread with the interpreter's stack.
+    fn on_interpreter_stack<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+            .spawn(body)
+            .expect("spawn the interpreter thread")
+            .join()
+            .expect("the interpreter thread returns")
+    }
+
+    /// Arrays nested `depth` levels around the number 1, and the outermost.
+    fn chain(arena: &mut JsonArena, depth: usize) -> usize {
+        let mut node = arena.push(Node::Scalar(Scalar::Number(1.into())));
+        for _ in 0..depth {
+            node = arena.push(Node::Array(vec![node]));
+        }
+        node
+    }
+
+    /// An array that holds itself, a cycle `Add` no longer makes (R13-RT-2).
+    /// Writing or copying it recursed until the stack overflowed and the
+    /// process aborted (SEC7-5). Both now stop at the depth limit with an
+    /// error, and a path search visits each node once.
+    #[test]
+    fn a_cycle_in_the_arena_is_an_error_and_not_a_stack_overflow() {
+        on_interpreter_stack(|| {
+            let mut arena = JsonArena::default();
+            let one = arena.push(Node::Scalar(Scalar::Number(1.into())));
+            let array = arena.push(Node::Array(vec![one]));
+            arena.set(array, Node::Array(vec![one, array]));
+            let message = arena.text_of(array).expect_err("writing a cycle fails");
+            assert!(message.contains("levels deep"), "{message}");
+            let message = arena.deep_copy(array).expect_err("copying a cycle fails");
+            assert!(message.contains("levels deep"), "{message}");
+            assert!(!arena.holds(array, usize::MAX));
+            let mut all = Vec::new();
+            arena.self_and_descendants(array, &mut all);
+            assert_eq!(all, vec![array, one]);
+        });
+    }
+
+    /// A value as deep as the limit is written and copied.
+    #[test]
+    fn a_value_as_deep_as_the_limit_is_written_and_copied() {
+        on_interpreter_stack(|| {
+            let mut arena = JsonArena::default();
+            let deepest = chain(&mut arena, MAX_JSON_DEPTH);
+            let text = arena.text_of(deepest).expect("the value is written");
+            assert_eq!(text.len(), 2 * MAX_JSON_DEPTH + 1);
+            let copy = arena.deep_copy(deepest).expect("the value is copied");
+            assert_eq!(arena.text_of(copy), Ok(text));
+            let mut all = Vec::new();
+            arena.self_and_descendants(deepest, &mut all);
+            assert_eq!(all.len(), MAX_JSON_DEPTH + 1);
+            let too_deep = chain(&mut arena, MAX_JSON_DEPTH + 1);
+            assert!(arena.text_of(too_deep).is_err());
+            assert!(arena.deep_copy(too_deep).is_err());
+        });
+    }
 
     #[test]
     fn paths_the_runtime_follows_and_the_steps_it_refuses() {
