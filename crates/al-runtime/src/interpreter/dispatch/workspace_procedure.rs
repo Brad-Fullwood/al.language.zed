@@ -191,11 +191,12 @@ pub(super) fn dispatch_workspace_procedure(
 
 /// The declaration among the same-named `candidates`, in source order, that a
 /// call with `args` runs: its parameter count matches, `check_param_type`
-/// accepts every argument, and a `Record` or `Codeunit` parameter names the
-/// argument's table or object. When several do, the one with the most
-/// arguments of exactly the declared type wins, then the first declared, so
-/// `Amount(1)` runs `Amount(A: Integer)` over `Amount(A: Decimal)`. A lone
-/// candidate is returned as it is, and `run_declaration` reports its mismatch.
+/// accepts every argument, and a `Record`, `Codeunit` or `Enum` parameter
+/// names the argument's table, object or enum. When several do, the one with
+/// the most arguments of exactly the declared type wins, then the first
+/// declared, so `Amount(1)` runs `Amount(A: Integer)` over
+/// `Amount(A: Decimal)`. A lone candidate is returned as it is, and
+/// `run_declaration` reports its mismatch.
 pub(super) fn choose_overload<'t>(
     candidates: &[tree_sitter::Node<'t>],
     source: &[u8],

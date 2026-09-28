@@ -406,7 +406,7 @@ pub(crate) fn dispatch_text_method(
                 }
             }
             if separators.is_empty() {
-                return Eval::Normal(Value::list(vec![Value::Text(s)]));
+                return Eval::Normal(Value::text_list(vec![Value::Text(s)]));
             }
             let mut parts = vec![s];
             for sep in &separators {
@@ -426,7 +426,9 @@ pub(crate) fn dispatch_text_method(
                     })
                     .collect();
             }
-            Eval::Normal(Value::list(parts.into_iter().map(Value::Text).collect()))
+            Eval::Normal(Value::text_list(
+                parts.into_iter().map(Value::Text).collect(),
+            ))
         }
         "trim" | "trimstart" | "trimend" => {
             if !args.is_empty() {
