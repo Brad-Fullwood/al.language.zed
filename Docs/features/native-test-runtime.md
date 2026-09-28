@@ -25,8 +25,9 @@ discover [Test] tests ──► router classifies each test ──► backend ex
 ## The interpreter (`crates/al-runtime`)
 
 The tree-walking interpreter executes tree-sitter AL trees on a thread with a 64 MiB stack. It caps
-call depth at 512 frames and statement and expression nesting at 2560 levels each, and checks for
-cancellation and the deadline in loops. A test that exceeds the call cap fails with a message saying
+call depth at 512 frames and statement and expression nesting at 2560 levels each. It checks for
+cancellation and the deadline at each loop iteration, and for cancellation at each element a
+comparison or a List search visits. A test that exceeds the call cap fails with a message saying
 the limit belongs to the local runner and suggesting a live BC run. One Text, Code or TextBuilder
 value holds at most 64 MiB, and one List, Dictionary or array at most 1,000,000 elements. The
 Lists, Dictionaries, arrays, TextBuilders and JSON values of one test hold at most 256 MiB together:
@@ -219,7 +220,8 @@ access, PureLogic fails with a capability error instead of running it against th
 - **Entry points:** single-codeunit, batch, automatic/MCP, and TUI runs use the same router.
 - **Backends:** InterpMode executes the test bodies with per-test deadlines (30 s by default) and
   parallel codeunit support. A test body still running 5 s after its deadline fails with a message
-  saying the runner stopped waiting for it, and the run goes on to the next test. LiveBcMode calls
+  saying the runner stopped waiting for it, and the run goes on to the next test. The runner then
+  raises the test's cancel flag, so the body stops at its next check. LiveBcMode calls
   `POST /dev/tests/{codeunit}/run` with basic/bearer/Windows authentication.
 - **Lifecycle/handlers:** initialize, test, and cleanup share one per-test record context. Cleanup
   always runs. MessageHandler, ConfirmHandler, StrMenuHandler, and HyperlinkHandler execute locally

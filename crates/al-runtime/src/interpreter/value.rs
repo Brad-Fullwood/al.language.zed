@@ -500,6 +500,11 @@ fn compare(left: &Value, right: &Value) -> std::cmp::Ordering {
     };
     let mut pending = vec![(left.into_iter(), right.into_iter())];
     while let Some((left, right)) = pending.last_mut() {
+        // A cancelled test stops here, and the statement that compared ends
+        // it. The order returned then does not matter.
+        if crate::interpreter::dispatch::thread_cancelled() {
+            return Ordering::Equal;
+        }
         let step = match (left.next(), right.next()) {
             (None, None) => {
                 pending.pop();

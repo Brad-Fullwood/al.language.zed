@@ -7789,3 +7789,58 @@ fn removed_and_dropped_elements_leave_the_test_budget() {
         Value::Integer(0)
     );
 }
+
+/// `Outer.Contains(Other)` where Outer holds a list of 50,000 numbers 50,000
+/// times and Other differs from it in the last number compares 2.5 billion
+/// elements in one statement. The deadline and the cancel flag were read only
+/// between loop iterations, so the test ran on for many minutes after the
+/// runner gave up on it (R13-RT-4). The search now stops at the element
+/// where the cancel flag is raised.
+#[test]
+fn a_cancel_request_stops_list_contains_on_a_list_of_lists() {
+    use crate::interpreter::scope::{CallFrame, ScopeStack};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    let (done, result) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+        .spawn(move || {
+            let inner: Vec<Value> = (1..=50_000).map(Value::Integer).collect();
+            let mut other = inner.clone();
+            other[49_999] = Value::Integer(0);
+            let inner = Value::list(inner);
+            let outer = Value::list(vec![inner; 50_000]);
+            let mut frame = CallFrame::new("Test", "Test");
+            frame.bind("Outer", outer);
+            let mut stack = ScopeStack::new();
+            stack.push(frame);
+            let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
+            ctx.set_cancel(flag);
+            let _ = done.send(crate::interpreter::records::dispatch_list_method(
+                "Outer",
+                "Contains",
+                vec![Value::list(other)],
+                false,
+                &mut stack,
+                &mut ctx,
+            ));
+        })
+        .expect("spawn the interpreter thread");
+    std::thread::sleep(Duration::from_millis(300));
+    let cancelled_at = Instant::now();
+    cancel.store(true, Ordering::Relaxed);
+    let message = error_message(
+        result
+            .recv_timeout(Duration::from_secs(30))
+            .expect("Contains returns once the test is cancelled"),
+    );
+    assert_eq!(message, "interpreter cancelled in List.contains");
+    assert!(
+        cancelled_at.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        cancelled_at.elapsed()
+    );
+}

@@ -2,7 +2,7 @@
 //! values, called from the same `Rec.Method(args)` / `Value.Method(args)`
 //! dispatch path as the record methods.
 
-use crate::interpreter::dispatch::DispatchCtx;
+use crate::interpreter::dispatch::{thread_cancelled, DispatchCtx};
 use crate::interpreter::eval_error;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{
@@ -226,11 +226,14 @@ fn list_method_on(
 /// locked twice on one thread waits for good, so when `needle` holds a list
 /// or dictionary the elements are compared as a copy, with `list` unlocked.
 fn search_list(list: &Collection<Vec<Value>>, method: &str, needle: &Value) -> Eval {
+    // Comparing a list of lists is one statement of quadratic cost, so the
+    // search stops at the element where the test is cancelled.
+    let matches = |item: &Value| thread_cancelled() || item == needle;
     let find = |items: &[Value]| {
         if method == "lastindexof" {
-            items.iter().rposition(|item| item == needle)
+            items.iter().rposition(matches)
         } else {
-            items.iter().position(|item| item == needle)
+            items.iter().position(matches)
         }
     };
     let position = if holds_collection(needle) {
@@ -238,6 +241,9 @@ fn search_list(list: &Collection<Vec<Value>>, method: &str, needle: &Value) -> E
     } else {
         find(&list.lock())
     };
+    if thread_cancelled() {
+        return eval_error(format!("interpreter cancelled in List.{method}"));
+    }
     match (method, position) {
         ("contains", position) => Eval::Normal(Value::Boolean(position.is_some())),
         ("remove", Some(position)) => {
