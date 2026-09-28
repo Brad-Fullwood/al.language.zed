@@ -27,7 +27,10 @@ pub fn set_compact_json(compact: bool) {
 pub fn print_json<T: Serialize>(value: &T) {
     match json_text(value) {
         Ok(json) => println!("{json}"),
-        Err(e) => eprintln!("{{\"error\":\"serialization failed: {e}\"}}"),
+        Err(e) => eprintln!(
+            "{{\"error\":\"serialization failed: {}\"}}",
+            terminal_text(&e.to_string())
+        ),
     }
 }
 
@@ -697,7 +700,8 @@ fn warn_if_not_projected(
     });
     if asked && result.is_array() && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         eprintln!(
-            "warning: --limit, --offset and --fields do not apply to `{method}`; the whole result is shown"
+            "warning: --limit, --offset and --fields do not apply to `{}`; the whole result is shown",
+            terminal_text(method)
         );
     }
 }
@@ -733,7 +737,11 @@ pub fn request_checked(
                 }
                 warn_if_not_projected(method, sent.as_ref(), &result);
                 if let Some(absent) = result.get("absentFields").and_then(|v| v.as_array()) {
-                    let names: Vec<&str> = absent.iter().filter_map(|v| v.as_str()).collect();
+                    let names: Vec<String> = absent
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .map(terminal_text)
+                        .collect();
                     eprintln!(
                         "note: no row has {}; those fields are left out",
                         names.join(", ")
