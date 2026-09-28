@@ -30,7 +30,7 @@ fixture's `OnAfterProcess` and `OnBeforeProcess` events. The fixture ships no
 without it.
 
 The fixture has no `.alpackages`, so it cannot exercise a base-app lookup.
-Question 4 reads a workspace procedure instead. The package-side numbers below
+Question 4 reads a workspace procedure instead. The numbers for packages below
 are measured directly against the project Round 6 built for that (see its
 entry under Results): `al-explorer new` plus `download-symbols --source
 nuget`, Base Application 28.0.46665.48632 from the public feed.
@@ -214,7 +214,7 @@ Microsoft package.** Two projects, both `al-explorer new` in a temp directory
 followed by `download-symbols --source nuget`, against
 `target/release/al-explorer` and `al-lsp` built beside it.
 
-The five-skill project (`app.json` `application: 28.0.0.0`) downloaded Base
+The project for the five skills (`app.json` `application: 28.0.0.0`) downloaded Base
 Application 28.0.46665.48632 plus Application, Business Foundation, System
 Application and System. Two files were added so the questions had a real
 answer to find: `src/SalesPostSubscribers.Codeunit.al` subscribes to
@@ -227,17 +227,17 @@ downloaded again, landing 26.0.30643.38226 alongside it in the same
 `.alpackages` (see the recorded defect below: this needed a `daemon-shutdown`
 in between). `src/GLAccountHelper.Codeunit.al` reads the G/L Account table's
 `Income/Balance` field, an `Option` in 25 that became `Enum "G/L Account
-Report Type"` in 26, so `package-diff` and `obsolete --used` had a real,
-workspace-side hit to find.
+Report Type"` in 26, so `package-diff` and `obsolete --used` had a real hit in
+the workspace to find.
 
 | # | Skill | Question | Answer | Right? | Tool calls | Bytes | Wall time |
 | - | - | - | - | - | - | -: | -: |
 | 1 | `bc-base-app-source` | How does Business Central calculate a customer's available credit? Show me the source of `CalcAvailableCredit` on the Customer table. | Signature only, `procedure CalcAvailableCredit(): Decimal`, no body: the package shipped without source | right, first try | Skill, Bash x3 | 4,446 | 23.0 s |
 | 2 | `bc-event-map` | Who subscribes to the `OnAfterPostSalesDoc` event published by the Sales-Post codeunit? | 1 subscriber, `Sales Post Subscribers.OnAfterPostSalesDocHandler`, workspace, resolved | right, first try | Skill, Bash | 503 | 13.2 s |
-| 3 | `bc-impact-check` | What would changing the Blocked field on the Customer table affect in this extension? | 1 workspace consumer (`Customer Block Helper`, read, high confidence), 1 out-of-scope low-confidence row (`Serv. Customer` table extension, extends) | right, first try | Skill, Bash x2 | 684 | 23.1 s |
-| 4 | `bc-workspace-health` | Audit this extension before I deploy it. What problems does it have? | One dead-code finding (`IsFullyBlocked`, zero references, medium confidence) and three codeunits with no permission set coverage; native-check, sql-scan, arch-lint, audit-data, metrics and duplicates all clean | right, first try | Skill, Bash x9 | 645 | 27.3 s |
+| 3 | `bc-impact-check` | What would changing the Blocked field on the Customer table affect in this extension? | 1 workspace consumer (`Customer Block Helper`, read, high confidence), 1 row outside the scope, low confidence (`Serv. Customer` table extension, extends) | right, first try | Skill, Bash x2 | 684 | 23.1 s |
+| 4 | `bc-workspace-health` | Audit this extension before I deploy it. What problems does it have? | One dead-code finding (`IsFullyBlocked`, zero references, medium confidence) and three codeunits with no permission set coverage, with native-check, sql-scan, arch-lint, audit-data, metrics and duplicates all clean | right, first try | Skill, Bash x9 | 645 | 27.3 s |
 | 5 | `bc-object-id-allocator` | I want to add a new table to this extension. What is the next free table object ID? | 50100 (`idRanges` 50100-50149, none used yet for tables) | right, first try | Skill, ToolSearch, Bash | 276 | 15.1 s |
-| 6 | `bc-upgrade-impact` (`package-diff`) | I'm upgrading this app's Base Application dependency from version 25 to version 26. What changed that this extension actually uses, and is it a breaking change? | One breaking change, `G/L Account.Income/Balance` changed `Option` to `Enum`, used by `GL Account Helper` (read); no orphaned subscribers, no obsolete calls in use | right, first try | Skill, Bash x7 | 1,161 | 36.1 s |
+| 6 | `bc-upgrade-impact` (`package-diff`) | I'm upgrading this app's Base Application dependency from version 25 to version 26. What changed that this extension actually uses, and is it a breaking change? | One breaking change, `G/L Account.Income/Balance` changed `Option` to `Enum`, used by `GL Account Helper` (read), with no orphaned subscribers and no obsolete calls in use | right, first try | Skill, Bash x7 | 1,161 | 36.1 s |
 
 Bytes are the tool results the session pulled into its context, summed across
 the run, the same measure Round 4 used. All six right on the first try: no
@@ -250,7 +250,7 @@ subcommands that do not exist (`call`, `symbol-search`), and closed the gap
 with `grep` and a file read rather than a documented command. The final
 answer was still right, so nothing in the skill needed a fix: every one of
 its bash blocks already prefixes `al-explorer` with `al-bin.sh`, and Haiku
-just did not follow that consistently once it went looking for where the
+did not follow that consistently once it went looking for where the
 field was used.
 
 One binary defect, recorded here during this round (fixes to `al-explorer`

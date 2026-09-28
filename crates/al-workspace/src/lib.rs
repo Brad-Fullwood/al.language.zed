@@ -413,10 +413,9 @@ pub struct Workspace {
     pub toolchain: RwLock<Option<AlToolchain>>,
     /// Discovered AL project (app.json manifest, packages).
     pub project: RwLock<Option<AlProject>>,
-    /// The [`project_files_fingerprint`](al_project::project::project_files_fingerprint)
-    /// of the files [`refresh_project_files`] last read into `project`. `None`
-    /// until the first refresh, which reads them whatever they hold.
-    project_files_fingerprint: tokio::sync::Mutex<Option<u64>>,
+    /// What [`refresh_project_files`] last read into `project` and the
+    /// symbol index. The lock also makes refreshes run one at a time.
+    project_file_stamps: tokio::sync::Mutex<ProjectFileStamps>,
     /// .NET semantic bridge for CodeAnalysis features.
     pub semantic: RwLock<Option<al_semantic::SemanticBridge>>,
     /// Serializes lazy initialization and restart so concurrent requests cannot
@@ -555,6 +554,21 @@ pub struct Workspace {
     pub code_lens_reference_counts: std::sync::RwLock<Option<CodeLensReferenceCounts>>,
 }
 
+/// The stamps of the project files a long running process keeps in memory,
+/// taken when it last read them.
+#[derive(Debug, Default)]
+struct ProjectFileStamps {
+    /// The [`project_files_fingerprint`](al_project::project::project_files_fingerprint)
+    /// of `app.json` and the debug configuration files. `None` until the
+    /// first refresh, which reads them whatever they hold.
+    files: Option<u64>,
+    /// The [`package_folders_fingerprint`](al_project::project::package_folders_fingerprint)
+    /// taken before the loaded packages were listed. `None` when no package
+    /// set was loaded under a stamp, and the first refresh then records one
+    /// and leaves the symbol index as it is.
+    packages: Option<u64>,
+}
+
 /// Cached code-lens reference counts, keyed to the generation and document
 /// they were computed for.
 pub struct CodeLensReferenceCounts {
@@ -576,7 +590,7 @@ impl Workspace {
             symbols: Arc::new(SymbolIndex::new()),
             toolchain: RwLock::new(None),
             project: RwLock::new(None),
-            project_files_fingerprint: tokio::sync::Mutex::new(None),
+            project_file_stamps: tokio::sync::Mutex::new(ProjectFileStamps::default()),
             semantic: RwLock::new(None),
             semantic_lifecycle_lock: tokio::sync::Mutex::new(()),
             file_index: Arc::new(FileIndex::new()),
@@ -1460,6 +1474,10 @@ pub async fn initialize_core_workspace(
     match project_result {
         Ok(mut project) => {
             let config = workspace.config.read().await.clone();
+            // Taken before the folders are listed, so a package copied in
+            // while they load moves the stamp and the first refresh loads it.
+            let packages_stamp =
+                al_project::project::package_folders_fingerprint(&project.root, &config);
             project.apply_symbol_settings(&config)?;
             // The manifest name and the root are repository text, and this line
             // reaches a terminal and the editor's log panel.
@@ -1507,6 +1525,7 @@ pub async fn initialize_core_workspace(
             file_count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root))?;
 
             *workspace.project.write().await = Some(project);
+            workspace.project_file_stamps.lock().await.packages = Some(packages_stamp);
 
             tracing::info!(
                 symbols = workspace.symbols.len(),
@@ -1673,13 +1692,16 @@ pub fn refresh_workspace_files(
     Ok(delta)
 }
 
-/// Read `app.json` and the debug configuration files into the loaded project
-/// again when their content changed since the last call.
+/// Read `app.json`, the debug configuration files and the symbol package
+/// folders into the loaded project again when they changed since the last
+/// call. A change in the folders also loads their packages into a new
+/// symbol index.
 ///
 /// For callers that hold no editor overlays, like [`refresh_workspace_files`].
 /// The daemon loaded the project once at startup, so after `application` was
 /// edited `download-symbols` kept asking for the old minimum versions until
-/// the daemon exited. A manifest that no longer loads leaves the one read
+/// the daemon exited, and a package copied into `.alpackages` was missing
+/// from every answer. A manifest that no longer loads leaves the one read
 /// before in place. Calls run one at a time, so every request after an edit
 /// sees it.
 pub async fn refresh_project_files(workspace: &Workspace) {
@@ -1692,17 +1714,27 @@ pub async fn refresh_project_files(workspace: &Workspace) {
     else {
         return;
     };
-    let mut last = workspace.project_files_fingerprint.lock().await;
+    let mut stamps = workspace.project_file_stamps.lock().await;
+    refresh_manifest_and_launch_files(workspace, &root, &mut stamps.files).await;
+    refresh_package_folders(workspace, &root, &mut stamps.packages).await;
+}
+
+/// The `app.json` and debug configuration part of [`refresh_project_files`].
+async fn refresh_manifest_and_launch_files(
+    workspace: &Workspace,
+    root: &Path,
+    last: &mut Option<u64>,
+) {
     // Taken before the files are read, so an edit that lands during the read
     // moves the fingerprint again and is read on the next call.
-    let fingerprint = al_project::project::project_files_fingerprint(&root);
+    let fingerprint = al_project::project::project_files_fingerprint(root);
     if *last == Some(fingerprint) {
         return;
     }
     // Read before the write guard is taken: most dispatchers take the read
     // guard with `try_read` and refuse the request while a writer holds it.
-    let manifest = al_project::project::load_app_manifest(&root);
-    let (server_configs, launch_config_error) = al_project::project::load_launch_configs(&root);
+    let manifest = al_project::project::load_app_manifest(root);
+    let (server_configs, launch_config_error) = al_project::project::load_launch_configs(root);
     let mut guard = workspace.project.write().await;
     let Some(project) = guard.as_mut().filter(|project| project.root == root) else {
         return;
@@ -1724,6 +1756,78 @@ pub async fn refresh_project_files(workspace: &Workspace) {
     }
     *last = Some(fingerprint);
     workspace.mark_generation_changed();
+}
+
+/// The package part of [`refresh_project_files`]: when the stamp of the
+/// symbol package folders moved, list them again, load every package they
+/// hold into a new symbol index and publish it with the new package list.
+///
+/// A package loaded before is read back from the symbol cache on disk, so
+/// most of the cost is the packages that are new. A package that does not
+/// load is skipped with a warning, as at startup. A folder that cannot be
+/// listed leaves the packages loaded before in use.
+async fn refresh_package_folders(workspace: &Workspace, root: &Path, last: &mut Option<u64>) {
+    let config = workspace.config.read().await.clone();
+    // Taken before the folders are listed, so a package that lands while
+    // they load moves the stamp again and is loaded on the next call.
+    let fingerprint = al_project::project::package_folders_fingerprint(root, &config);
+    let previous = last.replace(fingerprint);
+    if previous.is_none_or(|previous| previous == fingerprint) {
+        return;
+    }
+    let Some(mut project) = workspace.project.read().await.clone() else {
+        return;
+    };
+    let staged = tokio::task::spawn_blocking(move || {
+        project.apply_symbol_settings(&config)?;
+        let symbols = SymbolIndex::new();
+        let cache = al_symbols::cache::SymbolCache::default_location();
+        let (loaded, failures) = symbols.load_packages_cached_lenient(&project.packages, &cache);
+        symbols.load_runtime_enums();
+        Ok::<_, al_project::errors::DiscoveryError>((project, symbols, loaded, failures))
+    })
+    .await;
+    let (staged_project, symbols, loaded, failures) = match staged {
+        Ok(Ok(staged)) => staged,
+        Ok(Err(error)) => {
+            tracing::warn!(
+                %error,
+                "workspace: the symbol package folders changed and cannot be listed, the packages loaded before stay in use"
+            );
+            return;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "workspace: package load worker failed");
+            return;
+        }
+    };
+    for failure in &failures {
+        tracing::warn!(
+            path = %failure.path.display(),
+            message = %failure.message,
+            "workspace: skipping unreadable symbol package"
+        );
+    }
+    let mut guard = workspace.project.write().await;
+    let Some(project) = guard.as_mut().filter(|project| project.root == root) else {
+        return;
+    };
+    // The manifest and the debug configuration stay as the other part of
+    // the refresh read them.
+    project.packages_dir = staged_project.packages_dir;
+    project.packages = staged_project.packages;
+    workspace.symbols.replace_with(&symbols);
+    workspace.replace_package_info(loaded.iter().map(PackageInfo::from).collect());
+    workspace.invalidate_insight_graph();
+    workspace.mark_package_generation_changed();
+    workspace.mark_generation_changed();
+    tracing::info!(
+        root = %root.display(),
+        packages = loaded.len(),
+        failed_packages = failures.len(),
+        symbols = workspace.symbols.len(),
+        "workspace: the symbol package folders changed on disk and their packages were loaded again"
+    );
 }
 
 /// Apply files the editor reported changed on disk and does not have open:

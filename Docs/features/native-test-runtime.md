@@ -27,7 +27,9 @@ discover [Test] tests ──► router classifies each test ──► backend ex
 The tree-walking interpreter executes tree-sitter AL trees on a thread with a 64 MiB stack. It caps
 call depth at 512 frames and statement and expression nesting at 2560 levels each, and checks for
 cancellation and the deadline in loops. A test that exceeds the call cap fails with a message saying
-the limit belongs to the local runner and suggesting a live BC run.
+the limit belongs to the local runner and suggesting a live BC run. One Text, Code or TextBuilder
+value holds at most 64 MiB, and one List, Dictionary or array at most 1,000,000 elements. An
+operation that would grow a value past either limit is an AL error that fails the test.
 
 **Values (`interpreter/value.rs`):** Integer, BigInteger, Decimal, Boolean, Char, Text, Code,
 TextBuilder, Date/Time/DateTime/Duration, Guid, Option, Variant, Record, RecordRef, Codeunit, Array,
@@ -36,12 +38,14 @@ values can be map keys. `Label` declarations bind to their text.
 
 **Statements (`interpreter/eval_stmt.rs`):** blocks, `if`/`else`, `while`, `for` (up/down), `foreach`,
 `repeat until`, `case of`, normal and compound assignment, expression statements, `exit`, `break`,
-`continue`, and `asserterror`.
+`continue`, and `asserterror`. The `for` loop variable can be a quoted name (`"My Index"`) or a name
+that is also a keyword (`Value`), as in `foreach`.
 
-**Expressions (`interpreter/eval_expr.rs`):** literals (including Date/Time/BigInteger), identifiers
-(case-insensitive), unary and binary operators with the documented AL precedence and left
-associativity, inclusive ranges and `in [...]` sets, workspace-enum scope access with declared
-ordinals, member calls, and string concatenation. `MaxStrLen` retains `Text[N]` / `Code[N]`
+**Expressions (`interpreter/eval_expr/`):** literals (including Date/Time/BigInteger), identifiers
+(case-insensitive, and a quoted name such as `"Line No."` by its text inside the quotes), unary and
+binary operators with the documented AL precedence and left associativity, inclusive ranges and
+`in [...]` sets, workspace-enum scope access with declared ordinals, member calls, and string
+concatenation. `MaxStrLen` retains `Text[N]` / `Code[N]`
 declaration capacity. Array variables (`array[N] of T`) are bound with N default elements, and
 `A[i]` reads and writes them with bounds checks. `Txt[i]` reads and writes one character of a Text
 or Code. A call chain such as `S.Trim().ToUpper()` or `S.Split(',').Count()` runs every step, each
@@ -50,17 +54,23 @@ on the value the previous step returned.
 **Dispatch (`interpreter/dispatch/`):** a call on an object tries the object's native stub, then
 the workspace procedures found through the file index. A bare call tries the built-in globals, then
 the running object's procedures, and does not reach a stub library. Calls work in statement and
-expression position, through explicit object receivers and `Codeunit <Subtype>` variables, with
-`var` scalar parameter write-back to a variable or to a record field such as `Rec.Name`. A codeunit
-variable keeps its own globals between calls made on it, a `SingleInstance` codeunit has one
-instance for the test's whole lifecycle (initialize through cleanup), and an event subscriber runs
-on a fresh instance of its codeunit each time it fires, unless that codeunit is `SingleInstance`. A
-label is a constant, not state, so a table or helper codeunit whose only globals are labels runs the
-same as one with none. The global builtin catalog covers `Error`/`Message`-class dialogs,
+expression position, through explicit object receivers and `Codeunit <Subtype>` variables. A `var`
+scalar parameter writes its value back to a variable, a record field such as `Rec.Name`, or an
+array element or Text character such as `A[i]`, whose index is read once before the call. Any other
+`var` argument, such as a literal, is an error. An overloaded procedure runs the declaration whose
+parameter count and types take the arguments, and a `Record` or `Codeunit` parameter takes only
+its own table or object. When several declarations fit, the one with the most arguments of exactly
+the declared type runs, then the first declared, and when none fits the call fails with
+`no overload of 'X' takes these arguments`. A codeunit variable keeps its own globals between
+calls made on it, a `SingleInstance` codeunit has one instance for the test's whole lifecycle
+(initialize through cleanup), and an event subscriber runs on a fresh instance of its codeunit each
+time it fires, unless that codeunit is `SingleInstance`. A label is a constant, so a table or
+helper codeunit whose only globals are labels runs the same as one with none. The global builtin
+catalog covers `Error`/`Message`-class dialogs,
 `StrSubstNo`/`Format` (the default rendering, XML format 9, numbered standard formats 1 to 4 and
 picture strings such as `<Precision,2:2><Standard Format,0>` or `<Year4>-<Month,2>-<Day,2>`, with
-the length argument; numbers group thousands as BC's standard format does, so `Format(1234567)` is
-`1,234,567`), `CreateGuid`/`IsNullGuid`, string functions
+the length argument, and thousands grouped as BC's standard format groups them, so
+`Format(1234567)` is `1,234,567`), `CreateGuid`/`IsNullGuid`, string functions
 (`StrLen`, `CopyStr`, `StrPos`, `DelChr`, `DelStr`, `ConvertStr`, `PadStr`, `SelectStr`, `IncStr`,
 `LowerCase`/`UpperCase`, `IndexOf`, `MaxStrLen`), math (`Abs`, `Round` with the `'='`/`'<'`/`'>'`
 directions, where `'='` takes a midpoint away from zero as BC does, `Power`, `Maximum`,
@@ -81,13 +91,17 @@ Instance methods that run locally:
   `Substring`, `Trim`/`TrimStart`/`TrimEnd`, `ToLower`/`ToUpper`, `PadLeft`/`PadRight`, `Remove`.
 - `List`: `Add`, `AddRange`, `Get` (including `Get(index, var value)`), `GetRange`, `Set`
   (including `Set(index, value, var old)`), `Insert`, `Remove`, `RemoveAt`, `RemoveRange`,
-  `Reverse`, `Count`, `Contains`, `IndexOf`, `LastIndexOf`. The `var` form of `GetRange` runs on
-  live BC.
+  `Reverse`, `Count`, `Contains`, `IndexOf`, `LastIndexOf`. An element argument is converted to
+  the declared element type, so `L.Add('abc')` on a `List of [Code[20]]` stores `ABC` and
+  `L.Contains('abc')` finds it. `AddRange` with one List argument adds that list's elements to a
+  `List of [T]`, and adds the list as one element to a list of lists. `RemoveRange` on a range out
+  of bounds returns false where its result is read and raises as a statement. A test that calls
+  the `var` form of `GetRange` routes to live BC.
 - `Dictionary`: `Add`, `Get` (including `Get(key, var value)`), `Set` (including
   `Set(key, value, var old)`), `Remove`, `ContainsKey`, `Count`, `Keys`, `Values`. A key argument
   is converted to the declared key type, so `'abc'` is the key `ABC` of a
-  `Dictionary of [Code[20], Integer]`, and `Keys` returns keys of that type. The local runtime
-  keeps the keys in insertion order. BC documents no order.
+  `Dictionary of [Code[20], Integer]`. `Keys` returns a list of the key type and `Values` a list
+  of the value type. The local runtime keeps the keys in insertion order. BC documents no order.
 - `List`, `Dictionary` and `TextBuilder` are references, as in AL: assigning one, or passing it
   without `var`, shares it. `GetRange(1, L.Count())` makes a copy of a list.
 - `TextBuilder`: `Append`, `AppendLine` (CRLF), `Length`, `ToText`, `Clear`, `Insert`, `Remove`,
@@ -119,9 +133,9 @@ Randomness is seedable. Thread-local state is reset between test methods.
 
 ## Workspace-record runtime
 
-`Value::Record` handles connect through `interpreter/records.rs` to the BTreeMap-backed
-`mock::MockRecord` store. Record variables for the same table share a physical table inside one
-test, while each variable keeps its own filter set, iteration cursor, and field buffer (BC's
+`Value::Record` handles connect through `interpreter/records/` to the BTreeMap-backed
+`mock::record::MockRecord` store. Record variables for the same table share a physical table inside
+one test, while each variable keeps its own filter set, iteration cursor, and field buffer (BC's
 per-variable view semantics). The complete store is discarded before the next test. A temporary
 record variable (`Record "Sales Line" temporary`) has a store of its own, and passing it by value
 copies the rows it holds.
@@ -133,6 +147,9 @@ Supported behavior:
 - Init/Get/Insert/Modify/Delete, field reads/writes, Find/FindSet/FindFirst/FindLast/Next, with
   BC statement/expression semantics (a statement-position `Get`/`Find*` miss raises, `if Rec.Get`
   yields false, and `if Rec.Insert() then` takes the false branch on a duplicate key).
+- A record method or table procedure written without parentheses (`R.Insert;`,
+  `if R.FindFirst then`, `exit(R.Count)`) runs as the call. A field of the same name takes
+  precedence.
 - Code primary keys are caseless and Integer/Decimal key values unify.
 - SetRange/SetFilter (descending `%N` substitution so `%10` is safe), Count/CountApprox/IsEmpty,
   Reset/SetCurrentKey, Ascending (reverse iteration over the current key, restored by Reset),
@@ -154,7 +171,7 @@ Supported behavior:
   filtered relation, or by a relation to part of a composite key, routes to live BC.
 - Table code runs on its record, which is the implicit `Rec`: `Validate` assigns the field, checks
   a plain TableRelation to a workspace table and runs the field's OnValidate with the record as it
-  was as `xRec`; `Insert(true)`, `Modify(true)` and `Delete(true)` run OnInsert, OnModify and
+  was as `xRec`. `Insert(true)`, `Modify(true)` and `Delete(true)` run OnInsert, OnModify and
   OnDelete first, and `Rename` runs OnRename, which like the rename events gets the new key in
   `Rec` and the row as stored as `xRec`. `Member.Deposit(7)` runs the table's procedure on
   `Member`'s buffer. Inside table code a bare field name reads and writes `Rec`, and a bare record
@@ -164,11 +181,12 @@ Supported behavior:
 - Events: calling an `[IntegrationEvent]`, `[BusinessEvent]` or `[InternalEvent]` publisher runs
   every workspace subscriber bound to it (by object name or ID), binding arguments by parameter
   name with `var` values flowing back. A publisher whose `IncludeSender` argument is true passes
-  its codeunit as `Sender`, or for a table procedure the record the procedure runs on, so a write
-  to a `var Sender` changes that record. Insert, Modify, Delete and Rename raise the table's
+  `Sender`. From a codeunit it is the running instance, so a call on `Sender` reads and changes
+  the publisher's globals. From a table procedure it is the record the procedure runs on, so a
+  write to a `var Sender` changes that record. Insert, Modify, Delete and Rename raise the table's
   OnBefore/OnAfter events and Validate its OnBefore/OnAfterValidateEvent, whatever `RunTrigger`
   says, and DeleteAll and ModifyAll raise the same Delete or Modify events for every row they
-  touch. Subscribers in an `EventSubscriberInstance = Manual` codeunit are skipped; a test that
+  touch. Subscribers in an `EventSubscriberInstance = Manual` codeunit are skipped. A test that
   calls `BindSubscription` routes to live BC.
 
 PureLogic and WithRecords are runtime modes the interpreter enforces. If routing misses a record
@@ -182,16 +200,21 @@ access, PureLogic fails with a capability error instead of running it against th
 - **Routing:** syntax-aware classification follows the fully resolved transitive workspace call,
   trigger, interface, and event graph, including `Rename`, `DeleteAll`, `ModifyAll`, and the record
   calls table code makes through `Rec`, `xRec` or a bare method, so a reachable event subscriber on
-  any of them is classified like any other reachable code. Typed collection calls are not mistaken
-  for record calls. Supported workspace records select InterpRecord. A reachable `SingleInstance`
-  codeunit with variable globals still selects LiveBc unless it is the test's own codeunit, because
-  its state outlives one test on BC while the local run starts each test afresh. Dependency bodies
-  without native stubs and all other platform-bound behavior select LiveBc with file/line reasons.
+  any of them is classified like any other reachable code. Calls on typed collections are told
+  apart from record calls. A member of a record variable written without parentheses that is not
+  a field of its table (`R.LockTable;`) is classified as the method call it is, so an unsupported
+  method selects LiveBc as `R.LockTable();` does. Supported workspace records select InterpRecord.
+  A reachable `SingleInstance` codeunit with variable globals still selects LiveBc unless it is the
+  test's own codeunit, because its state outlives one test on BC while the local run starts each
+  test afresh. Dependency bodies without native stubs and all other platform-bound behavior select
+  LiveBc with file/line reasons.
 - **Whole codeunits:** a codeunit runs locally only when every discovered test is local. Mixed
   Interp/InterpRecord codeunits use WithRecords. Any LiveBc method keeps the whole codeunit on BC.
 - **Entry points:** single-codeunit, batch, automatic/MCP, and TUI runs use the same router.
-- **Backends:** InterpMode executes the test bodies with per-test deadlines and parallel codeunit support.
-  LiveBcMode calls `POST /dev/tests/{codeunit}/run` with basic/bearer/Windows authentication.
+- **Backends:** InterpMode executes the test bodies with per-test deadlines (30 s by default) and
+  parallel codeunit support. A test body still running 5 s after its deadline fails with a message
+  saying the runner stopped waiting for it, and the run goes on to the next test. LiveBcMode calls
+  `POST /dev/tests/{codeunit}/run` with basic/bearer/Windows authentication.
 - **Lifecycle/handlers:** initialize, test, and cleanup share one per-test record context. Cleanup
   always runs. MessageHandler, ConfirmHandler, StrMenuHandler, and HyperlinkHandler execute locally
   (including `var Reply`/`var Choice` write-back), while handlers requiring real page, report,
@@ -264,7 +287,7 @@ tests from blocked server tests.
 
 - Record execution requires workspace table definitions. Tables declaring FlowFilters, Linked
   formulas, or permission behavior are detected before execution and routed to live BC. A table's
-  triggers and procedures run locally and are classified like any reachable code; `Validate` on a
+  triggers and procedures run locally and are classified like any reachable code. `Validate` on a
   field whose TableRelation is conditional or points outside the workspace routes to live BC.
   Transactions, locking, RecordRef/FieldRef, unsupported record APIs, and dependency-only table
   schemas likewise remain live-BC behavior. The native runtime does not approximate them.
