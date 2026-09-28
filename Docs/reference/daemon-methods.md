@@ -175,10 +175,14 @@ the code the project can change.
 
 ## Paths and the project boundary
 
-A `uri` or `file` parameter is resolved inside the loaded project: its root, the package cache, and
-the directory each resolved `.app` came from. Anything else is refused with `-32002`, whose message
-names the path and the project root. The same dispatchers answer MCP's `al_call`, where the caller
-may be an agent and the path may be anything it asks for, so the boundary holds for every caller.
+Every path parameter is resolved inside the loaded project: its root, the package cache, and the
+directory each resolved `.app` came from. That covers `uri` and `file`, and the paths methods take
+under other names, which are `xlf`, `generated`, `project`, `from`, `to`, `dir`, `path`,
+`outputDir`, `snapshotPath`, `pathA`, `pathB`, `outputPath`, `junitOut`, `coberturaOut` and
+`files`. A report or snapshot a method writes (`junitOut`, `coberturaOut`, `outputPath`) must
+resolve under the project root itself. Anything else is refused with `-32002`, whose message names
+the path and the project root. The same dispatchers answer MCP's `al_call`, where the caller may
+be an agent and the path may be anything it asks for, so the boundary holds for every caller.
 
 A read-only single-file method (`parse`, `lint`, `metrics`, `hover`, `definition`, `references`,
 `implementations`, `completions`, `signatureHelp`, `rename`, `documentSymbols`, `foldingRanges`,
@@ -191,14 +195,15 @@ names (`format`, `fix`, `sortMembers`): supplied content is analysed, never writ
 
 `al-explorer` uses that: on `-32002` from a read-only method it reads the file itself and asks
 again with `text`, so `al-explorer parse ../elsewhere/Foo.al` works while the daemon still opens
-nothing outside the project. A write command reports the refusal instead.
+nothing outside the project. Every other command reports the refusal, with a hint to run it from
+the project that holds the path.
 
 Common parameter shapes: position queries accept `uri` plus `{line, character}`. `breaking` and
 `upgrade` accept `baselineSymbols`. `tests.snapshot_validate` accepts `snapshotPath`.
 `tests.snapshot_replay` accepts `snapshotPath`, `bcVersion`, and optional `config`/`timeoutMs`, and
-`tests.snapshot_diff` accepts `pathA` and `pathB`. Snapshot paths must resolve inside the current
-project. `source` requires `name` and accepts the disambiguators `kind`, `package`, `proc`, or
-`trigger` (`proc` and `trigger` are mutually exclusive).
+`tests.snapshot_diff` accepts `pathA` and `pathB`. `source` requires `name` and accepts the
+disambiguators `kind`, `package`, `proc`, or `trigger` (`proc` and `trigger` are mutually
+exclusive).
 It returns `source_availability` as `workspace_source`, `embedded_source`, `generated_outline`, or
 `metadata_only`. `source` also accepts `listProcedures` (boolean), which returns
 `{k, id, n, pkg, source_availability, members, total}` where each member carries `name`, `kind`,
