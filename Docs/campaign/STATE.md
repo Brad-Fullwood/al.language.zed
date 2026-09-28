@@ -33,8 +33,16 @@ Dispatched 23:52, each told to stop by 01:15 BST, each in a reused worktree dire
 - `campaign/fix-sec7-probing` (dir `fix-sec6-output`): SEC7-15.
 - `campaign/fix-r13-router` (dir `r13-review`): R13-ROUTER-1.
 
-Spare worktree directories: `test-snapshot` (on `campaign/fix-r13-lsp`, merged) and
-`fix-sec7-daemon` (on `campaign/fix-sec7-daemon`, merged).
+Two reviewers dispatched 23:58 over the tree at f4eb117a, each told to stop by 01:30 BST:
+
+- `campaign/r14-review` (dir `test-snapshot`): round 14, `git diff 73ed8751..f4eb117a` (22
+  merges), every `fixed` status in `r13-session-review.md` and `r7-security.md` read again with
+  its test, merge damage, text, and the class of gap the a298861f break showed (a test or a
+  cfg branch no gate compiles). Writes `findings/r14-session-review.md`.
+- `campaign/sec8-review` (dir `fix-sec7-daemon`): security round 8 over the SEC7 fixes, the
+  runtime caps and budget, the `app.json` reload, and the queued round 8 items (`al.dotnetPath`
+  and `binary.path` outside the project as text, a record going `Stale` once, the Windows pipe
+  owner check). Writes `findings/r8-security.md`.
 
 ## Close-out (the window ends tonight)
 
