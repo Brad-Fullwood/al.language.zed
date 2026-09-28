@@ -802,3 +802,28 @@ Append-only. Newest entry last.
   SEC7-5, SEC7-2 and SEC7-4 with the trust comment, the two formatter `case` bugs, R13-LSP-1,
   security round 7 items 2 to 6, round 13 items 5 to 16, article 9. Each stops by 21:30 so the
   close-out can merge, run the gates and write the checkpoint before the window ends.
+- Gates on 7717215c green (`.campaign/gates-7717215c.log`): fmt, clippy, clippy semantic, rustdoc,
+  125 suites, 5822 passed, 0 failed, 20 ignored, harness green.
+
+## 2026-09-28 19:20 BST: four branches merged, two more agents dispatched
+
+- Two agents dispatched at 19:05 for the findings the reviewers wrote in their first ten minutes:
+  `campaign/fix-sec7-daemon` for SEC7-6 to SEC7-8 (the daemon's write arms and nested snapshot
+  paths) and `campaign/fix-r13-runtime-2` for R13-RT-5 and R13-RT-6, in tests of their own so
+  the two runtime branches merge without a conflict in `records_tests.rs`.
+- Merged: `fix-sec7-1` (dfd6df9b, SEC7-1: the renderers in `build.rs`, `debug.rs`, `env.rs`,
+  `refactor.rs` and `trust.rs` on top of the eight inherited commits, a source tree test that
+  names the print site when a raw value reaches a terminal, the crafted-name commands checked
+  with `cat -v`), `fix-r13-trust` (8554630d: R13-TRUST-1, R13-TRUST-2, SEC7-2 with a 256 MiB
+  byte cap per tree, whole 64 KiB reads so `/proc/self/pagemap` counts against it, one hash per
+  tree per decision, `O_NONBLOCK` opens, SEC7-4 with outside analyzer and probing paths the
+  repository writes hashed or recorded `not present`, the stat count comment), `fix-formatter-case`
+  (6cae13c5: a nested case's labels under it, a `begin` on a label line closed by its own `end`, a
+  case `else` at the label level, a `begin` after a bare case `else` at the `else`'s level, each
+  checked against Microsoft's formatter), `fix-r13-runtime-2` (a298861f: R13-RT-5, R13-RT-6).
+  Gates on a298861f running.
+- Blog: article 9's wording pass committed 124e0bb and pushed (nineteen usage limits, counted from
+  the LOG headings, the weekly gap and the watchdog log, `readTime` 17, `pnpm validate` green).
+- Found on the way, queued: two older `else` placements in the formatter (after a `case ... end`
+  with no `;`, and a dangling `else` inside nested openers), `al.dotnetPath` and `binary.path`
+  outside the project still recorded as text, two `{e:?}` prints outside `src/cli`.
