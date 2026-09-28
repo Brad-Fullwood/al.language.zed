@@ -51,9 +51,10 @@ pub(super) fn parse_bc_server_params(
                 ));
             }
             // A caller-named download target is a write primitive, so it stays
-            // inside the project. The daemon-chosen default below is not
-            // caller-controlled and needs no such check.
-            crate::server::daemon::containment::resolve_param_within_project(
+            // under the project root, which leaves out the package folders a
+            // trusted project reads from. The daemon-chosen default below is
+            // not caller-controlled and needs no such check.
+            crate::server::daemon::containment::resolve_write_param_within_project(
                 workspace,
                 "outputDir",
                 &output_dir,
