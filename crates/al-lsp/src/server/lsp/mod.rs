@@ -932,8 +932,10 @@ impl AlServer {
     /// what the user had withdrawn. When nothing moved this costs up to seven
     /// `stat` calls: the trust store, the user settings file, the two editor
     /// settings files, the two launch files, and the `dotnet` host when
-    /// `AL_DOTNET_PATH` is set. Gating only removes values, so trust granted
-    /// mid-session takes effect at the next configuration change or restart.
+    /// `AL_DOTNET_PATH` is set. It also reads the settings files and takes a
+    /// `stat` per file under each probing path the repository sets. Gating
+    /// only removes values, so trust granted mid-session takes effect at the
+    /// next configuration change or restart.
     pub(crate) async fn refresh_trust(&self) {
         let root_uri = self.root_uri.read().await.clone();
         let Some(root) = root_uri.as_ref().and_then(|uri| uri.to_file_path().ok()) else {

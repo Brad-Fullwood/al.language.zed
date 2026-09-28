@@ -1841,6 +1841,40 @@ fn a_replaced_dotnet_host_moves_the_inputs_fingerprint() {
     assert_ne!(before, after);
 }
 
+/// The record hashes the tree under a probing path the repository sets, and
+/// a running daemon hands that path to `alc`. A pull that changes a file
+/// there, or adds one, changes no settings file, so the fingerprint has to
+/// stamp the tree itself.
+#[test]
+fn a_changed_file_under_a_probing_path_moves_the_inputs_fingerprint() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings(r#"{"al.assemblyProbingPaths": ["./probe"]}"#);
+    let probe = project.path().join("probe");
+    std::fs::create_dir_all(&probe).unwrap();
+    let helper = probe.join("Helper.dll");
+    std::fs::write(&helper, b"reviewed").unwrap();
+    let first = inputs_fingerprint(project.path());
+    assert_eq!(first, inputs_fingerprint(project.path()));
+
+    // The same length, so only the modification time tells the two apart.
+    std::fs::write(&helper, b"replaced").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&helper)
+        .unwrap()
+        .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000))
+        .unwrap();
+    let replaced = inputs_fingerprint(project.path());
+    assert_ne!(first, replaced, "a replaced file must move it");
+
+    std::fs::write(probe.join("Added.dll"), b"added").unwrap();
+    assert_ne!(
+        replaced,
+        inputs_fingerprint(project.path()),
+        "an added file must move it"
+    );
+}
+
 /// A running daemon or language server decides again only when
 /// `inputs_fingerprint` moves, and the fingerprint stamps the muxer alone.
 /// A `git pull` that replaced the runtime beside a trusted `dotnet` left

@@ -770,8 +770,10 @@ static TRUST_INPUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// never while an editor keeps it busy. So `al-explorer trust --revoke` left
 /// the privileged settings in effect in the process that was applying them.
 ///
-/// Four `stat` calls per request decide whether to read the files again, so
-/// the common case costs nothing and a revoke takes effect on the next
+/// [`al_project::trust::inputs_fingerprint`] decides whether to read the files
+/// again: a `stat` per trust input and per file under each probing path the
+/// repository sets. So the common case costs little, and a revoke, or a pull
+/// that changes the files under a probing path, takes effect on the next
 /// request.
 async fn refresh_trust(workspace: &Workspace) {
     use std::sync::atomic::Ordering;
