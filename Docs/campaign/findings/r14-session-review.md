@@ -43,10 +43,14 @@ for the orchestrator to save as a patch.
 - [ ] 15. 3851a033 (R13-LSP-1)
 - [ ] 16. 8bcf8a22 (R13-DAEMON-1, SEC7-7)
 - [ ] 17. 41ab5260 (R13-RT-1 to R13-RT-4, SEC7-3, SEC7-5)
-- [ ] 18. f8beee43, 255cc1f5, 146d0592, 10e8cd90, 2970b58a (the campaign branch merged into fix-sec7-1, fix-r13-runtime, fix-r13-trust, sec7-review and r13-review)
-- [ ] 19. d82b8d01 (merge repair, `TrustDecision::from_parts`)
-- [ ] 20. Merge damage: each merge's parents merged again with `git merge-tree --write-tree`
-- [ ] 21. Text in the added lines against the writing rules
-- [ ] 22. The gate gap at a298861f and code no Linux gate compiles or runs
+- [ ] 18. f8beee43 (the campaign branch at 7717215c merged into fix-sec7-1)
+- [ ] 19. 255cc1f5 (the campaign branch at 7717215c merged into fix-r13-runtime)
+- [ ] 20. 146d0592 (the campaign branch at 7717215c merged into fix-r13-trust)
+- [ ] 21. 10e8cd90 (the campaign branch at 7717215c merged into sec7-review)
+- [ ] 22. 2970b58a (the campaign branch at 7717215c merged into r13-review)
+- [ ] 23. d82b8d01 (merge repair, `TrustDecision::from_parts`)
+- [ ] 24. Merge damage: each merge's parents merged again with `git merge-tree --write-tree`
+- [ ] 25. Text in the added lines against the writing rules
+- [ ] 26. The gate gap at a298861f and code no Linux gate compiles or runs
 
 ## Findings
