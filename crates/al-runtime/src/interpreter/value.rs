@@ -28,15 +28,68 @@ pub type DictEntries = indexmap::IndexMap<String, (Value, Value)>;
 /// Values cross to the test runner's thread, hence `Arc<Mutex>`. Hold one
 /// guard at a time: locking the same contents twice deadlocks.
 #[derive(Debug, Default)]
-pub struct Shared<T>(Arc<Mutex<T>>);
+pub struct Shared<T: Contents>(Arc<Mutex<T>>);
 
-impl<T> Clone for Shared<T> {
+/// What a [`Shared`] handle holds: a List's values, a Dictionary's entries
+/// or a TextBuilder's text.
+pub trait Contents {
+    /// Move the values these contents hold into `into`.
+    fn take_values(&mut self, into: &mut Vec<Value>);
+}
+
+impl Contents for String {
+    fn take_values(&mut self, _into: &mut Vec<Value>) {}
+}
+
+impl Contents for Vec<Value> {
+    fn take_values(&mut self, into: &mut Vec<Value>) {
+        into.append(self);
+    }
+}
+
+impl Contents for DictEntries {
+    fn take_values(&mut self, into: &mut Vec<Value>) {
+        for (_, (key, value)) in self.drain(..) {
+            into.push(key);
+            into.push(value);
+        }
+    }
+}
+
+impl<T: Contents> Clone for Shared<T> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
-impl<T> Shared<T> {
+/// Dropping the last handle to a list drops the values it holds, and each
+/// of those drops the values it holds. The values are moved into a work list
+/// and dropped in a loop, so a chain of lists nested a hundred thousand deep
+/// is freed without one native frame per level.
+impl<T: Contents> Drop for Shared<T> {
+    fn drop(&mut self) {
+        let mut orphans = Vec::new();
+        self.take_values_if_last(&mut orphans);
+        while let Some(mut value) = orphans.pop() {
+            value.take_held_values(&mut orphans);
+        }
+    }
+}
+
+impl<T: Contents> Shared<T> {
+    /// Move the values the contents hold into `into` when this is the last
+    /// handle to them.
+    fn take_values_if_last(&mut self, into: &mut Vec<Value>) {
+        if let Some(contents) = Arc::get_mut(&mut self.0) {
+            contents
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take_values(into);
+        }
+    }
+}
+
+impl<T: Contents> Shared<T> {
     pub fn new(contents: T) -> Self {
         Self(Arc::new(Mutex::new(contents)))
     }
@@ -58,7 +111,7 @@ impl<T> Shared<T> {
     }
 }
 
-impl<T: Clone> Shared<T> {
+impl<T: Contents + Clone> Shared<T> {
     /// A copy of the contents, detached from the handle.
     pub fn snapshot(&self) -> T {
         self.lock().clone()
@@ -71,13 +124,13 @@ impl<T: Clone> Shared<T> {
 /// value type is the value type of a Dictionary. `None` when no declaration
 /// made the value.
 #[derive(Debug)]
-pub struct Collection<T> {
+pub struct Collection<T: Contents> {
     contents: Shared<T>,
     member_type: Option<Arc<str>>,
     value_type: Option<Arc<str>>,
 }
 
-impl<T> Clone for Collection<T> {
+impl<T: Contents> Clone for Collection<T> {
     fn clone(&self) -> Self {
         Self {
             contents: self.contents.clone(),
@@ -87,7 +140,7 @@ impl<T> Clone for Collection<T> {
     }
 }
 
-impl<T> Collection<T> {
+impl<T: Contents> Collection<T> {
     pub fn new(contents: T, member_type: Option<&str>) -> Self {
         Self {
             contents: Shared::new(contents),
@@ -140,7 +193,7 @@ impl<T> Collection<T> {
     }
 }
 
-impl<T: Clone> Collection<T> {
+impl<T: Contents + Clone> Collection<T> {
     /// A copy of the contents, detached from the value.
     pub fn snapshot(&self) -> T {
         self.contents.snapshot()
@@ -329,7 +382,7 @@ impl Eq for Value {}
 
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        compare(self, other, &mut MetPairs::new())
+        compare(self, other)
     }
 }
 
@@ -340,7 +393,47 @@ impl Ord for Value {
 /// compared or was equal, and a pair is walked at most once.
 type MetPairs = std::collections::HashSet<(usize, usize)>;
 
-fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Ordering {
+/// What comparing one pair of values gives: an order, or two sequences of
+/// values to compare element by element, a shorter sequence that matches so
+/// far first.
+enum Step {
+    Done(std::cmp::Ordering),
+    Descend(Vec<Value>, Vec<Value>),
+}
+
+/// Compare two values. Nested Arrays, Lists and Dictionaries are walked with
+/// a stack of the sequences being compared, so a chain of lists nested a
+/// hundred thousand deep takes heap and no native stack.
+fn compare(left: &Value, right: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut met = MetPairs::new();
+    let (left, right) = match compare_one(left, right, &mut met) {
+        Step::Done(ordering) => return ordering,
+        Step::Descend(left, right) => (left, right),
+    };
+    let mut pending = vec![(left.into_iter(), right.into_iter())];
+    while let Some((left, right)) = pending.last_mut() {
+        let step = match (left.next(), right.next()) {
+            (None, None) => {
+                pending.pop();
+                continue;
+            }
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(a), Some(b)) => compare_one(&a, &b, &mut met),
+        };
+        match step {
+            Step::Done(Ordering::Equal) => {}
+            Step::Done(different) => return different,
+            Step::Descend(left, right) => pending.push((left.into_iter(), right.into_iter())),
+        }
+    }
+    Ordering::Equal
+}
+
+/// Compare two values of which neither holds others, or give the sequences
+/// the comparison continues with.
+fn compare_one(left: &Value, right: &Value, met: &mut MetPairs) -> Step {
     use std::cmp::Ordering;
     use Value::*;
     fn variant_index(v: &Value) -> u8 {
@@ -375,12 +468,19 @@ fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Orderin
             Json(_) => 25,
         }
     }
+    /// The keys and values of a Dictionary's entries, entry by entry.
+    fn entries_in_order(dict: &Collection<DictEntries>) -> Vec<Value> {
+        dict.lock()
+            .values()
+            .flat_map(|(key, value)| [key.clone(), value.clone()])
+            .collect()
+    }
     let mine = variant_index(left);
     let theirs = variant_index(right);
     if mine != theirs {
-        return mine.cmp(&theirs);
+        return Step::Done(mine.cmp(&theirs));
     }
-    match (left, right) {
+    Step::Done(match (left, right) {
         (Null, Null) | (Empty, Empty) => Ordering::Equal,
         (Integer(a) | BigInteger(a), Integer(b) | BigInteger(b)) => a.cmp(b),
         (Decimal(a), Decimal(b)) => a.cmp(b),
@@ -408,28 +508,23 @@ fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Orderin
         (Record(a), Record(b)) | (RecordRef(a), RecordRef(b)) => {
             (a.table_id, &a.table_name, a.handle).cmp(&(b.table_id, &b.table_name, b.handle))
         }
-        (Variant(a), Variant(b)) => compare(a, b, met),
-        (Array(a), Array(b)) => compare_in_order(a.iter(), b.iter(), met),
+        (Variant(a), Variant(b)) => {
+            return Step::Descend(vec![(**a).clone()], vec![(**b).clone()]);
+        }
+        (Array(a), Array(b)) => return Step::Descend(a.clone(), b.clone()),
         (List(a), List(b)) if a.same(b) => Ordering::Equal,
         (List(a), List(b)) => {
             if !met.insert((a.address(), b.address())) {
-                return Ordering::Equal;
+                return Step::Done(Ordering::Equal);
             }
-            let (a, b) = (a.snapshot(), b.snapshot());
-            compare_in_order(a.iter(), b.iter(), met)
+            return Step::Descend(a.snapshot(), b.snapshot());
         }
         (Dict(a), Dict(b)) if a.same(b) => Ordering::Equal,
         (Dict(a), Dict(b)) => {
             if !met.insert((a.address(), b.address())) {
-                return Ordering::Equal;
+                return Step::Done(Ordering::Equal);
             }
-            let (a, b) = (a.snapshot(), b.snapshot());
-            // Entry by entry, the key and then the value.
-            compare_in_order(
-                a.values().flat_map(|(key, value)| [key, value]),
-                b.values().flat_map(|(key, value)| [key, value]),
-                met,
-            )
+            return Step::Descend(entries_in_order(a), entries_in_order(b));
         }
         (Blob(a), Blob(b)) => a.cmp(b),
         (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
@@ -452,31 +547,15 @@ fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Orderin
                 start: b_start,
                 end: b_end,
             },
-        ) => compare(a_start, b_start, met).then_with(|| compare(a_end, b_end, met)),
+        ) => {
+            return Step::Descend(
+                vec![(**a_start).clone(), (**a_end).clone()],
+                vec![(**b_start).clone(), (**b_end).clone()],
+            );
+        }
         // Different variants handled by the index check above.
         _ => Ordering::Equal,
-    }
-}
-
-/// Compare two sequences of values element by element, and a shorter
-/// sequence that matches so far first.
-fn compare_in_order<'a>(
-    mut left: impl Iterator<Item = &'a Value>,
-    mut right: impl Iterator<Item = &'a Value>,
-    met: &mut MetPairs,
-) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    loop {
-        match (left.next(), right.next()) {
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (Some(a), Some(b)) => match compare(a, b, met) {
-                Ordering::Equal => {}
-                different => return different,
-            },
-        }
-    }
+    })
 }
 
 impl PartialOrd for Value {
@@ -556,6 +635,20 @@ pub struct ErrorInfo {
 }
 
 impl Value {
+    /// Move the values this value holds into `into`: an Array's elements, a
+    /// Variant's value, and the contents of a List or Dictionary when this
+    /// is the last handle to them. Drop uses it to free nested values in a
+    /// loop.
+    fn take_held_values(&mut self, into: &mut Vec<Value>) {
+        match self {
+            Value::List(list) => list.contents.take_values_if_last(into),
+            Value::Dict(dict) => dict.contents.take_values_if_last(into),
+            Value::Array(values) => into.append(values),
+            Value::Variant(value) => into.push(std::mem::replace(&mut **value, Value::Null)),
+            _ => {}
+        }
+    }
+
     /// Truthiness for AL `IF`/`WHILE` semantics: only `Boolean(true)` is
     /// truthy. Numbers, strings, etc. are NOT auto-coerced (AL is strict).
     pub fn is_truthy(&self) -> bool {
@@ -1088,5 +1181,57 @@ mod tests {
         assert_eq!(map.get(&Value::Decimal(dec!(3.5))), Some(&"dec"));
         let keys: Vec<_> = map.keys().cloned().collect();
         assert!(keys[0] < keys[1]);
+    }
+
+    /// A chain `depth` levels deep around `Integer(end)`: each level a List,
+    /// or with `dictionaries` every other level a Dictionary.
+    fn nested(depth: usize, end: i64, dictionaries: bool) -> Value {
+        let mut value = Value::list(vec![Value::Integer(end)]);
+        for level in 0..depth {
+            value = if dictionaries && level % 2 == 0 {
+                let mut entries = DictEntries::new();
+                entries.insert("1".to_string(), (Value::Integer(1), value));
+                Value::dict(entries)
+            } else {
+                Value::list(vec![value])
+            };
+        }
+        value
+    }
+
+    /// Run `body` on a thread with the interpreter's stack, as the test
+    /// backend runs an AL body.
+    fn on_interpreter_stack<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+            .spawn(body)
+            .expect("spawn the interpreter thread")
+            .join()
+            .expect("the interpreter thread returns")
+    }
+
+    /// `compare` recursed once per level, and two chains 40,000 deep
+    /// overflowed the interpreter's stack in a debug build and aborted the
+    /// process.
+    #[test]
+    fn chains_of_collections_100000_deep_compare() {
+        on_interpreter_stack(|| {
+            for dictionaries in [false, true] {
+                let same = nested(100_000, 1, dictionaries);
+                assert_eq!(same, nested(100_000, 1, dictionaries));
+                assert!(same < nested(100_000, 2, dictionaries));
+            }
+        });
+    }
+
+    /// Dropping the last handle to a chain dropped one level per native
+    /// frame, and a chain 210,000 deep overflowed the interpreter's stack in
+    /// a debug build and aborted the process.
+    #[test]
+    fn chains_of_collections_300000_deep_drop() {
+        on_interpreter_stack(|| {
+            drop(nested(300_000, 1, false));
+            drop(nested(300_000, 1, true));
+        });
     }
 }

@@ -7563,3 +7563,46 @@ fn a_json_value_added_to_a_value_it_holds_is_added_as_a_copy() {
         Value::Text(r#"{"outer":{"inner":[{"outer":{"inner":[]}}]}}"#.into())
     );
 }
+
+/// Lists nested one level per loop iteration, the shape of the round 13
+/// finding R13-RT-1.
+const DEEP_CHAINS: &str = r#"codeunit 50461 "Deep Chains"
+{
+    procedure CompareChains(Depth: Integer): Boolean
+    var
+        Cur: List of [Integer];
+        Prev: List of [Integer];
+        Other: List of [Integer];
+        OtherPrev: List of [Integer];
+        I: Integer;
+    begin
+        Cur.Add(1);
+        Other.Add(1);
+        for I := 1 to Depth do begin
+            Prev := Cur;
+            Clear(Cur);
+            Cur.Add(Prev);
+            OtherPrev := Other;
+            Clear(Other);
+            Other.Add(OtherPrev);
+        end;
+        exit(Cur = Other);
+    end;
+}
+"#;
+
+/// `Prev := Cur; Clear(Cur); Cur.Add(Prev)` in a loop nests a list one level
+/// per iteration, and comparing two such chains 40,000 deep overflowed the
+/// interpreter's stack and aborted the process.
+#[test]
+fn comparing_lists_nested_100000_deep_in_al_returns() {
+    assert_eq!(
+        ok(run_on_interpreter_stack(
+            DEEP_CHAINS,
+            "Deep Chains",
+            "CompareChains",
+            vec![Value::Integer(100_000)],
+        )),
+        Value::Boolean(true)
+    );
+}
