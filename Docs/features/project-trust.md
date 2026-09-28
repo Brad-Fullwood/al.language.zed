@@ -201,8 +201,8 @@ and a `TeamCop.dll` that appeared under `/tmp/cops` after the grant loaded under
 record. A record made before this change lists such a path as text and goes `stale` once. An
 outside tree is held to the same caps as one inside: `/usr` as a probing path holds symbolic
 links and more than 50,000 entries, so the record refuses it rather than hash it. The same
-paths in `~/.config/al-lsp/settings.json` are the user's machine and are recorded as written,
-as are `al.dotnetPath` and `binary.path` outside the project.
+paths in `~/.config/al-lsp/settings.json` are the user's and stay out of the record.
+`al.dotnetPath` and `binary.path` outside the project are recorded as written.
 
 A path written inside the project that a link carries outside it is resolved and hashed the
 same way. With `"al.assemblyProbingPaths": ["./tools"]` and `tools` a link to a directory
