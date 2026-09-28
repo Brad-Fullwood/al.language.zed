@@ -282,6 +282,25 @@ pub(crate) fn text_field(row: &serde_json::Value, key: &str, default: &str) -> S
     )
 }
 
+/// Text of several lines, such as source code or a DOT graph, as
+/// [`terminal_text`] writes it, with its line breaks and tabs kept.
+pub(crate) fn terminal_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = if let Some(body) = line.strip_suffix("\r\n") {
+            (body, "\r\n")
+        } else if let Some(body) = line.strip_suffix('\n') {
+            (body, "\n")
+        } else {
+            (line, "")
+        };
+        let cells: Vec<String> = body.split('\t').map(terminal_text).collect();
+        out.push_str(&cells.join("\t"));
+        out.push_str(ending);
+    }
+    out
+}
+
 pub fn collect_al_files(dir: &std::path::Path) -> Result<Vec<PathBuf>, String> {
     collect_al_files_for_extension(dir, "al")
 }
@@ -1258,7 +1277,7 @@ mod subcommand_exit_code_tests {
 
 #[cfg(test)]
 mod terminal_text_tests {
-    use super::{error_text, json_text, lint_diag_line, symbol_entries_text};
+    use super::{error_text, json_text, lint_diag_line, symbol_entries_text, terminal_lines};
 
     const CRAFTED_NAME: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
     const ESCAPED_NAME: &str = r"Bad\u{1b}[31m Name\u{1b}[0m";
@@ -1333,5 +1352,14 @@ mod terminal_text_tests {
         assert_no_raw_control(&line);
         assert!(line.contains(ESCAPED_NAME), "got: {line}");
         assert!(line.starts_with(r"src/Bad\u{1b}[2J.al:3:1"), "got: {line}");
+    }
+
+    #[test]
+    fn multi_line_text_keeps_its_line_breaks_and_tabs_and_escapes_other_controls() {
+        let text = terminal_lines("digraph {\r\n\t\"Bad\u{1b}]0;pwned\u{7}\";\n\u{1b}[2J}");
+        assert_eq!(
+            text,
+            "digraph {\r\n\t\"Bad\\u{1b}]0;pwned\\u{7}\";\n\\u{1b}[2J}"
+        );
     }
 }
