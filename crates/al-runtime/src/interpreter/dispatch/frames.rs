@@ -421,9 +421,10 @@ pub(super) fn check_param_type(arg: &Value, type_name: &str) -> Option<String> {
 }
 
 /// Whether `arg` is of the subtype `type_name` declares, when both name one:
-/// a `Record <Table>` parameter takes a record of that table and a
-/// `Codeunit <Object>` parameter a codeunit of that object, compared without
-/// regard to case. Any other pairing, and a side with no subtype, is left to
+/// a `Record <Table>` parameter takes a record of that table, a
+/// `Codeunit <Object>` parameter a codeunit of that object and an
+/// `Enum <Type>` parameter a value of that enum, compared without regard to
+/// case. Any other pairing, and a side with no subtype, is left to
 /// `check_param_type`.
 pub(super) fn subtype_matches(arg: &Value, type_name: &str) -> bool {
     let (declared, given) = match (records::default_for_structured(type_name), arg) {
@@ -437,6 +438,13 @@ pub(super) fn subtype_matches(arg: &Value, type_name: &str) -> bool {
             }),
             Value::Codeunit { object_name, .. },
         ) => (declared, object_name.as_str()),
+        (
+            Some(Value::Option {
+                type_name: declared,
+                ..
+            }),
+            Value::Option { type_name, .. },
+        ) => (declared, type_name.as_str()),
         _ => return true,
     };
     declared.is_empty() || given.is_empty() || declared.eq_ignore_ascii_case(given)

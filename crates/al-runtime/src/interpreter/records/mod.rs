@@ -33,6 +33,9 @@ mod store;
 mod table_meta;
 mod validate;
 
+#[cfg(test)]
+mod r13_tests;
+
 pub use relations::{RelationIndex, RenameCascade};
 
 pub use store::RecordStore;
