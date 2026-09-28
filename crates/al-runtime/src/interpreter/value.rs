@@ -65,14 +65,16 @@ impl<T: Clone> Shared<T> {
     }
 }
 
-/// A `List` or `Dictionary` value: its shared contents and the member type
-/// its declaration gives it, written as in source (`Code[20]`). The member
-/// type is the element type of a List and the key type of a Dictionary.
-/// `None` when no declaration made the value.
+/// A `List` or `Dictionary` value: its shared contents and the types its
+/// declaration gives it, written as in source (`Code[20]`). The member type
+/// is the element type of a List and the key type of a Dictionary, and the
+/// value type is the value type of a Dictionary. `None` when no declaration
+/// made the value.
 #[derive(Debug)]
 pub struct Collection<T> {
     contents: Shared<T>,
     member_type: Option<Arc<str>>,
+    value_type: Option<Arc<str>>,
 }
 
 impl<T> Clone for Collection<T> {
@@ -80,6 +82,7 @@ impl<T> Clone for Collection<T> {
         Self {
             contents: self.contents.clone(),
             member_type: self.member_type.clone(),
+            value_type: self.value_type.clone(),
         }
     }
 }
@@ -89,7 +92,14 @@ impl<T> Collection<T> {
         Self {
             contents: Shared::new(contents),
             member_type: member_type.map(Arc::from),
+            value_type: None,
         }
+    }
+
+    /// The same collection with `value_type` as its Dictionary value type.
+    pub fn with_value_type(mut self, value_type: Option<&str>) -> Self {
+        self.value_type = value_type.map(Arc::from);
+        self
     }
 
     /// The contents, locked until the guard drops.
@@ -112,7 +122,12 @@ impl<T> Collection<T> {
         self.member_type.as_deref()
     }
 
-    /// New empty contents with the same member type, as `Clear` leaves.
+    /// The declared value type of a Dictionary.
+    pub fn value_type(&self) -> Option<&str> {
+        self.value_type.as_deref()
+    }
+
+    /// New empty contents with the same declared types, as `Clear` leaves.
     pub fn emptied(&self) -> Self
     where
         T: Default,
@@ -120,6 +135,7 @@ impl<T> Collection<T> {
         Self {
             contents: Shared::new(T::default()),
             member_type: self.member_type.clone(),
+            value_type: self.value_type.clone(),
         }
     }
 }

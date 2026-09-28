@@ -6878,3 +6878,504 @@ fn a_dictionary_past_the_limit_fails_the_test() {
     // Set on a key that is there replaces its value.
     assert!(!call("Set", 7).is_error());
 }
+
+/// A `List of [Code[20]]` and a `Dictionary of [Integer, Text]` whose
+/// arguments arrive as another type: Text for a Code element, a Char for an
+/// Integer key. Business Central converts each argument to the declared
+/// type, as it converts an argument to a typed parameter.
+const TYPED_COLLECTION_ARGUMENTS: &str = r#"table 50990 "Typed Item"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+codeunit 50991 "Typed Collection Arguments"
+{
+    procedure CodeListFromText(): Text
+    var
+        L: List of [Code[20]];
+    begin
+        L.Add('abc');
+        if not L.Contains('ABC') then
+            exit('missing');
+        exit(L.Get(1));
+    end;
+
+    procedure CodeListIndexOf(): Integer
+    var
+        L: List of [Code[20]];
+        C: Code[20];
+    begin
+        C := 'xyz';
+        L.Add(C);
+        exit(L.IndexOf('XYZ'));
+    end;
+
+    procedure CodeListContainsCodeVariable(): Text
+    var
+        L: List of [Code[20]];
+        C: Code[20];
+        D: Code[20];
+    begin
+        C := 'xyz';
+        D := 'XYZ';
+        L.Add(C);
+        if L.Contains(D) then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure CodeListFromField(): Text
+    var
+        R: Record "Typed Item";
+        L: List of [Code[20]];
+    begin
+        R."No." := 'ITEM1';
+        R.Insert();
+        R.FindFirst();
+        L.Add(R."No.");
+        if L.Contains('ITEM1') then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure CodeListInsertSetAndRemove(): Text
+    var
+        L: List of [Code[20]];
+        Old: Code[20];
+    begin
+        L.Add('a');
+        L.Insert(1, 'b ');
+        L.Set(2, 'c', Old);
+        if not L.Remove('B') then
+            exit('remove missed');
+        exit(L.Get(1) + '/' + Old);
+    end;
+
+    procedure CodeListAddRangeOfTexts(): Integer
+    var
+        L: List of [Code[20]];
+    begin
+        L.AddRange('a', 'b');
+        exit(L.LastIndexOf('B'));
+    end;
+
+    procedure ShortCodeListOverflows()
+    var
+        L: List of [Code[2]];
+    begin
+        L.Add('abc');
+    end;
+
+    procedure IntegerKeyFromChar(): Text
+    var
+        D: Dictionary of [Integer, Text];
+        S: Text;
+    begin
+        S := 'abc';
+        D.Add(S[1], 'x');
+        if D.ContainsKey(97) then
+            exit('found');
+        exit('missing');
+    end;
+}
+"#;
+
+fn run_typed_collection(proc: &str) -> Eval {
+    run(
+        &[("/ws/TypedCollection.al", TYPED_COLLECTION_ARGUMENTS)],
+        "Typed Collection Arguments",
+        proc,
+        vec![],
+    )
+}
+
+/// `L.Add('abc')` on a `List of [Code[20]]` stores the Code `ABC`, so a
+/// search with a Text literal, a Code variable of another case, or a Code
+/// field's value finds it.
+#[test]
+fn a_list_of_code_converts_each_added_and_searched_value_to_code() {
+    assert_eq!(
+        ok(run_typed_collection("CodeListFromText")),
+        Value::Code("ABC".into())
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListIndexOf")),
+        Value::Integer(1)
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListContainsCodeVariable")),
+        Value::Text("found".into())
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListFromField")),
+        Value::Text("found".into())
+    );
+}
+
+/// `Insert`, `Set`, `AddRange` and `Remove` convert their element the same
+/// way, and the `var` old value of `Set` comes back as the stored Code:
+/// `[A]`, then `[B, A]`, then `[B, C]` with `A` as the old value, then `[C]`.
+#[test]
+fn every_list_method_that_takes_an_element_converts_it() {
+    assert_eq!(
+        ok(run_typed_collection("CodeListInsertSetAndRemove")),
+        Value::Text("C/A".into())
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListAddRangeOfTexts")),
+        Value::Integer(2)
+    );
+}
+
+/// A value longer than the element's `Code[N]` raises the overflow text
+/// Business Central raises, as a Dictionary key does.
+#[test]
+fn a_list_element_longer_than_its_declared_length_raises() {
+    assert!(
+        error_message(run_typed_collection("ShortCodeListOverflows"))
+            .contains("must be less than or equal to 2")
+    );
+}
+
+/// `D.Add(S[1], 'x')` on a `Dictionary of [Integer, Text]` keys by the
+/// character's code, so `ContainsKey(97)` finds the entry for `a`.
+#[test]
+fn an_integer_key_given_as_a_char_is_its_character_code() {
+    assert_eq!(
+        ok(run_typed_collection("IntegerKeyFromChar")),
+        Value::Text("found".into())
+    );
+}
+
+/// Lists that come out of `Dictionary.Keys()` and `Dictionary.Values()`.
+/// Business Central types them by the dictionary's declaration, so the
+/// list of lists takes `AddRange(T)` and the list of Code converts what it
+/// adds.
+const DICTIONARY_KEYS_AND_VALUES: &str = r#"codeunit 50992 "Dictionary Keys And Values"
+{
+    var
+        Global: Dictionary of [Code[20], List of [Integer]];
+
+    procedure ValuesThenAddRange(): Integer
+    var
+        D: Dictionary of [Integer, List of [Integer]];
+        Vals: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Inner.AddRange(1, 2, 3);
+        D.Add(1, Inner);
+        Vals := D.Values();
+        Vals.AddRange(Inner);
+        exit(Vals.Count());
+    end;
+
+    procedure KeysThenAdd(): Text
+    var
+        D: Dictionary of [Code[20], Integer];
+        K: List of [Code[20]];
+    begin
+        D.Add('A', 1);
+        K := D.Keys();
+        K.Add('b');
+        if K.Contains('B') then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure GlobalValuesThenAddRange(): Integer
+    var
+        Vals: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Inner.AddRange(1, 2, 3);
+        Global.Add('x', Inner);
+        Vals := Global.Values();
+        Vals.AddRange(Inner);
+        exit(Vals.Count());
+    end;
+}
+"#;
+
+fn run_keys_and_values(proc: &str) -> Eval {
+    run(
+        &[("/ws/KeysAndValues.al", DICTIONARY_KEYS_AND_VALUES)],
+        "Dictionary Keys And Values",
+        proc,
+        vec![],
+    )
+}
+
+/// `Vals := D.Values()` for a `Dictionary of [Integer, List of [Integer]]`
+/// gives a list of lists, so `Vals.AddRange(Inner)` adds `Inner` as one
+/// element and the count is 2. A global dictionary types its values the
+/// same way.
+#[test]
+fn a_values_list_of_lists_adds_a_list_as_one_element() {
+    assert_eq!(
+        ok(run_keys_and_values("ValuesThenAddRange")),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        ok(run_keys_and_values("GlobalValuesThenAddRange")),
+        Value::Integer(2)
+    );
+}
+
+/// `K := D.Keys()` for a `Dictionary of [Code[20], Integer]` gives a list
+/// of Code, so `K.Add('b')` stores `B` and `K.Contains('B')` finds it.
+#[test]
+fn a_keys_list_converts_what_it_adds_to_the_key_type() {
+    assert_eq!(
+        ok(run_keys_and_values("KeysThenAdd")),
+        Value::Text("found".into())
+    );
+}
+
+/// An array element passed to a `var` parameter, with an index the callee
+/// moves or an index expression with a side effect. Business Central binds
+/// the reference before the call, so the write back lands on the element
+/// the caller named and the index runs once.
+const VAR_ELEMENT_INDEX: &str = r#"codeunit 50993 "Var Element Index"
+{
+    var
+        I: Integer;
+
+    procedure IndexReadAfterCallee(): Text
+    var
+        Amounts: array[3] of Integer;
+    begin
+        I := 1;
+        BumpAndMoveIndex(Amounts[I]);
+        exit(Format(Amounts[1]) + '/' + Format(Amounts[2]));
+    end;
+
+    local procedure BumpAndMoveIndex(var N: Integer)
+    begin
+        I := 2;
+        N += 1;
+    end;
+
+    procedure IndexEvaluatedTwice(): Text
+    var
+        Amounts: array[3] of Integer;
+    begin
+        I := 0;
+        Bump(Amounts[NextIndex()]);
+        exit(Format(Amounts[1]) + '/' + Format(Amounts[2]) + '/' + Format(I));
+    end;
+
+    local procedure NextIndex(): Integer
+    begin
+        I += 1;
+        exit(I);
+    end;
+
+    local procedure Bump(var N: Integer)
+    begin
+        N += 1;
+    end;
+
+    procedure ListGetIntoSideEffectIndex(): Text
+    var
+        L: List of [Integer];
+        Slots: array[3] of Integer;
+    begin
+        L.Add(9);
+        I := 0;
+        L.Get(1, Slots[NextIndex()]);
+        exit(Format(Slots[1]) + '/' + Format(Slots[2]) + '/' + Format(I));
+    end;
+
+    procedure CharOfTextThroughVar(): Text
+    var
+        T: Text;
+    begin
+        T := 'abc';
+        I := 1;
+        UpperAndMoveIndex(T[I]);
+        exit(T);
+    end;
+
+    local procedure UpperAndMoveIndex(var C: Char)
+    begin
+        I := 3;
+        C := 'X';
+    end;
+}
+"#;
+
+fn run_var_element(proc: &str) -> Eval {
+    run(
+        &[("/ws/VarElementIndex.al", VAR_ELEMENT_INDEX)],
+        "Var Element Index",
+        proc,
+        vec![],
+    )
+}
+
+/// `Bump(Amounts[I])` where the callee sets `I := 2` before writing its
+/// parameter still writes `Amounts[1]`, for an array element and for a
+/// character of a Text.
+#[test]
+fn a_var_array_element_is_written_where_the_caller_indexed_it() {
+    assert_eq!(
+        ok(run_var_element("IndexReadAfterCallee")),
+        Value::Text("1/0".into())
+    );
+    assert_eq!(
+        ok(run_var_element("CharOfTextThroughVar")),
+        Value::Text("Xbc".into())
+    );
+}
+
+/// `Bump(Amounts[NextIndex()])` runs `NextIndex` once: the element it names
+/// is bumped and the counter stays at 1.
+#[test]
+fn the_index_of_a_var_array_element_runs_once() {
+    assert_eq!(
+        ok(run_var_element("IndexEvaluatedTwice")),
+        Value::Text("1/0/1".into())
+    );
+}
+
+/// `L.Get(1, Slots[NextIndex()])` runs `NextIndex` once on the List path
+/// too: the value lands in `Slots[1]` and the counter stays at 1.
+#[test]
+fn a_list_get_var_result_runs_its_element_index_once() {
+    assert_eq!(
+        ok(run_var_element("ListGetIntoSideEffectIndex")),
+        Value::Text("9/0/1".into())
+    );
+}
+
+/// Procedures overloaded on the table of a Record parameter or the object
+/// of a Codeunit parameter. alc picks the declaration whose subtype is the
+/// argument's, so each call runs the body written for its table.
+const SUBTYPE_OVERLOADS: &str = r#"table 50994 "Overload Cust"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+table 50995 "Overload Vend"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+codeunit 50996 "Overload Helper A"
+{
+    procedure Name(): Text
+    begin
+        exit('a');
+    end;
+}
+
+codeunit 50997 "Overload Helper B"
+{
+    procedure Name(): Text
+    begin
+        exit('b');
+    end;
+}
+
+codeunit 50998 "Subtype Overloads"
+{
+    procedure Describe(C: Record "Overload Cust"): Text
+    begin
+        exit('cust');
+    end;
+
+    procedure Describe(V: Record "Overload Vend"): Text
+    begin
+        exit('vend');
+    end;
+
+    procedure ByRecordOverload(): Text
+    var
+        C: Record "Overload Cust";
+        V: Record "Overload Vend";
+    begin
+        exit(Describe(C) + '|' + Describe(V));
+    end;
+
+    procedure ByTemporaryRecordOverload(): Text
+    var
+        V: Record "Overload Vend" temporary;
+    begin
+        exit(Describe(V));
+    end;
+
+    procedure Tag(var A: Codeunit "Overload Helper A"): Text
+    begin
+        exit('a:' + A.Name());
+    end;
+
+    procedure Tag(var B: Codeunit "Overload Helper B"): Text
+    begin
+        exit('b:' + B.Name());
+    end;
+
+    procedure ByCodeunitOverload(): Text
+    var
+        A: Codeunit "Overload Helper A";
+        B: Codeunit "Overload Helper B";
+    begin
+        exit(Tag(B) + '|' + Tag(A));
+    end;
+}
+"#;
+
+fn run_subtype_overload(proc: &str) -> Eval {
+    run(
+        &[("/ws/SubtypeOverloads.al", SUBTYPE_OVERLOADS)],
+        "Subtype Overloads",
+        proc,
+        vec![],
+    )
+}
+
+/// `Describe(C) + '|' + Describe(V)` with one overload per table gives
+/// `cust|vend`, and a temporary record of the second table still picks its
+/// own overload.
+#[test]
+fn an_overload_is_chosen_by_the_table_of_its_record_argument() {
+    assert_eq!(
+        ok(run_subtype_overload("ByRecordOverload")),
+        Value::Text("cust|vend".into())
+    );
+    assert_eq!(
+        ok(run_subtype_overload("ByTemporaryRecordOverload")),
+        Value::Text("vend".into())
+    );
+}
+
+/// `Tag(B) + '|' + Tag(A)` with one overload per codeunit runs the body
+/// declared for each argument's codeunit: each body names its own prefix,
+/// so the first declaration run with B's value would show as `a:b`.
+#[test]
+fn an_overload_is_chosen_by_the_object_of_its_codeunit_argument() {
+    assert_eq!(
+        ok(run_subtype_overload("ByCodeunitOverload")),
+        Value::Text("b:b|a:a".into())
+    );
+}

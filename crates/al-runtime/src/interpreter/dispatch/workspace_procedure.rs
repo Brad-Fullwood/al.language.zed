@@ -13,7 +13,7 @@ use al_syntax::IdentifierText;
 use super::frames::{
     bind_local_vars, bind_object_globals, bind_structured_locals, check_param_type,
     coerce_int_width, collect_params, collect_return, declared_text_length,
-    default_for_declared_type, ParamDecl, ReturnDecl,
+    default_for_declared_type, subtype_matches, ParamDecl, ReturnDecl,
 };
 use super::{DispatchCtx, MAX_RECURSION_DEPTH};
 
@@ -190,11 +190,12 @@ pub(super) fn dispatch_workspace_procedure(
 }
 
 /// The declaration among the same-named `candidates`, in source order, that a
-/// call with `args` runs: its parameter count matches and `check_param_type`
-/// accepts every argument. When several do, the one with the most arguments
-/// of exactly the declared type wins, then the first declared, so `Amount(1)`
-/// runs `Amount(A: Integer)` over `Amount(A: Decimal)`. A lone candidate is
-/// returned as it is, and `run_declaration` reports its mismatch.
+/// call with `args` runs: its parameter count matches, `check_param_type`
+/// accepts every argument, and a `Record` or `Codeunit` parameter names the
+/// argument's table or object. When several do, the one with the most
+/// arguments of exactly the declared type wins, then the first declared, so
+/// `Amount(1)` runs `Amount(A: Integer)` over `Amount(A: Decimal)`. A lone
+/// candidate is returned as it is, and `run_declaration` reports its mismatch.
 pub(super) fn choose_overload<'t>(
     candidates: &[tree_sitter::Node<'t>],
     source: &[u8],
@@ -208,10 +209,10 @@ pub(super) fn choose_overload<'t>(
     for &candidate in candidates {
         let params = collect_params(candidate, source);
         let takes = params.len() == args.len()
-            && params
-                .iter()
-                .zip(args)
-                .all(|(param, arg)| check_param_type(arg, &param.type_name).is_none());
+            && params.iter().zip(args).all(|(param, arg)| {
+                check_param_type(arg, &param.type_name).is_none()
+                    && subtype_matches(arg, &param.type_name)
+            });
         if !takes {
             continue;
         }
