@@ -16,9 +16,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_validate(
         Ok(root) => root,
         Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
     };
-    let path = match resolve_existing_snapshot_path(path, &project_root) {
+    let path = match resolve_existing_snapshot_path(workspace, "snapshotPath", path) {
         Ok(path) => path,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     let bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
@@ -71,25 +71,13 @@ async fn snapshot_project_root(workspace: &Workspace) -> Result<PathBuf, String>
 }
 
 fn resolve_existing_snapshot_path(
+    workspace: &Workspace,
+    key: &str,
     requested: &str,
-    project_root: &std::path::Path,
-) -> Result<PathBuf, String> {
-    let path = std::path::Path::new(requested);
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        project_root.join(path)
-    };
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("resolve snapshot path failed: {error}"))?;
-    if !canonical.starts_with(project_root) {
-        return Err("snapshot path escapes the project root".to_string());
-    }
-    if !canonical.is_file() {
-        return Err("snapshot path is not a regular file".to_string());
-    }
-    Ok(canonical)
+) -> Result<PathBuf, PathRejection> {
+    let path = resolve_param_within_project(workspace, key, std::path::Path::new(requested))?;
+    require_regular_file(key, &path)?;
+    Ok(path)
 }
 
 fn normalize_snapshot_sample_paths(
@@ -244,18 +232,13 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
             );
         }
     };
-    let output = match resolve_output_path_within_project(
+    let output = match resolve_output_param_within_project(
+        "outputPath",
         std::path::Path::new(output_path),
         &project_root,
     ) {
-        Some(path) => path,
-        None => {
-            return rpc_error(
-                id,
-                error_codes::INVALID_PARAMS,
-                "'outputPath' path escapes the project root",
-            );
-        }
+        Ok(path) => path,
+        Err(rejection) => return rejection.into_response(id),
     };
 
     let discovered = match al_analysis::queries::tests::discover_tests(workspace) {
@@ -605,10 +588,11 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
         Ok(root) => root,
         Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
     };
-    let snapshot_path = match resolve_existing_snapshot_path(snapshot_path, &project_root) {
-        Ok(path) => path,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
-    };
+    let snapshot_path =
+        match resolve_existing_snapshot_path(workspace, "snapshotPath", snapshot_path) {
+            Ok(path) => path,
+            Err(rejection) => return rejection.into_response(id),
+        };
     let bytes = match tokio::fs::read(&snapshot_path).await {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -839,21 +823,24 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_diff(
         Ok(root) => root,
         Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
     };
-    let read = async |p: &str| -> Result<al_snapshot::format::Snapshot, String> {
-        let path = resolve_existing_snapshot_path(p, &project_root)?;
-        let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-        let mut snapshot =
-            al_snapshot::format::deserialize_snapshot(&bytes).map_err(|e| e.to_string())?;
-        normalize_snapshot_sample_paths(&mut snapshot, &project_root)?;
+    let read = async |key: &str, p: &str| -> Result<al_snapshot::format::Snapshot, PathRejection> {
+        let path = resolve_existing_snapshot_path(workspace, key, p)?;
+        let invalid = |e: String| PathRejection::invalid(format!("{key}: {e}"));
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut snapshot = al_snapshot::format::deserialize_snapshot(&bytes)
+            .map_err(|e| invalid(e.to_string()))?;
+        normalize_snapshot_sample_paths(&mut snapshot, &project_root).map_err(invalid)?;
         Ok(snapshot)
     };
-    let a = match read(path_a).await {
+    let a = match read("pathA", path_a).await {
         Ok(s) => s,
-        Err(e) => return rpc_error(id, error_codes::INVALID_PARAMS, &format!("pathA: {e}")),
+        Err(rejection) => return rejection.into_response(id),
     };
-    let b = match read(path_b).await {
+    let b = match read("pathB", path_b).await {
         Ok(s) => s,
-        Err(e) => return rpc_error(id, error_codes::INVALID_PARAMS, &format!("pathB: {e}")),
+        Err(rejection) => return rejection.into_response(id),
     };
     let divergences = al_snapshot::diff::diff_snapshots(&a, &b);
     Response {

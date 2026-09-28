@@ -6,30 +6,6 @@ use super::serialized_response;
 use al_protocol::jsonrpc::Response;
 use al_workspace::Workspace;
 
-/// Resolve the path parameter `key` inside the loaded project, or return the
-/// refusal message.
-///
-/// Every XLIFF method used to take any absolute path: `xlf.refresh` read one
-/// file and atomically replaced another anywhere the daemon's user could
-/// write, and `xlf.untranslated` and `xlf.suggest` read any file.
-fn contained_param(
-    workspace: &Workspace,
-    key: &str,
-    requested: &std::path::Path,
-) -> Result<std::path::PathBuf, String> {
-    containment::resolve_within_project(workspace, requested)
-        .map_err(|message| format!("'{key}' {message}"))
-}
-
-/// The answer for a path parameter the project boundary refused.
-fn path_refused(id: u64, message: &str) -> Response {
-    rpc_error(
-        id,
-        al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED,
-        message,
-    )
-}
-
 /// Read an `.xlf` file with the size cap applied to the bytes read.
 ///
 /// The cap used to be `metadata().len()`, which is 0 for a character device,
@@ -73,11 +49,20 @@ pub(in crate::server::daemon) async fn dispatch_xlf_generate(
         Err(e) => return e,
     };
     if let Some(requested) = params.get("project").and_then(|v| v.as_str()) {
-        let same = std::path::Path::new(requested)
+        // The boundary check comes first, because it refuses a UNC path before
+        // any filesystem call, and `canonicalize` on one makes Windows open an
+        // SMB connection to the host it names.
+        let requested_root = match containment::resolve_param_within_project(
+            workspace,
+            "project",
+            std::path::Path::new(requested),
+        ) {
+            Ok(path) => path,
+            Err(rejection) => return rejection.into_response(id),
+        };
+        let same = project_root
             .canonicalize()
-            .ok()
-            .zip(project_root.canonicalize().ok())
-            .is_some_and(|(requested, root)| requested == root);
+            .is_ok_and(|root| root == requested_root);
         if !same {
             return rpc_error(
                 id,
@@ -256,9 +241,9 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
             "'xlf' must be an absolute path",
         );
     }
-    let xlf_path = match contained_param(workspace, "xlf", &xlf_path) {
+    let xlf_path = match containment::resolve_param_within_project(workspace, "xlf", &xlf_path) {
         Ok(path) => path,
-        Err(message) => return path_refused(id, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
 
     let generated_path = if let Some(g) = params.get("generated").and_then(|v| v.as_str()) {
@@ -269,10 +254,11 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
             .and_then(|dir| blocking(|| pick_generated_xlf(dir)))
             .unwrap_or_else(|| xlf_path.with_extension("g.xlf"))
     };
-    let generated_path = match contained_param(workspace, "generated", &generated_path) {
-        Ok(path) => path,
-        Err(message) => return path_refused(id, &message),
-    };
+    let generated_path =
+        match containment::resolve_param_within_project(workspace, "generated", &generated_path) {
+            Ok(path) => path,
+            Err(rejection) => return rejection.into_response(id),
+        };
 
     let (gen_content, lang_content) = match blocking(|| {
         Ok::<_, String>((
@@ -355,9 +341,13 @@ pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
             "'xlf' must be an absolute path",
         );
     }
-    let xlf_path = match contained_param(workspace, "xlf", std::path::Path::new(xlf_path)) {
+    let xlf_path = match containment::resolve_param_within_project(
+        workspace,
+        "xlf",
+        std::path::Path::new(xlf_path),
+    ) {
         Ok(path) => path,
-        Err(message) => return path_refused(id, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     let xlf_content = match blocking(|| read_xlf_capped(&xlf_path)) {
         Ok(c) => c,
@@ -415,9 +405,13 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
         );
     }
 
-    let xlf_path = match contained_param(workspace, "xlf", std::path::Path::new(xlf_path)) {
+    let xlf_path = match containment::resolve_param_within_project(
+        workspace,
+        "xlf",
+        std::path::Path::new(xlf_path),
+    ) {
         Ok(path) => path,
-        Err(message) => return path_refused(id, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     let xlf_content = match blocking(|| read_xlf_capped(&xlf_path)) {
         Ok(c) => c,

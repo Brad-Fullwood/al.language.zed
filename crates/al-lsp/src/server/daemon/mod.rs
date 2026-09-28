@@ -958,11 +958,15 @@ pub(crate) enum PathUse {
     /// Rewrites the file its `uri`/`file` names, through
     /// [`file_uri_from_params`], which takes no `text`.
     Write,
-    /// Reads or writes a path named by another parameter (`xlf`, `generated`,
-    /// `from`, `to`, `dir`), each resolved through
-    /// `containment::resolve_within_project`. The XLIFF methods took any
-    /// absolute path for a release because the registry had no way to say
-    /// they took one at all.
+    /// Reads, writes or compares a path named by a parameter the method reads
+    /// itself (`xlf`, `generated`, `project`, `from`, `to`, `dir`, `file`,
+    /// `path`, `outputDir`, `snapshotPath`, `pathA`, `pathB`, `outputPath`,
+    /// `junitOut`, `coberturaOut`, `files`), each resolved through
+    /// `containment::resolve_param_within_project` or, for a report or
+    /// snapshot it writes, `containment::resolve_output_param_within_project`.
+    /// Both refuse with `PATH_NOT_AUTHORIZED` in the same words. The XLIFF
+    /// methods took any absolute path for a release because the registry had
+    /// no way to say they took one at all.
     Named,
 }
 
@@ -1039,7 +1043,9 @@ macro_rules! declared_credential {
 ///
 /// The capabilities in brackets are the ones [`PathUse`] and [`CredentialUse`]
 /// define: `read`, `write`, `named`, `authorized`. An arm that declares none reaches
-/// neither a caller-named path nor a credential.
+/// neither a caller-named path nor a credential. A path use and `authorized`
+/// combine, as `[named, authorized]` on a method that writes a caller-named
+/// file and can also spend a credential.
 macro_rules! dispatch_table {
     (
         ($workspace:ident, $method:ident, $id:ident, $params:ident, $shutdown:ident)
@@ -1138,7 +1144,7 @@ dispatch_table! {
         "sortMembers" [write] => build_dispatch::dispatch_sort_members(workspace, id, &params),
         "organizeFiles" [] => build_dispatch::dispatch_organize_files(workspace, id, &params),
         "source" [] => build_dispatch::dispatch_source(workspace, id, &params),
-        "eventSource" [] => build_dispatch::dispatch_event_source(workspace, id, &params),
+        "eventSource" [named] => build_dispatch::dispatch_event_source(workspace, id, &params),
         "location" [] => build_dispatch::dispatch_location(workspace, id, &params),
         "trace" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
@@ -1226,35 +1232,35 @@ dispatch_table! {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
         },
         "debug" [authorized] => debug_dispatch::dispatch_debug(workspace, id, &params).await,
-        "snapshot" [authorized] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
-        "profiling" [authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
-        "xlf.generate" [] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
+        "snapshot" [named, authorized] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
+        "profiling" [named, authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
+        "xlf.generate" [named] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
         "xlf.refresh" [named] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
         "xlf.untranslated" [named] => build_dispatch::dispatch_xlf_untranslated(workspace, id, &params),
         "xlf.suggest" [named] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
         "tests.discover" [] => build_dispatch::dispatch_tests_discover(workspace, id),
         "tests.run" [authorized] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
         "tests.coverage" [] => build_dispatch::dispatch_tests_coverage(workspace, id),
-        "tests.run_batch" [authorized] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
-        "tests.run_auto" [authorized] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
+        "tests.run_batch" [named, authorized] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
+        "tests.run_auto" [named, authorized] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
         "tests.last_results" [] => {
             build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
         },
         "tests.affected" [] => build_dispatch::dispatch_tests_affected(workspace, id, &params),
         "tests.classify" [] => build_dispatch::dispatch_tests_classify(workspace, id),
-        "tests.snapshot_validate" [] => {
+        "tests.snapshot_validate" [named] => {
             build_dispatch::dispatch_tests_snapshot_validate(workspace, id, &params).await
         },
-        "tests.snapshot_capture" [authorized] => {
+        "tests.snapshot_capture" [named, authorized] => {
             build_dispatch::dispatch_tests_snapshot_capture(workspace, id, &params).await
         },
-        "tests.snapshot_replay" [authorized] => {
+        "tests.snapshot_replay" [named, authorized] => {
             build_dispatch::dispatch_tests_snapshot_replay(workspace, id, &params).await
         },
-        "tests.snapshot_diff" [] => {
+        "tests.snapshot_diff" [named] => {
             build_dispatch::dispatch_tests_snapshot_diff(workspace, id, &params).await
         },
-        "tests.mutate" [] => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
+        "tests.mutate" [named] => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
         "generate" [] => build_dispatch::dispatch_generate(workspace, id, &params),
         "obsolete" [] => build_dispatch::dispatch_obsolete(workspace, id),
         "obsoleteUsages" [] => build_dispatch::dispatch_obsolete_usages(workspace, id),
