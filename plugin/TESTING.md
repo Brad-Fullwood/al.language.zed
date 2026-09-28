@@ -322,14 +322,23 @@ What it does, in order:
 2. Refuses immediately, before any network request, if the URL it would fetch
    from is not `https://`.
 3. Fetches `binary-checksums.txt` from the pinned release
-   (`AL_PIN_RELEASE_TAG` in the script). No such asset, or an empty one,
-   refuses before the archive is ever requested.
+   (`AL_PIN_RELEASE_TAG` in the script) and compares its SHA-256 with
+   `AL_PIN_CHECKSUMS_SHA256`, the digest pinned beside the tag. A tag can be
+   moved and a release's assets uploaded again, so the tag alone pins no
+   bytes. No such asset, an empty one, or a digest that differs from the pin
+   refuses before the archive is ever requested. A digest that differs is
+   named in the refusal beside the pinned one. While the pin holds the
+   placeholder `unset` the script refuses before any request. The comment above the pin says how to fill it when
+   the tag is bumped.
 4. Fetches the platform archive and extracts it into a private staging
    directory, not yet the plugin's cache directory.
 5. Hashes every extracted file and compares it against
    `binary-checksums.txt`. A file the listing does not name, or a digest that
    does not match, deletes the staging directory and refuses; nothing is made
-   executable and nothing is added to `$CLAUDE_PLUGIN_DATA/bin`.
+   executable and nothing is added to `$CLAUDE_PLUGIN_DATA/bin`. A file the
+   listing names under the archive's name that the archive does not hold
+   (`bridge/AlBridge.dll`, say) refuses the same way, as `check_bridge_files`
+   in `src/lib.rs` does for the Zed extension.
 6. Only once every file matches does it `chmod +x` the two binaries and move
    the staging directory into place.
 
@@ -361,7 +370,9 @@ and the MCP server already find them in `$CLAUDE_PLUGIN_DATA/bin` through
   the tag). This is the honest current state: until a release is cut that
   publishes it, the script refuses every real download rather than
   installing an unverified binary. See the `binary-checksums.txt` item in
-  `plugin/ROADMAP.md`.
+  `plugin/ROADMAP.md`. Since `AL_PIN_CHECKSUMS_SHA256` was added the same run
+  refuses before any request, because the pin holds the placeholder `unset`
+  for a tag with no listing.
 - **A full successful install**, against `v0.2.2`'s real `al-linux-x86_64.tar.gz`
   served from a local `python3 -m http.server`, with a `binary-checksums.txt`
   built by hand from that archive's real digests (standing in for the asset
@@ -377,8 +388,9 @@ and the MCP server already find them in `$CLAUDE_PLUGIN_DATA/bin` through
 
 Not tested: a real download succeeding against this repository's own release
 process end to end, because no tagged release publishes
-`binary-checksums.txt` yet. Once one does, the "forced download path" run
-above should be repeated against it without `AL_RELEASE_BASE_URL` or
+`binary-checksums.txt` yet. Once one does, bump `AL_PIN_RELEASE_TAG`, fill
+`AL_PIN_CHECKSUMS_SHA256` from that release, and repeat the "forced download
+path" run above against it without `AL_RELEASE_BASE_URL` or
 `AL_ALLOW_INSECURE_RELEASE_URL` set.
 
 ## Validation

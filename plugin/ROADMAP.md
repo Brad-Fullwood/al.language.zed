@@ -57,7 +57,9 @@ Left for the next agent:
       refuses every real download rather than installing an unverified
       binary; `plugin/TESTING.md` records that refusal as the honest result
       of testing it against the real repository. Cut a release, then bump
-      `AL_PIN_RELEASE_TAG` in that script.
+      `AL_PIN_RELEASE_TAG` in that script and fill `AL_PIN_CHECKSUMS_SHA256`
+      beside it with the SHA-256 of that release's `binary-checksums.txt`, as
+      the comment above the pin describes.
 
 ## Workarounds removed
 
