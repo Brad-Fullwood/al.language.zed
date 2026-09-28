@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-28 23:55 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-29 00:12 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -23,15 +23,32 @@ scratch tests are saved as `.campaign/sec7-scratch-tests-4.patch` and
 `.campaign/r13-scratch-tests-4.patch`. Gates on 41ab5260 running (fmt, clippy, clippy semantic and
 rustdoc green at 23:50). Statuses marked 682b831f: sixteen findings fixed, twelve open.
 
-Dispatched 23:52, each told to stop by 01:15 BST, each in a reused worktree directory:
+Dispatched 23:52, each told to stop by 01:15 BST, each in a reused worktree directory. Merged
+locally by 00:10 on 2026-09-29, gates on a1a9f46c running:
 
-- `campaign/fix-sec7-bc-writes` (dir `docs-recheck-4`): SEC7-6, SEC7-8.
-- `campaign/fix-sec7-plugin` (dir `fix-r12-router-text`): SEC7-9, SEC7-10.
+- `campaign/fix-r13-router` (dir `r13-review`): R13-ROUTER-1, merged 81c47204, gates green on
+  f612bb24, pushed b83bd8cd.
+- `campaign/fix-sec7-bc-writes` (dir `docs-recheck-4`): SEC7-6 (77925db7, `al-bc/src/output_file.rs`
+  opens the download destination `O_NOFOLLOW | O_NONBLOCK` and refuses anything but a regular
+  file) and SEC7-8 (c0e6f8b5, `resolve_snapshot_source` resolves `samples[i].file` and
+  `breakpoints[i].file` through the containment resolver before any filesystem call, the nested
+  keys are in the `PathUse::Named` doc and the registry test). Merged 85cf9dde.
+- `campaign/fix-sec7-identity` (dir `slop-splits-5`): SEC7-12 (13fe70b0, the key is written to a
+  temporary name and hard linked into place, both reads accept 32 bytes only with a short retry,
+  `handshake_secret` returns a whole key or none). Merged b79f43ef.
+- `campaign/fix-sec7-probing` (dir `fix-sec6-output`): SEC7-15 (04539060, `inputs_fingerprint`
+  stamps the path, size and mtime of every file under a repository probing path, capped at the
+  50,000 entry cap, and `project-trust.md` says so). Merged 9687e8d6.
+- `campaign/fix-sec7-plugin` (dir `fix-r12-router-text`): SEC7-9 (e1a221ea, only a debug build
+  keeps the `OUT_DIR` bridge fallback, `al-fetch-release.sh` refuses an archive that lacks a listed
+  file) and SEC7-10 (9444d8d5, `AL_PIN_CHECKSUMS_SHA256` beside the tag, `unset` until a release
+  publishes `binary-checksums.txt`, a listing whose digest differs is refused before the archive
+  is fetched). Merged a1a9f46c.
+
+Still running:
+
 - `campaign/fix-sec7-text` (dir `fix-r13-runtime-2`): SEC7-11, R13-TRUST-3, R13-TEXT-1.
-- `campaign/fix-sec7-identity` (dir `slop-splits-5`): SEC7-12.
 - `campaign/fix-sec7-daemon-life` (dir `fix-daemon`): SEC7-13, SEC7-14.
-- `campaign/fix-sec7-probing` (dir `fix-sec6-output`): SEC7-15.
-- `campaign/fix-r13-router` (dir `r13-review`): R13-ROUTER-1.
 
 Two reviewers dispatched 23:58 over the tree at f4eb117a, each told to stop by 01:30 BST:
 
@@ -67,6 +84,20 @@ al-campaign-watchdog.timer`. PR 30 was merged into `dev` on 2026-09-25 (afec75d1
 opens a draft pull request from `campaign/2026-09-21` against `dev` with its first push.
 
 Queued:
+- From the 2026-09-29 fix agents: `classify_bare_member` returns silently for a Page, Report,
+  XmlPort, Query, JSON, Text, Dictionary, List or Enum receiver, so a bare member naming an
+  unsupported method may stay local where the call with parentheses goes live (round 14). The
+  SEC7-15 fingerprint walks a repository probing path on every daemon request and language server
+  command, up to the 50,000 entry cap, so an untrusted repository that names `/` costs a walk per
+  request (security round 8). An `al.compilationOptions` entry such as
+  `/assemblyprobingpaths:./probe` is recorded as text and its files are never hashed. On Windows
+  the handshake key's hard link is untested, a filesystem without hard links makes
+  `handshake_secret` return none and the client refuse every daemon, and a process killed between
+  write and link leaves a `handshake.key.*.tmp`. A `--release --features semantic` al-lsp built in
+  a checkout finds no bridge unless `AL_BRIDGE_DIR` names `target/release/build/al-semantic-*/out/bridge`.
+  The identity.rs `temp_file` test helper leaves `/tmp/al-identity-<pid>` directories behind.
+  On Windows the al-bc and containment writes rename a temporary file over the target, so a
+  link planted between the check and the rename is not covered there.
 
 - Audit triage open items (`findings/audit-backlog-triage.md`): the interpreter re-collects a
   workspace procedure's parameters and locals on every call (memoise per procedure), no

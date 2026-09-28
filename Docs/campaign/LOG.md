@@ -862,3 +862,16 @@ Append-only. Newest entry last.
   five receiver shapes with and without parentheses, `native-test-runtime.md` states the rule).
   The agent read that a bare member on a Page, Report, XmlPort, Query, JSON, Text, Dictionary,
   List or Enum receiver still returns silently, queued for round 14. Gates on f612bb24 running.
+
+## 2026-09-29 00:12 BST: four fix branches merged, gates running
+
+- Gates on f612bb24 green (the router merge), pushed b83bd8cd.
+- Merged: `fix-sec7-bc-writes` (85cf9dde, SEC7-6 and SEC7-8), `fix-sec7-identity` (b79f43ef,
+  SEC7-12), `fix-sec7-probing` (9687e8d6, SEC7-15), `fix-sec7-plugin` (a1a9f46c, SEC7-9 and
+  SEC7-10). What each does is in `STATE.md`. Every test failed before its fix. Gates on a1a9f46c
+  running with the plugin fetch test and `check-plugin.sh` added as a stage.
+- Statuses marked in `r7-security.md`. Open: SEC7-11, SEC7-13, SEC7-14, R13-TRUST-3, R13-TEXT-1,
+  with the two agents still running.
+- Queued from the agents' notes (see `STATE.md`): the per request probing walk, unhashed
+  `compilationOptions` paths, the bare member receivers the router still passes, the Windows
+  hard link and rename gaps, a release build from a checkout without its bridge.
