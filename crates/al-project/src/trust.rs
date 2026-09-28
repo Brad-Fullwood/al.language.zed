@@ -251,12 +251,25 @@ pub struct TrustDecision {
     pub privileged: Vec<PrivilegedSetting>,
     /// Digest of `privileged`, the value a trust record stores.
     pub digest: String,
+    /// The analyzer entries the project's settings files write.
+    repository_analyzers: Vec<String>,
+    /// The probing paths the project's settings files write.
+    repository_probing_paths: Vec<PathBuf>,
 }
 
 impl TrustDecision {
     #[must_use]
     pub fn is_trusted(&self) -> bool {
         self.state.is_trusted()
+    }
+
+    /// The analyzer entries and probing paths the project's settings files
+    /// write, whatever the state.
+    pub(crate) fn repository_paths(&self) -> crate::analyzers::RepositoryPaths<'_> {
+        crate::analyzers::RepositoryPaths {
+            analyzers: &self.repository_analyzers,
+            probing_paths: &self.repository_probing_paths,
+        }
     }
 
     /// Why this project cannot be trusted as its files stand, or `None` when
@@ -517,8 +530,12 @@ fn read_repository(project_root: &Path) -> Result<(AlConfig, RepositoryAsk), Con
         ));
     }
     ask.settings.extend(launch_privileges(project_root));
-    ask.settings
-        .extend(project_analyzer_copies(&config, project_root, &mut hashes));
+    let repository = crate::analyzers::RepositoryPaths {
+        analyzers: &ask.analyzers,
+        probing_paths: &ask.assembly_probing_paths,
+    };
+    let copies = project_analyzer_copies(&config, project_root, repository, &mut hashes);
+    ask.settings.extend(copies);
     ask.settings
         .extend(linked_package_folders(&config, project_root));
     Ok((config, ask))
@@ -585,7 +602,9 @@ fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<Privile
 /// file the repository ships: a name finds a copy under `.netpackages`,
 /// `packages` or a relative probing path, and a path names the file itself.
 /// A link in the project can carry either outside it, and the file is hashed
-/// where it resolves.
+/// where it resolves. A path or a probing path the project's settings files
+/// write outside the project, in `repository`, names a file the repository
+/// chose, so that file is listed too.
 /// Recording the file's hash means a commit that replaces it makes the record
 /// stale, rather than loading new code under the old record. `config` holds
 /// the entries of `~/.config/al-lsp/settings.json` too, which
@@ -593,14 +612,18 @@ fn linked_package_folders(config: &AlConfig, project_root: &Path) -> Vec<Privile
 fn project_analyzer_copies(
     config: &AlConfig,
     project_root: &Path,
+    repository: crate::analyzers::RepositoryPaths<'_>,
     hashes: &mut Hashes,
 ) -> Vec<PrivilegedSetting> {
     let root = canonical_root(project_root);
     let mut settings = Vec::new();
     for entry in &config.code_analyzers {
-        let Some(found) =
-            crate::analyzers::find_in_project(entry, project_root, &config.assembly_probing_paths)
-        else {
+        let Some(found) = crate::analyzers::find_in_project(
+            entry,
+            project_root,
+            &config.assembly_probing_paths,
+            repository,
+        ) else {
             continue;
         };
         let relative = shown_within(&found, &root);
@@ -666,6 +689,8 @@ fn decision_for(project_root: &Path, ask: &RepositoryAsk) -> TrustDecision {
         state,
         privileged: Vec::new(),
         digest,
+        repository_analyzers: ask.analyzers.clone(),
+        repository_probing_paths: ask.assembly_probing_paths.clone(),
     }
 }
 
@@ -1049,6 +1074,7 @@ fn with_project_contents(
     value: &str,
     project_root: &Path,
     beside: Beside,
+    outside: Outside,
     unhashable: &mut Vec<String>,
 ) -> String {
     let path = Path::new(value.trim());
@@ -1056,7 +1082,21 @@ fn with_project_contents(
     if !is_path {
         return value.to_string();
     }
-    with_path_contents(hashes, value, project_root, beside, unhashable)
+    with_path_contents(hashes, value, project_root, beside, outside, unhashable)
+}
+
+/// How a path the repository writes is recorded when it names a place
+/// outside the project.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Outside {
+    /// As written. `al.dotnetPath` and `binary.path` name a program on the
+    /// user's machine.
+    AsWritten,
+    /// Hashed the same way as a path inside the project, or `not present`.
+    /// An analyzer path such as `../shared/TeamCop.dll` and a probing path
+    /// such as `/tmp/cops` name files the repository chose, and a record that
+    /// held them as text let the file change, or appear, after the grant.
+    Hashed,
 }
 
 /// [`with_project_contents`] for a value that names a path however it is
@@ -1068,10 +1108,11 @@ fn with_path_contents(
     value: &str,
     project_root: &Path,
     beside: Beside,
+    outside: Outside,
     unhashable: &mut Vec<String>,
 ) -> String {
     let path = Path::new(value.trim());
-    if !names_a_project_file(path, project_root) {
+    if outside == Outside::AsWritten && !names_a_project_file(path, project_root) {
         return value.to_string();
     }
     let absolute = if path.is_absolute() {
@@ -1103,7 +1144,12 @@ fn with_path_contents(
             .or_else(|_| written.strip_prefix(&root))
             .ok()
     });
-    if written_within.is_some() && written_within == resolved.strip_prefix(&root).ok() {
+    // `../shared/TeamCop.dll` says where it leads only through the project
+    // root, so it shows the resolved path. `/tmp/cops` says it as written.
+    let resolves_as_written = (path.is_absolute()
+        && written.as_deref() == Some(resolved.as_path()))
+        || (written_within.is_some() && written_within == resolved.strip_prefix(&root).ok());
+    if resolves_as_written {
         format!("{value} ({contents})")
     } else {
         format!(
@@ -1491,6 +1537,7 @@ fn privileged_changes(
                     entry,
                     project_root,
                     Beside::Assemblies,
+                    Outside::Hashed,
                     &mut unhashable,
                 )
             })
@@ -1547,6 +1594,7 @@ fn privileged_changes(
                     &path.display().to_string(),
                     project_root,
                     Beside::Assemblies,
+                    Outside::Hashed,
                     &mut unhashable,
                 )
             })
@@ -1892,6 +1940,7 @@ fn executable_path_privileges(
             } else {
                 Beside::Nothing
             },
+            Outside::AsWritten,
             &mut unhashable,
         );
         ask.settings

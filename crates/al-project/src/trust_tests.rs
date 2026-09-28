@@ -2006,8 +2006,10 @@ fn a_dotnet_outside_the_project_is_not_decided_before_a_spawn() {
     assert_eq!(reads(), before);
 }
 
-/// A path outside the project is the user's machine, so only its text is
-/// recorded.
+/// `al.dotnetPath` outside the project names a program on the user's
+/// machine, so only its text is recorded. An analyzer path or a probing path
+/// the repository writes outside the project is hashed instead, see
+/// `an_analyzer_path_the_repository_writes_outside_the_project_is_hashed`.
 #[test]
 fn a_path_outside_the_project_is_recorded_as_written() {
     let _config = ScratchConfig::new();
@@ -2020,6 +2022,235 @@ fn a_path_outside_the_project_is_recorded_as_written() {
         .find(|setting| setting.key == "al.dotnetPath")
         .unwrap();
     assert_eq!(dotnet.value, "/usr/bin/dotnet");
+}
+
+/// A project at `<parent>/project` with `settings` in `.vscode/settings.json`,
+/// so a test can write `../shared` beside it without touching a directory
+/// another test uses.
+fn project_in(parent: &Path, settings: &str) -> PathBuf {
+    let root = parent.join("project");
+    write_file(&root, ".vscode/settings.json", settings.as_bytes());
+    write_file(&root, "app.json", b"{}");
+    root
+}
+
+/// The recorded value of `key`.
+fn recorded<'a>(decision: &'a TrustDecision, key: &str) -> &'a str {
+    decision
+        .privileged
+        .iter()
+        .find(|setting| setting.key == key)
+        .map(|setting| setting.value.as_str())
+        .unwrap_or_else(|| panic!("no {key} in {:?}", decision.privileged))
+}
+
+/// The repository chose `../shared/TeamCop.dll` the same way it chooses
+/// `./tools/TeamCop.dll`, and the record held it as text, so the bytes at
+/// that path could change under a record that still matched. The language
+/// server gates its configuration once, so the search is asked again after
+/// the change, as a build would.
+#[test]
+fn an_analyzer_path_the_repository_writes_outside_the_project_is_hashed() {
+    let _config = ScratchConfig::new();
+    let parent = tempfile::tempdir().unwrap();
+    write_file(parent.path(), "shared/TeamCop.dll", b"reviewed analyzer");
+    let root = project_in(
+        parent.path(),
+        r#"{"al.codeAnalyzers": ["../shared/TeamCop.dll"]}"#,
+    );
+
+    let granted = grant(&root).unwrap();
+    let value = recorded(&granted, "al.codeAnalyzers");
+    assert!(
+        value.starts_with("../shared/TeamCop.dll (resolves to "),
+        "{value}"
+    );
+    assert!(value.contains("; sha256:"), "{value}");
+    assert!(value.contains("its directory: 1 files, sha256:"), "{value}");
+    let search = crate::analyzers::CustomAnalyzerSearch::new(&root, &[]);
+    assert!(search.resolve("../shared/TeamCop.dll").unwrap().is_some());
+
+    write_file(
+        parent.path(),
+        "shared/TeamCop.dll",
+        b"replaced by the other user",
+    );
+
+    assert_eq!(decide(&root).unwrap().state, TrustState::Stale);
+    let error = crate::analyzers::CustomAnalyzerSearch::new(&root, &[])
+        .resolve("../shared/TeamCop.dll")
+        .expect_err("the file changed since the project was trusted");
+    assert!(
+        matches!(
+            error,
+            crate::analyzers::AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. }
+        ),
+        "{error}"
+    );
+}
+
+/// `/tmp/cops` was recorded as text while nothing was there, and any user of
+/// the machine can create it. A directory that appeared there after the grant
+/// left the project trusted, and `TeamCop` resolved to the DLL in it.
+#[test]
+fn a_probing_path_outside_the_project_that_appears_after_the_grant_makes_the_record_stale() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    let cops = outside.path().join("cops");
+    let parent = tempfile::tempdir().unwrap();
+    let settings = serde_json::json!({
+        "al.assemblyProbingPaths": [cops],
+        "al.codeAnalyzers": ["TeamCop"],
+    });
+    let root = project_in(parent.path(), &settings.to_string());
+
+    let granted = grant(&root).unwrap();
+    assert_eq!(
+        recorded(&granted, "al.assemblyProbingPaths"),
+        format!("{} (not present)", cops.display())
+    );
+
+    write_file(&cops, "TeamCop.dll", b"put there by the other user");
+
+    let evaluated = evaluate(&root).unwrap();
+    assert_eq!(evaluated.decision.state, TrustState::Stale);
+    assert!(evaluated.config.assembly_probing_paths.is_empty());
+    let error = crate::analyzers::CustomAnalyzerSearch::new(&root, std::slice::from_ref(&cops))
+        .resolve("TeamCop")
+        .expect_err("the probing path changed since the project was trusted");
+    assert!(
+        matches!(
+            error,
+            crate::analyzers::AnalyzerDiscoveryError::UntrustedProjectAnalyzer { .. }
+        ),
+        "{error}"
+    );
+}
+
+/// Once the directory is there at the grant, the record hashes its tree and
+/// lists the copy the name finds in it, so the copy loads until it changes.
+#[test]
+fn a_named_analyzer_under_a_probing_path_outside_the_project_loads_its_recorded_copy() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    let cops = outside.path().join("cops");
+    write_file(&cops, "TeamCop.dll", b"reviewed analyzer");
+    let parent = tempfile::tempdir().unwrap();
+    let settings = serde_json::json!({
+        "al.assemblyProbingPaths": [cops],
+        "al.codeAnalyzers": ["TeamCop"],
+    });
+    let root = project_in(parent.path(), &settings.to_string());
+
+    let granted = grant(&root).unwrap();
+    let probing = recorded(&granted, "al.assemblyProbingPaths");
+    assert!(probing.contains("1 files, sha256:"), "{probing}");
+    let copy = cops.join("TeamCop.dll").canonicalize().unwrap();
+    assert!(
+        granted.privileged.iter().any(|setting| {
+            setting.key == "al.codeAnalyzers" && setting.source == copy.display().to_string()
+        }),
+        "the record lists the copy the name resolves to: {:?}",
+        granted.privileged
+    );
+    let config = evaluate(&root).unwrap().config;
+    let search = crate::analyzers::CustomAnalyzerSearch::new(&root, &config.assembly_probing_paths);
+    assert_eq!(search.resolve("TeamCop").unwrap(), Some(copy));
+
+    write_file(&cops, "TeamCop.dll", b"replaced by the other user");
+
+    assert_eq!(decide(&root).unwrap().state, TrustState::Stale);
+}
+
+/// The same paths in `~/.config/al-lsp/settings.json` are the user's. They
+/// stay out of the record, so a change to the files they name leaves the
+/// project trusted and the file loads.
+#[test]
+fn paths_outside_the_project_in_al_lsp_user_settings_are_not_hashed() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    let cops = outside.path().join("cops");
+    write_file(&cops, "TeamCop.dll", b"the user's analyzer");
+    write_file(
+        outside.path(),
+        "shared/Other.dll",
+        b"the user's other analyzer",
+    );
+    let user = AlConfig::default_settings_path().unwrap();
+    let settings = serde_json::json!({
+        "assemblyProbingPaths": [cops],
+        "codeAnalyzers": ["TeamCop", outside.path().join("shared/Other.dll")],
+    });
+    write_file(
+        user.parent().unwrap(),
+        "settings.json",
+        settings.to_string().as_bytes(),
+    );
+    let project = project_with_settings("{}");
+    let root = project.path();
+    grant(root).unwrap();
+    let before = decide(root).unwrap();
+    assert!(
+        !before.privileged.iter().any(|setting| setting
+            .value
+            .contains(&outside.path().display().to_string())),
+        "{:?}",
+        before.privileged
+    );
+
+    write_file(&cops, "TeamCop.dll", b"the user's next build");
+    write_file(outside.path(), "shared/Other.dll", b"the user's next build");
+
+    assert_eq!(decide(root).unwrap().state, TrustState::Trusted);
+    let config = evaluate(root).unwrap().config;
+    let search = crate::analyzers::CustomAnalyzerSearch::new(root, &config.assembly_probing_paths);
+    assert!(search.resolve("TeamCop").unwrap().is_some());
+    let other = outside.path().join("shared/Other.dll");
+    assert!(search.resolve(other.to_str().unwrap()).unwrap().is_some());
+}
+
+/// `/usr` as a probing path holds symbolic links and far more than the entry
+/// cap, so the record refuses it rather than hashing the machine, and says
+/// why.
+#[cfg(unix)]
+#[test]
+fn a_probing_path_at_usr_is_refused_rather_than_hashed() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings(r#"{"al.assemblyProbingPaths": ["/usr"]}"#);
+    let root = project.path().to_path_buf();
+
+    let decision = within_seconds(10, move || decide(&root).unwrap());
+
+    assert_eq!(decision.state, TrustState::Untrusted);
+    let reasons = unhashable_reasons(&decision);
+    assert!(
+        reasons.iter().any(|reason| reason.starts_with("/usr: ")),
+        "{reasons:?}"
+    );
+    assert!(decision.grant_refusal().is_some());
+}
+
+/// An outside tree over the byte budget is refused the same way.
+#[test]
+fn a_probing_path_outside_the_project_over_the_byte_budget_is_refused() {
+    let _config = ScratchConfig::new();
+    let _budget = HashedBytesBudget::set(MIB);
+    let outside = tempfile::tempdir().unwrap();
+    write_file(outside.path(), "cops/big.bin", &vec![0u8; 2 * MIB as usize]);
+    let cops = outside.path().join("cops");
+    let settings = serde_json::json!({ "al.assemblyProbingPaths": [cops] });
+    let project = project_with_settings(&settings.to_string());
+
+    let decision = decide(project.path()).unwrap();
+
+    let reasons = unhashable_reasons(&decision);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.ends_with("cops holds more than 1 MiB")),
+        "{reasons:?}"
+    );
+    assert!(matches!(grant(project.path()), Err(GrantError::Refused(_))));
 }
 
 /// A clone that commits `.alpackages` as a link out of the project names a

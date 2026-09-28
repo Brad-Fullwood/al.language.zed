@@ -189,8 +189,20 @@ for `al.dotnetPath`, one hash over every file beside the muxer and every file un
 prints the resolved paths and the hashes. A commit that replaces one of those files, adds one
 where the record saw none, or points a link somewhere else makes the record `stale`. An
 analyzer at the project root puts every file in the project into its record, so keep an
-analyzer in a directory of its own. A path written outside the project is the user's machine
-and is recorded as written.
+analyzer in a directory of its own.
+
+An analyzer path or a probing path the project's settings files write outside the project is
+hashed the same way. The repository chooses `../shared/TeamCop.dll` or `/tmp/cops` the same
+way it chooses `./tools`, and any user of the machine can create `/tmp/cops`. `trust --show`
+prints `../shared/TeamCop.dll (resolves to /home/you/src/shared/TeamCop.dll; sha256:...; its
+directory: ...)`, or `/tmp/cops (not present)` when nothing is there, so a file that changes
+or appears there after the grant makes the record `stale`. Before, both were recorded as text,
+and a `TeamCop.dll` that appeared under `/tmp/cops` after the grant loaded under the old
+record. A record made before this change lists such a path as text and goes `stale` once. An
+outside tree is held to the same caps as one inside: `/usr` as a probing path holds symbolic
+links and more than 50,000 entries, so the record refuses it rather than hash it. The same
+paths in `~/.config/al-lsp/settings.json` are the user's machine and are recorded as written,
+as are `al.dotnetPath` and `binary.path` outside the project.
 
 A path written inside the project that a link carries outside it is resolved and hashed the
 same way. With `"al.assemblyProbingPaths": ["./tools"]` and `tools` a link to a directory
@@ -257,6 +269,13 @@ file. Before, the copy was found ahead of the NuGet cache and the file at the pa
 To use a file in the project, write the entry in the project's settings or in
 `~/.config/al-lsp/settings.json`. A copy under an absolute probing path spelled inside the
 project used to be left out of the record, so its name was refused in a trusted project.
+
+The file an analyzer path the project's settings write outside the project names, and the copy
+a name finds under a probing path they write outside it, are the project's too. The search
+loads such a file only when the record lists it with the hash it has now. The language server
+gates its settings again only when a settings file or the trust store changes, so after the
+record went stale it still held the repository's entry, and the search loaded the changed
+file. The search now refuses it the same way as a file inside the project.
 
 The rule holds through a link in the project. A copy found under `.netpackages`, `packages`
 or a probing path relative to or spelled inside the project, and the file a path such as
