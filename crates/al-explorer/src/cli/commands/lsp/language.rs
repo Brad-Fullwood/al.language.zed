@@ -1,5 +1,6 @@
 //! Per-file language operations: lint, format, hover, definition/references/signature/completions, document symbols/folding/tokens, and rename.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use crate::cli::commands::*;
@@ -19,7 +20,7 @@ pub fn cmd_lint(file: Option<&str>, all: bool, json: bool) -> ExitCode {
     }
     match request_checked(&mut client, "lint", Some(params)) {
         Ok(result) => {
-            let diagnostic_count = match lint_diagnostic_count(&result, all) {
+            let diagnostic_count: usize = match lint_diagnostic_count(&result, all) {
                 Ok(count) => count,
                 Err(error) => return report_error(&error, json),
             };
@@ -121,6 +122,7 @@ pub fn cmd_format(file: Option<&str>, check: bool, stdin: bool, all: bool, json:
                 .get("changed")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
+            let file = terminal_text(file);
             if json {
                 print_json(&result);
             } else if check {
@@ -211,7 +213,7 @@ fn cmd_format_all(check: bool, json: bool) -> ExitCode {
                 error_count += 1;
                 eprintln!(
                     "Error formatting {}: path cannot be represented as a file URI",
-                    path.display()
+                    terminal_text(&path.display().to_string())
                 );
                 continue;
             }
@@ -226,18 +228,28 @@ fn cmd_format_all(check: bool, json: bool) -> ExitCode {
                 if changed {
                     changed_count += 1;
                     if !json {
-                        let display = path.strip_prefix(&root).unwrap_or(path);
+                        let display = terminal_text(
+                            &path
+                                .strip_prefix(&root)
+                                .unwrap_or(path)
+                                .display()
+                                .to_string(),
+                        );
                         if check {
-                            eprintln!("  would reformat: {}", display.display());
+                            eprintln!("  would reformat: {display}");
                         } else {
-                            eprintln!("  formatted: {}", display.display());
+                            eprintln!("  formatted: {display}");
                         }
                     }
                 }
             }
             Err(e) => {
                 error_count += 1;
-                eprintln!("Error formatting {}: {e}", path.display());
+                eprintln!(
+                    "Error formatting {}: {}",
+                    terminal_text(&path.display().to_string()),
+                    terminal_text(&e)
+                );
             }
         }
     }
@@ -286,7 +298,7 @@ pub fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
                 if json {
                     print_json(&serde_json::json!(null));
                 } else {
-                    eprintln!("No symbol at {file}:{line}:{col}");
+                    eprintln!("No symbol at {}:{line}:{col}", terminal_text(file));
                 }
             } else if json {
                 print_json(&result);
@@ -301,7 +313,7 @@ pub fn cmd_hover(file: &str, line: u32, col: u32, json: bool) -> ExitCode {
                     .replace("```", "")
                     .replace("*(", "(")
                     .replace(")*", ")");
-                println!("{}", display.trim());
+                println!("{}", terminal_lines(display.trim()));
             }
             ExitCode::SUCCESS
         }
@@ -328,7 +340,7 @@ pub fn cmd_position_query(method: &str, file: &str, line: u32, col: u32, json: b
             if json {
                 print_json(&result);
             } else if result.is_null() {
-                eprintln!("No results at {file}:{line}:{col}");
+                eprintln!("No results at {}:{line}:{col}", terminal_text(file));
             } else {
                 print_position_query_human(method, &result);
             }
@@ -340,13 +352,15 @@ pub fn cmd_position_query(method: &str, file: &str, line: u32, col: u32, json: b
 
 fn print_position_query_human(method: &str, result: &serde_json::Value) {
     /// Extract `file:line:col` from an LSP Location object.
-    fn location_str(loc: &serde_json::Value) -> Option<String> {
+    fn location_line(loc: &serde_json::Value) -> Option<String> {
         let uri = loc.get("uri").and_then(|v| v.as_str())?;
-        let path = url::Url::parse(uri)
-            .ok()
-            .and_then(|u| u.to_file_path().ok())
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| uri.to_string());
+        let path = terminal_text(
+            &url::Url::parse(uri)
+                .ok()
+                .and_then(|u| u.to_file_path().ok())
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| uri.to_string()),
+        );
         let line = loc
             .get("range")
             .and_then(|r| r.get("start"))
@@ -368,11 +382,11 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
         "definition" | "typeDefinition" | "declaration" | "implementation" => {
             if let Some(locations) = list_rows(result).as_array() {
                 for loc in locations {
-                    if let Some(s) = location_str(loc) {
+                    if let Some(s) = location_line(loc) {
                         println!("{s}");
                     }
                 }
-            } else if let Some(s) = location_str(result) {
+            } else if let Some(s) = location_line(result) {
                 println!("{s}");
             } else {
                 println!(
@@ -384,7 +398,7 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
         "references" => {
             if let Some(locations) = list_rows(result).as_array() {
                 for loc in locations {
-                    if let Some(s) = location_str(loc) {
+                    if let Some(s) = location_line(loc) {
                         println!("{s}");
                     }
                 }
@@ -402,10 +416,12 @@ fn print_position_query_human(method: &str, result: &serde_json::Value) {
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             for item in items {
-                let label = item["label"].as_str().unwrap_or("?");
-                match item["detail"].as_str().filter(|detail| !detail.is_empty()) {
-                    Some(detail) => println!("{label}  {detail}"),
-                    None => println!("{label}"),
+                let label = text_field(item, "label", "?");
+                let detail = text_field(item, "detail", "");
+                if detail.is_empty() {
+                    println!("{label}");
+                } else {
+                    println!("{label}  {detail}");
                 }
             }
             eprintln!("\n{} completion(s)", items.len());
@@ -448,7 +464,7 @@ fn print_signature_help(result: &serde_json::Value) {
         } else {
             " "
         };
-        println!("{marker} {label}");
+        println!("{marker} {}", terminal_text(&label));
     }
 }
 
@@ -470,9 +486,9 @@ pub fn cmd_symbols(file: &str, json: bool) -> ExitCode {
         Some(serde_json::json!({ "uri": uri })),
     ) {
         Ok(result) => {
-            let outline = render_outline(list_rows(&result));
+            let outline = outline_text(list_rows(&result));
             if outline.is_empty() {
-                eprintln!("No symbols in {file}");
+                eprintln!("No symbols in {}", terminal_text(file));
             } else {
                 print!("{outline}");
                 print_page_footer(&result);
@@ -485,12 +501,12 @@ pub fn cmd_symbols(file: &str, json: bool) -> ExitCode {
 
 /// Document symbols as an indented outline, one symbol per line with its
 /// 1-based line: `Method SetTier(var Cust: Record Customer)  :3`.
-fn render_outline(symbols: &serde_json::Value) -> String {
+fn outline_text(symbols: &serde_json::Value) -> String {
     fn walk(symbols: &serde_json::Value, depth: usize, out: &mut String) {
         for symbol in symbols.as_array().into_iter().flatten() {
-            let kind = symbol["kind"].as_str().unwrap_or("Symbol");
-            let name = symbol["name"].as_str().unwrap_or("?");
-            let detail = symbol["detail"].as_str().unwrap_or("");
+            let kind = text_field(symbol, "kind", "Symbol");
+            let name = text_field(symbol, "name", "?");
+            let detail = text_field(symbol, "detail", "");
             let line = symbol["range"]["start"]["line"]
                 .as_u64()
                 .map_or(0, |l| l + 1);
@@ -499,11 +515,12 @@ fn render_outline(symbols: &serde_json::Value) -> String {
             } else {
                 " "
             };
-            out.push_str(&format!(
-                "{:indent$}{kind} {name}{separator}{detail}  :{line}\n",
+            let _ = writeln!(
+                out,
+                "{:indent$}{kind} {name}{separator}{detail}  :{line}",
                 "",
                 indent = depth * 2
-            ));
+            );
             walk(&symbol["children"], depth + 1, out);
         }
     }
@@ -535,13 +552,13 @@ pub fn cmd_folding(file: &str, json: bool) -> ExitCode {
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             if ranges.is_empty() {
-                eprintln!("No folding ranges in {file}");
+                eprintln!("No folding ranges in {}", terminal_text(file));
             } else {
                 // 1-based, as the command's input and every other text output.
                 for range in ranges {
                     let start = range["startLine"].as_u64().map_or(0, |line| line + 1);
                     let end = range["endLine"].as_u64().map_or(0, |line| line + 1);
-                    let kind = range["kind"].as_str().unwrap_or("region");
+                    let kind = text_field(range, "kind", "region");
                     println!("{start}-{end}  {kind}");
                 }
                 print_page_footer(&result);
@@ -571,7 +588,7 @@ fn cmd_file_query(method: &str, file: &str, json: bool) -> ExitCode {
             if json || !result.is_null() {
                 print_json(&result);
             } else {
-                eprintln!("No results for {file}");
+                eprintln!("No results for {}", terminal_text(file));
             }
             ExitCode::SUCCESS
         }
@@ -609,7 +626,10 @@ pub fn cmd_rename(
             }
             if exit_code == ExitCode::FAILURE {
                 if !json {
-                    eprintln!("Cannot rename symbol at {file}:{line}:{col}");
+                    eprintln!(
+                        "Cannot rename symbol at {}:{line}:{col}",
+                        terminal_text(file)
+                    );
                 }
                 return exit_code;
             }
@@ -626,23 +646,19 @@ pub fn cmd_rename(
                 if dry_run {
                     for (uri, edits) in changes {
                         if let Some(arr) = edits.as_array() {
-                            println!("{uri}: {} edit(s)", arr.len());
+                            println!("{}: {} edit(s)", terminal_text(uri), arr.len());
                         }
                     }
                     eprintln!("\n{total_edits} total edits (dry run, not applied)");
                 } else {
-                    match apply_workspace_edit(changes) {
-                        Ok(files_changed) => {
-                            eprintln!(
-                                "{total_edits} edit(s) applied across {} file(s)",
-                                files_changed
-                            );
-                        }
+                    let files_changed: usize = match apply_workspace_edit(changes) {
+                        Ok(files_changed) => files_changed,
                         Err(e) => {
-                            eprintln!("Error applying edits: {e}");
+                            eprintln!("Error applying edits: {}", terminal_text(&e));
                             return ExitCode::FAILURE;
                         }
-                    }
+                    };
+                    eprintln!("{total_edits} edit(s) applied across {files_changed} file(s)");
                 }
             }
             ExitCode::SUCCESS
@@ -941,7 +957,7 @@ mod exit_status_tests {
 
 #[cfg(test)]
 mod outline_tests {
-    use super::render_outline;
+    use super::outline_text;
 
     #[test]
     fn outline_indents_children_and_shows_one_based_lines() {
@@ -958,8 +974,39 @@ mod outline_tests {
             }]
         }]);
         assert_eq!(
-            render_outline(&symbols),
+            outline_text(&symbols),
             "Class Loyalty Mgt codeunit 50101  :1\n  Method SetTier(var Cust: Record Customer)  :3\n"
+        );
+    }
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::outline_text;
+
+    #[test]
+    fn the_symbols_outline_prints_a_crafted_object_name_escaped() {
+        let symbols = serde_json::json!([{
+            "name": "Bad\u{1b}[31m Name\u{1b}[0m",
+            "detail": "codeunit 50170",
+            "kind": "Class",
+            "range": { "start": { "line": 0, "character": 0 } },
+            "children": [{
+                "name": "Sec7\u{1b}]0;pwned\u{7}",
+                "detail": "(Tests: Text\u{1b}[2J)",
+                "kind": "Method",
+                "range": { "start": { "line": 2, "character": 4 } }
+            }]
+        }]);
+        let text = outline_text(&symbols);
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "{text:?}"
+        );
+        assert_eq!(
+            text,
+            "Class Bad\\u{1b}[31m Name\\u{1b}[0m codeunit 50170  :1\n  \
+             Method Sec7\\u{1b}]0;pwned\\u{7}(Tests: Text\\u{1b}[2J)  :3\n"
         );
     }
 }
