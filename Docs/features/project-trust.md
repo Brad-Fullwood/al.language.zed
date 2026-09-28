@@ -173,23 +173,24 @@ holds the canonical project root and a SHA-256 of the privileged values. Change 
 values in the repository and the digest stops matching, so the settings are ignored again
 until you run `trust` a second time. `al-explorer trust --show` reports that as `stale`.
 
-A privileged value that is a path into the project names a file the repository ships, and
-the file is what runs. For an analyzer path, `al.dotnetPath`, `binary.path` and each
-analyzer name that resolves to a DLL under `.netpackages`, `packages` or a relative probing
-path, the path is first resolved through any symbolic link, since the loader opens the target
-and reads its neighbours beside the target. The recorded value carries the resolved file's
-SHA-256 and, when the path is a link, where it resolves. For a probing directory inside the
-project, written as `tools` or `./tools`, it carries one hash over every file below it. A
-probing path written without `./` used to be recorded as text alone. The record also covers what the file
-loads from beside it: for an analyzer, one hash over every file in its directory and below,
-since .NET resolves an analyzer's references and its native libraries (`.so`, `.dylib`) from
-its own directory, and for `al.dotnetPath`, one hash over every file beside the muxer and
-every file under its `host` and `shared` directories, where it finds `hostfxr` and the
-framework. `trust --show` prints the resolved paths and the hashes. A commit that replaces one
-of those files, adds one where the record saw none, or points a link somewhere else makes the
-record `stale`. An analyzer at the project root puts every file in the project into its
-record, so keep an analyzer in a directory of its own. A path written outside the project is
-the user's machine and is recorded as written.
+A privileged value that is a path into the project names a file the repository ships, and the
+file is what runs. For an analyzer path, `al.dotnetPath`, `binary.path` and each analyzer
+name that resolves to a DLL under `.netpackages`, `packages`, a relative probing path or an
+absolute one spelled inside the project, the path is first resolved through any symbolic
+link, since the loader opens the target and reads its neighbours beside the target. The
+recorded value carries the resolved file's SHA-256 and, when the path is a link, where it
+resolves. For a probing directory inside the project, written as `tools` or `./tools`, it
+carries one hash over every file below it. A probing path written without `./` used to be
+recorded as text alone. The record also covers what the file loads from beside it: for an
+analyzer, one hash over every file in its directory and below, since .NET resolves an
+analyzer's references and its native libraries (`.so`, `.dylib`) from its own directory, and
+for `al.dotnetPath`, one hash over every file beside the muxer and every file under its
+`host` and `shared` directories, where it finds `hostfxr` and the framework. `trust --show`
+prints the resolved paths and the hashes. A commit that replaces one of those files, adds one
+where the record saw none, or points a link somewhere else makes the record `stale`. An
+analyzer at the project root puts every file in the project into its record, so keep an
+analyzer in a directory of its own. A path written outside the project is the user's machine
+and is recorded as written.
 
 A path written inside the project that a link carries outside it is resolved and hashed the
 same way. With `"al.assemblyProbingPaths": ["./tools"]` and `tools` a link to a directory
@@ -227,13 +228,13 @@ contribute. A privileged value written only in user settings survives; one the r
 asks for is gated until the project is trusted.
 
 An analyzer name you write yourself, such as `BusinessCentral.LinterCop`, is looked up in the
-project's own folders (`.netpackages`, `packages`, a relative `al.assemblyProbingPaths`
-entry) only when the project is trusted. Otherwise it resolves from the NuGet cache, an
-absolute probing path or the editor extension folders, and a name found only inside the
-project is refused with a message saying so. A relative analyzer path names a file the
-repository ships and is refused the same way. The name was the user's, but the repository
-chose which file answered to it, and that file is loaded into alc and into the language
-server's semantic bridge.
+project's own folders (`.netpackages`, `packages`, a relative `al.assemblyProbingPaths` entry
+or an absolute one spelled inside the project) only when the project is trusted. Otherwise it
+resolves from the NuGet cache, an absolute probing path outside the project or the editor
+extension folders, and a name found only inside the project is refused with a message saying
+so. A relative analyzer path names a file the repository ships and is refused the same way.
+The name was the user's, but the repository chose which file answered to it, and that file is
+loaded into alc and into the language server's semantic bridge.
 
 In a trusted project, a file inside the project that an analyzer entry resolves to, the copy
 found for a name or the file a path names, loads only when the trust record lists that file
@@ -244,15 +245,17 @@ not in the record. So a copy of a name that a later commit adds under `.netpacka
 file it adds at a path such as `./tools/TeamCop.dll`, is refused with a message naming the
 file. Before, the copy was found ahead of the NuGet cache and the file at the path was loaded.
 To use a file in the project, write the entry in the project's settings or in
-`~/.config/al-lsp/settings.json`.
+`~/.config/al-lsp/settings.json`. A copy under an absolute probing path spelled inside the
+project used to be left out of the record, so its name was refused in a trusted project.
 
-The rule holds through a link in the project. A copy found under `.netpackages`, `packages` or
-a relative probing path, and the file a path such as `./tools/TeamCop.dll` names, belong to the
-project wherever a link carries them. The record hashes such a file where it resolves, and the
-search loads it only when the record lists it. Before, such a file loaded at once when its
-resolved path was outside the project, and a path through such a link loaded even in an
-untrusted project. The rule is in `al_project::analyzers::CustomAnalyzerSearch`, which every
-build, publish, debug launch and semantic analysis goes through.
+The rule holds through a link in the project. A copy found under `.netpackages`, `packages`
+or a probing path relative to or spelled inside the project, and the file a path such as
+`./tools/TeamCop.dll` names, belong to the project wherever a link carries them. The record
+hashes such a file where it resolves, and the search loads it only when the record lists it.
+Before, such a file loaded at once when its resolved path was outside the project, and a path
+through such a link loaded even in an untrusted project. The rule is in
+`al_project::analyzers::CustomAnalyzerSearch`, which every build, publish, debug launch and
+semantic analysis goes through.
 
 A credential you supply yourself is the same: `BC_USERNAME`, `BC_PASSWORD` and
 `BC_ACCESS_TOKEN` apply without trust. What still needs trust is the *server* those

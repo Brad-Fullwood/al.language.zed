@@ -2067,6 +2067,41 @@ fn a_path_through_a_link_out_of_the_project_is_judged_as_the_project_s() {
     );
 }
 
+/// The search treats a copy under an absolute probing path spelled inside
+/// the project as the project's, and the record left that copy out, so the
+/// name was refused in a trusted project with a message asking for an entry
+/// the project's settings already held.
+#[test]
+fn a_named_analyzer_under_an_absolute_probing_path_inside_the_project_loads_once_trusted() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings("{}");
+    let root = project.path();
+    write_file(root, "tools/TeamCop.dll", b"reviewed analyzer");
+    let settings = serde_json::json!({
+        "al.assemblyProbingPaths": [root.join("tools")],
+        "al.codeAnalyzers": ["TeamCop"],
+    });
+    std::fs::write(root.join(".vscode/settings.json"), settings.to_string()).unwrap();
+
+    let granted = grant(root).unwrap();
+    assert!(
+        granted.privileged.iter().any(|setting| {
+            setting.key == "al.codeAnalyzers" && setting.source == "tools/TeamCop.dll"
+        }),
+        "the record lists the copy the name resolves to: {:?}",
+        granted.privileged
+    );
+    let config = evaluate(root).unwrap().config;
+    let found = crate::analyzers::CustomAnalyzerSearch::new(root, &config.assembly_probing_paths)
+        .resolve("TeamCop")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        found,
+        root.join("tools/TeamCop.dll").canonicalize().unwrap()
+    );
+}
+
 /// A relative probing path the project's settings write, through a link out
 /// of the project, is listed with where it resolves, so a commit that points
 /// the link somewhere else makes the record stale.

@@ -380,14 +380,18 @@ fn discover(
 }
 
 /// The directories inside the project that discovery searches for a bare
-/// analyzer name: each relative probing path, then `.netpackages` and
-/// `packages`. They are searched first when the project is trusted and not at
-/// all when it is not. A file found under one is the project's copy, even
-/// when the root is a link that leads outside the project.
+/// analyzer name: each probing path that is relative or spelled inside the
+/// project, then `.netpackages` and `packages`. A file found under one is the
+/// project's copy, even when the root is a link that leads outside the
+/// project. [`discover`] treats a copy under an absolute probing path spelled
+/// inside the project as the project's too, so the record has to list it.
 fn project_search_roots(project_root: &Path, assembly_probing_paths: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = assembly_probing_paths
         .iter()
-        .filter(|configured| !configured.is_absolute())
+        .filter(|configured| {
+            !configured.is_absolute()
+                || crate::trust::spelled_inside_project(project_root, configured)
+        })
         .map(|configured| project_root.join(configured))
         .collect();
     roots.extend(
@@ -400,9 +404,9 @@ fn project_search_roots(project_root: &Path, assembly_probing_paths: &[PathBuf])
 
 /// The file the project supplies for an analyzer entry when the project is
 /// trusted, for the trust record to hash: the file a path spelled inside the
-/// project names, or the copy a bare name finds under a relative probing
-/// path, `.netpackages` or `packages`. Either can sit outside the project
-/// when a link leads there.
+/// project names, or the copy a bare name finds under a probing path spelled
+/// inside the project, `.netpackages` or `packages`. Either can sit outside
+/// the project when a link leads there.
 pub(crate) fn find_in_project(
     entry: &str,
     project_root: &Path,
