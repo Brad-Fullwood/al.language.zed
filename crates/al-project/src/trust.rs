@@ -1047,15 +1047,16 @@ enum Beside {
     Nothing,
 }
 
-/// `value` with what it names folded in, when it is a path into the project.
+/// `value` with what it names folded in, when it is a path into the project,
+/// or a path outside it that `outside` says to hash.
 ///
 /// A path in a settings file names a file, and the file is what runs. The
 /// record used to cover the path text alone, so a later commit that replaced
 /// `tools/TeamCop.dll`, or a `dotnet` shipped in the tree, kept the record
 /// valid while the code under it changed. It then covered the named file
 /// alone, so a commit that replaced a DLL the analyzer references, or the
-/// runtime beside a `dotnet`, did the same. A path written outside the
-/// project is the user's machine and stays as written.
+/// runtime beside a `dotnet`, did the same. A path outside the project stays
+/// as written under [`Outside::AsWritten`].
 ///
 /// The path is resolved through symbolic links before anything is hashed,
 /// because the loader opens the target and reads its neighbours beside the
