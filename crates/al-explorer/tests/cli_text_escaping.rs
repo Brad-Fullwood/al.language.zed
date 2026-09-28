@@ -817,8 +817,8 @@ fn statements(code: &str, start: usize, end: usize) -> Vec<(usize, usize)> {
     let mut parts = Vec::new();
     let mut depth = 0i32;
     let mut from = start;
-    for i in start..end {
-        match bytes[i] {
+    for (i, byte) in bytes.iter().enumerate().take(end).skip(start) {
+        match byte {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
             b';' if depth == 0 => {
@@ -867,8 +867,8 @@ fn last_expression(code: &str, start: usize, end: usize) -> (usize, usize) {
     let bytes = code.as_bytes();
     let mut depth = 0i32;
     let mut last = start;
-    for i in start..end {
-        match bytes[i] {
+    for (i, byte) in bytes.iter().enumerate().take(end).skip(start) {
+        match byte {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth -= 1,
             b';' if depth == 0 => last = i + 1,
