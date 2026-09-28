@@ -804,8 +804,10 @@ pub fn deny_privileged(config: &mut AlConfig) {
 /// after the last request or never while an editor keeps it busy. Revocation
 /// is the user saying stop, so it has to take effect.
 ///
-/// This is up to seven `stat` calls, so it can run per request. A change in
-/// any of them means the decision has to be made again.
+/// This is up to seven `stat` calls, a read of the user and repository
+/// settings files, and one `stat` per file under each probing path the
+/// repository sets, at most `MAX_HASHED_ENTRIES` per path, so it can run per
+/// request. A change in any of them means the decision has to be made again.
 #[must_use]
 pub fn inputs_fingerprint(project_root: &Path) -> u64 {
     let mut hasher = Sha256::new();
@@ -818,13 +820,7 @@ pub fn inputs_fingerprint(project_root: &Path) -> u64 {
         match std::fs::metadata(&path) {
             Ok(metadata) => {
                 hasher.update(metadata.len().to_le_bytes());
-                let modified = metadata
-                    .modified()
-                    .ok()
-                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|since| since.as_nanos() as u64)
-                    .unwrap_or_default();
-                hasher.update(modified.to_le_bytes());
+                hasher.update(modified_nanos(&metadata).to_le_bytes());
             }
             // Absent is a state of its own: a store that is deleted revokes
             // every project in it.
@@ -853,9 +849,93 @@ pub fn inputs_fingerprint(project_root: &Path) -> u64 {
             }
         }),
     );
+    // The record hashes the tree under each probing path the repository sets,
+    // and a running daemon hands that path to `alc`. A pull that changes a
+    // file there changes no settings file, so the tree is stamped too.
+    for path in repository_probing_paths(project_root) {
+        stamp_probing_tree(&mut hasher, project_root, &path);
+    }
 
     let digest = hasher.finalize();
     u64::from_le_bytes(digest[..8].try_into().expect("sha256 is 32 bytes"))
+}
+
+/// A file's modification time in nanoseconds since the Unix epoch, or zero
+/// when the platform does not report one.
+fn modified_nanos(metadata: &std::fs::Metadata) -> u64 {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|since| since.as_nanos() as u64)
+        .unwrap_or_default()
+}
+
+/// The probing paths the project's settings files add to the user's, the
+/// ones [`privileged_changes`] records, read without hashing anything.
+///
+/// A settings file that cannot be read adds nothing here. Its own stamp in
+/// [`inputs_fingerprint`] moves when it changes.
+fn repository_probing_paths(project_root: &Path) -> Vec<PathBuf> {
+    let mut config = AlConfig::default_settings_path()
+        .and_then(|path| AlConfig::load(&path).ok().flatten())
+        .unwrap_or_default();
+    let mut paths = Vec::new();
+    for relative in [".vscode/settings.json", ".zed/settings.json"] {
+        let path = project_root.join(relative);
+        let Ok(Some(value)) = crate::config::read_editor_settings_file(&path) else {
+            continue;
+        };
+        let before = config.clone();
+        config.merge_editor_settings_reporting(&value);
+        paths.extend(added_probing_paths(&before, &config));
+    }
+    paths
+}
+
+/// Stamp into `hasher` where the probing path `path` resolves, and the path,
+/// length and modification time of each file the record hashes under it.
+///
+/// The walk is the one [`Hashes::tree`] makes, with its entry cap, and it
+/// opens no file. A tree the record cannot hash is stamped with the reason.
+fn stamp_probing_tree(hasher: &mut Sha256, project_root: &Path, path: &Path) {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    };
+    hasher.update(absolute.as_os_str().as_encoded_bytes());
+    hasher.update([0u8]);
+    let Ok(resolved) = absolute.canonicalize() else {
+        hasher.update([0xffu8]);
+        return;
+    };
+    hasher.update(resolved.as_os_str().as_encoded_bytes());
+    hasher.update([0u8]);
+    // A probing path that names a file is recorded with its directory.
+    let directory = match std::fs::metadata(&resolved) {
+        Ok(metadata) if metadata.is_dir() => resolved,
+        Ok(metadata) if metadata.is_file() => match resolved.parent() {
+            Some(parent) => parent.to_path_buf(),
+            None => return,
+        },
+        _ => {
+            hasher.update([0xfeu8]);
+            return;
+        }
+    };
+    let mut files = Vec::new();
+    if let Err(reason) = collect_files(&directory, true, &mut files) {
+        hasher.update(reason.describe(project_root).as_bytes());
+        return;
+    }
+    files.sort();
+    for file in &files {
+        hasher.update(file.path.as_os_str().as_encoded_bytes());
+        hasher.update([0u8]);
+        hasher.update(file.bytes.to_le_bytes());
+        hasher.update(file.modified.to_le_bytes());
+    }
 }
 
 /// The trust decision alone, for callers that do not need the configuration.
@@ -1368,18 +1448,18 @@ impl Hashes {
         // opened. Counting while reading catches a file that reports less.
         let listed = files
             .iter()
-            .fold(0u64, |total, (_, bytes)| total.saturating_add(*bytes));
+            .fold(0u64, |total, file| total.saturating_add(file.bytes));
         if listed > budget {
             return Err(too_large());
         }
         files.sort();
         let mut read = 0u64;
         let mut hasher = Sha256::new();
-        for (file, _) in &files {
-            let relative = file.strip_prefix(dir).unwrap_or(file);
+        for file in &files {
+            let relative = file.path.strip_prefix(dir).unwrap_or(&file.path);
             hasher.update(relative.as_os_str().as_encoded_bytes());
             hasher.update([0u8]);
-            match self.file(file, budget.saturating_sub(read)) {
+            match self.file(&file.path, budget.saturating_sub(read)) {
                 FileHash::Hashed { sha256, bytes } => {
                     read += bytes;
                     hasher.update(sha256.as_bytes());
@@ -1482,19 +1562,23 @@ fn not_hashed(reason: &Unhashable, root: &Path, unhashable: &mut Option<String>)
     text
 }
 
-/// Push every regular file in `dir` onto `files` with the length the walk
-/// saw, below `dir` too when `recursive`. A directory that cannot be read
-/// adds nothing.
+/// A regular file a tree walk found, with the length and modification time
+/// the walk saw.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+struct Listed {
+    path: PathBuf,
+    bytes: u64,
+    modified: u64,
+}
+
+/// Push every regular file in `dir` onto `files`, below `dir` too when
+/// `recursive`. A directory that cannot be read adds nothing.
 ///
 /// `Err` for a symbolic link anywhere in the walk, and when the walk passes
 /// `MAX_HASHED_ENTRIES`. The walk used to skip a link and to return a fixed
 /// text past the cap, so a link beside an analyzer, or a file in a tree of
 /// 50,001 entries, could change under a record that still matched.
-fn collect_files(
-    dir: &Path,
-    recursive: bool,
-    files: &mut Vec<(PathBuf, u64)>,
-) -> Result<(), Unhashable> {
+fn collect_files(dir: &Path, recursive: bool, files: &mut Vec<Listed>) -> Result<(), Unhashable> {
     let mut stack = vec![dir.to_path_buf()];
     let mut inspected = 0usize;
     while let Some(directory) = stack.pop() {
@@ -1518,12 +1602,28 @@ fn collect_files(
                     stack.push(path);
                 }
             } else if file_type.is_file() {
-                let bytes = entry.metadata().map_or(0, |metadata| metadata.len());
-                files.push((path, bytes));
+                let (bytes, modified) = entry.metadata().map_or((0, 0), |metadata| {
+                    (metadata.len(), modified_nanos(&metadata))
+                });
+                files.push(Listed {
+                    path,
+                    bytes,
+                    modified,
+                });
             }
         }
     }
     Ok(())
+}
+
+/// The probing paths `candidate` holds that `base` does not.
+fn added_probing_paths(base: &AlConfig, candidate: &AlConfig) -> Vec<PathBuf> {
+    candidate
+        .assembly_probing_paths
+        .iter()
+        .filter(|path| !base.assembly_probing_paths.contains(path))
+        .cloned()
+        .collect()
 }
 
 /// The privileged values `candidate` gained over `base`.
@@ -1599,12 +1699,7 @@ fn privileged_changes(
         }
     }
 
-    ask.assembly_probing_paths = candidate
-        .assembly_probing_paths
-        .iter()
-        .filter(|path| !base.assembly_probing_paths.contains(path))
-        .cloned()
-        .collect();
+    ask.assembly_probing_paths = added_probing_paths(base, candidate);
     if !ask.assembly_probing_paths.is_empty() {
         let value = ask
             .assembly_probing_paths

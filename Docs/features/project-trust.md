@@ -150,6 +150,13 @@ before each request, up to seven `stat` calls, and re-evaluate when any of them 
 used to decide once at startup and keep that configuration until they exited, which is up to
 `AL_DAEMON_IDLE_SECS` after the last request and never while an editor keeps them busy.
 
+The fingerprint also stamps the tree under each probing path the repository sets: it reads
+the settings files for the paths and takes the length and modification time of each file
+there, with the walk and the 50,000 entry cap the record's hash uses. The daemon hands those
+paths to `alc`, and a `git pull` that replaced or added a file there changed no settings
+file, so the daemon kept passing the probing path to every build while `trust --show` said
+`stale`. Now the next request decides again and drops the path.
+
 The language server Zed runs takes the same fingerprint before every command (build, Run
 Test, symbol download) and before semantic analysis resolves analyzers, and gates the
 editor's settings again when it moved. Gating only removes values, so a project trusted

@@ -726,6 +726,60 @@ mod tests {
         assert!(error.contains("outside the project"), "{error}");
     }
 
+    /// A pull that changes the files under a trusted probing path changes no
+    /// settings file, and the daemon decided again only when a settings file,
+    /// a launch file or the trust store moved. It kept handing `alc` the
+    /// probing path while the record said `Stale`.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_probing_path_whose_files_change_leaves_the_alc_arguments() {
+        let _config = ScratchConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::create_dir_all(root.join("probe")).unwrap();
+        std::fs::write(root.join("app.json"), "{}").unwrap();
+        std::fs::write(root.join("probe/Helper.dll"), b"MZ first").unwrap();
+        std::fs::write(
+            root.join(".vscode/settings.json"),
+            r#"{"al.assemblyProbingPaths": ["./probe"]}"#,
+        )
+        .unwrap();
+        al_project::trust::grant(&root).unwrap();
+        let workspace = Workspace::new();
+        super::super::set_test_project_root(&workspace, &root);
+        super::super::TRUST_INPUTS.store(
+            al_project::trust::inputs_fingerprint(&root),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        *workspace.config.write().await = al_project::trust::evaluate(&root).unwrap().config;
+        let alc_args = |config: &al_project::config::AlConfig| {
+            al_compile::CompilationConfigOptions::from(config).to_alc_args()
+        };
+        assert_eq!(
+            alc_args(&*workspace.config.read().await),
+            ["/assemblyprobingpaths:./probe"],
+            "the granted probing path reaches alc"
+        );
+
+        std::fs::write(root.join("probe/Helper.dll"), b"MZ replaced by a pull").unwrap();
+        std::fs::write(root.join("probe/Added.dll"), b"MZ added by a pull").unwrap();
+        super::super::refresh_trust(&workspace).await;
+
+        assert_eq!(
+            al_project::trust::decide(&root).unwrap().state,
+            al_project::trust::TrustState::Stale
+        );
+        let after = alc_args(&*workspace.config.read().await);
+        assert!(
+            !after
+                .iter()
+                .any(|arg| arg.starts_with("/assemblyprobingpaths:")),
+            "a stale record must not keep the probing path: {after:?}"
+        );
+    }
+
     /// Trusting the project is how a user says its own paths may point where
     /// they point, and it is the same decision that lets `al.packageCachePath`
     /// name a directory outside the project.
