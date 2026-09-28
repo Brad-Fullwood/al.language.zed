@@ -473,7 +473,8 @@ pub fn load_launch_configs(
 ///
 /// Hashed by content, up to the 1 MiB both loaders accept. An edit such as
 /// `25.0.0.0` to `26.0.0.0` keeps the file's length, and inside one tick of the
-/// filesystem clock it keeps the mtime too.
+/// filesystem clock it keeps the mtime too. A path that is not a regular file,
+/// such as a link to a FIFO, is hashed as an absent file and never waited on.
 pub fn project_files_fingerprint(project_root: &Path) -> u64 {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -483,15 +484,15 @@ pub fn project_files_fingerprint(project_root: &Path) -> u64 {
     let [zed_debug, vscode_launch] = al_bc::launch::launch_file_paths(project_root);
     for path in [project_root.join("app.json"), zed_debug, vscode_launch] {
         let mut content = Vec::new();
-        let read = std::fs::File::open(&path)
-            .and_then(|file| file.take(MAX_APP_JSON_BYTES + 1).read_to_end(&mut content));
+        let read = crate::trust::open_regular_file(&path)
+            .map(|file| file.take(MAX_APP_JSON_BYTES + 1).read_to_end(&mut content));
         match read {
-            Ok(length) => {
+            Some(Ok(length)) => {
                 hasher.update([1u8]);
                 hasher.update((length as u64).to_le_bytes());
                 hasher.update(&content);
             }
-            Err(_) => hasher.update([0u8]),
+            _ => hasher.update([0u8]),
         }
     }
     let digest = hasher.finalize();
@@ -1346,6 +1347,49 @@ mod tests {
             launch_added,
             "a debug.json written"
         );
+    }
+
+    /// The fingerprint opens `app.json` and the two debug files. A link the
+    /// repository ships at one of them to a FIFO must not make a daemon wait
+    /// before each request. Such a file counts as absent.
+    #[cfg(unix)]
+    #[test]
+    fn project_files_fingerprint_does_not_wait_on_a_fifo_at_a_file_it_reads() {
+        for (relative, target) in [
+            ("app.json", "pipe"),
+            (".zed/debug.json", "../pipe"),
+            (".vscode/launch.json", "../pipe"),
+        ] {
+            let project = tempdir();
+            make_fifo(&project.join("pipe"));
+            let link = project.join(relative);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(target, &link).unwrap();
+
+            let root = project.clone();
+            let with_link = answer_within_three_seconds(move || project_files_fingerprint(&root))
+                .unwrap_or_else(|| panic!("the fingerprint waited on a FIFO at {relative}"));
+
+            std::fs::remove_file(&link).unwrap();
+            assert_eq!(
+                with_link,
+                project_files_fingerprint(&project),
+                "a FIFO at {relative} counts as an absent file"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_files_fingerprint_reads_through_a_link_to_a_regular_file() {
+        let project = tempdir();
+        let target = project.join("manifest.json");
+        std::fs::write(&target, r#"{"application":"25.0.0.0"}"#).unwrap();
+        std::os::unix::fs::symlink("manifest.json", project.join("app.json")).unwrap();
+        let first = project_files_fingerprint(&project);
+
+        std::fs::write(&target, r#"{"application":"26.0.0.0"}"#).unwrap();
+        assert_ne!(project_files_fingerprint(&project), first);
     }
 
     #[test]
