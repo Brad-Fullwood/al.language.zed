@@ -2562,9 +2562,7 @@ fn a_path_through_a_link_out_of_the_project_is_recorded_where_it_resolves() {
             .iter()
             .find(|setting| setting.key == key && setting.source == ".vscode/settings.json")
             .unwrap();
-        // The value itself, since `display_line` caps it at 120 characters and a
-        // macOS temp path pushes the digest past the cap.
-        let line = &setting.value;
+        let line = setting.display_line();
         assert!(line.contains(&format!("resolves to {target}")), "{line}");
         assert!(line.contains("sha256:"), "{line}");
     }
@@ -2582,6 +2580,50 @@ fn a_path_through_a_link_out_of_the_project_is_recorded_where_it_resolves() {
         found,
         second.path().join("TeamCop.dll").canonicalize().unwrap()
     );
+}
+
+/// The lines a person reads before granting trust show where a link leads and
+/// the digest of what is there, however long the target is. A shared symbols
+/// folder under a synced home directory is past 120 characters.
+#[cfg(unix)]
+#[test]
+fn the_printed_lines_for_a_link_under_a_long_path_show_the_whole_target_and_the_digest() {
+    let _config = ScratchConfig::new();
+    let base = tempfile::tempdir().unwrap();
+    let first = base.path().join(
+        "Users/someone/Library/CloudStorage/SharedDrive/Documents/Business Central/Symbols/Team/Base Application/Version 26.0",
+    );
+    write_file(&first, "TeamCop.dll", b"reviewed analyzer");
+    let project = project_with_settings(
+        r#"{"al.assemblyProbingPaths": ["./tools"], "al.codeAnalyzers": ["./tools/TeamCop.dll"]}"#,
+    );
+    let root = project.path();
+    link(root, "tools", first.to_str().unwrap());
+
+    let granted = grant(root).unwrap();
+    let target = first.canonicalize().unwrap().display().to_string();
+    assert!(target.chars().count() > 120, "{target}");
+    let lines: Vec<String> = granted
+        .privileged
+        .iter()
+        .map(PrivilegedSetting::display_line)
+        .collect();
+    let leading = |key: &str| {
+        lines
+            .iter()
+            .find(|line| line.starts_with(&format!("{key} = ")))
+            .unwrap_or_else(|| panic!("no line for {key} in {lines:#?}"))
+    };
+    for key in ["al.assemblyProbingPaths", "al.codeAnalyzers"] {
+        let line = leading(key);
+        assert!(line.contains(&format!("resolves to {target}")), "{line}");
+        assert!(line.contains("sha256:"), "{line}");
+    }
+    assert!(
+        leading(LINKED_PACKAGE_FOLDER_KEY).contains(&format!("resolves to {target}")),
+        "{lines:#?}"
+    );
+    assert!(lines.iter().all(|line| !line.contains('…')), "{lines:#?}");
 }
 
 /// A file alc probes at the link's target, beside no analyzer the record
