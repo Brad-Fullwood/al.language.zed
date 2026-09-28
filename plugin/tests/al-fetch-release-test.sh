@@ -6,6 +6,8 @@
 #   archive is refused before install.
 #   A failed install step (mkdir, mv or rm) is named in the refusal. The
 #   report does not claim anything was installed.
+#   An archive that lacks a file the listing names under the archive's name
+#   is refused.
 #   A missing or mismatched al-lsp skips an eval case by name, with the
 #   reason al-explorer gave.
 #
@@ -187,6 +189,41 @@ scenario_failed_install_step() {
 	pass "a failed install step is named and nothing is reported installed"
 }
 
+# ── an archive that lacks a listed bridge file is refused ───────────
+# Every extracted file is listed and matches, and al-explorer and al-lsp are
+# at the root, so only the check that every listed file was extracted stops
+# this install. check_bridge_files in src/lib.rs refuses the same archive.
+scenario_missing_listed_file() {
+	local stage="$work/stage-missing" data="$work/data-missing" out rc
+	rm -rf "$stage" "$data"
+	mkdir -p "$stage/bridge"
+	printf 'explorer-bytes\n' >"$stage/al-explorer"
+	printf 'lsp-bytes\n' >"$stage/al-lsp"
+	chmod +x "$stage/al-explorer" "$stage/al-lsp"
+	printf 'dep-bytes\n' >"$stage/bridge/Dep.dll"
+	(cd "$stage" && tar -czf "$serve_dir/$asset_name" al-explorer al-lsp bridge/Dep.dll)
+	{
+		printf '%s  %s/al-explorer\n' "$(sha256_of "$stage/al-explorer")" "$asset_name"
+		printf '%s  %s/al-lsp\n' "$(sha256_of "$stage/al-lsp")" "$asset_name"
+		printf '%s  %s/bridge/AlBridge.dll\n' \
+			"0000000000000000000000000000000000000000000000000000000000000000" "$asset_name"
+		printf '%s  %s/bridge/Dep.dll\n' "$(sha256_of "$stage/bridge/Dep.dll")" "$asset_name"
+		printf '%s  %s/al-lsp\n' \
+			"1111111111111111111111111111111111111111111111111111111111111111" "al-other-platform.tar.gz"
+	} >"$serve_dir/binary-checksums.txt"
+
+	out="$(run_fetch "$data" 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] || fail "missing listed file: al-fetch-release.sh exited $rc, its contract is always 0. Output: $out"
+	printf '%s\n' "$out" | grep -qF "$asset_name/bridge/AlBridge.dll is listed in binary-checksums.txt but was not extracted" ||
+		fail "missing listed file: expected a refusal naming $asset_name/bridge/AlBridge.dll. Output: $out"
+	if printf '%s\n' "$out" | grep -qF "al-other-platform.tar.gz"; then
+		fail "missing listed file: a name listed under another asset was reported. Output: $out"
+	fi
+	[ ! -d "$data/bin" ] ||
+		fail "missing listed file: something was installed into $data/bin"
+	pass "an archive that lacks a listed bridge file is refused, not installed"
+}
+
 # run.sh now asks al-explorer itself whether al-lsp is usable (a preflight
 # call before any case runs) instead of guessing from the filesystem, so
 # these two scenarios need an al-explorer that behaves like the real one for
@@ -303,6 +340,7 @@ JSON
 scenario_symlink_member
 scenario_directory_member
 scenario_failed_install_step
+scenario_missing_listed_file
 scenario_missing_al_lsp_eval
 scenario_mismatched_al_lsp_eval
 

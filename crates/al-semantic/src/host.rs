@@ -336,14 +336,51 @@ fn check_bridge_pair(dll: PathBuf, config: PathBuf) -> Option<(PathBuf, PathBuf)
     }
 }
 
+/// The `OUT_DIR` build.rs compiles the bridge into, for a debug build and
+/// `None` for a release build.
+///
+/// The path is fixed at compile time, so in a release binary it would name a
+/// directory on the machine that built the release. The Windows release was
+/// built under `D:\a\...`. On a Windows machine with a `D:` data volume the
+/// default permissions let any signed in user create that folder, and an
+/// al-lsp with no bridge of its own would load the `AlBridge.dll` another user
+/// put there.
+const fn build_output_dir(debug_build: bool) -> Option<&'static str> {
+    if debug_build {
+        option_env!("OUT_DIR")
+    } else {
+        None
+    }
+}
+
+/// [`build_output_dir`] for this build. A constant, so a release binary does
+/// not contain the path at all.
+const BUILD_OUTPUT_DIR: Option<&str> = build_output_dir(cfg!(debug_assertions));
+
 /// Locate the bridge DLL and runtime config.
 ///
 /// Search order:
 /// 1. `AL_BRIDGE_DIR` environment variable (explicit operator override)
 /// 2. Next to the current executable (deployed)
-/// 3. `OUT_DIR` from build.rs (development build artifact)
+/// 3. `OUT_DIR` from build.rs, in a debug build only (a build from a checkout)
+///
+/// With no bridge in any of these places the error says semantic analysis is
+/// off.
 pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
-    if let Ok(dir) = std::env::var("AL_BRIDGE_DIR") {
+    let exe = std::env::current_exe().ok();
+    find_bridge_in(
+        std::env::var_os("AL_BRIDGE_DIR"),
+        exe.as_deref().and_then(Path::parent),
+        BUILD_OUTPUT_DIR,
+    )
+}
+
+fn find_bridge_in(
+    explicit_dir: Option<std::ffi::OsString>,
+    exe_dir: Option<&Path>,
+    build_output_dir: Option<&str>,
+) -> Result<(PathBuf, PathBuf), SemanticError> {
+    if let Some(dir) = explicit_dir {
         let bridge_dir = PathBuf::from(&dir);
         let dll = bridge_dir.join("AlBridge.dll");
         let config = bridge_dir.join("AlBridge.runtimeconfig.json");
@@ -357,25 +394,23 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
         )));
     }
 
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let dll = exe_dir.join("bridge").join("AlBridge.dll");
-            let config = exe_dir.join("bridge").join("AlBridge.runtimeconfig.json");
-            if let Some(pair) = check_bridge_pair(dll, config) {
-                debug!(path = %pair.0.display(), "Found bridge DLL next to executable");
-                return Ok(pair);
-            }
-            // Also check flat layout
-            let dll = exe_dir.join("AlBridge.dll");
-            let config = exe_dir.join("AlBridge.runtimeconfig.json");
-            if let Some(pair) = check_bridge_pair(dll, config) {
-                debug!(path = %pair.0.display(), "Found bridge DLL next to executable (flat)");
-                return Ok(pair);
-            }
+    if let Some(exe_dir) = exe_dir {
+        let dll = exe_dir.join("bridge").join("AlBridge.dll");
+        let config = exe_dir.join("bridge").join("AlBridge.runtimeconfig.json");
+        if let Some(pair) = check_bridge_pair(dll, config) {
+            debug!(path = %pair.0.display(), "Found bridge DLL next to executable");
+            return Ok(pair);
+        }
+        // Also check flat layout
+        let dll = exe_dir.join("AlBridge.dll");
+        let config = exe_dir.join("AlBridge.runtimeconfig.json");
+        if let Some(pair) = check_bridge_pair(dll, config) {
+            debug!(path = %pair.0.display(), "Found bridge DLL next to executable (flat)");
+            return Ok(pair);
         }
     }
 
-    if let Some(out_dir) = option_env!("OUT_DIR") {
+    if let Some(out_dir) = build_output_dir {
         let bridge_dir = PathBuf::from(out_dir).join("bridge");
         let dll = bridge_dir.join("AlBridge.dll");
         let config = bridge_dir.join("AlBridge.runtimeconfig.json");
@@ -385,9 +420,16 @@ pub fn find_bridge_dll() -> Result<(PathBuf, PathBuf), SemanticError> {
         }
     }
 
-    Err(SemanticError::HostInit(
-        "Could not find AlBridge.dll. Set AL_BRIDGE_DIR or ensure bridge/ is compiled.".into(),
-    ))
+    let beside = match exe_dir {
+        Some(dir) => format!("in {}", dir.join("bridge").display()),
+        None => "beside the executable".to_string(),
+    };
+    Err(SemanticError::HostInit(format!(
+        "Could not find AlBridge.dll and AlBridge.runtimeconfig.json {beside} or in \
+         AL_BRIDGE_DIR, so semantic analysis is off. Install the bridge/ folder from the \
+         release archive beside the executable, or set AL_BRIDGE_DIR to a folder that \
+         holds both files."
+    )))
 }
 
 #[cfg(feature = "semantic")]
@@ -568,5 +610,26 @@ mod tests {
             result.is_err(),
             "an invalid explicit override must fail closed"
         );
+    }
+
+    /// A release build finds its bridge beside the executable or in
+    /// `AL_BRIDGE_DIR` and nowhere else. The directory build.rs wrote is a
+    /// path on the machine that built the release, so a release al-lsp with
+    /// neither runs without semantics.
+    #[test]
+    fn test_release_build_does_not_fall_back_to_build_output_dir() {
+        assert_eq!(build_output_dir(false), None);
+
+        let exe_dir = tempfile::tempdir().unwrap();
+        let result = find_bridge_in(None, Some(exe_dir.path()), build_output_dir(false));
+        let error = match result {
+            Ok((dll, _)) => panic!(
+                "a release build with no bridge beside it or in AL_BRIDGE_DIR loaded {}",
+                dll.display()
+            ),
+            Err(error) => error.to_string(),
+        };
+        assert!(error.contains("AL_BRIDGE_DIR"), "{error}");
+        assert!(error.contains("semantic analysis is off"), "{error}");
     }
 }

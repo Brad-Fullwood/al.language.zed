@@ -329,7 +329,10 @@ What it does, in order:
 5. Hashes every extracted file and compares it against
    `binary-checksums.txt`. A file the listing does not name, or a digest that
    does not match, deletes the staging directory and refuses; nothing is made
-   executable and nothing is added to `$CLAUDE_PLUGIN_DATA/bin`.
+   executable and nothing is added to `$CLAUDE_PLUGIN_DATA/bin`. A file the
+   listing names under the archive's name that the archive does not hold
+   (`bridge/AlBridge.dll`, say) refuses the same way, as `check_bridge_files`
+   in `src/lib.rs` does for the Zed extension.
 6. Only once every file matches does it `chmod +x` the two binaries and move
    the staging directory into place.
 

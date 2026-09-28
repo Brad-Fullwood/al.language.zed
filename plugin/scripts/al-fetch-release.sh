@@ -135,10 +135,10 @@ sha256_of() {
 }
 
 # Read a sha256sum-style listing (line = "<64-hex-digest>  <name>", an
-# optional leading "*" on the name for binary mode) and print the digest for
-# the exact name given, mirroring expected_sha256() in src/lib.rs.
-expected_digest() {
-	local listing="$1" key="$2" digest_line line_digest line_rest
+# optional leading "*" on the name for binary mode) and print "<digest> <name>"
+# for each well formed line, mirroring expected_sha256() in src/lib.rs.
+listing_entries() {
+	local listing="$1" digest_line line_digest line_rest
 	while IFS= read -r digest_line || [ -n "$digest_line" ]; do
 		line_digest="${digest_line%%[[:space:]]*}"
 		line_rest="${digest_line#"$line_digest"}"
@@ -152,11 +152,21 @@ expected_digest() {
 		case "$line_digest" in
 		*[!0-9a-f]*) continue ;;
 		esac
-		if [ "${#line_digest}" -eq 64 ] && [ "$line_rest" = "$key" ]; then
-			printf '%s\n' "$line_digest"
-			return 0
+		if [ "${#line_digest}" -eq 64 ] && [ -n "$line_rest" ]; then
+			printf '%s %s\n' "$line_digest" "$line_rest"
 		fi
 	done <"$listing"
+}
+
+# Print the listing's digest for the exact name given.
+expected_digest() {
+	local listing="$1" key="$2" entry_digest entry_name
+	while IFS=' ' read -r entry_digest entry_name; do
+		if [ "$entry_name" = "$key" ]; then
+			printf '%s\n' "$entry_digest"
+			return 0
+		fi
+	done < <(listing_entries "$listing")
 	return 1
 }
 
@@ -235,6 +245,23 @@ while IFS= read -r rel; do
 		exit 0
 	fi
 done <"$file_list"
+
+# The loop above checks the files the archive holds. A file the listing names
+# under this archive and the archive leaves out (bridge/AlBridge.dll, say)
+# would leave al-lsp without its bridge, so refuse that too, as
+# check_bridge_files in src/lib.rs does. Names under another archive's asset
+# name belong to another platform and are skipped.
+while IFS=' ' read -r _ listed_name; do
+	case "$listed_name" in
+	"$asset_name"/*) ;;
+	*) continue ;;
+	esac
+	listed_rel="${listed_name#"$asset_name"/}"
+	if ! grep -qxF -- "$listed_rel" "$file_list"; then
+		report "$listed_name is listed in $BINARY_CHECKSUMS_ASSET but was not extracted from $asset_name of release $AL_PIN_RELEASE_TAG. Nothing was installed"
+		exit 0
+	fi
+done < <(listing_entries "$checksums_path")
 
 if ! have_pair "$stage_dir"; then
 	report "$asset_name from release $AL_PIN_RELEASE_TAG has verified digests but is missing al-explorer or al-lsp at its root. Nothing was installed"
