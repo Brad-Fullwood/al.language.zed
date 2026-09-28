@@ -142,19 +142,11 @@ pub(in crate::server::daemon) fn dispatch_new_project(
     }
     // Scaffolding writes app.json, src/ and .vscode/ under `dir`, so an
     // unconstrained `dir` creates files anywhere the daemon's user can write.
-    let dir = match crate::server::daemon::containment::resolve_within_project(workspace, &dir) {
+    let dir = match crate::server::daemon::containment::resolve_param_within_project(
+        workspace, "dir", &dir,
+    ) {
         Ok(dir) => dir,
-        Err(message) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INVALID_PARAMS,
-                    message: format!("'dir' {message}"),
-                }),
-                ..Default::default()
-            };
-        }
+        Err(rejection) => return rejection.into_response(id),
     };
 
     let invalid = |message: String| Response {
@@ -1037,7 +1029,7 @@ mod tests {
             &serde_json::json!({ "dir": outside.to_string_lossy() }),
         );
         let err = resp.error.expect("a dir outside the project must error");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert_eq!(err.code, error_codes::PATH_NOT_AUTHORIZED);
         assert!(
             err.message.contains("outside the project"),
             "got: {}",

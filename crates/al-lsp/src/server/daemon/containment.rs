@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 
 use al_workspace::Workspace;
 
+use super::PathRejection;
+
 /// A path spelled the way the caller would have typed it.
 ///
 /// Containment canonicalises both sides, and on Windows `canonicalize` returns
@@ -361,13 +363,49 @@ pub(crate) fn resolve_within_project(
 ) -> Result<PathBuf, String> {
     let roots = project_boundary(workspace)?;
     let base = roots[0].clone();
-    resolve_path_within_roots(requested, &base, &roots).ok_or_else(|| {
-        format!(
-            "path '{}' is outside the project at '{}'",
-            display_path(requested),
-            display_path(&base)
-        )
+    resolve_path_within_roots(requested, &base, &roots)
+        .ok_or_else(|| outside_the_project(requested, &base))
+}
+
+/// Resolve the path parameter `key` inside the loaded project's boundary.
+///
+/// Every path parameter is refused in the same words and with
+/// [`PATH_NOT_AUTHORIZED`](al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED),
+/// so a caller tells "the daemon will not touch this path" from a malformed
+/// request by the code alone.
+pub(crate) fn resolve_param_within_project(
+    workspace: &Workspace,
+    key: &str,
+    requested: &Path,
+) -> Result<PathBuf, PathRejection> {
+    resolve_within_project(workspace, requested)
+        .map_err(|message| PathRejection::unauthorized(format!("'{key}' {message}")))
+}
+
+/// Resolve the output path parameter `key` inside `project_root`.
+///
+/// A report or snapshot the caller asks for is written under the project root
+/// only, so the package directories the read boundary includes are left out.
+/// The refusal is the one [`resolve_param_within_project`] gives.
+pub(crate) fn resolve_output_param_within_project(
+    key: &str,
+    requested: &Path,
+    project_root: &Path,
+) -> Result<PathBuf, PathRejection> {
+    resolve_output_path_within_project(requested, project_root).ok_or_else(|| {
+        PathRejection::unauthorized(format!(
+            "'{key}' {}",
+            outside_the_project(requested, project_root)
+        ))
     })
+}
+
+fn outside_the_project(requested: &Path, root: &Path) -> String {
+    format!(
+        "path '{}' is outside the project at '{}'",
+        display_path(requested),
+        display_path(root)
+    )
 }
 
 #[cfg(test)]

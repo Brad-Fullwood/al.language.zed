@@ -383,8 +383,13 @@ mod dispatch_tests {
     }
 
     /// Every method that takes a path in a parameter other than `uri`/`file`
-    /// refuses one outside the project, and in particular a `.g.xlf` the
-    /// caller names outside it is neither read nor replaced.
+    /// refuses one outside the project with the code a client can act on, and
+    /// the file or directory it names is neither rewritten nor created.
+    ///
+    /// Each case carries the other parameters its method needs, so the request
+    /// reaches the path check. The cases cover exactly the methods the dispatch
+    /// table declares `named`: a method declared without a case fails here, and
+    /// so does a case whose method stopped declaring its path.
     #[tokio::test]
     async fn every_named_path_dispatcher_refuses_a_path_outside_the_project() {
         let dir = tempfile::tempdir().unwrap();
@@ -395,22 +400,196 @@ mod dispatch_tests {
         let outside = dir.path().join("outside.xlf");
         let original = r#"<xliff version="1.2"><file original="x"></file></xliff>"#;
         std::fs::write(&outside, original).unwrap();
+        let outside_snapshot = dir.path().join("outside.snap.json");
+        std::fs::write(&outside_snapshot, "{}").unwrap();
         let outside_dir = dir.path().join("elsewhere");
+        let file = outside.to_str().unwrap();
+        let snapshot = outside_snapshot.to_str().unwrap();
+        let directory = outside_dir.to_str().unwrap();
         let shutdown = Notify::new();
 
-        let mut checked = BTreeSet::new();
+        let cases = [
+            ("xlf.generate", serde_json::json!({ "project": directory })),
+            (
+                "xlf.refresh",
+                serde_json::json!({ "xlf": file, "generated": file }),
+            ),
+            ("xlf.untranslated", serde_json::json!({ "xlf": file })),
+            ("xlf.suggest", serde_json::json!({ "xlf": file })),
+            (
+                "packageDiff",
+                serde_json::json!({ "from": file, "to": file }),
+            ),
+            (
+                "newProject",
+                serde_json::json!({ "dir": directory, "name": "Scaffold", "publisher": "Test" }),
+            ),
+            (
+                "eventSource",
+                serde_json::json!({ "file": file, "line": 1 }),
+            ),
+            (
+                "snapshot",
+                serde_json::json!({ "cmd": "list", "outputDir": directory }),
+            ),
+            (
+                "profiling",
+                serde_json::json!({ "cmd": "analyze", "outputDir": directory }),
+            ),
+            (
+                "profiling",
+                serde_json::json!({ "cmd": "analyze", "path": file }),
+            ),
+            (
+                "tests.run_batch",
+                serde_json::json!({ "codeunitIds": [50100], "junitOut": file }),
+            ),
+            (
+                "tests.run_batch",
+                serde_json::json!({ "codeunitIds": [50100], "coberturaOut": file }),
+            ),
+            ("tests.run_auto", serde_json::json!({ "junitOut": file })),
+            (
+                "tests.run_auto",
+                serde_json::json!({ "coberturaOut": file }),
+            ),
+            (
+                "tests.snapshot_validate",
+                serde_json::json!({ "snapshotPath": snapshot }),
+            ),
+            (
+                "tests.snapshot_capture",
+                serde_json::json!({
+                    "codeunitId": 50100,
+                    "codeunitName": "X",
+                    "methodName": "M",
+                    "bcVersion": "26.0",
+                    "breakpoints": [{ "file": "doc.al", "line": 1 }],
+                    "outputPath": snapshot,
+                }),
+            ),
+            (
+                "tests.snapshot_replay",
+                serde_json::json!({ "snapshotPath": snapshot, "bcVersion": "26.0" }),
+            ),
+            (
+                "tests.snapshot_diff",
+                serde_json::json!({ "pathA": snapshot, "pathB": snapshot }),
+            ),
+            ("tests.mutate", serde_json::json!({ "files": [file] })),
+        ];
+
+        for (method, params) in &cases {
+            let response = dispatch_request(
+                &workspace,
+                Request::new(1, *method, Some(params.clone())),
+                &shutdown,
+            )
+            .await;
+            let error = response
+                .error
+                .unwrap_or_else(|| panic!("{method} answered for a path outside the project"));
+            assert_eq!(
+                error.code,
+                error_codes::PATH_NOT_AUTHORIZED,
+                "{method} must refuse an outside path with the boundary code: {error:?}"
+            );
+            assert!(
+                error.message.contains("outside the project"),
+                "{method} must refuse an outside path: {error:?}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            original,
+            "a refused method rewrote the file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_snapshot).unwrap(),
+            "{}",
+            "a refused method rewrote the snapshot"
+        );
+        assert!(
+            !outside_dir.exists(),
+            "a refused method created a directory"
+        );
+
+        let driven = cases
+            .iter()
+            .map(|(method, _)| *method)
+            .collect::<BTreeSet<_>>();
+        let declared = DISPATCHERS
+            .iter()
+            .filter(|dispatcher| dispatcher.path == PathUse::Named)
+            .map(|dispatcher| dispatcher.method)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            driven, declared,
+            "the cases and the methods declared `named` differ"
+        );
+    }
+
+    /// A method declared with no path use judges no caller path either. Every
+    /// parameter a path method reads is sent naming a place outside the
+    /// project, and no such method may answer with the boundary refusal: one
+    /// that does reads the parameter, and the registry tests above skip it.
+    #[tokio::test]
+    async fn no_method_declared_without_a_path_use_refuses_a_caller_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"id":"00000000-0000-0000-0000-000000000001","name":"Test","publisher":"Test","version":"1.0.0.0"}"#,
+        )
+        .unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let outside = dir.path().join("outside.snap.json");
+        std::fs::write(&outside, b"{}").unwrap();
+        let outside_dir = dir.path().join("elsewhere");
+        let file = outside.to_str().unwrap();
+        let directory = outside_dir.to_str().unwrap();
+        let shutdown = Notify::new();
+
+        let mut undeclared = BTreeSet::new();
         for dispatcher in DISPATCHERS {
-            if dispatcher.path != PathUse::Named {
+            // `clearCache` takes no parameters and empties the user's own
+            // index cache, which a test has no business doing.
+            if dispatcher.path != PathUse::None || dispatcher.method == "clearCache" {
                 continue;
             }
+            let cmd = match dispatcher.method {
+                "profiling" => "analyze",
+                "snapshot" => "list",
+                _ => "summary",
+            };
             let params = serde_json::json!({
-                "xlf": outside.to_str().unwrap(),
-                "generated": outside.to_str().unwrap(),
-                "from": outside.to_str().unwrap(),
-                "to": outside.to_str().unwrap(),
-                "dir": outside_dir.to_str().unwrap(),
-                "name": "Scaffold",
-                "publisher": "Test",
+                "cmd": cmd,
+                "path": file,
+                "outputDir": directory,
+                "file": file,
+                "line": 1,
+                "xlf": file,
+                "generated": file,
+                "from": file,
+                "to": file,
+                "dir": directory,
+                "project": directory,
+                "snapshotPath": file,
+                "pathA": file,
+                "pathB": file,
+                "outputPath": file,
+                "junitOut": file,
+                "coberturaOut": file,
+                "files": [file],
+                "codeunitIds": [50100],
+                "codeunitNames": ["X"],
+                "codeunitId": 50100,
+                "codeunitName": "X",
+                "methodName": "M",
+                "bcVersion": "26.0",
+                "breakpoints": [{ "file": file, "line": 1 }],
             });
             let response = dispatch_request(
                 &workspace,
@@ -418,31 +597,24 @@ mod dispatch_tests {
                 &shutdown,
             )
             .await;
-            let error = response.error.unwrap_or_else(|| {
-                panic!(
-                    "{} answered for a path outside the project",
-                    dispatcher.method
-                )
-            });
-            assert!(
-                error.message.contains("outside the project"),
-                "{} must refuse an outside path: {error:?}",
-                dispatcher.method
-            );
-            checked.insert(dispatcher.method);
+            if let Some(error) = response.error {
+                let message = error.message.to_ascii_lowercase();
+                if error.code == error_codes::PATH_NOT_AUTHORIZED
+                    || message.contains("outside the")
+                    || message.contains("escapes the")
+                {
+                    undeclared.insert(dispatcher.method);
+                }
+            }
         }
-        assert_eq!(
-            std::fs::read_to_string(&outside).unwrap(),
-            original,
-            "a refused method rewrote the file"
-        );
         assert!(
             !outside_dir.exists(),
-            "a refused method created a directory"
+            "a method declared with no path use created the outside directory"
         );
-        for method in ["xlf.refresh", "xlf.untranslated", "xlf.suggest"] {
-            assert!(checked.contains(method), "{method} declares no path use");
-        }
+        assert!(
+            undeclared.is_empty(),
+            "declared with no path use, yet refused a caller path: {undeclared:?}"
+        );
     }
 
     /// `xlf.generate` writes into the project it serves, and a `project`
