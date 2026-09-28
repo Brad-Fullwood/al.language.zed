@@ -1709,13 +1709,16 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
                 return None;
             }
             std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
+            // The file is named on its own, relative to the project, because
+            // the error's absolute path pushed the reason past the display cap.
             return Some(format!(
                 "Ignoring the dotnet host '{}': it is inside this project, and the project's \
-                 settings could not be read to decide whether it is trusted ({}). Falling back \
-                 to 'dotnet' from PATH. To use it, fix that file, and the user runs this in a \
-                 terminal: {TRUST_COMMAND} --show {}",
+                 settings could not be read to decide whether it is trusted ({} {}). Falling \
+                 back to 'dotnet' from PATH. To use it, fix that file, and the user runs this \
+                 in a terminal: {TRUST_COMMAND} --show {}",
                 one_line(&configured),
-                one_line(&error.to_string()),
+                one_line(&shown_within(error.path(), project_root)),
+                one_line(&error.reason()),
                 one_line(&canonical_root(project_root).display().to_string())
             ));
         }
