@@ -263,7 +263,8 @@ mod tests {
         async fn the_next_free_id_per_kind_matches_the_fixture_sources() {
             let workspace = fixture_workspace().await;
             // Declared in the fixture: tables 50100 and 50130; pages 50100 and
-            // 50130; codeunits 50100, 50101, 50103, 50104, 50110, 50130, 50131;
+            // 50130; codeunits 50100, 50101, 50103, 50104, 50110, 50130, 50131,
+            // 50160;
             // reports 50120 and 50130; query 50121; xmlport 50122;
             // enums 50100, 50130, 50131; tableextension 50100;
             // pageextensions 50100 and 50101; permissionset 50123.

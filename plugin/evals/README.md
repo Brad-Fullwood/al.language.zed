@@ -24,7 +24,7 @@ fixture it runs against, and one or more checks. Each check runs
   output. Used for free-text fields (a `code` body, a message) where an exact
   match would be brittle, and alongside a `jq` check for extra confidence.
 
-A case can use either or both. All twelve cases in this directory currently
+A case can use either or both. All thirteen cases in this directory currently
 have at least one `jq` check, because the bundled fixture is small enough that
 an exact answer exists for every question asked of it so far.
 
@@ -58,7 +58,9 @@ The first seven cases are the seven questions in `plugin/TESTING.md`, in
 order, against `crates/al-test-harness/data/test_al_project`. Cases 8 and 9
 cover `bc-test-locally`, 10 and 11 cover `bc-upgrade-impact`, and 12 covers
 `bc-cop-fixer`: the three surfaces `plugin/ROADMAP.md` listed as verified by
-hand but never run through an agent. All twelve have a ground-truth check.
+hand but never run through an agent. Case 13 is the question in
+`plugin/TESTING.md` about an object whose name holds a quote. All thirteen
+have a ground-truth check.
 
 Not covered: a project with `.alpackages`, which is what `bc-upgrade-impact`'s
 `package-diff` and the base-app half of `bc-symbol-lookup` and
