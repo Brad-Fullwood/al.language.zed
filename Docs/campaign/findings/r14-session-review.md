@@ -49,7 +49,7 @@ for the orchestrator to save as a patch.
 - [ ] 21. 10e8cd90 (the campaign branch at 7717215c merged into sec7-review)
 - [ ] 22. 2970b58a (the campaign branch at 7717215c merged into r13-review)
 - [ ] 23. d82b8d01 (merge repair, `TrustDecision::from_parts`)
-- [ ] 24. Merge damage: each merge's parents merged again with `git merge-tree --write-tree`
+- [x] 24. Merge damage: each merge's parents merged again with `git merge-tree --write-tree`: no finding. Twenty one of the 22 merges have the tree of the automatic merge of their parents. fc04be15 (R12-DAEMON-1) differs in `Docs/features/daemon-protocol.md` alone, where the automatic merge stops on a conflict in the "Changes on disk" bullet: the campaign side had rewritten the `.al` walk sentence and the settings sentence, and the branch replaced the package folder sentence. The resolution keeps the campaign side's first six lines and the branch's package folder stamp, which is what each side meant to say, and the bullet at f4eb117a adds the trust side of the stamp that later work gave it. The one clash no merge tree shows is the a298861f build break (item 26).
 - [ ] 25. Text in the added lines against the writing rules
 - [ ] 26. The gate gap at a298861f and code no Linux gate compiles or runs
 
