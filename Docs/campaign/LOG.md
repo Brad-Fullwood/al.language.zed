@@ -722,3 +722,21 @@ Append-only. Newest entry last.
 - Findings files updated: eight R12 statuses and SEC6-6 to SEC6-8 fixed. Gates on 73ed8751 running.
 - Seven agents dispatched (see `STATE.md`): R12-MUT-1, R12-DAEMON-1, security round 7, round 13
   review, the al-runtime file splits, docs re-check 4, the grammar query drift check.
+
+## 2026-09-28 08:55 BST: resume, two branches merged, eight agents dispatched
+
+- The 03:41 session's seven agents were dead by 08:43 with no branch pushed. `docs-recheck-4`
+  (11 docs commits over `Docs/features`, `Docs/reference`, `plugin/`, no completion note) merged
+  8bb95bcc. `slop-splits-5` (41c4190b, `records.rs` 3632 lines into a module directory of seven
+  files, no logic moved, `records_tests.rs` unchanged) merged c0e143b7. Gates on c0e143b7 green:
+  fmt, clippy, clippy semantic, rustdoc, 5795 passed, 0 failed, 20 ignored, harness green
+  (`.campaign/gates-c0e143b7.log`).
+- `fix-r12-mut` held only `#[ignore]` on the seven R12-MUT-1 tests: discarded. `fix-daemon` (651
+  uncommitted lines for R12-DAEMON-1), `test-snapshot` (117 lines in `snapshot.rs`) and the grammar
+  worktree (`corpus_queries.rs`, 667 lines, not wired in) kept their work for the agents
+  re-dispatched onto them. `sec7-review` had SEC7-1 (the SEC6-8 escaping covers six renderers and
+  the rest print names raw) and no coverage item ticked. `r13-review` had the brief and a false
+  `## Review complete` line.
+- Eight agents dispatched at 08:52 (see `STATE.md`): R12-DAEMON-1, R12-MUT-1, security round 7,
+  round 13, the `eval_expr.rs` split, the grammar query drift check, `snapshot.rs` testable, and
+  the SEC7-1 fix on a new branch `campaign/fix-sec7-1`.
