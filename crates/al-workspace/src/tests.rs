@@ -1442,6 +1442,37 @@ mod workspace_lifecycle_tests {
             .collect();
         assert_eq!(names, ["New Folder Table"]);
     }
+
+    /// A project put in place without a package stamp, as tests do, keeps
+    /// the symbol index it was given until its folders change: the first
+    /// refresh only records the stamp.
+    #[tokio::test]
+    async fn the_first_refresh_of_an_unstamped_project_records_the_package_stamp() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("packagestamp");
+        write_manifest(&dir, "25.0.0.0");
+        let packages = dir.join(".alpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(
+            packages.join("Present.app"),
+            table_package("00000000-0000-0000-0000-0000000000b3", "Present Table"),
+        )
+        .unwrap();
+        *workspace.project.write().await =
+            Some(al_project::project::find_project(&dir).expect("project loads"));
+
+        refresh_project_files(&workspace).await;
+        assert!(workspace.symbols.get_by_name("Present Table").is_empty());
+
+        std::fs::write(
+            packages.join("Copied.app"),
+            table_package("00000000-0000-0000-0000-0000000000b4", "Copied Table"),
+        )
+        .unwrap();
+        refresh_project_files(&workspace).await;
+        assert_eq!(workspace.symbols.get_by_name("Copied Table").len(), 1);
+        assert_eq!(workspace.symbols.get_by_name("Present Table").len(), 1);
+    }
 }
 
 mod call_graph_progress_tests {

@@ -99,9 +99,11 @@ path uses LSP handlers directly and does not go through the daemon. See
   read into the project again when the hash changed, so an edit to `application` or a dependency
   reaches the next `deps` or `download-symbols`. A manifest that no longer parses leaves the one
   read before in use, with a warning in the log. The trust inputs are fingerprinted the same way
-  (see [project trust](project-trust.md)). The symbol package folders are listed at startup and
-  after a `download-symbols` that fetched a package, so a changed `al.packageCachePath` or
-  `al.appLocalFolderPaths` takes effect after `al-explorer daemon-shutdown`.
+  (see [project trust](project-trust.md)). The symbol package folders (`al.packageCachePath`,
+  default `.alpackages`, and each `al.appLocalFolderPaths` entry) are stamped by the name, size
+  and mtime of each `.app` file in them. When the stamp moves, because a package was copied in,
+  removed or rewritten, or because a changed setting names other folders, the daemon lists the
+  folders again and loads their packages into a new symbol index before it answers.
 - **Per-connection ordering:** requests on one connection are served one at a time, in order, which
   matches the shipped synchronous client (`DaemonClient` sends one request and waits for its
   response). A client that wants concurrent work, or cheap queries while a build runs, opens a
