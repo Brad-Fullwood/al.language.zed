@@ -4,17 +4,25 @@
 //! debug hub instead of pretending a local interpreter sample is equivalent.
 //! The caller supplies resolved workspace breakpoint metadata and is
 //! responsible for persisting the returned `al_snapshot::Snapshot`.
+//!
+//! The capture logic reaches the debug hub through the private
+//! `SnapshotDebugger` trait and the test runner through `SnapshotTestRunner`.
+//! `NativeDebugSession` and `TestRunnerClient` implement them for a live
+//! server. The unit tests implement them with scripted fakes, so the capture
+//! logic runs without a server.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::Duration;
 
 use al_bc::launch::BcServerConfig;
 use al_dap::dap::bc_debug::BcDebugConfig;
-use al_dap::dap::types::SessionStatus;
+use al_dap::dap::types::{BreakpointInfo, DebugState, SessionStatus};
 use al_dap::native_debug::NativeDebugSession;
 use al_snapshot::{Sample, Snapshot};
 use thiserror::Error;
 
+use crate::error::TestRunnerError;
 use crate::result::TestCodeunitResult;
 use crate::test_runner::TestRunnerClient;
 
@@ -100,15 +108,99 @@ pub enum SnapshotCaptureError {
     CaptureAndShutdown { capture: String, shutdown: String },
 }
 
+/// The debug hub calls a snapshot capture makes.
+trait SnapshotDebugger {
+    async fn set_breakpoints(
+        &mut self,
+        file: &str,
+        lines: &[(u32, Option<&str>)],
+        object_type: i32,
+        object_id: i32,
+    ) -> al_dap::dap::Result<Vec<BreakpointInfo>>;
+
+    /// The session state, and the (object type, object ID) of the most recent
+    /// stop when BC reported one.
+    async fn state_and_object(&mut self) -> al_dap::dap::Result<(DebugState, Option<(i32, i32)>)>;
+
+    async fn continue_exec(&mut self) -> al_dap::dap::Result<()>;
+
+    async fn stop(&mut self) -> al_dap::dap::Result<()>;
+}
+
+impl SnapshotDebugger for NativeDebugSession {
+    async fn set_breakpoints(
+        &mut self,
+        file: &str,
+        lines: &[(u32, Option<&str>)],
+        object_type: i32,
+        object_id: i32,
+    ) -> al_dap::dap::Result<Vec<BreakpointInfo>> {
+        NativeDebugSession::set_breakpoints(self, file, lines, object_type, object_id).await
+    }
+
+    async fn state_and_object(&mut self) -> al_dap::dap::Result<(DebugState, Option<(i32, i32)>)> {
+        let state = NativeDebugSession::state(self).await?;
+        Ok((state, NativeDebugSession::current_object(self)))
+    }
+
+    async fn continue_exec(&mut self) -> al_dap::dap::Result<()> {
+        NativeDebugSession::continue_exec(self).await.map(drop)
+    }
+
+    async fn stop(&mut self) -> al_dap::dap::Result<()> {
+        NativeDebugSession::stop(self).await
+    }
+}
+
+/// The test runner call a snapshot capture makes.
+trait SnapshotTestRunner {
+    async fn run_codeunit(
+        &self,
+        codeunit_id: i32,
+        codeunit_name: &str,
+        method: Option<&str>,
+    ) -> Result<TestCodeunitResult, TestRunnerError>;
+}
+
+impl SnapshotTestRunner for TestRunnerClient {
+    async fn run_codeunit(
+        &self,
+        codeunit_id: i32,
+        codeunit_name: &str,
+        method: Option<&str>,
+    ) -> Result<TestCodeunitResult, TestRunnerError> {
+        TestRunnerClient::run_codeunit(self, codeunit_id, codeunit_name, method).await
+    }
+}
+
 pub async fn capture_live_snapshot(
     request: LiveSnapshotRequest,
 ) -> Result<(Snapshot, TestCodeunitResult), SnapshotCaptureError> {
+    capture(
+        &request,
+        NativeDebugSession::start(request.debug.clone(), &request.access_token),
+        || TestRunnerClient::with_access_token(&request.server, Some(&request.access_token)),
+    )
+    .await
+}
+
+/// Run one capture. `start_debugger` is awaited only when the request has
+/// breakpoints. `connect_runner` is called once the breakpoints are set.
+async fn capture<D, R>(
+    request: &LiveSnapshotRequest,
+    start_debugger: impl Future<Output = al_dap::dap::Result<D>>,
+    connect_runner: impl FnOnce() -> Result<R, TestRunnerError>,
+) -> Result<(Snapshot, TestCodeunitResult), SnapshotCaptureError>
+where
+    D: SnapshotDebugger,
+    R: SnapshotTestRunner,
+{
     if request.breakpoints.is_empty() {
         return Err(SnapshotCaptureError::MissingBreakpoints);
     }
 
-    let mut debug = NativeDebugSession::start(request.debug.clone(), &request.access_token).await?;
-    let capture_result = capture_with_session(&request, &mut debug).await;
+    let mut debug = start_debugger.await?;
+    let capture_result = capture_with_session(request, &mut debug, connect_runner).await;
     let shutdown_result = debug.stop().await;
     match (capture_result, shutdown_result) {
         (Ok(snapshot), Ok(())) => Ok(snapshot),
@@ -130,10 +222,15 @@ pub async fn capture_live_snapshot(
     }
 }
 
-async fn capture_with_session(
+async fn capture_with_session<D, R>(
     request: &LiveSnapshotRequest,
-    debug: &mut NativeDebugSession,
-) -> Result<(Snapshot, TestCodeunitResult), SnapshotCaptureError> {
+    debug: &mut D,
+    connect_runner: impl FnOnce() -> Result<R, TestRunnerError>,
+) -> Result<(Snapshot, TestCodeunitResult), SnapshotCaptureError>
+where
+    D: SnapshotDebugger,
+    R: SnapshotTestRunner,
+{
     let mut grouped =
         std::collections::BTreeMap::<(String, i32, i32), Vec<(u32, Option<String>)>>::new();
     for breakpoint in &request.breakpoints {
@@ -175,7 +272,7 @@ async fn capture_with_session(
         }
     }
 
-    let client = TestRunnerClient::with_access_token(&request.server, Some(&request.access_token))?;
+    let client = connect_runner()?;
     let test_run = client.run_codeunit(
         request.codeunit_id,
         &request.codeunit_name,
@@ -196,11 +293,10 @@ async fn capture_with_session(
                 return Err(SnapshotCaptureError::Timeout(request.timeout.as_millis()));
             }
             _ = interval.tick() => {
-                let state = debug.state().await?;
+                let (state, current_object) = debug.state_and_object().await?;
                 if state.status != SessionStatus::Paused {
                     continue;
                 }
-                let current_object = debug.current_object();
                 let location = state
                     .location
                     .ok_or(SnapshotCaptureError::MissingStopLocation {
