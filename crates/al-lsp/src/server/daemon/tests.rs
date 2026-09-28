@@ -530,6 +530,150 @@ mod dispatch_tests {
         );
     }
 
+    /// Write a snapshot whose one sample names `file`, the way a repository
+    /// can ship one.
+    fn write_snapshot_with_sample(path: &Path, file: &str) {
+        let header = serde_json::json!({
+            "run_id": "r", "codeunit_id": 50100, "method_name": "M",
+            "bc_version": "26.0", "source_hash": "00", "captured_at": 1, "samples": []
+        });
+        let sample = serde_json::json!({
+            "breakpoint_id": 1, "file": file, "line": 1, "iteration": 0, "variables": {}
+        });
+        std::fs::write(path, format!("{header}\n{sample}\n")).unwrap();
+    }
+
+    /// The paths a snapshot method reads one level down, `samples[i].file` in
+    /// a snapshot file and `breakpoints[i].file` in the request, go through
+    /// `containment.rs` as the top level ones do. Each nested key is driven
+    /// with a path outside the project, a `..` escape, a UNC spelling in both
+    /// separators and, on Unix, a link the project ships, and each is refused
+    /// with `PATH_NOT_AUTHORIZED` naming the key. The UNC spelling used to
+    /// reach `canonicalize`, which on Windows opens an SMB connection to the
+    /// host it names.
+    #[tokio::test]
+    async fn every_nested_path_key_refuses_a_path_outside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let outside = dir.path().join("outside.al");
+        std::fs::write(&outside, "codeunit 50100 X {}").unwrap();
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut sources = vec![
+            outside.to_str().unwrap().to_string(),
+            "../outside.al".to_string(),
+            "//sec7-host.example/share/x.al".to_string(),
+            r"\\sec7-host.example\share\x.al".to_string(),
+        ];
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("linked.al")).unwrap();
+            sources.push("linked.al".to_string());
+        }
+        let snapshot_path = root.join("shipped.snap.json");
+        let snapshot = snapshot_path.to_str().unwrap();
+        let output = root.join("out.snap.json");
+        let shutdown = Notify::new();
+
+        for source in &sources {
+            write_snapshot_with_sample(&snapshot_path, source);
+            let cases = [
+                (
+                    "tests.snapshot_validate",
+                    "samples[0].file",
+                    serde_json::json!({ "snapshotPath": snapshot }),
+                ),
+                (
+                    "tests.snapshot_replay",
+                    "samples[0].file",
+                    serde_json::json!({ "snapshotPath": snapshot, "bcVersion": "26.0" }),
+                ),
+                (
+                    "tests.snapshot_diff",
+                    "samples[0].file",
+                    serde_json::json!({ "pathA": snapshot, "pathB": snapshot }),
+                ),
+                (
+                    "tests.snapshot_capture",
+                    "breakpoints[0].file",
+                    serde_json::json!({
+                        "codeunitId": 50100,
+                        "codeunitName": "X",
+                        "methodName": "M",
+                        "bcVersion": "26.0",
+                        "breakpoints": [{ "file": source, "line": 1 }],
+                        "outputPath": output.to_str().unwrap(),
+                    }),
+                ),
+            ];
+            for (method, key, params) in cases {
+                let response =
+                    dispatch_request(&workspace, Request::new(1, method, Some(params)), &shutdown)
+                        .await;
+                let error = response
+                    .error
+                    .unwrap_or_else(|| panic!("{method} answered for {key} = {source}"));
+                assert_eq!(
+                    error.code,
+                    error_codes::PATH_NOT_AUTHORIZED,
+                    "{method} must refuse {key} = {source} with the boundary code: {error:?}"
+                );
+                assert!(
+                    error.message.contains(key),
+                    "{method} must name {key} in the refusal: {error:?}"
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "codeunit 50100 X {}"
+        );
+        assert!(!output.exists(), "a refused capture wrote its output");
+    }
+
+    /// A sample inside the project, relative or absolute, still validates and
+    /// diffs after the nested containment check.
+    #[tokio::test]
+    async fn snapshot_samples_inside_the_project_still_validate() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, doc) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let snapshot_path = root.join("shipped.snap.json");
+        let snapshot = snapshot_path.to_str().unwrap();
+        let shutdown = Notify::new();
+
+        for source in ["doc.al", doc.to_str().unwrap()] {
+            write_snapshot_with_sample(&snapshot_path, source);
+            let validated = dispatch_request(
+                &workspace,
+                Request::new(
+                    1,
+                    "tests.snapshot_validate",
+                    Some(serde_json::json!({ "snapshotPath": snapshot })),
+                ),
+                &shutdown,
+            )
+            .await;
+            assert!(validated.error.is_none(), "{source}: {:?}", validated.error);
+            assert_eq!(validated.result.unwrap()["sampleCount"], 1);
+            let diffed = dispatch_request(
+                &workspace,
+                Request::new(
+                    1,
+                    "tests.snapshot_diff",
+                    Some(serde_json::json!({ "pathA": snapshot, "pathB": snapshot })),
+                ),
+                &shutdown,
+            )
+            .await;
+            assert!(diffed.error.is_none(), "{source}: {:?}", diffed.error);
+        }
+    }
+
     /// A method declared with no path use judges no caller path either. Every
     /// parameter a path method reads is sent naming a place outside the
     /// project, and no such method may answer with the boundary refusal: one

@@ -5,6 +5,7 @@
 //! - `snapshot` — snapshot REST
 //! - `profiling` — profiler REST
 //! - `launch` — `.vscode/launch.json` / `.zed/debug.json` parsing + `BcServerConfig`
+//! - `output_file` (private): the no follow write both downloads use
 //!
 //! Connection enums (`EnvironmentType`/`AuthMethod`), `AppDependency`, and the
 //! JSONC helpers live in `al-types`; this crate re-exports the enums from
@@ -13,5 +14,6 @@
 pub mod bc_client;
 pub mod http_auth;
 pub mod launch;
+mod output_file;
 pub mod profiling;
 pub mod snapshot;

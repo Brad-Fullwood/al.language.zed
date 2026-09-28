@@ -966,8 +966,16 @@ pub(crate) enum PathUse {
     /// `containment::resolve_param_within_project`. That boundary is the
     /// project root, the package cache and the folder of every resolved `.app`,
     /// and a trusted project keeps those folders where they resolve, outside
-    /// the project included. The XLIFF methods took any absolute path for a
-    /// release because the registry had no way to say they took one at all.
+    /// the project included. A path one level down goes through the same
+    /// resolver under a key that names its place: `files[i]` of `tests.mutate`,
+    /// `samples[i].file` in the snapshot file `tests.snapshot_validate`,
+    /// `tests.snapshot_replay` and `tests.snapshot_diff` read, and
+    /// `breakpoints[i].file`, which `tests.snapshot_capture` reads beside the
+    /// snapshot it writes. A sample or breakpoint source must also lie under
+    /// the project root. The XLIFF methods took any absolute path for a
+    /// release because the registry had no way to say they took one at all,
+    /// and the snapshot keys were canonicalised before any check, so a UNC
+    /// spelling reached the filesystem.
     Named,
     /// Creates or rewrites a path named by a parameter the method reads itself
     /// (`project`, `xlf` of `xlf.refresh`, `dir`, `outputDir`, `outputPath`,
