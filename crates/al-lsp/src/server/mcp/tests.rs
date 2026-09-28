@@ -913,3 +913,58 @@ async fn session_rejects_malformed_json_rpc_envelopes() {
         assert_eq!(response["error"]["code"], -32600, "{response}");
     }
 }
+
+/// A daemon error can quote a name or path read from the repository. The text
+/// an MCP client decodes must carry each control character as its escape, so a
+/// terminal that shows the error does not act on it. A successful result is
+/// already escaped by serde.
+#[tokio::test]
+async fn a_tool_error_carries_repository_controls_as_escapes() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let workspace = ws();
+    install_project(&workspace, &root, None).await;
+    let header = serde_json::json!({
+        "run_id": "r", "codeunit_id": 50100, "method_name": "M",
+        "bc_version": "26.0", "source_hash": "00", "captured_at": 1, "samples": []
+    });
+    let sample = serde_json::json!({
+        "breakpoint_id": 1, "file": "src/\u{1b}]0;pwned\u{7}\u{1b}[2J.al", "line": 1,
+        "iteration": 0, "variables": {}
+    });
+    std::fs::write(
+        root.join("shipped.snap.json"),
+        format!("{header}\n{sample}\n"),
+    )
+    .unwrap();
+
+    let resp = handle_mcp_message(
+        &workspace,
+        &Notify::new(),
+        serde_json::json!({
+            "jsonrpc":"2.0","id":7,"method":"tools/call",
+            "params": {"name": "al_call", "arguments": {
+                "method": "tests.snapshot_validate",
+                "params": {"snapshotPath": root.join("shipped.snap.json").to_str().unwrap()}
+            }}
+        }),
+    )
+    .await
+    .expect("response");
+
+    let result = &resp["result"];
+    assert_eq!(result["isError"], true, "{resp}");
+    let text = result["content"][0]["text"].as_str().unwrap();
+    let structured = result["structuredContent"]["error"].as_str().unwrap();
+    for shown in [text, structured] {
+        assert!(
+            !shown.chars().any(|ch| ch.is_control() && ch != '\n'),
+            "control character in {shown:?}"
+        );
+        assert!(
+            shown.contains(r"src/\u{1b}]0;pwned\u{7}\u{1b}[2J.al"),
+            "the escaped path is missing from {shown:?}"
+        );
+    }
+    assert_eq!(text, structured);
+}

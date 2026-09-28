@@ -58,7 +58,7 @@ const ALLOWED: &[(&str, &str, &str)] = &[
         "commands/trust.rs",
         "setting.display_line()",
         "PrivilegedSetting::display_line escapes the key, the value and the source \
-         through al_project::trust::one_line",
+         through al_project::trust::escape_controls",
     ),
 ];
 

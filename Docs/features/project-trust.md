@@ -115,7 +115,9 @@ al-explorer trust --revoke        # remove the record
 ```
 
 `trust` prints every privileged value, then asks. Type `yes` to record them. The record
-covers exactly what was printed.
+covers exactly what was printed. `trust` and `trust --show` print each value whole with
+control characters escaped and no length cap, so a link's target and its digest read to the
+end, however long the path is.
 
 The question is asked on the terminal device (`/dev/tty`, `CONIN$` on Windows), not on
 stdin, and a call whose stdin is not a terminal is refused outright. stdin can be a pipe

@@ -6582,8 +6582,7 @@ fn a_record_called_back_from_another_records_table_code_keeps_its_own_globals() 
     assert_eq!(ok(call("AskOtherReadsBack")), Value::Boolean(true));
 }
 
-/// Lists and dictionaries that hold each other, the shapes of the round 6
-/// security findings SEC6-3 and SEC6-4.
+/// Lists and dictionaries that hold each other, directly or through a cycle.
 const CYCLIC_COLLECTIONS: &str = r#"codeunit 50390 "Cyclic Collections"
 {
     procedure ListsInACycle(): Boolean
@@ -6720,8 +6719,8 @@ fn searching_a_list_in_a_cycle_returns() {
     );
 }
 
-/// Values that double or grow to a length the test gives, the shapes of the
-/// round 6 security finding SEC6-5.
+/// Values that double or grow to a length the test gives, past the text and
+/// collection caps.
 const GROWING_VALUES: &str = r#"codeunit 50393 "Growing Values"
 {
     procedure DoubleText(): Integer

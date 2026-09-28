@@ -196,7 +196,7 @@ pub struct PrivilegedSetting {
     ///
     /// Held exactly as the repository wrote it, because the digest is taken
     /// over it and two values that differ must not hash the same. Every place
-    /// that prints it puts it through [`one_line`] first.
+    /// that prints it puts it through [`one_line`] or [`escape_controls`] first.
     pub value: String,
     /// The repository file it came from, relative to the project root.
     pub source: String,
@@ -212,13 +212,18 @@ impl PrivilegedSetting {
     }
 
     /// The key and the value as one line safe to print in a terminal.
+    ///
+    /// Nothing is cut. A person deciding on trust reads where a link leads and
+    /// the digest of what is there, and both can be longer than
+    /// [`one_line`] allows. Control characters are escaped, so the line stays
+    /// one line.
     #[must_use]
     pub fn display_line(&self) -> String {
         format!(
             "{} = {}  (from {})",
-            one_line(&self.key),
-            one_line(&self.value),
-            one_line(&self.source)
+            escape_controls(&self.key),
+            escape_controls(&self.value),
+            escape_controls(&self.source)
         )
     }
 }
