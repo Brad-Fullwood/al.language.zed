@@ -689,11 +689,15 @@ pub fn request_checked(
 }
 
 /// Say why a path was refused when the CLI cannot work around it.
+///
+/// The refusal reaches here from a method that rewrites its file and from one
+/// that reads a path it takes in another parameter, so the hint holds for
+/// both. The daemon's own message says when the method rewrites the file.
 fn explain_path_refusal(error: &str) -> String {
     if is_path_not_authorized(error) {
         format!(
-            "{error}\n\nHint: this command rewrites the file it is given, and the daemon changes \
-             only files inside the project named above. Run it from that file's own project."
+            "{error}\n\nHint: the daemon reads and writes only paths inside the project named \
+             above. Run the command from the project that holds the path."
         )
     } else {
         error.to_string()
@@ -833,6 +837,30 @@ mod lint_target_tests {
 
         let targets = resolve_lint_targets(&parts);
         assert_eq!(targets, vec![path.to_string_lossy().into_owned()]);
+    }
+}
+
+#[cfg(test)]
+mod path_refusal_tests {
+    use super::explain_path_refusal;
+
+    /// `eventSource`, `packageDiff`, the snapshot readers and the XLIFF
+    /// readers answer a path outside the project with the same code as the
+    /// methods that rewrite their file, so the hint has to hold for a reader.
+    #[test]
+    fn the_path_refusal_hint_holds_for_a_method_that_only_reads_the_path() {
+        let error = format!(
+            "eventSource: 'file' path '/elsewhere/Foo.al' is outside the project at '/project' \
+             (code {})",
+            al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED
+        );
+        let explained = explain_path_refusal(&error);
+        assert!(explained.starts_with(&error), "{explained}");
+        assert!(explained.contains("Hint:"), "{explained}");
+        assert!(
+            !explained.contains("rewrites"),
+            "a reader was told it rewrites the file: {explained}"
+        );
     }
 }
 
