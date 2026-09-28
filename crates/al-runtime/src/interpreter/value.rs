@@ -660,6 +660,24 @@ impl Value {
         Value::List(Collection::new(items, None))
     }
 
+    /// A new `List of [member_type]` holding `items`, for a method whose
+    /// return type is a typed list, so the list converts what it is given.
+    pub fn typed_list(member_type: &str, items: Vec<Value>) -> Value {
+        Value::List(Collection::new(items, Some(member_type)))
+    }
+
+    /// A new `List of [Text]` holding `items`, as `Text.Split`,
+    /// `Enum.Names()` and `JsonObject.Keys()` return.
+    pub fn text_list(items: Vec<Value>) -> Value {
+        Value::typed_list("Text", items)
+    }
+
+    /// A new `List of [JsonToken]` holding `items`, as `JsonObject.Values()`
+    /// returns.
+    pub fn json_token_list(items: Vec<Value>) -> Value {
+        Value::typed_list("JsonToken", items)
+    }
+
     /// A new `TextBuilder` holding `text`.
     pub fn text_builder(text: String) -> Value {
         Value::TextBuilder(Shared::new(text))

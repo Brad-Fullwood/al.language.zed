@@ -162,13 +162,14 @@ pub(crate) fn dispatch_enum_static(
         ));
     };
     match (method.to_ascii_lowercase().as_str(), args) {
-        ("names", []) => Eval::Normal(Value::list(
+        ("names", []) => Eval::Normal(Value::text_list(
             members
                 .into_iter()
                 .map(|(name, _)| Value::Text(name))
                 .collect(),
         )),
-        ("ordinals", []) => Eval::Normal(Value::list(
+        ("ordinals", []) => Eval::Normal(Value::typed_list(
+            "Integer",
             members
                 .into_iter()
                 .map(|(_, ordinal)| Value::Integer(ordinal))
