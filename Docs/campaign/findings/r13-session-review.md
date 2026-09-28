@@ -43,5 +43,3 @@ for the orchestrator to save as a patch.
 - [ ] 16. Text in the added lines against the writing rules.
 
 ## Findings
-
-## Review complete
