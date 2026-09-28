@@ -166,6 +166,19 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             }
         }
 
+        // A `begin` on the line after a case's bare `else` takes the `else`'s
+        // level, as it does after an `if`'s `else`. The body's level comes
+        // back after the block's `end`, for the `else`'s later statements.
+        if !code.is_empty() {
+            if let Some(frame) = case_stack.last_mut().filter(|frame| frame.after_bare_else) {
+                frame.after_bare_else = false;
+                if code_lower == "begin" && frame.in_body {
+                    indent_level = (indent_level - 1).max(0);
+                    frame.else_block_open = true;
+                }
+            }
+        }
+
         // `begin` after single-statement openers (if...then begin written separately)
         // drains the single-stmt stack since begin starts a block. An opener
         // that ends in `begin` itself (`if B then begin`) is the statement an
@@ -240,6 +253,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             || code_lower.starts_with("end;")
             || code_lower.starts_with("end ");
 
+        // The block after a case's bare `else` closed on this line.
+        let mut resume_else_body = false;
         if is_close {
             if single_stmt_depth > 0 {
                 indent_level = (indent_level - single_stmt_depth).max(0);
@@ -256,6 +271,10 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                 if frame.begin_depth > 0 {
                     // This end; closes a begin block within the case
                     frame.begin_depth -= 1;
+                    if frame.begin_depth == 0 && frame.else_block_open {
+                        frame.else_block_open = false;
+                        resume_else_body = true;
+                    }
                 } else if frame.in_body {
                     // No nested begin: this end; closes the case block itself
                     indent_level = (indent_level - 1).max(0);
@@ -320,6 +339,10 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                     frame.open_ifs += 1;
                 }
             }
+        }
+
+        if resume_else_body {
+            indent_level += 1;
         }
 
         let net_parens = count_net_parens(&code);
@@ -454,6 +477,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                     // A case `else` can hold several statements, each one
                     // level under it, like a branch body.
                     frame.in_body = true;
+                    frame.after_bare_else = true;
                 } else {
                     single_stmt_depth += 1 + pending_else;
                     pending_else = 0;
@@ -534,6 +558,11 @@ struct CaseFrame {
     /// `if` statements in the open branch that a later `else` could still
     /// belong to. An `else` at 0 is the case's own.
     open_ifs: i32,
+    /// The last code line was the case's bare `else`.
+    after_bare_else: bool,
+    /// A `begin` block on the line after the bare `else` is open. It sits at
+    /// the `else`'s level, one level left of the `else`'s body.
+    else_block_open: bool,
 }
 
 /// Whether a line's `else` pairs with an earlier `if`, and whether the line
@@ -1116,6 +1145,43 @@ end;
                     Message('d');
             end;
         Message('e');
+    end;
+}
+",
+        );
+    }
+
+    /// A `begin` on the line after a case's bare `else` takes the `else`'s
+    /// level, as it does after an `if`'s `else`. The block's statements and
+    /// its `end;` then sit where Microsoft's formatter puts them after it
+    /// joins the two lines into `else begin`, and so does `Message('e')`, a
+    /// later statement of the `else`: one level under the `else`. A comment
+    /// line between `else` and `begin` keeps the level of a statement under
+    /// the `else`, as it does after an `if`'s `else`.
+    #[test]
+    fn a_begin_on_the_line_after_a_case_else_takes_the_else_level() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        if A then
+            Message('a')
+        else
+        begin
+            Message('b');
+        end;
+        case X of
+            1:
+                Message('c');
+            else
+                // A comment line is not the `else`'s statement.
+            begin
+                Message('d');
+            end;
+                Message('e');
+        end;
+        Message('f');
     end;
 }
 ",
