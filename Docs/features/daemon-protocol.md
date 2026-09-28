@@ -101,9 +101,11 @@ path uses LSP handlers directly and does not go through the daemon. See
   leaves the one read before in use, with a warning in the log. The settings files and the other
   trust inputs are stamped by size and mtime, and when a stamp moves the daemon reads the settings
   into its configuration again and decides trust again (see [project trust](project-trust.md)).
-  The symbol package folders are listed at startup and after a `download-symbols` that fetched a
-  package. A changed `al.packageCachePath` or `al.appLocalFolderPaths`, or a package copied into
-  `.alpackages` some other way, takes effect after `al-explorer daemon-shutdown`.
+  The symbol package folders (`al.packageCachePath`, default `.alpackages`, and each
+  `al.appLocalFolderPaths` entry) are stamped by the name, size and mtime of each `.app` file in
+  them. When the stamp moves, because a package was copied in, removed or rewritten, or because a
+  changed setting names other folders, the daemon lists the folders again and loads their packages
+  into a new symbol index before it answers.
 - **Per-connection ordering:** requests on one connection are served one at a time, in order, which
   matches the shipped synchronous client (`DaemonClient` sends one request and waits for its
   response). A client that wants concurrent work, or cheap queries while a build runs, opens a
