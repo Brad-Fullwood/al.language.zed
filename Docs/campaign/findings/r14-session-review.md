@@ -54,3 +54,11 @@ for the orchestrator to save as a patch.
 - [ ] 26. The gate gap at a298861f and code no Linux gate compiles or runs
 
 ## Findings
+
+### [R14-RT-1] the byte budget counts what collections hold, so a text passed down a recursion or copied into records takes memory past it
+- where: crates/al-runtime/src/interpreter/value.rs:676-693 (`MAX_HELD_BYTES` counts List and Dictionary elements, array elements, TextBuilders and JSON nodes, and nothing else), against crates/al-runtime/src/interpreter/dispatch/mod.rs:85 (`MAX_RECURSION_DEPTH`, 512, each level binding its own copy of a Text parameter) and crates/al-runtime/src/interpreter/records/crud.rs:783 (`Insert` stores the record's field values, which no budget counts), and the SEC7-3 scenario, which names "a record inserted in a loop" among the shapes
+- severity: low
+- scenario: SEC7-3 with the copies kept where the fix does not count them. `T := 'x'; for I := 1 to 25 do T := T + T; exit(Deep(T, 16))` with `local procedure Deep(T: Text; N: Integer): Integer` calling itself with `N - 1` returns 33554432 in 1.4 s with the test process's peak resident size at 1,162 MiB, past the 256 MiB budget with no error. At the recursion cap and the 64 MiB text cap the same shape asks for about 64 GiB, and the measured rate reaches the 30 s deadline at about 24 GiB. Record fields check their declared length, so the record route is slower: a table with ten `Text[2048]` fields and 20,000 rows inserted in a loop holds 419 MiB after 11 s in the debug build with no error. Confirmed with `r14_scratch_budget_stack` and `r14_scratch_budget_wide_records` in records_tests.rs.
+- fix: charge a Text, Code or Blob parameter and local variable against the budget when it is bound and give it back when its frame ends, or bound the bytes a call frame's variables hold. Charge the text bytes of a record's fields on `Insert` and `Modify` and give them back on `Delete` and `DeleteAll`. Pin the recursion shape against the budget error.
+- status: open
+
