@@ -285,6 +285,12 @@ pub(crate) fn text_field(row: &serde_json::Value, key: &str, default: &str) -> S
     )
 }
 
+/// A file system path as [`terminal_text`] writes it. A directory name can
+/// hold an escape sequence as well as an object name can.
+pub(crate) fn path_text(path: &std::path::Path) -> String {
+    terminal_text(&path.display().to_string())
+}
+
 /// Text of several lines, such as source code or a DOT graph, as
 /// [`terminal_text`] writes it, with its line breaks and tabs kept.
 pub(crate) fn terminal_lines(text: &str) -> String {

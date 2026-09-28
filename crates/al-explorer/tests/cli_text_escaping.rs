@@ -47,12 +47,20 @@ use regex::Regex;
 
 /// Values printed as they are on purpose: the file under `src/cli`, the value
 /// as written in the macro, and the reason.
-const ALLOWED: &[(&str, &str, &str)] = &[(
-    "commands/lsp/language.rs",
-    "formatted",
-    "format --stdin is a filter: it writes back the source the caller piped in, \
-     formatted, and escaping would change that file",
-)];
+const ALLOWED: &[(&str, &str, &str)] = &[
+    (
+        "commands/lsp/language.rs",
+        "formatted",
+        "format --stdin is a filter: it writes back the source the caller piped in, \
+         formatted, and escaping would change that file",
+    ),
+    (
+        "commands/trust.rs",
+        "setting.display_line()",
+        "PrivilegedSetting::display_line escapes the key, the value and the source \
+         through al_project::trust::one_line",
+    ),
+];
 
 /// A macro call whose formatted values the rule checks.
 struct Site {
