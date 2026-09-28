@@ -885,3 +885,15 @@ Append-only. Newest entry last.
   and SEC7-14 (in flight).
 - Queued from the agent's notes: campaign labels left in code comments by the round 13 and SEC7
   fix branches, and the unescaped `launch_config_error` in one MCP diagnostic.
+
+## 2026-09-29 00:20 BST: security round 8 merged, three fix agents dispatched
+
+- Gates on c4d44d67 green, pushed ac87043a.
+- Security round 8 complete (`findings/r8-security.md`, merged a005a33d, pushed): four low
+  findings. SEC8-1: the byte budget and entry cap bound one hash and nothing bounds the hashes one
+  decision runs. SEC8-2: an outside `al.dotnetPath` is recorded as text with no mark of whether
+  the file exists. SEC8-3: a link at `app.json` to a device or FIFO stalls or exhausts every reader
+  before trust. SEC8-4: text in scalar variables and recursion frames is outside the held byte
+  budget. The SEC7-2, SEC7-3 and SEC7-4 fixes fail their tests when reverted by hand. The seven
+  `sec8_scratch_` tests saved as `.campaign/sec8-scratch-tests-1.patch`.
+- Three fix agents dispatched at 00:20 (see `STATE.md`).

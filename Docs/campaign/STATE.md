@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-29 00:15 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-29 00:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -56,6 +56,17 @@ Still running:
 - `campaign/fix-sec7-daemon-life` (dir `fix-daemon`): SEC7-13 committed (d581db7d, a second daemon
   for a project refuses to start and a taken socket path is left alone), SEC7-14 in its
   verification chain at 00:10.
+
+Security round 8 complete (`campaign/sec8-review` merged a005a33d, `findings/r8-security.md`,
+four findings, all low, scratch tests saved as `.campaign/sec8-scratch-tests-1.patch`). Three
+fix agents dispatched 00:20 on 2026-09-29, each told to stop by 01:45 BST:
+
+- `campaign/fix-sec8-trust` (dir `slop-splits-5`): SEC8-1 (a per decision total over the hashes),
+  SEC8-2 (an outside `al.dotnetPath` recorded hashed or `not present`).
+- `campaign/fix-sec8-manifest` (dir `docs-recheck-4`): SEC8-3 (`app.json` read as the settings
+  reader reads, a regular file, bounded).
+- `campaign/fix-sec8-budget` (dir `fix-sec6-output`): SEC8-4 (text in scalar variables and frames
+  counts against the held byte budget).
 
 Two reviewers dispatched 23:58 over the tree at f4eb117a, each told to stop by 01:30 BST:
 
