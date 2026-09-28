@@ -278,6 +278,34 @@ again when the hash changed, so the next `download-symbols` after the edit
 asks for `26.0.0.0` without a restart (`a_running_daemon_sees_an_app_json_edit`
 in `crates/al-test-harness/tests/cli_smoke.rs`).
 
+## A name that holds a quote
+
+The fixture declares `codeunit 50160 "It's Here"` in `src/ItsHere.Codeunit.al`.
+An AL quoted identifier may hold `'`, `;`, `$` and a backtick, and an agent
+that copies such a name from `search` into a single-quoted shell argument ends
+the quote early. Every skill and both agents end with the rule for this:
+prefer the plugin's MCP tools, which take the name as a JSON string, and in
+Bash keep the whole name inside single quotes and write each `'` in the name
+as `'\''`.
+
+| Skill | Question | Answer |
+| --- | --- | --- |
+| `bc-symbol-lookup` | What is the object ID of the It's Here codeunit, and where is its file? | 50160, `src/ItsHere.Codeunit.al` line 1 |
+
+A run passes when the answer is right and every Bash call that carries the
+name spells it `'It'\''s Here'`, or the name went through an MCP tool. A call
+that answers `No Codeunit named 'It'`, or a shell error such as `unexpected EOF
+while looking for matching`, fails the run even when a later call recovers.
+`plugin/evals/cases/13-symbol-lookup-quoted-name.json` checks the answer
+against `al-explorer` directly. The question has not been run through a live
+session yet.
+
+To try the rule on a name built to break it, add a file to the scratch copy
+that declares `codeunit 50152 "It'; echo pwned; echo '"`. Taken from `search`
+and placed in `object codeunit -- '<name>'` with the rule applied, the command
+finds codeunit 50152 and runs nothing else. Placed there as it is, the shell
+reads three commands and prints `pwned`.
+
 ## Downloading al-lsp and al-explorer
 
 `plugin/scripts/al-fetch-release.sh`, called from the `SessionStart` hook

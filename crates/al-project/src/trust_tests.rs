@@ -104,6 +104,20 @@ fn printing_escapes_without_merging_two_values_in_the_digest() {
     assert_ne!(digest_of(&[newline]), digest_of(&[literal]));
 }
 
+#[test]
+fn terminal_escaping_keeps_long_text_whole_and_escapes_the_same_characters_as_one_line() {
+    let long = format!("Bad\u{1b}[31m Name{}\u{1b}[0m\u{2028}", "x".repeat(200));
+    let escaped = escape_controls(&long);
+    assert!(!escaped.chars().any(char::is_control), "got: {escaped:?}");
+    assert!(escaped.starts_with(r"Bad\u{1b}[31m Name"), "got: {escaped}");
+    assert!(escaped.ends_with(r"\u{1b}[0m\u{2028}"), "got: {escaped}");
+    assert!(!escaped.contains('…'));
+    assert_eq!(
+        escape_controls("Pub\u{1b}]0;pwned\u{7}lisher\u{9b}"),
+        one_line("Pub\u{1b}]0;pwned\u{7}lisher\u{9b}")
+    );
+}
+
 /// `binary.path = /bin/sh` reads as harmless on the line the user is shown.
 /// The arguments are the setting, so trust granted over the path must go
 /// stale when they change.
@@ -1751,6 +1765,42 @@ fn an_untrusted_project_dotnet_is_dropped_when_its_settings_do_not_parse() {
         .expect("a project dotnet that cannot be decided is dropped");
     assert!(advisory.contains(".vscode/settings.json"), "{advisory}");
     assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+}
+
+/// A project under a deep directory, such as a macOS temporary folder, made
+/// the settings error longer than the message cap, and the advisory ended at
+/// `.vscode/settings.js…` with the parse error cut off.
+#[test]
+fn the_dotnet_advisory_names_the_settings_file_and_the_parse_error_under_a_deep_project_path() {
+    let _config = ScratchConfig::new();
+    let base = tempfile::tempdir().unwrap();
+    let root = base
+        .path()
+        .join("private/var/folders/36/tjdph2t965j8snz9_vkdnw0r0000gn/T/.tmpvAC7gG");
+    write_file(&root, ".vscode/settings.json", b"{");
+    write_file(&root, "app.json", b"{}");
+    write_file(
+        &root,
+        ".zed/settings.json",
+        br#"{"lsp":{"al-lsp":{"settings":{"dotnetPath":"./tools/dotnet/dotnet"}}}}"#,
+    );
+    write_file(&root, "tools/dotnet/dotnet", b"repository muxer");
+    let _dotnet = EnvVar::set(
+        crate::toolchain::DOTNET_PATH_ENV,
+        &root.join("tools/dotnet/dotnet"),
+    );
+    let error = decide(&root)
+        .expect_err("the settings do not parse")
+        .to_string();
+    assert!(
+        error.chars().count() > 120,
+        "the settings error must be longer than the display cap: {error}"
+    );
+
+    let advisory = enforce_dotnet_path_before_spawn(&root)
+        .expect("a project dotnet that cannot be decided is dropped");
+    assert!(advisory.contains(".vscode/settings.json"), "{advisory}");
+    assert!(advisory.contains("EOF while parsing"), "{advisory}");
 }
 
 /// A host outside the project is not decided again, so a build pays one

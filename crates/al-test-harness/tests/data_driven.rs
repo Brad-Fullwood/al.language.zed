@@ -17,6 +17,7 @@ const OBJECTS: &[(&str, &str, usize)] = &[
     ("src/Enum50100.al", "Test Status", 1),
     ("src/HelloWorld.al", "Hello World", 2),
     ("src/Interface50100.al", "ITest Processor", 1),
+    ("src/ItsHere.Codeunit.al", "It's Here", 1),
     ("src/MultiProcedure.al", "Multi Procedure", 8),
     ("src/Page50100.al", "Test Customer Card", 5),
     ("src/PageExtension50100.al", "Test Customer Card Ext", 3),

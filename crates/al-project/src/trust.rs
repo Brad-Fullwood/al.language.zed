@@ -153,16 +153,36 @@ const ONE_LINE_LIMIT: usize = 120;
 pub fn one_line(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for ch in text.chars().take(ONE_LINE_LIMIT) {
-        if ch.is_control() || ch == '\u{2028}' || ch == '\u{2029}' {
-            out.extend(ch.escape_debug());
-        } else {
-            out.push(ch);
-        }
+        push_escaped(&mut out, ch);
     }
     if text.chars().nth(ONE_LINE_LIMIT).is_some() {
         out.push('…');
     }
     out
+}
+
+/// Repository text made safe to write to a terminal, at any length.
+///
+/// The same escaping as [`one_line`] without its length cap: a control
+/// character (U+0000 to U+001F and U+007F to U+009F) or a line or paragraph
+/// separator (U+2028, U+2029) becomes its escaped spelling, so the terminal
+/// prints `\u{1b}[31m` instead of acting on it. For object, package and
+/// manifest names in command output and log lines.
+#[must_use]
+pub fn escape_controls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        push_escaped(&mut out, ch);
+    }
+    out
+}
+
+fn push_escaped(out: &mut String, ch: char) {
+    if ch.is_control() || ch == '\u{2028}' || ch == '\u{2029}' {
+        out.extend(ch.escape_debug());
+    } else {
+        out.push(ch);
+    }
 }
 
 /// One privileged value a repository file supplied.
@@ -1689,13 +1709,16 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
                 return None;
             }
             std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
+            // The file is named on its own, relative to the project, because
+            // the error's absolute path pushed the reason past the display cap.
             return Some(format!(
                 "Ignoring the dotnet host '{}': it is inside this project, and the project's \
-                 settings could not be read to decide whether it is trusted ({}). Falling back \
-                 to 'dotnet' from PATH. To use it, fix that file, and the user runs this in a \
-                 terminal: {TRUST_COMMAND} --show {}",
+                 settings could not be read to decide whether it is trusted ({} {}). Falling \
+                 back to 'dotnet' from PATH. To use it, fix that file, and the user runs this \
+                 in a terminal: {TRUST_COMMAND} --show {}",
                 one_line(&configured),
-                one_line(&error.to_string()),
+                one_line(&shown_within(error.path(), project_root)),
+                one_line(&error.reason()),
                 one_line(&canonical_root(project_root).display().to_string())
             ));
         }

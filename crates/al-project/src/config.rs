@@ -33,6 +33,38 @@ pub enum ConfigLoadError {
     InvalidSettings { path: PathBuf, message: String },
 }
 
+impl ConfigLoadError {
+    /// The settings file the error is about.
+    #[must_use]
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Inspect { path, .. }
+            | Self::Read { path, .. }
+            | Self::TooLarge { path, .. }
+            | Self::InvalidJson { path, .. }
+            | Self::InvalidSettings { path, .. } => path,
+        }
+    }
+
+    /// What is wrong with [`Self::path`], worded to follow the file name.
+    ///
+    /// A message that names the file itself, for example relative to the
+    /// project, uses this in place of the whole error, whose absolute path
+    /// can push the reason past a display cap.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            Self::Inspect { source, .. } => format!("cannot be inspected: {source}"),
+            Self::Read { source, .. } => format!("cannot be read: {source}"),
+            Self::TooLarge { bytes, cap, .. } => {
+                format!("is {bytes} bytes, and at most {cap} bytes are accepted")
+            }
+            Self::InvalidJson { message, .. } => format!("is not valid JSON: {message}"),
+            Self::InvalidSettings { message, .. } => format!("holds invalid settings: {message}"),
+        }
+    }
+}
+
 /// Merged configuration for an AL workspace.
 ///
 /// Settings can be updated at runtime via `workspace/didChangeConfiguration`.

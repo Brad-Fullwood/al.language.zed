@@ -1461,9 +1461,11 @@ pub async fn initialize_core_workspace(
         Ok(mut project) => {
             let config = workspace.config.read().await.clone();
             project.apply_symbol_settings(&config)?;
+            // The manifest name and the root are repository text, and this line
+            // reaches a terminal and the editor's log panel.
             tracing::info!(
-                name = %project.app_json.name,
-                root = %project.root.display(),
+                name = %al_project::trust::escape_controls(&project.app_json.name),
+                root = %al_project::trust::escape_controls(&project.root.display().to_string()),
                 packages = project.packages.len(),
                 "workspace: project discovered"
             );

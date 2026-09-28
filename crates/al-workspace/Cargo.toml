@@ -38,4 +38,5 @@ semantic = ["al-semantic/semantic"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+tracing-subscriber = { workspace = true }
 zip = { workspace = true }
