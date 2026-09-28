@@ -401,40 +401,53 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
 /// Maximum bytes accepted for an `app.json`. The largest legitimate manifest
 /// we've observed across hundreds of AL projects is ~20 KB (heavy
 /// `dependencies` + `idRanges` arrays). 1 MiB is two orders of magnitude past
-/// that — more than enough headroom for any real project while still refusing
+/// that, more than enough headroom for any real project while still refusing
 /// pathological inputs that would OOM the daemon on `read_to_string`.
 const MAX_APP_JSON_BYTES: u64 = 1_048_576;
 
+/// The text `reader` holds, or `None` when it holds more than `cap` bytes.
+/// Reads at most `cap + 1` bytes, so a source that never ends stops there.
+fn read_text_up_to(reader: impl std::io::Read, cap: u64) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+
+    let mut text = String::new();
+    reader.take(cap + 1).read_to_string(&mut text)?;
+    Ok((text.len() as u64 <= cap).then_some(text))
+}
+
 /// Load the exact `app.json` in `project_root` with the same size and schema
 /// validation used by workspace discovery.
+///
+/// A path that is not a regular file is refused, so a link the repository
+/// ships to a device or a FIFO neither stalls the load nor feeds it an endless
+/// stream. A link to a regular file loads.
 pub fn load_app_manifest(project_root: &Path) -> Result<AppManifest, DiscoveryError> {
     let app_json_path = project_root.join("app.json");
-    let size = std::fs::metadata(&app_json_path)
-        .map_err(|error| DiscoveryError::InvalidAppJson {
-            path: app_json_path.clone(),
-            error: format!("cannot inspect file: {error}"),
-        })?
-        .len();
-    if size > MAX_APP_JSON_BYTES {
-        return Err(DiscoveryError::InvalidAppJson {
-            path: app_json_path.clone(),
-            error: format!(
-                "app.json is {} bytes — refusing to parse (cap = {} bytes)",
-                size, MAX_APP_JSON_BYTES
-            ),
-        });
+    let invalid = |error: String| DiscoveryError::InvalidAppJson {
+        path: app_json_path.clone(),
+        error,
+    };
+    let too_large = |what: String| {
+        invalid(format!(
+            "app.json {what}, refusing to parse (cap = {MAX_APP_JSON_BYTES} bytes)"
+        ))
+    };
+
+    let metadata = std::fs::metadata(&app_json_path)
+        .map_err(|error| invalid(format!("cannot inspect file: {error}")))?;
+    if !metadata.is_file() {
+        return Err(invalid("path is not a regular file".to_string()));
+    }
+    if metadata.len() > MAX_APP_JSON_BYTES {
+        return Err(too_large(format!("is {} bytes", metadata.len())));
     }
 
-    let content = std::fs::read_to_string(&app_json_path).map_err(|error| {
-        DiscoveryError::InvalidAppJson {
-            path: app_json_path.clone(),
-            error: format!("cannot read file: {error}"),
-        }
-    })?;
-    serde_json::from_str(&content).map_err(|error| DiscoveryError::InvalidAppJson {
-        path: app_json_path,
-        error: error.to_string(),
-    })
+    let file = crate::trust::open_regular_file(&app_json_path)
+        .ok_or_else(|| invalid("cannot open file as a regular file".to_string()))?;
+    let content = read_text_up_to(file, MAX_APP_JSON_BYTES)
+        .map_err(|error| invalid(format!("cannot read file: {error}")))?
+        .ok_or_else(|| too_large("holds more bytes than the cap".to_string()))?;
+    serde_json::from_str(&content).map_err(|error| invalid(error.to_string()))
 }
 
 /// Read the debug configuration of the project at `project_root` into the
@@ -987,6 +1000,95 @@ mod tests {
             "manifest under the cap must load: {result:?}"
         );
         assert!(result.unwrap().is_some());
+    }
+
+    #[test]
+    fn app_json_of_exactly_the_cap_loads_and_one_byte_more_is_refused() {
+        let manifest = r#"{"id":"00000000-0000-0000-0000-000000000000","name":"Test","publisher":"Test","version":"1.0.0.0"}"#;
+        let padded = |length: u64| {
+            let spaces = " ".repeat(length as usize - manifest.len());
+            format!("{manifest}{spaces}")
+        };
+        let project = tempdir();
+
+        std::fs::write(project.join("app.json"), padded(MAX_APP_JSON_BYTES)).unwrap();
+        assert!(load_app_manifest(&project).is_ok(), "a manifest at the cap");
+
+        std::fs::write(project.join("app.json"), padded(MAX_APP_JSON_BYTES + 1)).unwrap();
+        let error = load_app_manifest(&project).unwrap_err().to_string();
+        assert!(error.contains("refusing to parse"), "{error}");
+    }
+
+    /// A source that never ends is read up to one byte past the cap and no
+    /// further, and text of exactly the cap is kept.
+    #[test]
+    fn read_text_up_to_stops_one_byte_past_the_cap() {
+        use std::io::Read;
+
+        let mut endless = std::io::repeat(b'a').take(1 << 20);
+        assert_eq!(read_text_up_to(&mut endless, 1024).unwrap(), None);
+        assert_eq!(endless.limit(), (1 << 20) - 1025, "bytes taken from it");
+
+        let at_the_cap = read_text_up_to(std::io::repeat(b'a').take(1024), 1024).unwrap();
+        assert_eq!(at_the_cap.map(|text| text.len()), Some(1024));
+    }
+
+    /// A FIFO at `path`.
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) {
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // Safety: `name` is a NUL terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    }
+
+    /// What `work` returns, or `None` when it has not returned after three
+    /// seconds. A read that waits on a FIFO leaves its thread behind and fails
+    /// the test where the test would otherwise hang.
+    #[cfg(unix)]
+    fn answer_within_three_seconds<T: Send + 'static>(
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(work());
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .ok()
+    }
+
+    /// A clone can ship `app.json` as a link to a FIFO. The length seen through
+    /// the link is 0 and a plain read waits for a writer, so every process that
+    /// loads the manifest before the project is trusted would stall.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_app_json_to_a_fifo_is_refused_instead_of_read() {
+        let project = tempdir();
+        make_fifo(&project.join("pipe"));
+        std::os::unix::fs::symlink("pipe", project.join("app.json")).unwrap();
+
+        let root = project.clone();
+        let answer = answer_within_three_seconds(move || {
+            load_app_manifest(&root)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+
+        let error = answer
+            .expect("the load returned instead of waiting on the FIFO")
+            .expect_err("a FIFO is not a manifest");
+        assert!(error.contains("not a regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_app_json_to_a_regular_file_inside_the_project_still_loads() {
+        let project = tempdir();
+        write_valid_manifest(&project.join("manifests"), "Linked");
+        std::os::unix::fs::symlink("manifests/app.json", project.join("app.json")).unwrap();
+
+        let manifest = load_app_manifest(&project).expect("a link to a regular file loads");
+        assert_eq!(manifest.name, "Linked");
     }
 
     #[test]

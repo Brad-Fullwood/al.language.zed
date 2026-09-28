@@ -1528,7 +1528,7 @@ fn file_hash(path: &Path, limit: u64) -> FileHash {
 /// On Unix the open does not wait. A file swapped for a FIFO after it was
 /// checked opens at once and is refused here, where a plain open blocked
 /// until something wrote to the FIFO.
-fn open_regular_file(path: &Path) -> Option<std::fs::File> {
+pub(crate) fn open_regular_file(path: &Path) -> Option<std::fs::File> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
