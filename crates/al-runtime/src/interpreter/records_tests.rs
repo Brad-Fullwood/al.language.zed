@@ -7053,3 +7053,87 @@ fn an_integer_key_given_as_a_char_is_its_character_code() {
         Value::Text("found".into())
     );
 }
+
+/// Lists that come out of `Dictionary.Keys()` and `Dictionary.Values()`.
+/// Business Central types them by the dictionary's declaration, so the
+/// list of lists takes `AddRange(T)` and the list of Code converts what it
+/// adds.
+const DICTIONARY_KEYS_AND_VALUES: &str = r#"codeunit 50992 "Dictionary Keys And Values"
+{
+    var
+        Global: Dictionary of [Code[20], List of [Integer]];
+
+    procedure ValuesThenAddRange(): Integer
+    var
+        D: Dictionary of [Integer, List of [Integer]];
+        Vals: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Inner.AddRange(1, 2, 3);
+        D.Add(1, Inner);
+        Vals := D.Values();
+        Vals.AddRange(Inner);
+        exit(Vals.Count());
+    end;
+
+    procedure KeysThenAdd(): Text
+    var
+        D: Dictionary of [Code[20], Integer];
+        K: List of [Code[20]];
+    begin
+        D.Add('A', 1);
+        K := D.Keys();
+        K.Add('b');
+        if K.Contains('B') then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure GlobalValuesThenAddRange(): Integer
+    var
+        Vals: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Inner.AddRange(1, 2, 3);
+        Global.Add('x', Inner);
+        Vals := Global.Values();
+        Vals.AddRange(Inner);
+        exit(Vals.Count());
+    end;
+}
+"#;
+
+fn run_keys_and_values(proc: &str) -> Eval {
+    run(
+        &[("/ws/KeysAndValues.al", DICTIONARY_KEYS_AND_VALUES)],
+        "Dictionary Keys And Values",
+        proc,
+        vec![],
+    )
+}
+
+/// `Vals := D.Values()` for a `Dictionary of [Integer, List of [Integer]]`
+/// gives a list of lists, so `Vals.AddRange(Inner)` adds `Inner` as one
+/// element and the count is 2. A global dictionary types its values the
+/// same way.
+#[test]
+fn a_values_list_of_lists_adds_a_list_as_one_element() {
+    assert_eq!(
+        ok(run_keys_and_values("ValuesThenAddRange")),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        ok(run_keys_and_values("GlobalValuesThenAddRange")),
+        Value::Integer(2)
+    );
+}
+
+/// `K := D.Keys()` for a `Dictionary of [Code[20], Integer]` gives a list
+/// of Code, so `K.Add('b')` stores `B` and `K.Contains('B')` finds it.
+#[test]
+fn a_keys_list_converts_what_it_adds_to_the_key_type() {
+    assert_eq!(
+        ok(run_keys_and_values("KeysThenAdd")),
+        Value::Text("found".into())
+    );
+}

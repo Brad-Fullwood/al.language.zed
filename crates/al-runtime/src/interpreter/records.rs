@@ -3346,21 +3346,25 @@ pub(crate) fn dispatch_dict_method(
                 Err(_) => eval_error("Dictionary.Count exceeds the supported Integer range"),
             }
         }
+        // The lists carry the dictionary's declared types, so a typed
+        // variable that takes one keeps its overloads and conversions.
         "keys" => {
             if !args.is_empty() {
                 return eval_error("Dictionary.Keys expects no arguments");
             }
-            Eval::Normal(Value::list(
+            Eval::Normal(Value::List(Collection::new(
                 entries.values().map(|(key, _)| key.clone()).collect(),
-            ))
+                dict.member_type(),
+            )))
         }
         "values" => {
             if !args.is_empty() {
                 return eval_error("Dictionary.Values expects no arguments");
             }
-            Eval::Normal(Value::list(
+            Eval::Normal(Value::List(Collection::new(
                 entries.values().map(|(_, value)| value.clone()).collect(),
-            ))
+                dict.value_type(),
+            )))
         }
         other => eval_error(format!("unsupported Dictionary method: {other}")),
     }
@@ -3407,10 +3411,10 @@ pub(crate) fn default_for_structured(type_text: &str) -> Option<Value> {
     }
     if lower.starts_with("dictionary of") {
         let arguments = type_arguments(&trimmed["dictionary of".len()..]);
-        return Some(Value::Dict(Collection::new(
-            Default::default(),
-            arguments.first().copied(),
-        )));
+        return Some(Value::Dict(
+            Collection::new(Default::default(), arguments.first().copied())
+                .with_value_type(arguments.get(1).copied()),
+        ));
     }
     if lower == "variant" {
         return Some(Value::Variant(Box::new(Value::Null)));
