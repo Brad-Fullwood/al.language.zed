@@ -678,13 +678,15 @@ pub const MAX_COLLECTION_LEN: usize = 1_000_000;
 /// values of one test hold together in the local test runtime.
 ///
 /// [`MAX_TEXT_BYTES`] and [`MAX_COLLECTION_LEN`] bound one value, and a
-/// test that copies a large text into many elements used to take memory at
-/// a gigabyte a second. The runtime counts the bytes of each element as it
-/// is added (56 for the value and the bytes of any text it holds), takes
-/// them off when the element is removed or the last handle to its List or
-/// Dictionary drops, and refuses an addition past this total. An array
-/// element counts the text assigned to it, and a JSON node counts from when
-/// it is made until the test ends.
+/// test that copied a large text into many elements took memory at a
+/// gigabyte a second. The runtime counts each List or Dictionary element as
+/// it is added, the size of a `Value` and the bytes of the text it holds,
+/// and takes it off when the element is removed or the last handle to its
+/// List or Dictionary drops. A TextBuilder counts its text. An array element
+/// counts the text assigned to it until another text replaces it, and the
+/// count stays after the array goes out of scope. A JSON node counts from
+/// when it is made until the test ends. An addition past this total is an
+/// AL error.
 ///
 /// The total is kept per thread, and the test runner runs each test on a
 /// thread of its own.

@@ -31,8 +31,9 @@ comparison or a List search visits. A test that exceeds the call cap fails with 
 the limit belongs to the local runner and suggesting a live BC run. One Text, Code or TextBuilder
 value holds at most 64 MiB, and one List, Dictionary or array at most 1,000,000 elements. The
 Lists, Dictionaries, arrays, TextBuilders and JSON values of one test hold at most 256 MiB together:
-an element counts 56 bytes and the bytes of the text it holds from when it is added until it is
-removed or its List or Dictionary is dropped, an array element counts the text assigned to it, and
+a List or Dictionary element counts 56 bytes and the bytes of the text it holds from when it is
+added until it is removed or its List or Dictionary is dropped, a TextBuilder counts its text, an
+array element counts the text assigned to it until the test ends or another text replaces it, and
 a JSON node counts until the test ends. An operation that would grow a value past one of these
 limits is an AL error that fails the test.
 
