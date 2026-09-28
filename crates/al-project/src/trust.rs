@@ -258,6 +258,26 @@ pub struct TrustDecision {
 }
 
 impl TrustDecision {
+    /// A decision over values that came from somewhere other than a project
+    /// on disk, for renderers and their tests. The repository writes no
+    /// analyzer entry and no probing path.
+    #[must_use]
+    pub fn from_parts(
+        root: PathBuf,
+        state: TrustState,
+        privileged: Vec<PrivilegedSetting>,
+        digest: String,
+    ) -> Self {
+        Self {
+            root,
+            state,
+            privileged,
+            digest,
+            repository_analyzers: Vec::new(),
+            repository_probing_paths: Vec::new(),
+        }
+    }
+
     #[must_use]
     pub fn is_trusted(&self) -> bool {
         self.state.is_trusted()

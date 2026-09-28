@@ -529,16 +529,16 @@ mod terminal_text_tests {
     /// A project cloned into a directory whose name clears the screen, with
     /// a launch configuration whose name renames the window.
     fn crafted_decision() -> trust::TrustDecision {
-        trust::TrustDecision {
-            root: std::path::PathBuf::from("/tmp/Sec7 Tests\u{1b}[2J"),
-            state: trust::TrustState::Untrusted,
-            privileged: vec![trust::PrivilegedSetting {
+        trust::TrustDecision::from_parts(
+            std::path::PathBuf::from("/tmp/Sec7 Tests\u{1b}[2J"),
+            trust::TrustState::Untrusted,
+            vec![trust::PrivilegedSetting {
                 key: "Sec7 Caller\u{1b}]0;pwned\u{7}".to_string(),
                 value: "https://bc.example".to_string(),
                 source: ".vscode/launch.json".to_string(),
             }],
-            digest: "sha256:reviewed".to_string(),
-        }
+            "sha256:reviewed".to_string(),
+        )
     }
 
     #[test]
