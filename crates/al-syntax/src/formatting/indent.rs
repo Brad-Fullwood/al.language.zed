@@ -617,14 +617,14 @@ end;
     fn test_blank_line_drains_single_stmt() {
         let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif x > 0 then\n\nMessage('after blank');\nend;\n}";
         let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if x > 0 then\n\n        Message('after blank');\n    end;\n}\n";
-        // After blank line, single-stmt stack must be drained, so Message
-        // lands at the if's own level, not one level deeper.
+        // A blank line drains the pending single statement slot, so `Message`
+        // lands at the `if`'s own level.
         assert_eq!(fmt(input), expected);
     }
 
     /// An `end` closing a block that carried a nested single-statement slot
     /// (`if A then if B then begin ... end`), with no `;` and no following
-    /// `else`: the outer slot must drain before the next line, not linger.
+    /// `else`: the outer slot drains before the next line.
     #[test]
     fn end_without_semicolon_defers_its_slot_until_the_next_line_is_not_else() {
         let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif A then\nif B then begin\nMessage('a');\nend\nMessage('after');\nend;\n}";
@@ -636,7 +636,7 @@ end;
     /// not itself a single-statement opener written on the same line (like
     /// `if B then begin`) must still drain an outer pending single-statement
     /// slot, the same way a bare `begin` does. `MyLabel: begin` stands in
-    /// for any such line; the formatter's indentation state machine does not
+    /// for any such line. The formatter's indentation state machine does not
     /// care whether the label is valid AL, only that the text ends in
     /// " begin".
     #[test]
@@ -686,7 +686,7 @@ end;
         assert_eq!(fmt(input), expected);
     }
 
-    /// A colon-terminated line outside any `case` is not a case label: it
+    /// A line that ends in a colon outside any `case` is not a case label: it
     /// must not gain the label's extra indent. Pins the `case_depth > 0`
     /// guard against a line that merely looks like a label.
     #[test]
@@ -698,8 +698,8 @@ end;
 
     /// A `case` block whose only label body ends in `end` with no `;` (no
     /// nested `begin` was ever opened, so `case_depth` decrements once and
-    /// only once). Confirmed by the label-like line right after the case:
-    /// it must not be mistaken for a label of a still-open case.
+    /// only once). Confirmed by the line that looks like a label right after
+    /// the case: it must not be mistaken for a label of a case still open.
     #[test]
     fn a_case_label_body_ending_in_a_bare_end_closes_the_case_exactly_once() {
         let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\ncase X of\n1:\nbegin\nMessage('a');\nend\nend;\nAfterLabel:\nMessage('after');\nend;\n}";
@@ -727,11 +727,11 @@ end;
         assert_eq!(fmt(input), expected);
     }
 
-    /// The immediate-vs-deferred choice when a fused-begin block's carried
-    /// slot closes: a `;`-terminated close (`end;`) must subtract its saved
-    /// indent right away, not defer it as a pending-else slot. Observed
-    /// through the outer `if`'s matching `else`, which must align with the
-    /// outer `if`, not with the inner block.
+    /// The choice between an immediate and a deferred close when a block
+    /// opened by `if B then begin` gives back its carried slot: `end;`
+    /// subtracts the saved indent right away, where `end` with no `;` holds
+    /// it for an `else`. Observed through the outer `if`'s matching `else`,
+    /// which aligns with the outer `if`.
     #[test]
     fn a_semicolon_terminated_close_applies_its_carried_slot_immediately() {
         let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif A then\nif B then begin\nX;\nend;\nelse\nY;\nend;\n}";

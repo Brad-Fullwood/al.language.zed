@@ -5585,7 +5585,7 @@ const KEYWORD_NAMED_INDEXES: &str = r#"codeunit 50450 "Keyword Indexes"
 
 /// A variable named after an object or type keyword can be indexed. The
 /// grammar gives its name as `object_keyword` or `type_keyword`, which the
-/// index read and write did not accept (GR3-2).
+/// index read and write did not accept.
 #[test]
 fn variables_named_after_keywords_can_be_indexed() {
     let result = run(

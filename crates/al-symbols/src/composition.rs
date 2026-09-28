@@ -522,12 +522,12 @@ mod tests {
 
     /// Runs `f` under a capturing subscriber and returns everything it wrote.
     ///
-    /// `tracing`'s per-callsite `Interest` is a global, process-wide cache:
-    /// the first time a given `tracing::warn!` call site is ever hit, the
-    /// result is cached and later calls skip re-checking it. In a parallel
+    /// `tracing` caches each call site's `Interest` once for the whole
+    /// process: the first time a given `tracing::warn!` call site is hit,
+    /// the result is cached and later calls skip the check. In a parallel
     /// test binary, another test can hit the same call site with no
-    /// subscriber active at all, permanently caching "never interested"
-    /// before this test runs — dropping the warning even though a real
+    /// subscriber active at all and cache "never interested" for good
+    /// before this test runs, which drops the warning even though a real
     /// subscriber is now listening. `rebuild_interest_cache` forces a fresh
     /// evaluation against the subscriber this call just installed, so the
     /// result does not depend on what any other test hit first.
