@@ -14,19 +14,25 @@
 //! value a `format!` formats inside a renderer (a function whose name ends in
 //! `_text` or `_line`), is one of:
 //!
-//! - a literal, `String::new()`, or a string literal's `.repeat(..)`,
-//!   `.to_string()` or `.to_owned()`;
-//! - a call to `terminal_text`, `text_field` or a renderer;
+//! - a literal, `String::new()`, `env!("..")`, or a string literal's
+//!   `.repeat(..)`, `.to_string()` or `.to_owned()`;
+//! - a call to `terminal_text`, `text_field`, `terminal_lines` or a renderer;
 //! - a count (`.len()`, `.count()`), a cast to a number type, a read of a JSON
 //!   number or bool, or arithmetic on accepted values;
-//! - an `if` whose branches end in accepted values, or a `format!` whose values
-//!   are accepted;
+//! - a call to a function of the same file that returns `&'static str`, a
+//!   number type, or an `Option` or `Result` of a number type, or a call to a
+//!   closure whose `let` is accepted;
+//! - an `if` or a `match` whose branches end in accepted values or leave with
+//!   `return`, `continue`, `break` or a panic, or a `format!` whose values are
+//!   accepted;
 //! - JSON from `serde_json::to_string` or `to_string_pretty`, which writes a
 //!   control character as `\u001b`;
 //! - a name, or a method chain on a name, whose nearest binding in scope is a
 //!   `let` or a parameter of a number or `bool` type, the index of an
-//!   `.enumerate()` loop, or a `let` whose value is accepted or calls a helper
-//!   or a renderer;
+//!   `.enumerate()` loop, a `for` loop over an array whose items are accepted
+//!   at the name's place in the pattern, a `Some(..)` or `Ok(..)` match arm on
+//!   a value that is accepted, or a `let` whose value is accepted or calls a
+//!   helper or a renderer;
 //! - an entry of `ALLOWED`, which names the file, the value and the reason.
 //!
 //! A renderer is trusted to build its text through the macros this test
@@ -77,7 +83,8 @@ struct Rule {
     cast: Regex,
     number_read: Regex,
     number_default: Regex,
-    literal_match: Regex,
+    match_keyword: Regex,
+    leaves: Regex,
     call: Regex,
     json: Regex,
     number_type: Regex,
@@ -87,7 +94,6 @@ struct Rule {
     closure_params: Regex,
     arm_pattern: Regex,
     constant: Regex,
-    literal_array: Regex,
 }
 
 const NUMBER_TYPES: &str = "u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize|f32|f64|bool";
@@ -100,7 +106,9 @@ impl Rule {
                 r"(?:^|[^\w:!])(print|println|eprint|eprintln|write|writeln|format)!\s*\(",
             ),
             function: regex(r"\bfn\s+(\w+)"),
-            literal: regex(r##"^(?:"_*"|r#*"_*"#*|'_+'|-?\d[\w.]*|true|false|String::new\(\))$"##),
+            literal: regex(
+                r##"^(?:"_*"|r#*"_*"#*|'_+'|-?\d[\w.]*|true|false|String::new\(\)|env!\("_*"\))$"##,
+            ),
             literal_method: regex(r#"^"_*"\.(?:repeat|to_string|to_owned)\("#),
             helper_call: regex(
                 r"^(?:\w+::)*(?:terminal_text|terminal_lines|text_field|\w+_text|\w+_line)\(",
@@ -114,7 +122,10 @@ impl Rule {
             number_default: regex(
                 r"\.(?:unwrap_or\(\s*(?:-?\d[\w.]*|true|false)\s*|map_or\(\s*-?\d[\w.]*\s*,[^;]*)\)$",
             ),
-            literal_match: regex(r#"^match\b[^{]*\{(?:\s*[^=;{}]*=>\s*"_*"\s*,?)*\s*\}$"#),
+            match_keyword: regex(r"\bmatch\s"),
+            leaves: regex(
+                r"^(?:return\b|continue\b|break\b|panic!|unreachable!|std::process::exit\b)",
+            ),
             call: regex(r"^(\w+)\("),
             json: regex(r"^serde_json::to_string(?:_pretty)?\("),
             number_type: regex(&format!(r"^[\s(),]*(?:(?:{NUMBER_TYPES})[\s(),]*)+$")),
@@ -124,7 +135,6 @@ impl Rule {
             closure_params: regex(r"\|([^|;\n]*)\|"),
             arm_pattern: regex(r"\(([^()]*)\)\s*(?:if\b[^=]*)?=>"),
             constant: regex(r#"\bconst\s+(\w+)\s*:([^=;]*)=\s*([^;]*);"#),
-            literal_array: regex(r#"^\[(?:\s|,|\(|\)|"_*"|-?\d[\w.]*)*\]$"#),
         }
     }
 
@@ -201,17 +211,19 @@ impl Rule {
                 .into_iter()
                 .all(|branch| self.accepted(file, branch, at, depth + 1));
         }
-        if self.literal_match.is_match(value) {
-            return true;
+        if let Some(arms) = match_arms(&file.code, start, end) {
+            return arms
+                .into_iter()
+                .all(|body| self.arm_accepted(file, body, depth + 1));
         }
         if let Some(captures) = self.call.captures(value) {
-            // A function of this file that returns `&'static str`.
-            let returns_static = Regex::new(&format!(
-                r"\bfn\s+{}\s*\([^)]*\)\s*->\s*&'static\s+str\b",
-                &captures[1]
+            let name = &captures[1];
+            let returns_safe = Regex::new(&format!(
+                r"\bfn\s+{name}\s*\([^)]*\)\s*->\s*(?:&'static\s+str\b|(?:Option|Result)<\s*(?:{NUMBER_TYPES})\b|(?:{NUMBER_TYPES})\b)"
             ))
             .unwrap();
-            return returns_static.is_match(&file.code);
+            return returns_safe.is_match(&file.code)
+                || self.binding_accepted(file, name, at, depth + 1);
         }
         if let Some(rest) = value.strip_prefix("format!") {
             let open = end - rest.len() + rest.find('(').unwrap() + 1;
@@ -224,6 +236,82 @@ impl Rule {
             return self.binding_accepted(file, captures.get(1).unwrap().as_str(), at, depth);
         }
         false
+    }
+
+    /// Whether a match arm's body ends in an accepted value or leaves. The
+    /// body's names are looked up where the body starts.
+    fn arm_accepted(&self, file: &File, body: (usize, usize), depth: u8) -> bool {
+        let (start, end) = trim_value(&file.code, body.0, body.1);
+        let text = &file.code[start..end];
+        if self.leaves.is_match(text) {
+            return true;
+        }
+        if !text.starts_with('{') {
+            return self.accepted(file, (start, end), start, depth);
+        }
+        let (inner_start, inner_end) = (start + 1, end - 1);
+        let leaves = statements(&file.code, inner_start, inner_end)
+            .into_iter()
+            .any(|(from, to)| self.leaves.is_match(file.code[from..to].trim_start()));
+        let last = last_expression(&file.code, inner_start, inner_end);
+        leaves || self.accepted(file, last, last.0, depth)
+    }
+
+    /// The `match` whose block holds `pos`: the offset of its keyword and the
+    /// range of the value it matches on.
+    fn enclosing_match(&self, code: &str, pos: usize) -> Option<(usize, (usize, usize))> {
+        let keywords: Vec<_> = self.match_keyword.find_iter(&code[..pos]).collect();
+        keywords.into_iter().rev().find_map(|keyword| {
+            let open = block_open(code, keyword.end())?;
+            (open < pos && still_open(code, open, pos))
+                .then_some((keyword.start(), (keyword.end(), open)))
+        })
+    }
+
+    /// Whether the items of the array literal at `range` are accepted, or the
+    /// item at `place` of each tuple in it when the loop pattern is a tuple.
+    fn array_accepted(
+        &self,
+        file: &File,
+        range: (usize, usize),
+        place: Option<usize>,
+        depth: u8,
+    ) -> bool {
+        let (start, end) = trim_value(&file.code, range.0, range.1);
+        if !file.code[start..end].starts_with('[') {
+            return false;
+        }
+        let (items, close) = split_args(&file.code, start + 1);
+        if close != end {
+            return false;
+        }
+        items.into_iter().all(|item| {
+            let item = trim_value(&file.code, item.0, item.1);
+            match place {
+                None => self.accepted(file, item, item.0, depth + 1),
+                Some(place) => {
+                    file.code[item.0..item.1].starts_with('(')
+                        && split_args(&file.code, item.0 + 1)
+                            .0
+                            .get(place)
+                            .is_some_and(|&part| self.accepted(file, part, part.0, depth + 1))
+                }
+            }
+        })
+    }
+
+    /// The value of the nearest `let name = ..` above `at` that is in scope
+    /// there.
+    fn let_value(&self, file: &File, name: &str, at: usize) -> Option<(usize, usize)> {
+        self.let_binding
+            .find_iter(&file.code[..at])
+            .filter_map(|found| {
+                let binding = let_parts(&file.code, found.end())?;
+                let simple = binding.pattern.trim_start_matches("mut ").trim() == name;
+                (simple && !binding.conditional && in_scope(&file.code, found.start(), at))
+                    .then_some(binding.value)
+            })
+            .last()
     }
 
     /// Whether the nearest binding of `name` above `at` that is still in
@@ -273,16 +361,36 @@ impl Rule {
                 .strip_prefix('(')
                 .and_then(|rest| rest.split(',').next())
                 .is_some_and(|first| first.trim() == name);
-            let accepted = (index && iterable.trim_end().ends_with(".enumerate()"))
-                || self.literal_array.is_match(iterable.trim());
+            // The loop runs over an array written in place or bound by a `let`.
+            let place = pattern.as_str().trim().strip_prefix('(').map(|rest| {
+                rest.trim_end_matches(')')
+                    .split(',')
+                    .position(|part| part.trim().trim_start_matches(['&', ' ']) == name)
+            });
+            let iterable_range = trim_value(&file.code, header_end, body.unwrap_or(header_end));
+            let iterable_text = file.code[iterable_range.0..iterable_range.1]
+                .trim_end_matches(".iter()")
+                .to_string();
+            let array = if iterable_text.starts_with('[') {
+                Some(iterable_range)
+            } else if is_identifier(&iterable_text) {
+                self.let_value(file, &iterable_text, header_end)
+            } else {
+                None
+            };
+            let array_accepted = match (array, place) {
+                (Some(array), None) => self.array_accepted(file, array, None, depth),
+                (Some(array), Some(Some(place))) => {
+                    self.array_accepted(file, array, Some(place), depth)
+                }
+                _ => false,
+            };
+            let accepted =
+                (index && iterable.trim_end().ends_with(".enumerate()")) || array_accepted;
             consider(pattern.start(), accepted);
         }
 
-        for captures in self
-            .closure_params
-            .captures_iter(code)
-            .chain(self.arm_pattern.captures_iter(code))
-        {
+        for captures in self.closure_params.captures_iter(code) {
             let pattern = captures.get(1).unwrap();
             let after = captures.get(0).unwrap().end();
             if word.is_match(pattern.as_str()) && in_scope(&file.code, after, at) {
@@ -293,6 +401,23 @@ impl Rule {
                     })
                 });
                 consider(pattern.start(), typed_number);
+            }
+        }
+
+        for captures in self.arm_pattern.captures_iter(code) {
+            let pattern = captures.get(1).unwrap();
+            let after = captures.get(0).unwrap().end();
+            if word.is_match(pattern.as_str()) && in_scope(&file.code, after, at) {
+                // A name a `Some(..)` or `Ok(..)` arm binds out of a value the
+                // rule accepts. An `Err(..)` arm holds something else.
+                let variant = file.code[..captures.get(0).unwrap().start()].trim_end();
+                let accepted = (variant.ends_with("Some") || variant.ends_with("Ok"))
+                    && self
+                        .enclosing_match(&file.code, pattern.start())
+                        .is_some_and(|(keyword, value)| {
+                            self.accepted(file, value, keyword, depth + 1)
+                        });
+                consider(pattern.start(), accepted);
             }
         }
 
@@ -593,6 +718,112 @@ fn split_arithmetic(code: &str, start: usize, end: usize) -> Vec<(usize, usize)>
     parts
 }
 
+/// The first `{` after `from` outside parentheses and brackets, before any
+/// `;`.
+fn block_open(code: &str, from: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    for (i, byte) in code.bytes().enumerate().skip(from) {
+        match byte {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'{' if depth == 0 => return Some(i),
+            b';' if depth == 0 => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether the block whose `{` is at `open` is still open at `at`.
+fn still_open(code: &str, open: usize, at: usize) -> bool {
+    let mut depth = 0i32;
+    for byte in code[open..at].bytes() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+/// The body of each arm of a `match` that is the whole value.
+fn match_arms(code: &str, start: usize, end: usize) -> Option<Vec<(usize, usize)>> {
+    let rest = code[start..end].strip_prefix("match")?;
+    if !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let open = block_open(code, start + "match".len())?;
+    let (_, close) = split_args(code, open + 1);
+    if close != end {
+        return None;
+    }
+    let bytes = code.as_bytes();
+    let inner_end = close - 1;
+    let mut arms = Vec::new();
+    let mut i = open + 1;
+    loop {
+        let mut depth = 0i32;
+        let mut arrow = None;
+        for j in i..inner_end.saturating_sub(1) {
+            match bytes[j] {
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b'=' if depth == 0 && bytes[j + 1] == b'>' => {
+                    arrow = Some(j);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(arrow) = arrow else {
+            return Some(arms);
+        };
+        let body_start = arrow + 2;
+        let first = body_start
+            + code[body_start..inner_end]
+                .find(|ch: char| !ch.is_whitespace())
+                .unwrap_or(inner_end - body_start);
+        if bytes.get(first) == Some(&b'{') {
+            let (_, after) = split_args(code, first + 1);
+            arms.push((first, after));
+            i = after;
+            continue;
+        }
+        let (parts, _) = split_args(code, body_start);
+        let body_end = parts.first().map_or(inner_end, |&(_, part_end)| part_end);
+        arms.push((body_start, body_end));
+        i = body_end + 1;
+    }
+}
+
+/// The statements of the block between `start` and `end`, split at each `;`
+/// outside brackets.
+fn statements(code: &str, start: usize, end: usize) -> Vec<(usize, usize)> {
+    let bytes = code.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut from = start;
+    for i in start..end {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b';' if depth == 0 => {
+                parts.push((from, i));
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push((from, end));
+    parts
+}
+
 /// The last expression of each branch of an `if .. else ..` that is the
 /// whole value.
 fn if_branches(code: &str, start: usize, end: usize) -> Option<Vec<(usize, usize)>> {
@@ -864,6 +1095,58 @@ fn row_json(row: &serde_json::Value) -> String {
         (13, vec!["item".into()]),
         (16, vec!["found".into()]),
         (26, vec!["raw".into()]),
+    ];
+    assert_eq!(raw, expected);
+}
+
+#[test]
+fn the_rule_follows_matches_loops_and_closures_to_the_values_they_bind() {
+    let source = r#"
+fn count(row: &serde_json::Value) -> Option<u64> {
+    row.get("count").and_then(|v| v.as_u64())
+}
+
+fn render(row: &serde_json::Value) {
+    let version = env!("CARGO_PKG_VERSION");
+    let errors = match count(row) {
+        Some(errors) => errors,
+        None => {
+            return;
+        }
+    };
+    let numbers = |value: &serde_json::Value| value.as_i64().unwrap_or(0).to_string();
+    let labels = |value: &serde_json::Value| value.as_str().unwrap_or("?").to_string();
+    println!("{version} {errors} {} {}", numbers(row), labels(row));
+    let checks = [("ALTool", row.get("a").is_some()), ("Project", true)];
+    for (name, ok) in &checks {
+        println!("{name} {ok}");
+    }
+    let names = [row.get("n").and_then(|v| v.as_str()).unwrap_or("?")];
+    for name in names {
+        println!("{name}");
+    }
+    let score = row.get("score").and_then(|v| v.as_f64());
+    match score {
+        Some(score) => println!("{score:.1}"),
+        None => {}
+    }
+    match serde_json::to_string(row) {
+        Ok(json) => println!("{json}"),
+        Err(error) => eprintln!("{error}"),
+    }
+    match row.get("kind").and_then(|v| v.as_str()) {
+        Some(kind) => println!("{kind}"),
+        None => {}
+    }
+}
+"#;
+    let raw = raw_values(&Rule::new(), source);
+    let expected: Vec<(usize, Vec<String>)> = vec![
+        (16, vec!["labels(row)".into()]),
+        (19, vec!["ok".into()]),
+        (23, vec!["name".into()]),
+        (32, vec!["error".into()]),
+        (35, vec!["kind".into()]),
     ];
     assert_eq!(raw, expected);
 }
