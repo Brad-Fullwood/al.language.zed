@@ -7254,3 +7254,128 @@ fn a_list_get_var_result_runs_its_element_index_once() {
         Value::Text("9/0/1".into())
     );
 }
+
+/// Procedures overloaded on the table of a Record parameter or the object
+/// of a Codeunit parameter. alc picks the declaration whose subtype is the
+/// argument's, so each call runs the body written for its table.
+const SUBTYPE_OVERLOADS: &str = r#"table 50994 "Overload Cust"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+table 50995 "Overload Vend"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+codeunit 50996 "Overload Helper A"
+{
+    procedure Name(): Text
+    begin
+        exit('a');
+    end;
+}
+
+codeunit 50997 "Overload Helper B"
+{
+    procedure Name(): Text
+    begin
+        exit('b');
+    end;
+}
+
+codeunit 50998 "Subtype Overloads"
+{
+    procedure Describe(C: Record "Overload Cust"): Text
+    begin
+        exit('cust');
+    end;
+
+    procedure Describe(V: Record "Overload Vend"): Text
+    begin
+        exit('vend');
+    end;
+
+    procedure ByRecordOverload(): Text
+    var
+        C: Record "Overload Cust";
+        V: Record "Overload Vend";
+    begin
+        exit(Describe(C) + '|' + Describe(V));
+    end;
+
+    procedure ByTemporaryRecordOverload(): Text
+    var
+        V: Record "Overload Vend" temporary;
+    begin
+        exit(Describe(V));
+    end;
+
+    procedure Tag(var A: Codeunit "Overload Helper A"): Text
+    begin
+        exit('a:' + A.Name());
+    end;
+
+    procedure Tag(var B: Codeunit "Overload Helper B"): Text
+    begin
+        exit('b:' + B.Name());
+    end;
+
+    procedure ByCodeunitOverload(): Text
+    var
+        A: Codeunit "Overload Helper A";
+        B: Codeunit "Overload Helper B";
+    begin
+        exit(Tag(B) + '|' + Tag(A));
+    end;
+}
+"#;
+
+fn run_subtype_overload(proc: &str) -> Eval {
+    run(
+        &[("/ws/SubtypeOverloads.al", SUBTYPE_OVERLOADS)],
+        "Subtype Overloads",
+        proc,
+        vec![],
+    )
+}
+
+/// `Describe(C) + '|' + Describe(V)` with one overload per table gives
+/// `cust|vend`, and a temporary record of the second table still picks its
+/// own overload.
+#[test]
+fn an_overload_is_chosen_by_the_table_of_its_record_argument() {
+    assert_eq!(
+        ok(run_subtype_overload("ByRecordOverload")),
+        Value::Text("cust|vend".into())
+    );
+    assert_eq!(
+        ok(run_subtype_overload("ByTemporaryRecordOverload")),
+        Value::Text("vend".into())
+    );
+}
+
+/// `Tag(B) + '|' + Tag(A)` with one overload per codeunit runs the body
+/// declared for each argument's codeunit: each body names its own prefix,
+/// so the first declaration run with B's value would show as `a:b`.
+#[test]
+fn an_overload_is_chosen_by_the_object_of_its_codeunit_argument() {
+    assert_eq!(
+        ok(run_subtype_overload("ByCodeunitOverload")),
+        Value::Text("b:b|a:a".into())
+    );
+}
