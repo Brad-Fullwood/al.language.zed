@@ -12,7 +12,7 @@ use tree_sitter::Node;
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{self, owned_bytes, Value};
 use crate::interpreter::{error_info, eval_error};
 
 /// The variable name and `index_suffix` of `Name[index]`, looking through the
@@ -47,7 +47,7 @@ pub(crate) fn indexed_variable<'tree>(
 }
 
 /// The 1-based position an `index_suffix` names.
-fn eval_index(
+pub(crate) fn eval_index(
     suffix: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
@@ -154,10 +154,21 @@ pub(crate) fn write_element(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    let index = match eval_index(suffix, source, stack, ctx) {
-        Ok(index) => index,
-        Err(error) => return error,
-    };
+    match eval_index(suffix, source, stack, ctx) {
+        Ok(index) => write_element_at(name, index, value, combine, stack),
+        Err(error) => error,
+    }
+}
+
+/// `Name[index] := value` for an `index` already evaluated: the element of
+/// an array, or the character of a Text.
+pub(crate) fn write_element_at(
+    name: &str,
+    index: i64,
+    value: Value,
+    combine: &dyn Fn(Value, Value) -> Eval,
+    stack: &mut ScopeStack,
+) -> Eval {
     let current = match read_element_at(name, index, stack) {
         Ok(current) => current,
         Err(error) => return error,
@@ -173,10 +184,18 @@ pub(crate) fn write_element(
     match slot {
         Value::Array(items) => {
             let at = (index - 1) as usize;
-            match Value::coerce_into_slot(&items[at], value, None) {
-                Ok(value) => items[at] = value,
+            let value = match Value::coerce_into_slot(&items[at], value, None) {
+                Ok(value) => value,
                 Err(message) => return eval_error(message),
+            };
+            // The element's text counts toward the test's total in place of
+            // the text it held.
+            if let Err(message) = value::hold_bytes("Array element assignment", owned_bytes(&value))
+            {
+                return eval_error(message);
             }
+            value::release_held_bytes(owned_bytes(&items[at]));
+            items[at] = value;
         }
         Value::Text(text) | Value::Code(text) => {
             let mut replacement = match value {
@@ -211,7 +230,9 @@ pub(crate) fn write_element(
     Eval::Normal(Value::Empty)
 }
 
-fn read_element_at(name: &str, index: i64, stack: &ScopeStack) -> Result<Value, Eval> {
+/// The element of the array `name`, or the character of the Text, at the
+/// 1-based `index`.
+pub(crate) fn read_element_at(name: &str, index: i64, stack: &ScopeStack) -> Result<Value, Eval> {
     match stack.lookup(name) {
         Some(Value::Array(items)) => position(index, items.len(), name).map(|at| items[at].clone()),
         Some(Value::Text(text) | Value::Code(text)) => {

@@ -950,7 +950,8 @@ mod tests {
         };
         let xml = run_cobertura_dynamic(&report);
         assert_well_formed_xml(&xml);
-        // Both conditions covered: 2/2 must read 100%, not (2+100)/2 = 51%.
+        // Both conditions covered: 2/2 reads 100%. The rate multiplies before
+        // it divides, since (2 + 100) / 2 would read 51%.
         assert!(
             xml.contains(r#"mcdc-coverage="100% (2/2)""#),
             "both conditions are covered, so mcdc-coverage must read 100%:\n{xml}"

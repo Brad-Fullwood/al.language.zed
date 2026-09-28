@@ -3,6 +3,8 @@
 
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
+use crate::server::daemon::PathRejection;
+
 /// Common BC server connection parameters extracted from JSON-RPC params.
 pub(super) struct BcServerParams {
     pub(super) server_url: String,
@@ -12,18 +14,28 @@ pub(super) struct BcServerParams {
     pub(super) password: Option<String>,
     pub(super) accept_invalid_certs: bool,
 }
+
+/// Read the connection parameters from the request.
+///
+/// A malformed field is `INVALID_PARAMS`, and an `outputDir` outside the
+/// project is the boundary refusal every path parameter gives.
 pub(super) fn parse_bc_server_params(
     workspace: &al_workspace::Workspace,
     params: &serde_json::Value,
     output_subdir: &str,
-) -> Result<BcServerParams, String> {
-    fn optional_string(params: &serde_json::Value, key: &str) -> Result<Option<String>, String> {
+) -> Result<BcServerParams, PathRejection> {
+    fn optional_string(
+        params: &serde_json::Value,
+        key: &str,
+    ) -> Result<Option<String>, PathRejection> {
         match params.get(key) {
             None => Ok(None),
             Some(value) => value
                 .as_str()
                 .map(|value| Some(value.to_string()))
-                .ok_or_else(|| format!("'{key}' must be a string when supplied")),
+                .ok_or_else(|| {
+                    PathRejection::invalid(format!("'{key}' must be a string when supplied"))
+                }),
         }
     }
 
@@ -34,13 +46,19 @@ pub(super) fn parse_bc_server_params(
         Some(output_dir) => {
             let output_dir = std::path::PathBuf::from(output_dir);
             if !output_dir.is_absolute() {
-                return Err("'outputDir' must be an absolute path".to_string());
+                return Err(PathRejection::invalid(
+                    "'outputDir' must be an absolute path",
+                ));
             }
             // A caller-named download target is a write primitive, so it stays
-            // inside the project. The daemon-chosen default below is not
-            // caller-controlled and needs no such check.
-            crate::server::daemon::containment::resolve_within_project(workspace, &output_dir)
-                .map_err(|error| format!("'outputDir' {error}"))?
+            // under the project root, which leaves out the package folders a
+            // trusted project reads from. The daemon-chosen default below is
+            // not caller-controlled and needs no such check.
+            crate::server::daemon::containment::resolve_write_param_within_project(
+                workspace,
+                "outputDir",
+                &output_dir,
+            )?
         }
         None => dirs::data_local_dir()
             .unwrap_or_else(std::env::temp_dir)
@@ -51,9 +69,9 @@ pub(super) fn parse_bc_server_params(
     let password = optional_string(params, "password")?;
     let accept_invalid_certs = match params.get("acceptInvalidCerts") {
         None => false,
-        Some(value) => value
-            .as_bool()
-            .ok_or_else(|| "'acceptInvalidCerts' must be a boolean when supplied".to_string())?,
+        Some(value) => value.as_bool().ok_or_else(|| {
+            PathRejection::invalid("'acceptInvalidCerts' must be a boolean when supplied")
+        })?,
     };
     Ok(BcServerParams {
         server_url,

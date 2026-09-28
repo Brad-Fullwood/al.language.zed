@@ -13,6 +13,8 @@
 //!  * structured: Option, Record, RecordRef, Variant, Array, List, Dict,
 //!    Blob, Stream, ErrorInfo
 
+use std::cell::Cell;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub use rust_decimal::Decimal;
@@ -27,24 +29,151 @@ pub type DictEntries = indexmap::IndexMap<String, (Value, Value)>;
 ///
 /// Values cross to the test runner's thread, hence `Arc<Mutex>`. Hold one
 /// guard at a time: locking the same contents twice deadlocks.
+///
+/// The contents count toward the test's [`MAX_HELD_BYTES`]: the bytes they
+/// held when made, and what the methods that add to them charge, until the
+/// last handle drops.
 #[derive(Debug, Default)]
-pub struct Shared<T>(Arc<Mutex<T>>);
+pub struct Shared<T: Contents>(Arc<SharedContents<T>>);
 
-impl<T> Clone for Shared<T> {
+#[derive(Debug, Default)]
+struct SharedContents<T> {
+    contents: Mutex<T>,
+    /// The bytes these contents have added to the test's total.
+    held: AtomicUsize,
+}
+
+/// What a [`Shared`] handle holds: a List's values, a Dictionary's entries
+/// or a TextBuilder's text.
+pub trait Contents {
+    /// Move the values these contents hold into `into`.
+    fn take_values(&mut self, into: &mut Vec<Value>);
+
+    /// The bytes the contents take, as [`MAX_HELD_BYTES`] counts them.
+    fn held_bytes(&self) -> usize;
+}
+
+impl Contents for String {
+    fn take_values(&mut self, _into: &mut Vec<Value>) {}
+
+    fn held_bytes(&self) -> usize {
+        self.len()
+    }
+}
+
+impl Contents for Vec<Value> {
+    fn take_values(&mut self, into: &mut Vec<Value>) {
+        into.append(self);
+    }
+
+    fn held_bytes(&self) -> usize {
+        self.iter().map(element_bytes).sum()
+    }
+}
+
+impl Contents for DictEntries {
+    fn take_values(&mut self, into: &mut Vec<Value>) {
+        for (_, (key, value)) in self.drain(..) {
+            into.push(key);
+            into.push(value);
+        }
+    }
+
+    fn held_bytes(&self) -> usize {
+        self.iter()
+            .map(|(key_text, (key, value))| entry_bytes(key_text, key, value))
+            .sum()
+    }
+}
+
+impl<T: Contents> Clone for Shared<T> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
-impl<T> Shared<T> {
+/// Dropping the last handle to a list drops the values it holds, and each
+/// of those drops the values it holds. The values are moved into a work list
+/// and dropped in a loop, so a chain of lists nested a hundred thousand deep
+/// is freed without one native frame per level.
+impl<T: Contents> Drop for Shared<T> {
+    fn drop(&mut self) {
+        let mut orphans = Vec::new();
+        self.take_values_if_last(&mut orphans);
+        while let Some(mut value) = orphans.pop() {
+            value.take_held_values(&mut orphans);
+        }
+    }
+}
+
+impl<T: Contents> Shared<T> {
+    /// Move the values the contents hold into `into`, and take their bytes
+    /// off the test's total, when this is the last handle to them.
+    fn take_values_if_last(&mut self, into: &mut Vec<Value>) {
+        if let Some(shared) = Arc::get_mut(&mut self.0) {
+            release_held_bytes(std::mem::take(shared.held.get_mut()));
+            shared
+                .contents
+                .get_mut()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take_values(into);
+        }
+    }
+}
+
+impl<T: Contents> Shared<T> {
+    /// New contents, whose bytes count toward the test's total. The total
+    /// is checked at the next operation that adds to it.
     pub fn new(contents: T) -> Self {
-        Self(Arc::new(Mutex::new(contents)))
+        let held = contents.held_bytes();
+        add_held_bytes(held);
+        Self(Arc::new(SharedContents {
+            contents: Mutex::new(contents),
+            held: AtomicUsize::new(held),
+        }))
     }
 
     /// The contents, locked until the guard drops.
     pub fn lock(&self) -> MutexGuard<'_, T> {
-        // A panic while locked leaves the contents as they were; use them.
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+        // A panic while locked leaves the contents as they were. Use them.
+        self.0
+            .contents
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Count `bytes` more for these contents, or refuse when the test's
+    /// total would pass [`MAX_HELD_BYTES`]. `operation` names what adds
+    /// them, for the message.
+    pub(crate) fn charge(&self, operation: &str, bytes: usize) -> Result<(), String> {
+        hold_bytes(operation, bytes)?;
+        self.0.held.fetch_add(bytes, AtomicOrdering::Relaxed);
+        Ok(())
+    }
+
+    /// Count `bytes` fewer for these contents, at most what they count.
+    pub(crate) fn release(&self, bytes: usize) {
+        let before = self
+            .0
+            .held
+            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |held| {
+                Some(held.saturating_sub(bytes))
+            })
+            .unwrap_or_else(|held| held);
+        release_held_bytes(before.min(bytes));
+    }
+
+    /// Count the contents as `bytes`, what a TextBuilder's text takes after
+    /// a method changed it, and refuse when the test's total is past
+    /// [`MAX_HELD_BYTES`].
+    pub(crate) fn recount(&self, operation: &str, bytes: usize) -> Result<(), String> {
+        let before = self.0.held.swap(bytes, AtomicOrdering::Relaxed);
+        if bytes <= before {
+            release_held_bytes(before - bytes);
+            return Ok(());
+        }
+        add_held_bytes(bytes - before);
+        check_held_bytes(operation)
     }
 
     /// Whether both handles name the same contents.
@@ -58,38 +187,48 @@ impl<T> Shared<T> {
     }
 }
 
-impl<T: Clone> Shared<T> {
+impl<T: Contents + Clone> Shared<T> {
     /// A copy of the contents, detached from the handle.
     pub fn snapshot(&self) -> T {
         self.lock().clone()
     }
 }
 
-/// A `List` or `Dictionary` value: its shared contents and the member type
-/// its declaration gives it, written as in source (`Code[20]`). The member
-/// type is the element type of a List and the key type of a Dictionary.
-/// `None` when no declaration made the value.
+/// A `List` or `Dictionary` value: its shared contents and the types its
+/// declaration gives it, written as in source (`Code[20]`). The member type
+/// is the element type of a List and the key type of a Dictionary, and the
+/// value type is the value type of a Dictionary. `None` when no declaration
+/// made the value.
 #[derive(Debug)]
-pub struct Collection<T> {
+pub struct Collection<T: Contents> {
     contents: Shared<T>,
     member_type: Option<Arc<str>>,
+    value_type: Option<Arc<str>>,
 }
 
-impl<T> Clone for Collection<T> {
+impl<T: Contents> Clone for Collection<T> {
     fn clone(&self) -> Self {
         Self {
             contents: self.contents.clone(),
             member_type: self.member_type.clone(),
+            value_type: self.value_type.clone(),
         }
     }
 }
 
-impl<T> Collection<T> {
+impl<T: Contents> Collection<T> {
     pub fn new(contents: T, member_type: Option<&str>) -> Self {
         Self {
             contents: Shared::new(contents),
             member_type: member_type.map(Arc::from),
+            value_type: None,
         }
+    }
+
+    /// The same collection with `value_type` as its Dictionary value type.
+    pub fn with_value_type(mut self, value_type: Option<&str>) -> Self {
+        self.value_type = value_type.map(Arc::from);
+        self
     }
 
     /// The contents, locked until the guard drops.
@@ -102,6 +241,17 @@ impl<T> Collection<T> {
         self.contents.same(&other.contents)
     }
 
+    /// Count `bytes` more for the contents, or refuse when the test's total
+    /// would pass [`MAX_HELD_BYTES`].
+    pub(crate) fn charge(&self, operation: &str, bytes: usize) -> Result<(), String> {
+        self.contents.charge(operation, bytes)
+    }
+
+    /// Count `bytes` fewer for the contents.
+    pub(crate) fn release(&self, bytes: usize) {
+        self.contents.release(bytes);
+    }
+
     /// The address of the contents, the same for every copy of the value.
     fn address(&self) -> usize {
         self.contents.address()
@@ -112,7 +262,12 @@ impl<T> Collection<T> {
         self.member_type.as_deref()
     }
 
-    /// New empty contents with the same member type, as `Clear` leaves.
+    /// The declared value type of a Dictionary.
+    pub fn value_type(&self) -> Option<&str> {
+        self.value_type.as_deref()
+    }
+
+    /// New empty contents with the same declared types, as `Clear` leaves.
     pub fn emptied(&self) -> Self
     where
         T: Default,
@@ -120,11 +275,12 @@ impl<T> Collection<T> {
         Self {
             contents: Shared::new(T::default()),
             member_type: self.member_type.clone(),
+            value_type: self.value_type.clone(),
         }
     }
 }
 
-impl<T: Clone> Collection<T> {
+impl<T: Contents + Clone> Collection<T> {
     /// A copy of the contents, detached from the value.
     pub fn snapshot(&self) -> T {
         self.contents.snapshot()
@@ -313,7 +469,7 @@ impl Eq for Value {}
 
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        compare(self, other, &mut MetPairs::new())
+        compare(self, other)
     }
 }
 
@@ -324,7 +480,52 @@ impl Ord for Value {
 /// compared or was equal, and a pair is walked at most once.
 type MetPairs = std::collections::HashSet<(usize, usize)>;
 
-fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Ordering {
+/// What comparing one pair of values gives: an order, or two sequences of
+/// values to compare element by element, a shorter sequence that matches so
+/// far first.
+enum Step {
+    Done(std::cmp::Ordering),
+    Descend(Vec<Value>, Vec<Value>),
+}
+
+/// Compare two values. Nested Arrays, Lists and Dictionaries are walked with
+/// a stack of the sequences being compared, so a chain of lists nested a
+/// hundred thousand deep takes heap and no native stack.
+fn compare(left: &Value, right: &Value) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let mut met = MetPairs::new();
+    let (left, right) = match compare_one(left, right, &mut met) {
+        Step::Done(ordering) => return ordering,
+        Step::Descend(left, right) => (left, right),
+    };
+    let mut pending = vec![(left.into_iter(), right.into_iter())];
+    while let Some((left, right)) = pending.last_mut() {
+        // A cancelled test stops here, and the statement that compared ends
+        // it. The order returned then does not matter.
+        if crate::interpreter::dispatch::thread_cancelled() {
+            return Ordering::Equal;
+        }
+        let step = match (left.next(), right.next()) {
+            (None, None) => {
+                pending.pop();
+                continue;
+            }
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(a), Some(b)) => compare_one(&a, &b, &mut met),
+        };
+        match step {
+            Step::Done(Ordering::Equal) => {}
+            Step::Done(different) => return different,
+            Step::Descend(left, right) => pending.push((left.into_iter(), right.into_iter())),
+        }
+    }
+    Ordering::Equal
+}
+
+/// Compare two values of which neither holds others, or give the sequences
+/// the comparison continues with.
+fn compare_one(left: &Value, right: &Value, met: &mut MetPairs) -> Step {
     use std::cmp::Ordering;
     use Value::*;
     fn variant_index(v: &Value) -> u8 {
@@ -359,12 +560,19 @@ fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Orderin
             Json(_) => 25,
         }
     }
+    /// The keys and values of a Dictionary's entries, entry by entry.
+    fn entries_in_order(dict: &Collection<DictEntries>) -> Vec<Value> {
+        dict.lock()
+            .values()
+            .flat_map(|(key, value)| [key.clone(), value.clone()])
+            .collect()
+    }
     let mine = variant_index(left);
     let theirs = variant_index(right);
     if mine != theirs {
-        return mine.cmp(&theirs);
+        return Step::Done(mine.cmp(&theirs));
     }
-    match (left, right) {
+    Step::Done(match (left, right) {
         (Null, Null) | (Empty, Empty) => Ordering::Equal,
         (Integer(a) | BigInteger(a), Integer(b) | BigInteger(b)) => a.cmp(b),
         (Decimal(a), Decimal(b)) => a.cmp(b),
@@ -392,28 +600,23 @@ fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Orderin
         (Record(a), Record(b)) | (RecordRef(a), RecordRef(b)) => {
             (a.table_id, &a.table_name, a.handle).cmp(&(b.table_id, &b.table_name, b.handle))
         }
-        (Variant(a), Variant(b)) => compare(a, b, met),
-        (Array(a), Array(b)) => compare_in_order(a.iter(), b.iter(), met),
+        (Variant(a), Variant(b)) => {
+            return Step::Descend(vec![(**a).clone()], vec![(**b).clone()]);
+        }
+        (Array(a), Array(b)) => return Step::Descend(a.clone(), b.clone()),
         (List(a), List(b)) if a.same(b) => Ordering::Equal,
         (List(a), List(b)) => {
             if !met.insert((a.address(), b.address())) {
-                return Ordering::Equal;
+                return Step::Done(Ordering::Equal);
             }
-            let (a, b) = (a.snapshot(), b.snapshot());
-            compare_in_order(a.iter(), b.iter(), met)
+            return Step::Descend(a.snapshot(), b.snapshot());
         }
         (Dict(a), Dict(b)) if a.same(b) => Ordering::Equal,
         (Dict(a), Dict(b)) => {
             if !met.insert((a.address(), b.address())) {
-                return Ordering::Equal;
+                return Step::Done(Ordering::Equal);
             }
-            let (a, b) = (a.snapshot(), b.snapshot());
-            // Entry by entry, the key and then the value.
-            compare_in_order(
-                a.values().flat_map(|(key, value)| [key, value]),
-                b.values().flat_map(|(key, value)| [key, value]),
-                met,
-            )
+            return Step::Descend(entries_in_order(a), entries_in_order(b));
         }
         (Blob(a), Blob(b)) => a.cmp(b),
         (ErrorInfo(a), ErrorInfo(b)) => a.message.cmp(&b.message),
@@ -436,31 +639,15 @@ fn compare(left: &Value, right: &Value, met: &mut MetPairs) -> std::cmp::Orderin
                 start: b_start,
                 end: b_end,
             },
-        ) => compare(a_start, b_start, met).then_with(|| compare(a_end, b_end, met)),
+        ) => {
+            return Step::Descend(
+                vec![(**a_start).clone(), (**a_end).clone()],
+                vec![(**b_start).clone(), (**b_end).clone()],
+            );
+        }
         // Different variants handled by the index check above.
         _ => Ordering::Equal,
-    }
-}
-
-/// Compare two sequences of values element by element, and a shorter
-/// sequence that matches so far first.
-fn compare_in_order<'a>(
-    mut left: impl Iterator<Item = &'a Value>,
-    mut right: impl Iterator<Item = &'a Value>,
-    met: &mut MetPairs,
-) -> std::cmp::Ordering {
-    use std::cmp::Ordering;
-    loop {
-        match (left.next(), right.next()) {
-            (None, None) => return Ordering::Equal,
-            (None, Some(_)) => return Ordering::Less,
-            (Some(_), None) => return Ordering::Greater,
-            (Some(a), Some(b)) => match compare(a, b, met) {
-                Ordering::Equal => {}
-                different => return different,
-            },
-        }
-    }
+    })
 }
 
 impl PartialOrd for Value {
@@ -486,6 +673,114 @@ pub const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
 /// Dictionary. The runtime uses the array limit for all three: a value takes
 /// 56 bytes before any text it holds, so a full list of numbers takes 53 MiB.
 pub const MAX_COLLECTION_LEN: usize = 1_000_000;
+
+/// The most bytes the Lists, Dictionaries, arrays, TextBuilders and JSON
+/// values of one test hold together in the local test runtime.
+///
+/// [`MAX_TEXT_BYTES`] and [`MAX_COLLECTION_LEN`] bound one value, and a
+/// test that copied a large text into many elements took memory at a
+/// gigabyte a second. The runtime counts each List or Dictionary element as
+/// it is added, the size of a `Value` and the bytes of the text it holds,
+/// and takes it off when the element is removed or the last handle to its
+/// List or Dictionary drops. A TextBuilder counts its text. An array element
+/// counts the text assigned to it until another text replaces it, and the
+/// count stays after the array goes out of scope. A JSON node counts from
+/// when it is made until the test ends. An addition past this total is an
+/// AL error.
+///
+/// The total is kept per thread, and the test runner runs each test on a
+/// thread of its own.
+pub const MAX_HELD_BYTES: usize = 256 * 1024 * 1024;
+
+thread_local! {
+    /// The bytes the test running on this thread holds, as
+    /// [`MAX_HELD_BYTES`] counts them.
+    static HELD_BYTES: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The bytes the test running on this thread holds, as [`MAX_HELD_BYTES`]
+/// counts them.
+pub(crate) fn held_bytes() -> usize {
+    HELD_BYTES.with(Cell::get)
+}
+
+/// Add `bytes` to the test's total, or refuse when the total would pass
+/// [`MAX_HELD_BYTES`]. `operation` names what adds them, for the message.
+pub(crate) fn hold_bytes(operation: &str, bytes: usize) -> Result<(), String> {
+    let total = held_bytes().saturating_add(bytes);
+    if bytes > 0 && total > MAX_HELD_BYTES {
+        return Err(over_held_budget(operation, total));
+    }
+    HELD_BYTES.with(|held| held.set(total));
+    Ok(())
+}
+
+/// Add `bytes` to the test's total without checking it.
+pub(crate) fn add_held_bytes(bytes: usize) {
+    HELD_BYTES.with(|held| held.set(held.get().saturating_add(bytes)));
+}
+
+/// Refuse when the test's total is past [`MAX_HELD_BYTES`].
+pub(crate) fn check_held_bytes(operation: &str) -> Result<(), String> {
+    let total = held_bytes();
+    if total > MAX_HELD_BYTES {
+        return Err(over_held_budget(operation, total));
+    }
+    Ok(())
+}
+
+/// Take `bytes` off the test's total.
+pub(crate) fn release_held_bytes(bytes: usize) {
+    HELD_BYTES.with(|held| held.set(held.get().saturating_sub(bytes)));
+}
+
+fn over_held_budget(operation: &str, total: usize) -> String {
+    format!(
+        "{operation} would make the Lists, Dictionaries, arrays, TextBuilders and JSON values \
+         of this test hold {total} bytes, over the local test runtime's limit of {} MiB for \
+         one test",
+        MAX_HELD_BYTES / (1024 * 1024)
+    )
+}
+
+/// The bytes of text or data `value` owns, as [`MAX_HELD_BYTES`] counts an
+/// array element. An array counts its elements and the text they hold.
+pub(crate) fn owned_bytes(value: &Value) -> usize {
+    fn text_bytes(value: &Value) -> usize {
+        match value {
+            Value::Text(text) | Value::Code(text) | Value::Guid(text) => text.len(),
+            Value::Blob(bytes) => bytes.len(),
+            _ => 0,
+        }
+    }
+    let mut value = value;
+    while let Value::Variant(inner) = value {
+        value = inner;
+    }
+    match value {
+        Value::Array(items) => items
+            .iter()
+            .map(|item| std::mem::size_of::<Value>().saturating_add(text_bytes(item)))
+            .sum(),
+        other => text_bytes(other),
+    }
+}
+
+/// The bytes `value` takes as an element of a List or Dictionary: the value
+/// itself and what it owns. A List, Dictionary or TextBuilder element is a
+/// handle, and its contents count on their own.
+pub(crate) fn element_bytes(value: &Value) -> usize {
+    std::mem::size_of::<Value>().saturating_add(owned_bytes(value))
+}
+
+/// The bytes one Dictionary entry takes: its normalised key text, key and
+/// value.
+pub(crate) fn entry_bytes(key_text: &str, key: &Value, value: &Value) -> usize {
+    key_text
+        .len()
+        .saturating_add(element_bytes(key))
+        .saturating_add(element_bytes(value))
+}
 
 /// Refuse a text of `bytes` bytes that is longer than [`MAX_TEXT_BYTES`].
 /// `operation` names what would build it, for the message.
@@ -540,6 +835,20 @@ pub struct ErrorInfo {
 }
 
 impl Value {
+    /// Move the values this value holds into `into`: an Array's elements, a
+    /// Variant's value, and the contents of a List or Dictionary when this
+    /// is the last handle to them. Drop uses it to free nested values in a
+    /// loop.
+    fn take_held_values(&mut self, into: &mut Vec<Value>) {
+        match self {
+            Value::List(list) => list.contents.take_values_if_last(into),
+            Value::Dict(dict) => dict.contents.take_values_if_last(into),
+            Value::Array(values) => into.append(values),
+            Value::Variant(value) => into.push(std::mem::replace(&mut **value, Value::Null)),
+            _ => {}
+        }
+    }
+
     /// Truthiness for AL `IF`/`WHILE` semantics: only `Boolean(true)` is
     /// truthy. Numbers, strings, etc. are NOT auto-coerced (AL is strict).
     pub fn is_truthy(&self) -> bool {
@@ -642,6 +951,24 @@ impl Value {
     /// A new `List` holding `items`, with no declared element type.
     pub fn list(items: Vec<Value>) -> Value {
         Value::List(Collection::new(items, None))
+    }
+
+    /// A new `List of [member_type]` holding `items`, for a method whose
+    /// return type is a typed list, so the list converts what it is given.
+    pub fn typed_list(member_type: &str, items: Vec<Value>) -> Value {
+        Value::List(Collection::new(items, Some(member_type)))
+    }
+
+    /// A new `List of [Text]` holding `items`, as `Text.Split`,
+    /// `Enum.Names()` and `JsonObject.Keys()` return.
+    pub fn text_list(items: Vec<Value>) -> Value {
+        Value::typed_list("Text", items)
+    }
+
+    /// A new `List of [JsonToken]` holding `items`, as `JsonObject.Values()`
+    /// returns.
+    pub fn json_token_list(items: Vec<Value>) -> Value {
+        Value::typed_list("JsonToken", items)
     }
 
     /// A new `TextBuilder` holding `text`.
@@ -1072,5 +1399,57 @@ mod tests {
         assert_eq!(map.get(&Value::Decimal(dec!(3.5))), Some(&"dec"));
         let keys: Vec<_> = map.keys().cloned().collect();
         assert!(keys[0] < keys[1]);
+    }
+
+    /// A chain `depth` levels deep around `Integer(end)`: each level a List,
+    /// or with `dictionaries` every other level a Dictionary.
+    fn nested(depth: usize, end: i64, dictionaries: bool) -> Value {
+        let mut value = Value::list(vec![Value::Integer(end)]);
+        for level in 0..depth {
+            value = if dictionaries && level % 2 == 0 {
+                let mut entries = DictEntries::new();
+                entries.insert("1".to_string(), (Value::Integer(1), value));
+                Value::dict(entries)
+            } else {
+                Value::list(vec![value])
+            };
+        }
+        value
+    }
+
+    /// Run `body` on a thread with the interpreter's stack, as the test
+    /// backend runs an AL body.
+    fn on_interpreter_stack<T: Send + 'static>(body: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+            .spawn(body)
+            .expect("spawn the interpreter thread")
+            .join()
+            .expect("the interpreter thread returns")
+    }
+
+    /// `compare` recursed once per level, and two chains 40,000 deep
+    /// overflowed the interpreter's stack in a debug build and aborted the
+    /// process.
+    #[test]
+    fn chains_of_collections_100000_deep_compare() {
+        on_interpreter_stack(|| {
+            for dictionaries in [false, true] {
+                let same = nested(100_000, 1, dictionaries);
+                assert_eq!(same, nested(100_000, 1, dictionaries));
+                assert!(same < nested(100_000, 2, dictionaries));
+            }
+        });
+    }
+
+    /// Dropping the last handle to a chain dropped one level per native
+    /// frame, and a chain 210,000 deep overflowed the interpreter's stack in
+    /// a debug build and aborted the process.
+    #[test]
+    fn chains_of_collections_300000_deep_drop() {
+        on_interpreter_stack(|| {
+            drop(nested(300_000, 1, false));
+            drop(nested(300_000, 1, true));
+        });
     }
 }

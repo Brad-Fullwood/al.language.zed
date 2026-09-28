@@ -2124,3 +2124,115 @@ mod lock_order_tests {
         );
     }
 }
+
+mod project_file_refresh_tests {
+    use super::*;
+
+    fn write_manifest(dir: &std::path::Path, application: &str) {
+        std::fs::write(
+            dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "Editor path",
+                "publisher": "Tests",
+                "version": "1.0.0.0",
+                "application": application
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+
+    /// The Base Application version a symbol download asks for: the
+    /// download clones this project and requests its dependencies.
+    async fn base_application(server: &AlServer) -> Option<String> {
+        server
+            .workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .expect("a project is loaded")
+            .all_dependencies()
+            .into_iter()
+            .find(|dependency| dependency.name == "Base Application")
+            .map(|dependency| dependency.version)
+    }
+
+    async fn server_with_project(
+        dir: &std::path::Path,
+    ) -> (LspService<AlServer>, tower_lsp::ClientSocket) {
+        let (service, socket) = LspService::new(AlServer::new);
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+        *server.workspace.project.write().await =
+            Some(al_project::project::find_project(dir).expect("project loads"));
+        (service, socket)
+    }
+
+    async fn app_json_changed(server: &AlServer, dir: &std::path::Path) {
+        server
+            .did_change_watched_files(DidChangeWatchedFilesParams {
+                changes: vec![FileEvent {
+                    uri: Url::from_file_path(dir.join("app.json")).unwrap(),
+                    typ: FileChangeType::CHANGED,
+                }],
+            })
+            .await;
+    }
+
+    /// The language server read `app.json` at initialization and on
+    /// `al.reindex` only, so after `application` was edited
+    /// `al.downloadSymbols` asked for the versions the manifest held before.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_app_json_edit_reaches_the_manifest_the_download_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), "25.0.0.0");
+        let (service, _socket) = server_with_project(dir.path()).await;
+        let server = service.inner();
+        assert_eq!(base_application(server).await.as_deref(), Some("25.0.0.0"));
+
+        write_manifest(dir.path(), "26.0.0.0");
+        app_json_changed(server, dir.path()).await;
+        assert_eq!(
+            base_application(server).await.as_deref(),
+            Some("26.0.0.0"),
+            "a watched app.json edit must reach the loaded manifest"
+        );
+
+        // The daemon's rule: a manifest that no longer parses leaves the one
+        // read before in use.
+        std::fs::write(dir.path().join("app.json"), "{ \"id\": ").unwrap();
+        app_json_changed(server, dir.path()).await;
+        assert_eq!(base_application(server).await.as_deref(), Some("26.0.0.0"));
+    }
+
+    /// A client without a file watcher, or a download run straight after a
+    /// save, still asks for what `app.json` holds when the command runs.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_symbol_download_reads_app_json_before_it_asks() {
+        use futures::StreamExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        write_manifest(dir.path(), "25.0.0.0");
+        let (service, mut socket) = server_with_project(dir.path()).await;
+        let server = service.inner();
+        // A client send completes only once the socket has taken it.
+        tokio::spawn(async move { while socket.next().await.is_some() {} });
+
+        write_manifest(dir.path(), "26.0.0.0");
+        // No debug configuration, so the server download stops before any
+        // request leaves the process.
+        server
+            .execute_command(ExecuteCommandParams {
+                command: "al.downloadSymbolsServer".to_string(),
+                arguments: Vec::new(),
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .expect("the command runs");
+        assert_eq!(base_application(server).await.as_deref(), Some("26.0.0.0"));
+    }
+}

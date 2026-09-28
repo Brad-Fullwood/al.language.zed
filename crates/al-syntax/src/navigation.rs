@@ -765,8 +765,8 @@ pub(crate) fn collect_primary_expression_names_into(
             }
         }
 
-        // FOR/FOREACH iterator fields are identifier nodes rather than primary
-        // expressions, but the loop machinery itself is a meaningful use.
+        // FOR/FOREACH iterator fields are name_or_keyword nodes rather than
+        // primary expressions, but the loop machinery itself is a meaningful use.
         if matches!(node.kind(), "for_statement" | "foreach_statement") {
             if let Some(iterator) = node.child_by_field_name("iterator") {
                 if let Some(name) = super::node_text_clean(iterator, source) {

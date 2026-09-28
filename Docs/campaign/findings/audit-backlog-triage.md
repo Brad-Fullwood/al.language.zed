@@ -90,7 +90,7 @@ recorded there, not re-investigated separately.
 | grammar.js comment token treats # as comment (grammar.js:1181) | fixed | comment rule now matches only `//` and `/* */`, with a comment explaining AL has no `#` comments |
 | Docs parsing-and-syntax.md omits AL-NL010 (line 24,141) | fixed | doc now lists AL-NL010 at lines 24 and 144 |
 | Docs claims and/or counted in complexity, code didn't (line 81) | fixed | complexity.rs now actually counts and/or via operator_word matching, so doc and code agree |
-| Docs language-assets.md claims folds.scm folds attribute lists (line 25) | open | folds.scm:languages/al and tree-sitter-al/queries fold list has no `(attribute)` entry despite an `attribute` node existing in the grammar. Doc still overstates |
+| Docs language-assets.md claims folds.scm folds attribute lists (line 25) | fixed | the doc line now lists what folds.scm folds. `(attribute)` stays out of folds.scm because an attribute starts the fold of the procedure it decorates (`findings/grammar-query-drift.md`) |
 
 ## Analysis & Insight (al-analysis, al-insight)
 

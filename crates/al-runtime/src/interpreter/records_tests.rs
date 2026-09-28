@@ -5585,7 +5585,7 @@ const KEYWORD_NAMED_INDEXES: &str = r#"codeunit 50450 "Keyword Indexes"
 
 /// A variable named after an object or type keyword can be indexed. The
 /// grammar gives its name as `object_keyword` or `type_keyword`, which the
-/// index read and write did not accept (GR3-2).
+/// index read and write did not accept.
 #[test]
 fn variables_named_after_keywords_can_be_indexed() {
     let result = run(
@@ -5595,6 +5595,57 @@ fn variables_named_after_keywords_can_be_indexed() {
         vec![],
     );
     assert_eq!(ok(result), Value::Text("xbc|B|5".into()));
+}
+
+const QUOTED_LOOP_VARIABLES: &str = r#"codeunit 50291 "Quoted Loop"
+{
+    procedure QuotedLoop(): Text
+    var
+        "My Index": Integer;
+        T: Text;
+    begin
+        for "My Index" := 1 to 3 do
+            T += Format("My Index");
+        exit(T);
+    end;
+
+    procedure QuotedDownto(): Text
+    var
+        "I": Integer;
+        T: Text;
+    begin
+        for "I" := 3 downto 1 do
+            T += Format("I");
+        exit(T);
+    end;
+
+    procedure KeywordNamed(): Integer
+    var
+        Value: Integer;
+        Sum: Integer;
+    begin
+        for Value := 1 to 2 do
+            Sum += Value;
+        exit(Sum);
+    end;
+}
+"#;
+
+/// A quoted name and a name that is also a keyword can be the `for` loop
+/// variable, as they can be the `foreach` variable.
+#[test]
+fn a_quoted_name_can_be_the_for_loop_variable() {
+    let call = |proc: &str| {
+        run(
+            &[("/ws/QuotedLoop.al", QUOTED_LOOP_VARIABLES)],
+            "Quoted Loop",
+            proc,
+            vec![],
+        )
+    };
+    assert_eq!(ok(call("QuotedLoop")), Value::Text("123".into()));
+    assert_eq!(ok(call("QuotedDownto")), Value::Text("321".into()));
+    assert_eq!(ok(call("KeywordNamed")), Value::Integer(3));
 }
 
 const SIGNED_CASE_LABELS: &str = r#"codeunit 50286 "Signed Labels"
@@ -6531,8 +6582,7 @@ fn a_record_called_back_from_another_records_table_code_keeps_its_own_globals() 
     assert_eq!(ok(call("AskOtherReadsBack")), Value::Boolean(true));
 }
 
-/// Lists and dictionaries that hold each other, the shapes of the round 6
-/// security findings SEC6-3 and SEC6-4.
+/// Lists and dictionaries that hold each other, directly or through a cycle.
 const CYCLIC_COLLECTIONS: &str = r#"codeunit 50390 "Cyclic Collections"
 {
     procedure ListsInACycle(): Boolean
@@ -6604,26 +6654,31 @@ const CYCLIC_COLLECTIONS: &str = r#"codeunit 50390 "Cyclic Collections"
 }
 "#;
 
-/// Run `proc` of [`CYCLIC_COLLECTIONS`] on a thread with the interpreter's
-/// stack, as the test backend does, so a test measures the runtime's own
-/// guards and not the 2 MiB stack of a test thread. A procedure that has not
-/// returned after 60 seconds fails the test, and its thread is left behind.
-fn run_cyclic(proc: &'static str) -> Eval {
+/// Run `proc` of the codeunit `object` in `source` on a thread with the
+/// interpreter's stack, as the test backend does, so a test measures the
+/// runtime's own guards and not the 2 MiB stack of a test thread. A procedure
+/// that has not returned after 60 seconds fails the test, and its thread is
+/// left behind.
+fn run_on_interpreter_stack(
+    source: &'static str,
+    object: &'static str,
+    proc: &'static str,
+    args: Vec<Value>,
+) -> Eval {
     let (done, result) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
         .spawn(move || {
-            let _ = done.send(run(
-                &[("/ws/Cyclic.al", CYCLIC_COLLECTIONS)],
-                "Cyclic Collections",
-                proc,
-                vec![],
-            ));
+            let _ = done.send(run(&[("/ws/Stack.al", source)], object, proc, args));
         })
         .expect("spawn the interpreter thread");
     result
         .recv_timeout(std::time::Duration::from_secs(60))
         .unwrap_or_else(|error| panic!("{proc} did not return: {error}"))
+}
+
+fn run_cyclic(proc: &'static str) -> Eval {
+    run_on_interpreter_stack(CYCLIC_COLLECTIONS, "Cyclic Collections", proc, vec![])
 }
 
 /// Comparing two lists that hold each other walked the cycle in `Value::cmp`
@@ -6664,8 +6719,8 @@ fn searching_a_list_in_a_cycle_returns() {
     );
 }
 
-/// Values that double or grow to a length the test gives, the shapes of the
-/// round 6 security finding SEC6-5.
+/// Values that double or grow to a length the test gives, past the text and
+/// collection caps.
 const GROWING_VALUES: &str = r#"codeunit 50393 "Growing Values"
 {
     procedure DoubleText(): Integer
@@ -6877,4 +6932,976 @@ fn a_dictionary_past_the_limit_fails_the_test() {
     assert!(error_message(call("Set", limit)).contains("1000000 elements"));
     // Set on a key that is there replaces its value.
     assert!(!call("Set", 7).is_error());
+}
+
+/// A `List of [Code[20]]` and a `Dictionary of [Integer, Text]` whose
+/// arguments arrive as another type: Text for a Code element, a Char for an
+/// Integer key. Business Central converts each argument to the declared
+/// type, as it converts an argument to a typed parameter.
+const TYPED_COLLECTION_ARGUMENTS: &str = r#"table 50990 "Typed Item"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+codeunit 50991 "Typed Collection Arguments"
+{
+    procedure CodeListFromText(): Text
+    var
+        L: List of [Code[20]];
+    begin
+        L.Add('abc');
+        if not L.Contains('ABC') then
+            exit('missing');
+        exit(L.Get(1));
+    end;
+
+    procedure CodeListIndexOf(): Integer
+    var
+        L: List of [Code[20]];
+        C: Code[20];
+    begin
+        C := 'xyz';
+        L.Add(C);
+        exit(L.IndexOf('XYZ'));
+    end;
+
+    procedure CodeListContainsCodeVariable(): Text
+    var
+        L: List of [Code[20]];
+        C: Code[20];
+        D: Code[20];
+    begin
+        C := 'xyz';
+        D := 'XYZ';
+        L.Add(C);
+        if L.Contains(D) then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure CodeListFromField(): Text
+    var
+        R: Record "Typed Item";
+        L: List of [Code[20]];
+    begin
+        R."No." := 'ITEM1';
+        R.Insert();
+        R.FindFirst();
+        L.Add(R."No.");
+        if L.Contains('ITEM1') then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure CodeListInsertSetAndRemove(): Text
+    var
+        L: List of [Code[20]];
+        Old: Code[20];
+    begin
+        L.Add('a');
+        L.Insert(1, 'b ');
+        L.Set(2, 'c', Old);
+        if not L.Remove('B') then
+            exit('remove missed');
+        exit(L.Get(1) + '/' + Old);
+    end;
+
+    procedure CodeListAddRangeOfTexts(): Integer
+    var
+        L: List of [Code[20]];
+    begin
+        L.AddRange('a', 'b');
+        exit(L.LastIndexOf('B'));
+    end;
+
+    procedure ShortCodeListOverflows()
+    var
+        L: List of [Code[2]];
+    begin
+        L.Add('abc');
+    end;
+
+    procedure IntegerKeyFromChar(): Text
+    var
+        D: Dictionary of [Integer, Text];
+        S: Text;
+    begin
+        S := 'abc';
+        D.Add(S[1], 'x');
+        if D.ContainsKey(97) then
+            exit('found');
+        exit('missing');
+    end;
+}
+"#;
+
+fn run_typed_collection(proc: &str) -> Eval {
+    run(
+        &[("/ws/TypedCollection.al", TYPED_COLLECTION_ARGUMENTS)],
+        "Typed Collection Arguments",
+        proc,
+        vec![],
+    )
+}
+
+/// `L.Add('abc')` on a `List of [Code[20]]` stores the Code `ABC`, so a
+/// search with a Text literal, a Code variable of another case, or a Code
+/// field's value finds it.
+#[test]
+fn a_list_of_code_converts_each_added_and_searched_value_to_code() {
+    assert_eq!(
+        ok(run_typed_collection("CodeListFromText")),
+        Value::Code("ABC".into())
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListIndexOf")),
+        Value::Integer(1)
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListContainsCodeVariable")),
+        Value::Text("found".into())
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListFromField")),
+        Value::Text("found".into())
+    );
+}
+
+/// `Insert`, `Set`, `AddRange` and `Remove` convert their element the same
+/// way, and the `var` old value of `Set` comes back as the stored Code:
+/// `[A]`, then `[B, A]`, then `[B, C]` with `A` as the old value, then `[C]`.
+#[test]
+fn every_list_method_that_takes_an_element_converts_it() {
+    assert_eq!(
+        ok(run_typed_collection("CodeListInsertSetAndRemove")),
+        Value::Text("C/A".into())
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListAddRangeOfTexts")),
+        Value::Integer(2)
+    );
+}
+
+/// A value longer than the element's `Code[N]` raises the overflow text
+/// Business Central raises, as a Dictionary key does.
+#[test]
+fn a_list_element_longer_than_its_declared_length_raises() {
+    assert!(
+        error_message(run_typed_collection("ShortCodeListOverflows"))
+            .contains("must be less than or equal to 2")
+    );
+}
+
+/// `D.Add(S[1], 'x')` on a `Dictionary of [Integer, Text]` keys by the
+/// character's code, so `ContainsKey(97)` finds the entry for `a`.
+#[test]
+fn an_integer_key_given_as_a_char_is_its_character_code() {
+    assert_eq!(
+        ok(run_typed_collection("IntegerKeyFromChar")),
+        Value::Text("found".into())
+    );
+}
+
+/// Lists that come out of `Dictionary.Keys()` and `Dictionary.Values()`.
+/// Business Central types them by the dictionary's declaration, so the
+/// list of lists takes `AddRange(T)` and the list of Code converts what it
+/// adds.
+const DICTIONARY_KEYS_AND_VALUES: &str = r#"codeunit 50992 "Dictionary Keys And Values"
+{
+    var
+        Global: Dictionary of [Code[20], List of [Integer]];
+
+    procedure ValuesThenAddRange(): Integer
+    var
+        D: Dictionary of [Integer, List of [Integer]];
+        Vals: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Inner.AddRange(1, 2, 3);
+        D.Add(1, Inner);
+        Vals := D.Values();
+        Vals.AddRange(Inner);
+        exit(Vals.Count());
+    end;
+
+    procedure KeysThenAdd(): Text
+    var
+        D: Dictionary of [Code[20], Integer];
+        K: List of [Code[20]];
+    begin
+        D.Add('A', 1);
+        K := D.Keys();
+        K.Add('b');
+        if K.Contains('B') then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure GlobalValuesThenAddRange(): Integer
+    var
+        Vals: List of [List of [Integer]];
+        Inner: List of [Integer];
+    begin
+        Inner.AddRange(1, 2, 3);
+        Global.Add('x', Inner);
+        Vals := Global.Values();
+        Vals.AddRange(Inner);
+        exit(Vals.Count());
+    end;
+}
+"#;
+
+fn run_keys_and_values(proc: &str) -> Eval {
+    run(
+        &[("/ws/KeysAndValues.al", DICTIONARY_KEYS_AND_VALUES)],
+        "Dictionary Keys And Values",
+        proc,
+        vec![],
+    )
+}
+
+/// `Vals := D.Values()` for a `Dictionary of [Integer, List of [Integer]]`
+/// gives a list of lists, so `Vals.AddRange(Inner)` adds `Inner` as one
+/// element and the count is 2. A global dictionary types its values the
+/// same way.
+#[test]
+fn a_values_list_of_lists_adds_a_list_as_one_element() {
+    assert_eq!(
+        ok(run_keys_and_values("ValuesThenAddRange")),
+        Value::Integer(2)
+    );
+    assert_eq!(
+        ok(run_keys_and_values("GlobalValuesThenAddRange")),
+        Value::Integer(2)
+    );
+}
+
+/// `K := D.Keys()` for a `Dictionary of [Code[20], Integer]` gives a list
+/// of Code, so `K.Add('b')` stores `B` and `K.Contains('B')` finds it.
+#[test]
+fn a_keys_list_converts_what_it_adds_to_the_key_type() {
+    assert_eq!(
+        ok(run_keys_and_values("KeysThenAdd")),
+        Value::Text("found".into())
+    );
+}
+
+/// An array element passed to a `var` parameter, with an index the callee
+/// moves or an index expression with a side effect. Business Central binds
+/// the reference before the call, so the write back lands on the element
+/// the caller named and the index runs once.
+const VAR_ELEMENT_INDEX: &str = r#"codeunit 50993 "Var Element Index"
+{
+    var
+        I: Integer;
+
+    procedure IndexReadAfterCallee(): Text
+    var
+        Amounts: array[3] of Integer;
+    begin
+        I := 1;
+        BumpAndMoveIndex(Amounts[I]);
+        exit(Format(Amounts[1]) + '/' + Format(Amounts[2]));
+    end;
+
+    local procedure BumpAndMoveIndex(var N: Integer)
+    begin
+        I := 2;
+        N += 1;
+    end;
+
+    procedure IndexEvaluatedTwice(): Text
+    var
+        Amounts: array[3] of Integer;
+    begin
+        I := 0;
+        Bump(Amounts[NextIndex()]);
+        exit(Format(Amounts[1]) + '/' + Format(Amounts[2]) + '/' + Format(I));
+    end;
+
+    local procedure NextIndex(): Integer
+    begin
+        I += 1;
+        exit(I);
+    end;
+
+    local procedure Bump(var N: Integer)
+    begin
+        N += 1;
+    end;
+
+    procedure ListGetIntoSideEffectIndex(): Text
+    var
+        L: List of [Integer];
+        Slots: array[3] of Integer;
+    begin
+        L.Add(9);
+        I := 0;
+        L.Get(1, Slots[NextIndex()]);
+        exit(Format(Slots[1]) + '/' + Format(Slots[2]) + '/' + Format(I));
+    end;
+
+    procedure CharOfTextThroughVar(): Text
+    var
+        T: Text;
+    begin
+        T := 'abc';
+        I := 1;
+        UpperAndMoveIndex(T[I]);
+        exit(T);
+    end;
+
+    local procedure UpperAndMoveIndex(var C: Char)
+    begin
+        I := 3;
+        C := 'X';
+    end;
+}
+"#;
+
+fn run_var_element(proc: &str) -> Eval {
+    run(
+        &[("/ws/VarElementIndex.al", VAR_ELEMENT_INDEX)],
+        "Var Element Index",
+        proc,
+        vec![],
+    )
+}
+
+/// `Bump(Amounts[I])` where the callee sets `I := 2` before writing its
+/// parameter still writes `Amounts[1]`, for an array element and for a
+/// character of a Text.
+#[test]
+fn a_var_array_element_is_written_where_the_caller_indexed_it() {
+    assert_eq!(
+        ok(run_var_element("IndexReadAfterCallee")),
+        Value::Text("1/0".into())
+    );
+    assert_eq!(
+        ok(run_var_element("CharOfTextThroughVar")),
+        Value::Text("Xbc".into())
+    );
+}
+
+/// `Bump(Amounts[NextIndex()])` runs `NextIndex` once: the element it names
+/// is bumped and the counter stays at 1.
+#[test]
+fn the_index_of_a_var_array_element_runs_once() {
+    assert_eq!(
+        ok(run_var_element("IndexEvaluatedTwice")),
+        Value::Text("1/0/1".into())
+    );
+}
+
+/// `L.Get(1, Slots[NextIndex()])` runs `NextIndex` once on the List path
+/// too: the value lands in `Slots[1]` and the counter stays at 1.
+#[test]
+fn a_list_get_var_result_runs_its_element_index_once() {
+    assert_eq!(
+        ok(run_var_element("ListGetIntoSideEffectIndex")),
+        Value::Text("9/0/1".into())
+    );
+}
+
+/// Procedures overloaded on the table of a Record parameter or the object
+/// of a Codeunit parameter. alc picks the declaration whose subtype is the
+/// argument's, so each call runs the body written for its table.
+const SUBTYPE_OVERLOADS: &str = r#"table 50994 "Overload Cust"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+table 50995 "Overload Vend"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+codeunit 50996 "Overload Helper A"
+{
+    procedure Name(): Text
+    begin
+        exit('a');
+    end;
+}
+
+codeunit 50997 "Overload Helper B"
+{
+    procedure Name(): Text
+    begin
+        exit('b');
+    end;
+}
+
+codeunit 50998 "Subtype Overloads"
+{
+    procedure Describe(C: Record "Overload Cust"): Text
+    begin
+        exit('cust');
+    end;
+
+    procedure Describe(V: Record "Overload Vend"): Text
+    begin
+        exit('vend');
+    end;
+
+    procedure ByRecordOverload(): Text
+    var
+        C: Record "Overload Cust";
+        V: Record "Overload Vend";
+    begin
+        exit(Describe(C) + '|' + Describe(V));
+    end;
+
+    procedure ByTemporaryRecordOverload(): Text
+    var
+        V: Record "Overload Vend" temporary;
+    begin
+        exit(Describe(V));
+    end;
+
+    procedure Tag(var A: Codeunit "Overload Helper A"): Text
+    begin
+        exit('a:' + A.Name());
+    end;
+
+    procedure Tag(var B: Codeunit "Overload Helper B"): Text
+    begin
+        exit('b:' + B.Name());
+    end;
+
+    procedure ByCodeunitOverload(): Text
+    var
+        A: Codeunit "Overload Helper A";
+        B: Codeunit "Overload Helper B";
+    begin
+        exit(Tag(B) + '|' + Tag(A));
+    end;
+}
+"#;
+
+fn run_subtype_overload(proc: &str) -> Eval {
+    run(
+        &[("/ws/SubtypeOverloads.al", SUBTYPE_OVERLOADS)],
+        "Subtype Overloads",
+        proc,
+        vec![],
+    )
+}
+
+/// `Describe(C) + '|' + Describe(V)` with one overload per table gives
+/// `cust|vend`, and a temporary record of the second table still picks its
+/// own overload.
+#[test]
+fn an_overload_is_chosen_by_the_table_of_its_record_argument() {
+    assert_eq!(
+        ok(run_subtype_overload("ByRecordOverload")),
+        Value::Text("cust|vend".into())
+    );
+    assert_eq!(
+        ok(run_subtype_overload("ByTemporaryRecordOverload")),
+        Value::Text("vend".into())
+    );
+}
+
+/// `Tag(B) + '|' + Tag(A)` with one overload per codeunit runs the body
+/// declared for each argument's codeunit: each body names its own prefix,
+/// so the first declaration run with B's value would show as `a:b`.
+#[test]
+fn an_overload_is_chosen_by_the_object_of_its_codeunit_argument() {
+    assert_eq!(
+        ok(run_subtype_overload("ByCodeunitOverload")),
+        Value::Text("b:b|a:a".into())
+    );
+}
+
+/// JSON values added to themselves or to a value they hold, the shapes of
+/// the round 13 finding R13-RT-2.
+const JSON_SELF_ADD: &str = r#"codeunit 50460 "Json Self Add"
+{
+    procedure ArrayAddedToItself(): Text
+    var
+        JA: JsonArray;
+        Out: Text;
+    begin
+        JA.Add(1);
+        JA.Add(JA);
+        JA.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure ArrayAddedToItselfTwice(): Text
+    var
+        JA: JsonArray;
+        Out: Text;
+    begin
+        JA.Add(1);
+        JA.Add(JA);
+        JA.Add(JA);
+        JA.WriteTo(Out);
+        exit(Format(JA.Count()) + ' ' + Out);
+    end;
+
+    procedure ObjectAddedToItself(): Text
+    var
+        JO: JsonObject;
+        Out: Text;
+    begin
+        JO.Add('a', 1);
+        JO.Add('self', JO);
+        JO.Replace('a', JO);
+        JO.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure ParentAddedToItsChild(): Text
+    var
+        JO: JsonObject;
+        JA: JsonArray;
+        Out: Text;
+        Child: Text;
+    begin
+        JO.Add('a', JA);
+        JA.Add(JO);
+        JA.Insert(0, JO);
+        JO.WriteTo(Out);
+        JA.WriteTo(Child);
+        exit(Out + ' ' + Child);
+    end;
+
+    procedure ArraySetToItself(): Text
+    var
+        JA: JsonArray;
+        Out: Text;
+    begin
+        JA.Add(1);
+        JA.Add(2);
+        JA.Set(1, JA);
+        JA.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure RootAddedToADeepChild(): Text
+    var
+        JO: JsonObject;
+        Mid: JsonObject;
+        Inner: JsonArray;
+        Token: JsonToken;
+        Deep: JsonArray;
+        Out: Text;
+    begin
+        Mid.Add('inner', Inner);
+        JO.Add('outer', Mid);
+        JO.SelectToken('$.outer.inner', Token);
+        Deep := Token.AsArray();
+        Deep.Add(JO);
+        JO.WriteTo(Out);
+        exit(Out);
+    end;
+}
+"#;
+
+fn run_json_self_add(proc: &'static str) -> Eval {
+    run_on_interpreter_stack(JSON_SELF_ADD, "Json Self Add", proc, vec![])
+}
+
+/// `JA.Add(JA)` put the array's own node among its items, so the next
+/// `Add` or `WriteTo` walked the cycle until the stack overflowed and the
+/// process aborted. A JSON value added to itself, or to a value it holds,
+/// is now copied first, as a value that already has a parent is.
+#[test]
+fn a_json_value_added_to_itself_is_added_as_a_copy() {
+    assert_eq!(
+        ok(run_json_self_add("ArrayAddedToItself")),
+        Value::Text("[1,[1]]".into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("ArrayAddedToItselfTwice")),
+        Value::Text("3 [1,[1],[1,[1]]]".into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("ObjectAddedToItself")),
+        Value::Text(r#"{"a":{"a":1,"self":{"a":1}},"self":{"a":1}}"#.into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("ArraySetToItself")),
+        Value::Text("[1,[1,2]]".into())
+    );
+}
+
+/// A root added to its child, and through a token to its grandchild, is
+/// added as a copy of the root as it was before the call.
+#[test]
+fn a_json_value_added_to_a_value_it_holds_is_added_as_a_copy() {
+    assert_eq!(
+        ok(run_json_self_add("ParentAddedToItsChild")),
+        Value::Text(r#"{"a":[{"a":[{"a":[]}]},{"a":[]}]} [{"a":[{"a":[]}]},{"a":[]}]"#.into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("RootAddedToADeepChild")),
+        Value::Text(r#"{"outer":{"inner":[{"outer":{"inner":[]}}]}}"#.into())
+    );
+}
+
+/// Lists nested one level per loop iteration, the shape of the round 13
+/// finding R13-RT-1.
+const DEEP_CHAINS: &str = r#"codeunit 50461 "Deep Chains"
+{
+    procedure CompareChains(Depth: Integer): Boolean
+    var
+        Cur: List of [Integer];
+        Prev: List of [Integer];
+        Other: List of [Integer];
+        OtherPrev: List of [Integer];
+        I: Integer;
+    begin
+        Cur.Add(1);
+        Other.Add(1);
+        for I := 1 to Depth do begin
+            Prev := Cur;
+            Clear(Cur);
+            Cur.Add(Prev);
+            OtherPrev := Other;
+            Clear(Other);
+            Other.Add(OtherPrev);
+        end;
+        exit(Cur = Other);
+    end;
+}
+"#;
+
+/// `Prev := Cur; Clear(Cur); Cur.Add(Prev)` in a loop nests a list one level
+/// per iteration, and comparing two such chains 40,000 deep overflowed the
+/// interpreter's stack and aborted the process.
+#[test]
+fn comparing_lists_nested_100000_deep_in_al_returns() {
+    assert_eq!(
+        ok(run_on_interpreter_stack(
+            DEEP_CHAINS,
+            "Deep Chains",
+            "CompareChains",
+            vec![Value::Integer(100_000)],
+        )),
+        Value::Boolean(true)
+    );
+}
+
+/// Copies of one large text kept in a List, a Dictionary, an array and a
+/// JsonArray, the shapes of the findings R13-RT-3 and SEC7-3. Each procedure
+/// catches the error and returns how many copies it had kept.
+const MANY_TEXTS: &str = r#"codeunit 50462 "Many Texts"
+{
+    procedure Doubled(): Text
+    var
+        T: Text;
+        I: Integer;
+    begin
+        T := 'x';
+        for I := 1 to 25 do
+            T := T + T;
+        exit(T);
+    end;
+
+    procedure InList(): Integer
+    var
+        L: List of [Text];
+        T: Text;
+        I: Integer;
+    begin
+        T := PadStr('', 16000000, 'x');
+        asserterror for I := 1 to 64 do
+            L.Add(T);
+        exit(L.Count());
+    end;
+
+    procedure InDictionary(): Integer
+    var
+        D: Dictionary of [Integer, Text];
+        T: Text;
+        I: Integer;
+    begin
+        T := PadStr('', 16000000, 'x');
+        asserterror for I := 1 to 64 do
+            D.Add(I, T);
+        exit(D.Count());
+    end;
+
+    procedure InArray(): Integer
+    var
+        Arr: array[32] of Text;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        asserterror for I := 1 to 32 do
+            Arr[I] := T;
+        exit(I - 1);
+    end;
+
+    procedure InJsonArray(): Integer
+    var
+        J: JsonArray;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        asserterror for I := 1 to 32 do
+            J.Add(T);
+        exit(J.Count());
+    end;
+
+    procedure InTextBuilders(): Integer
+    var
+        Builders: List of [TextBuilder];
+        B: TextBuilder;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        asserterror for I := 1 to 32 do begin
+            Clear(B);
+            B.Append(T);
+            Builders.Add(B);
+        end;
+        exit(Builders.Count());
+    end;
+
+    procedure Uncaught()
+    var
+        L: List of [Text];
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        for I := 1 to 32 do
+            L.Add(T);
+    end;
+
+    procedure AddAndRemove(): Integer
+    var
+        L: List of [Text];
+        D: Dictionary of [Integer, Text];
+        Arr: array[2] of Text;
+        T: Text;
+        I: Integer;
+    begin
+        T := Doubled();
+        // Six copies of 32 MiB each time round, 1.5 GiB in all.
+        for I := 1 to 8 do begin
+            L.Add(T);
+            L.RemoveAt(1);
+            D.Set(1, T);
+            Arr[1] := T;
+            KeepInALocalList(T);
+            L.Add(T);
+            Clear(L);
+        end;
+        exit(L.Count());
+    end;
+
+    local procedure KeepInALocalList(T: Text)
+    var
+        Local: List of [Text];
+    begin
+        Local.Add(T);
+        Local.Add(T);
+    end;
+}
+"#;
+
+/// A test that keeps many copies of a text each under the one-value cap took
+/// memory at a gigabyte a second (R13-RT-3, SEC7-3). The copies a test's
+/// Lists, Dictionaries, arrays, TextBuilders and JSON values hold now count
+/// toward one total, and the addition that passes it is an AL error.
+#[test]
+fn copies_of_a_large_text_stop_at_the_test_budget() {
+    use crate::interpreter::value::MAX_HELD_BYTES;
+    // One procedure at a time, so the test holds one budget's worth.
+    for (procedure, text_bytes) in [
+        ("InList", 16_000_000),
+        ("InDictionary", 16_000_000),
+        ("InArray", 32 << 20),
+        ("InJsonArray", 32 << 20),
+        ("InTextBuilders", 32 << 20),
+    ] {
+        let kept = ok(run_on_interpreter_stack(
+            MANY_TEXTS,
+            "Many Texts",
+            procedure,
+            vec![],
+        ));
+        let Value::Integer(kept) = kept else {
+            panic!("{procedure} returned {kept:?}");
+        };
+        let kept = usize::try_from(kept).expect("a count");
+        assert!(kept >= 1, "{procedure} kept {kept}");
+        assert!(
+            kept * text_bytes <= MAX_HELD_BYTES,
+            "{procedure} kept {kept} copies of {text_bytes} bytes"
+        );
+    }
+    let message = error_message(run_on_interpreter_stack(
+        MANY_TEXTS,
+        "Many Texts",
+        "Uncaught",
+        vec![],
+    ));
+    assert!(message.contains("List.Add would make"), "{message}");
+    assert!(
+        message.contains("limit of 256 MiB for one test"),
+        "{message}"
+    );
+}
+
+/// Removing an element, replacing it, clearing a list and dropping a local
+/// list give their bytes back, so a test that passes a large text through
+/// its collections many times stays under the budget.
+#[test]
+fn removed_and_dropped_elements_leave_the_test_budget() {
+    assert_eq!(
+        ok(run_on_interpreter_stack(
+            MANY_TEXTS,
+            "Many Texts",
+            "AddAndRemove",
+            vec![],
+        )),
+        Value::Integer(0)
+    );
+}
+
+/// `Outer.Contains(Other)` where Outer holds a list of 50,000 numbers 50,000
+/// times and Other differs from it in the last number compares 2.5 billion
+/// elements in one statement. The deadline and the cancel flag were read only
+/// between loop iterations, so the test ran on for many minutes after the
+/// runner gave up on it (R13-RT-4). The search now stops at the element
+/// where the cancel flag is raised.
+#[test]
+fn a_cancel_request_stops_list_contains_on_a_list_of_lists() {
+    use crate::interpreter::scope::{CallFrame, ScopeStack};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&cancel);
+    let (done, result) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
+        .spawn(move || {
+            let inner: Vec<Value> = (1..=50_000).map(Value::Integer).collect();
+            let mut other = inner.clone();
+            other[49_999] = Value::Integer(0);
+            let inner = Value::list(inner);
+            let outer = Value::list(vec![inner; 50_000]);
+            let mut frame = CallFrame::new("Test", "Test");
+            frame.bind("Outer", outer);
+            let mut stack = ScopeStack::new();
+            stack.push(frame);
+            let mut ctx = DispatchCtx::new_pure(Arc::new(Workspace::new()));
+            ctx.set_cancel(flag);
+            let _ = done.send(crate::interpreter::records::dispatch_list_method(
+                "Outer",
+                "Contains",
+                vec![Value::list(other)],
+                false,
+                &mut stack,
+                &mut ctx,
+            ));
+        })
+        .expect("spawn the interpreter thread");
+    std::thread::sleep(Duration::from_millis(300));
+    let cancelled_at = Instant::now();
+    cancel.store(true, Ordering::Relaxed);
+    let message = error_message(
+        result
+            .recv_timeout(Duration::from_secs(30))
+            .expect("Contains returns once the test is cancelled"),
+    );
+    assert_eq!(message, "interpreter cancelled in List.contains");
+    assert!(
+        cancelled_at.elapsed() < Duration::from_secs(10),
+        "{:?}",
+        cancelled_at.elapsed()
+    );
+}
+
+/// The three shapes of the security finding SEC7-5, each of which ended the
+/// test binary with a stack overflow before `child_for` copied a JSON value
+/// added to itself.
+const JSON_SELF_WRITE: &str = r#"codeunit 50463 "Json Self Write"
+{
+    procedure ArrayAddedToItself(): Integer
+    var
+        J: JsonArray;
+        T: Text;
+    begin
+        J.Add(J);
+        J.WriteTo(T);
+        exit(StrLen(T));
+    end;
+
+    procedure ObjectAddedToItself(): Integer
+    var
+        O: JsonObject;
+        T: Text;
+    begin
+        O.Add('self', O);
+        O.WriteTo(T);
+        exit(StrLen(T));
+    end;
+
+    procedure ArrayAddedAsItsOwnToken(): Integer
+    var
+        J: JsonArray;
+        K: JsonToken;
+        T: Text;
+    begin
+        K := J.AsToken();
+        J.Add(K);
+        J.WriteTo(T);
+        exit(StrLen(T));
+    end;
+}
+"#;
+
+/// `J.Add(J)`, `O.Add('self', O)` and `J.Add(J.AsToken())` each add a copy,
+/// and `WriteTo` returns the text of one level: `[[]]` and
+/// `{"self":{}}`.
+#[test]
+fn a_json_value_written_after_it_was_added_to_itself_returns() {
+    for (procedure, length) in [
+        ("ArrayAddedToItself", 4),
+        ("ObjectAddedToItself", 11),
+        ("ArrayAddedAsItsOwnToken", 4),
+    ] {
+        assert_eq!(
+            ok(run_on_interpreter_stack(
+                JSON_SELF_WRITE,
+                "Json Self Write",
+                procedure,
+                vec![],
+            )),
+            Value::Integer(length),
+            "{procedure}"
+        );
+    }
 }

@@ -1262,11 +1262,13 @@ fn binary_version(binary: &Path) -> Option<String> {
 
 /// The per-user handshake secret, created on first use.
 ///
-/// `None` when there is no runtime directory to keep it in, or the directory
-/// is one this user does not own. Both are reasons not to make a challenge
-/// rather than reasons to refuse the daemon: the peer check already decided
-/// who may answer.
-pub fn handshake_secret() -> Option<Vec<u8>> {
+/// `None` when there is no runtime directory to keep it in, the directory is
+/// one this user does not own, or the key file there does not hold
+/// [`identity::SECRET_BYTES`] bytes. Then no challenge can be made: a daemon
+/// answers the handshake with no proof, and a client goes on without one on
+/// Unix, where the peer check already decided who may answer, and refuses the
+/// daemon on Windows.
+pub fn handshake_secret() -> Option<[u8; identity::SECRET_BYTES]> {
     let dir = crate::socket::runtime_al_lsp_dir()?;
     #[cfg(unix)]
     crate::endpoint::ensure_private_dir(&dir).ok()?;
@@ -2038,7 +2040,7 @@ mod startup_error_tests {
                                     let secret = if forge {
                                         Some(b"not this user's key".to_vec())
                                     } else {
-                                        handshake_secret()
+                                        handshake_secret().map(|secret| secret.to_vec())
                                     };
                                     if let Some(secret) = secret {
                                         answer["proof"] = serde_json::json!(

@@ -383,8 +383,14 @@ mod dispatch_tests {
     }
 
     /// Every method that takes a path in a parameter other than `uri`/`file`
-    /// refuses one outside the project, and in particular a `.g.xlf` the
-    /// caller names outside it is neither read nor replaced.
+    /// refuses one outside the project with the code a client can act on, and
+    /// the file or directory it names is neither rewritten nor created.
+    ///
+    /// Each case carries the other parameters its method needs, so the request
+    /// reaches the path check. The cases cover exactly the methods the dispatch
+    /// table declares `named` or `named_write`: a method declared without a
+    /// case fails here, and
+    /// so does a case whose method stopped declaring its path.
     #[tokio::test]
     async fn every_named_path_dispatcher_refuses_a_path_outside_the_project() {
         let dir = tempfile::tempdir().unwrap();
@@ -395,22 +401,340 @@ mod dispatch_tests {
         let outside = dir.path().join("outside.xlf");
         let original = r#"<xliff version="1.2"><file original="x"></file></xliff>"#;
         std::fs::write(&outside, original).unwrap();
+        let outside_snapshot = dir.path().join("outside.snap.json");
+        std::fs::write(&outside_snapshot, "{}").unwrap();
         let outside_dir = dir.path().join("elsewhere");
+        let file = outside.to_str().unwrap();
+        let snapshot = outside_snapshot.to_str().unwrap();
+        let directory = outside_dir.to_str().unwrap();
         let shutdown = Notify::new();
 
-        let mut checked = BTreeSet::new();
+        let cases = [
+            ("xlf.generate", serde_json::json!({ "project": directory })),
+            (
+                "xlf.refresh",
+                serde_json::json!({ "xlf": file, "generated": file }),
+            ),
+            ("xlf.untranslated", serde_json::json!({ "xlf": file })),
+            ("xlf.suggest", serde_json::json!({ "xlf": file })),
+            (
+                "packageDiff",
+                serde_json::json!({ "from": file, "to": file }),
+            ),
+            (
+                "newProject",
+                serde_json::json!({ "dir": directory, "name": "Scaffold", "publisher": "Test" }),
+            ),
+            (
+                "eventSource",
+                serde_json::json!({ "file": file, "line": 1 }),
+            ),
+            (
+                "snapshot",
+                serde_json::json!({ "cmd": "list", "outputDir": directory }),
+            ),
+            (
+                "profiling",
+                serde_json::json!({ "cmd": "analyze", "outputDir": directory }),
+            ),
+            (
+                "profiling",
+                serde_json::json!({ "cmd": "analyze", "path": file }),
+            ),
+            (
+                "tests.run_batch",
+                serde_json::json!({ "codeunitIds": [50100], "junitOut": file }),
+            ),
+            (
+                "tests.run_batch",
+                serde_json::json!({ "codeunitIds": [50100], "coberturaOut": file }),
+            ),
+            ("tests.run_auto", serde_json::json!({ "junitOut": file })),
+            (
+                "tests.run_auto",
+                serde_json::json!({ "coberturaOut": file }),
+            ),
+            (
+                "tests.snapshot_validate",
+                serde_json::json!({ "snapshotPath": snapshot }),
+            ),
+            (
+                "tests.snapshot_capture",
+                serde_json::json!({
+                    "codeunitId": 50100,
+                    "codeunitName": "X",
+                    "methodName": "M",
+                    "bcVersion": "26.0",
+                    "breakpoints": [{ "file": "doc.al", "line": 1 }],
+                    "outputPath": snapshot,
+                }),
+            ),
+            (
+                "tests.snapshot_replay",
+                serde_json::json!({ "snapshotPath": snapshot, "bcVersion": "26.0" }),
+            ),
+            (
+                "tests.snapshot_diff",
+                serde_json::json!({ "pathA": snapshot, "pathB": snapshot }),
+            ),
+            ("tests.mutate", serde_json::json!({ "files": [file] })),
+        ];
+
+        for (method, params) in &cases {
+            let response = dispatch_request(
+                &workspace,
+                Request::new(1, *method, Some(params.clone())),
+                &shutdown,
+            )
+            .await;
+            let error = response
+                .error
+                .unwrap_or_else(|| panic!("{method} answered for a path outside the project"));
+            assert_eq!(
+                error.code,
+                error_codes::PATH_NOT_AUTHORIZED,
+                "{method} must refuse an outside path with the boundary code: {error:?}"
+            );
+            assert!(
+                error.message.contains("outside the project"),
+                "{method} must refuse an outside path: {error:?}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            original,
+            "a refused method rewrote the file"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&outside_snapshot).unwrap(),
+            "{}",
+            "a refused method rewrote the snapshot"
+        );
+        assert!(
+            !outside_dir.exists(),
+            "a refused method created a directory"
+        );
+
+        let driven = cases
+            .iter()
+            .map(|(method, _)| *method)
+            .collect::<BTreeSet<_>>();
+        let declared = DISPATCHERS
+            .iter()
+            .filter(|dispatcher| matches!(dispatcher.path, PathUse::Named | PathUse::NamedWrite))
+            .map(|dispatcher| dispatcher.method)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            driven, declared,
+            "the cases and the methods declared `named` differ"
+        );
+    }
+
+    /// Write a snapshot whose one sample names `file`, the way a repository
+    /// can ship one.
+    fn write_snapshot_with_sample(path: &Path, file: &str) {
+        let header = serde_json::json!({
+            "run_id": "r", "codeunit_id": 50100, "method_name": "M",
+            "bc_version": "26.0", "source_hash": "00", "captured_at": 1, "samples": []
+        });
+        let sample = serde_json::json!({
+            "breakpoint_id": 1, "file": file, "line": 1, "iteration": 0, "variables": {}
+        });
+        std::fs::write(path, format!("{header}\n{sample}\n")).unwrap();
+    }
+
+    /// The paths a snapshot method reads one level down, `samples[i].file` in
+    /// a snapshot file and `breakpoints[i].file` in the request, go through
+    /// `containment.rs` as the top level ones do. Each nested key is driven
+    /// with a path outside the project, a `..` escape, a UNC spelling in both
+    /// separators and, on Unix, a link the project ships, and each is refused
+    /// with `PATH_NOT_AUTHORIZED` naming the key. The UNC spelling used to
+    /// reach `canonicalize`, which on Windows opens an SMB connection to the
+    /// host it names.
+    #[tokio::test]
+    async fn every_nested_path_key_refuses_a_path_outside_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let outside = dir.path().join("outside.al");
+        std::fs::write(&outside, "codeunit 50100 X {}").unwrap();
+        #[cfg_attr(not(unix), allow(unused_mut))]
+        let mut sources = vec![
+            outside.to_str().unwrap().to_string(),
+            "../outside.al".to_string(),
+            "//sec7-host.example/share/x.al".to_string(),
+            r"\\sec7-host.example\share\x.al".to_string(),
+        ];
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("linked.al")).unwrap();
+            sources.push("linked.al".to_string());
+        }
+        let snapshot_path = root.join("shipped.snap.json");
+        let snapshot = snapshot_path.to_str().unwrap();
+        let output = root.join("out.snap.json");
+        let shutdown = Notify::new();
+
+        for source in &sources {
+            write_snapshot_with_sample(&snapshot_path, source);
+            let cases = [
+                (
+                    "tests.snapshot_validate",
+                    "samples[0].file",
+                    serde_json::json!({ "snapshotPath": snapshot }),
+                ),
+                (
+                    "tests.snapshot_replay",
+                    "samples[0].file",
+                    serde_json::json!({ "snapshotPath": snapshot, "bcVersion": "26.0" }),
+                ),
+                (
+                    "tests.snapshot_diff",
+                    "samples[0].file",
+                    serde_json::json!({ "pathA": snapshot, "pathB": snapshot }),
+                ),
+                (
+                    "tests.snapshot_capture",
+                    "breakpoints[0].file",
+                    serde_json::json!({
+                        "codeunitId": 50100,
+                        "codeunitName": "X",
+                        "methodName": "M",
+                        "bcVersion": "26.0",
+                        "breakpoints": [{ "file": source, "line": 1 }],
+                        "outputPath": output.to_str().unwrap(),
+                    }),
+                ),
+            ];
+            for (method, key, params) in cases {
+                let response =
+                    dispatch_request(&workspace, Request::new(1, method, Some(params)), &shutdown)
+                        .await;
+                let error = response
+                    .error
+                    .unwrap_or_else(|| panic!("{method} answered for {key} = {source}"));
+                assert_eq!(
+                    error.code,
+                    error_codes::PATH_NOT_AUTHORIZED,
+                    "{method} must refuse {key} = {source} with the boundary code: {error:?}"
+                );
+                assert!(
+                    error.message.contains(key),
+                    "{method} must name {key} in the refusal: {error:?}"
+                );
+            }
+        }
+        assert_eq!(
+            std::fs::read_to_string(&outside).unwrap(),
+            "codeunit 50100 X {}"
+        );
+        assert!(!output.exists(), "a refused capture wrote its output");
+    }
+
+    /// A sample inside the project, relative or absolute, still validates and
+    /// diffs after the nested containment check.
+    #[tokio::test]
+    async fn snapshot_samples_inside_the_project_still_validate() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let (workspace, doc) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let snapshot_path = root.join("shipped.snap.json");
+        let snapshot = snapshot_path.to_str().unwrap();
+        let shutdown = Notify::new();
+
+        for source in ["doc.al", doc.to_str().unwrap()] {
+            write_snapshot_with_sample(&snapshot_path, source);
+            let validated = dispatch_request(
+                &workspace,
+                Request::new(
+                    1,
+                    "tests.snapshot_validate",
+                    Some(serde_json::json!({ "snapshotPath": snapshot })),
+                ),
+                &shutdown,
+            )
+            .await;
+            assert!(validated.error.is_none(), "{source}: {:?}", validated.error);
+            assert_eq!(validated.result.unwrap()["sampleCount"], 1);
+            let diffed = dispatch_request(
+                &workspace,
+                Request::new(
+                    1,
+                    "tests.snapshot_diff",
+                    Some(serde_json::json!({ "pathA": snapshot, "pathB": snapshot })),
+                ),
+                &shutdown,
+            )
+            .await;
+            assert!(diffed.error.is_none(), "{source}: {:?}", diffed.error);
+        }
+    }
+
+    /// A method declared with no path use judges no caller path either. Every
+    /// parameter a path method reads is sent naming a place outside the
+    /// project, and no such method may answer with the boundary refusal: one
+    /// that does reads the parameter, and the registry tests above skip it.
+    #[tokio::test]
+    async fn no_method_declared_without_a_path_use_refuses_a_caller_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"id":"00000000-0000-0000-0000-000000000001","name":"Test","publisher":"Test","version":"1.0.0.0"}"#,
+        )
+        .unwrap();
+        let (workspace, _) = project_with_doc(&root);
+        let workspace = std::sync::Arc::new(workspace);
+        let outside = dir.path().join("outside.snap.json");
+        std::fs::write(&outside, b"{}").unwrap();
+        let outside_dir = dir.path().join("elsewhere");
+        let file = outside.to_str().unwrap();
+        let directory = outside_dir.to_str().unwrap();
+        let shutdown = Notify::new();
+
+        let mut undeclared = BTreeSet::new();
         for dispatcher in DISPATCHERS {
-            if dispatcher.path != PathUse::Named {
+            // `clearCache` takes no parameters and empties the user's own
+            // index cache, which a test has no business doing.
+            if dispatcher.path != PathUse::None || dispatcher.method == "clearCache" {
                 continue;
             }
+            let cmd = match dispatcher.method {
+                "profiling" => "analyze",
+                "snapshot" => "list",
+                _ => "summary",
+            };
             let params = serde_json::json!({
-                "xlf": outside.to_str().unwrap(),
-                "generated": outside.to_str().unwrap(),
-                "from": outside.to_str().unwrap(),
-                "to": outside.to_str().unwrap(),
-                "dir": outside_dir.to_str().unwrap(),
-                "name": "Scaffold",
-                "publisher": "Test",
+                "cmd": cmd,
+                "path": file,
+                "outputDir": directory,
+                "file": file,
+                "line": 1,
+                "xlf": file,
+                "generated": file,
+                "from": file,
+                "to": file,
+                "dir": directory,
+                "project": directory,
+                "snapshotPath": file,
+                "pathA": file,
+                "pathB": file,
+                "outputPath": file,
+                "junitOut": file,
+                "coberturaOut": file,
+                "files": [file],
+                "codeunitIds": [50100],
+                "codeunitNames": ["X"],
+                "codeunitId": 50100,
+                "codeunitName": "X",
+                "methodName": "M",
+                "bcVersion": "26.0",
+                "breakpoints": [{ "file": file, "line": 1 }],
             });
             let response = dispatch_request(
                 &workspace,
@@ -418,31 +742,24 @@ mod dispatch_tests {
                 &shutdown,
             )
             .await;
-            let error = response.error.unwrap_or_else(|| {
-                panic!(
-                    "{} answered for a path outside the project",
-                    dispatcher.method
-                )
-            });
-            assert!(
-                error.message.contains("outside the project"),
-                "{} must refuse an outside path: {error:?}",
-                dispatcher.method
-            );
-            checked.insert(dispatcher.method);
+            if let Some(error) = response.error {
+                let message = error.message.to_ascii_lowercase();
+                if error.code == error_codes::PATH_NOT_AUTHORIZED
+                    || message.contains("outside the")
+                    || message.contains("escapes the")
+                {
+                    undeclared.insert(dispatcher.method);
+                }
+            }
         }
-        assert_eq!(
-            std::fs::read_to_string(&outside).unwrap(),
-            original,
-            "a refused method rewrote the file"
-        );
         assert!(
             !outside_dir.exists(),
-            "a refused method created a directory"
+            "a method declared with no path use created the outside directory"
         );
-        for method in ["xlf.refresh", "xlf.untranslated", "xlf.suggest"] {
-            assert!(checked.contains(method), "{method} declares no path use");
-        }
+        assert!(
+            undeclared.is_empty(),
+            "declared with no path use, yet refused a caller path: {undeclared:?}"
+        );
     }
 
     /// `xlf.generate` writes into the project it serves, and a `project`
@@ -1153,6 +1470,121 @@ mod dispatch_tests {
             .as_str()
             .expect("the unreadable debug.json is reported");
         assert!(error.contains("debug.json"), "{error}");
+    }
+
+    /// A symbol package declaring one table, as a `.app` file holds it.
+    fn write_table_package(path: &Path, app_id: &str, name: &str, table_id: i32, table: &str) {
+        use std::io::Write;
+        let manifest = format!(
+            r#"<?xml version="1.0"?><Package><App Id="{app_id}" Name="{name}" Publisher="Tests" Version="1.0.0.0" /></Package>"#
+        );
+        let symbols = serde_json::json!({
+            "Tables": [{ "Id": table_id, "Name": table, "Fields": [], "Methods": [] }]
+        })
+        .to_string();
+        let mut archive = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut archive));
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("NavxManifest.xml", options).unwrap();
+            zip.write_all(manifest.as_bytes()).unwrap();
+            zip.start_file("SymbolReference.json", options).unwrap();
+            zip.write_all(symbols.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let mut bytes = b"NAVX".to_vec();
+        bytes.resize(40, 0);
+        bytes.extend_from_slice(&archive);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// The daemon listed `.alpackages` once at startup, so a package copied in
+    /// by hand, by `git pull` or by another editor's download was missing from
+    /// `packages` and from every symbol lookup until the daemon exited.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_package_copied_into_alpackages_is_in_the_next_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "Package Copy",
+                "publisher": "Tests",
+                "version": "1.0.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let packages = dir.path().join(".alpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        write_table_package(
+            &packages.join("Tests_First_1.0.0.0.app"),
+            "00000000-0000-0000-0000-0000000001a1",
+            "First",
+            50_140,
+            "First Package Table",
+        );
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        *ws.config.write().await = al_project::trust::evaluate(dir.path()).unwrap().config;
+        super::initialize_daemon_workspace(&ws, dir.path())
+            .await
+            .expect("the project loads");
+        let shutdown = Notify::new();
+        let package_names = |id: u64| {
+            let ws = std::sync::Arc::clone(&ws);
+            let shutdown = &shutdown;
+            async move {
+                let result = dispatch_request(&ws, Request::new(id, "packages", None), shutdown)
+                    .await
+                    .result
+                    .expect("packages answers");
+                let mut names: Vec<String> = result
+                    .as_array()
+                    .expect("packages lists the loaded packages")
+                    .iter()
+                    .filter_map(|package| package["name"].as_str().map(str::to_string))
+                    .collect();
+                names.sort();
+                names
+            }
+        };
+        assert_eq!(package_names(1).await, ["First"]);
+
+        write_table_package(
+            &packages.join("Tests_Second_1.0.0.0.app"),
+            "00000000-0000-0000-0000-0000000001a2",
+            "Second",
+            50_141,
+            "Second Package Table",
+        );
+
+        assert_eq!(package_names(2).await, ["First", "Second"]);
+        let table = dispatch_request(
+            &ws,
+            Request::new(
+                3,
+                "byId",
+                Some(serde_json::json!({ "kind": "table", "id": 50_141 })),
+            ),
+            &shutdown,
+        )
+        .await
+        .result
+        .expect("the copied package's table is found");
+        assert!(
+            table.to_string().contains("Second Package Table"),
+            "{table}"
+        );
+        let project = ws.project.read().await;
+        assert_eq!(
+            project
+                .as_ref()
+                .expect("a project is loaded")
+                .packages
+                .len(),
+            2,
+            "the project lists the copied package"
+        );
     }
 
     /// A client whose request is blocked on the dependency source index needs

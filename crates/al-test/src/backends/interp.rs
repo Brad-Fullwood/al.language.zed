@@ -14,6 +14,7 @@
 
 use al_syntax::IdentifierText;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
@@ -378,13 +379,16 @@ fn run_codeunit_interp(
             let cu = cu.cloned();
             let codeunit_name = codeunit_name.to_string();
             let proc_name = proc_name.clone();
-            move || {
+            move |cancel| {
                 run_procedure_interp(
                     &workspace,
                     cu.as_ref(),
                     &codeunit_name,
                     &proc_name,
-                    timeout_dur,
+                    Limits {
+                        timeout: timeout_dur,
+                        cancel,
+                    },
                     dispatch_mode,
                     collect_coverage,
                 )
@@ -480,19 +484,24 @@ enum Watched<T> {
 ///
 /// tokio's blocking threads have 2 MiB stacks, which held the interpreter's
 /// call depth to 48 frames, so the AL body gets a thread whose stack the
-/// depth caps are sized against. A thread still running after `limit` is left
-/// running and is never joined: Rust has no way to stop a thread, and a test
-/// stuck inside one step must not hold up the run. It keeps its stack until
-/// it ends or the process exits.
+/// depth caps are sized against. `body` gets a cancel flag, which is raised
+/// when `limit` passes. The interpreter reads it at each loop iteration and
+/// at each element a comparison or a list search visits, so a test stuck in
+/// one long statement ends soon after. Rust has no way to stop a thread, so
+/// a thread still running is left running and is never joined, and a test
+/// stuck in a step that does not read the flag keeps its thread until it
+/// ends or the process exits.
 fn run_watched<T: Send + 'static>(
     limit: Duration,
-    body: impl FnOnce() -> T + Send + 'static,
+    body: impl FnOnce(Arc<AtomicBool>) -> T + Send + 'static,
 ) -> Result<Watched<T>, TestRunnerError> {
     let (done, finished) = std::sync::mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let body_cancel = Arc::clone(&cancel);
     let thread = std::thread::Builder::new()
         .stack_size(al_runtime::interpreter::dispatch::INTERP_STACK_BYTES)
         .spawn(move || {
-            let _ = done.send(body());
+            let _ = done.send(body(body_cancel));
         })
         .map_err(|error| {
             TestRunnerError::WorkerFailed(format!(
@@ -509,8 +518,18 @@ fn run_watched<T: Send + 'static>(
             let _ = thread.join();
             Ok(Watched::Panicked)
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(Watched::Overran),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            cancel.store(true, Ordering::Relaxed);
+            Ok(Watched::Overran)
+        }
     }
+}
+
+/// What stops one test's AL body: its deadline, and the cancel flag
+/// [`run_watched`] raises when it stops waiting.
+struct Limits {
+    timeout: Duration,
+    cancel: Arc<AtomicBool>,
 }
 
 /// Run one test procedure. Returns its `Eval` result plus, when
@@ -522,7 +541,7 @@ fn run_procedure_interp(
     cu: Option<&TestCodeunit>,
     codeunit_name: &str,
     proc_name: &str,
-    timeout_dur: Duration,
+    limits: Limits,
     dispatch_mode: DispatchMode,
     collect_coverage: bool,
 ) -> (Eval, Option<Coverage>) {
@@ -582,7 +601,7 @@ fn run_procedure_interp(
     // shuts down.
     let mut ctx = DispatchCtx {
         mode: dispatch_mode,
-        deadline: Some(std::time::Instant::now() + timeout_dur),
+        deadline: Some(std::time::Instant::now() + limits.timeout),
         // Attach a dynamic-coverage collector only when requested,
         // seeded with this codeunit's file so its statements attribute there.
         coverage: collect_coverage.then(|| {
@@ -593,6 +612,7 @@ fn run_procedure_interp(
         test_handlers,
         ..DispatchCtx::new_pure(proc_source)
     };
+    ctx.set_cancel(limits.cancel);
 
     // One context (especially one record store and deadline) spans the full BC
     // lifecycle for this test method. Cleanup always runs, including after a
@@ -1472,7 +1492,7 @@ mod tests {
     #[test]
     fn run_watched_stops_waiting_for_a_stuck_body() {
         let start = Instant::now();
-        let watched = run_watched(Duration::from_millis(100), || loop {
+        let watched = run_watched(Duration::from_millis(100), |_| loop {
             std::thread::park();
         })
         .expect("start the thread");
@@ -1484,19 +1504,36 @@ mod tests {
         );
     }
 
+    /// The runner left a test stuck in one statement running at full speed
+    /// after it stopped waiting (R13-RT-4). It now raises the cancel flag the
+    /// body reads.
+    #[test]
+    fn run_watched_raises_the_cancel_flag_when_it_stops_waiting() {
+        let (stopped, seen) = std::sync::mpsc::channel();
+        let watched = run_watched(Duration::from_millis(100), move |cancel| {
+            while !cancel.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            let _ = stopped.send(());
+        })
+        .expect("start the thread");
+        assert!(matches!(watched, Watched::Overran));
+        seen.recv_timeout(Duration::from_secs(10))
+            .expect("the body sees the cancel flag");
+    }
+
     #[test]
     fn run_watched_returns_what_the_body_returns_or_that_it_panicked() {
-        let watched = run_watched(Duration::from_secs(60), || 7).expect("start the thread");
+        let watched = run_watched(Duration::from_secs(60), |_| 7).expect("start the thread");
         assert!(matches!(watched, Watched::Finished(7)));
-        let watched = run_watched(Duration::from_secs(60), || -> u8 { panic!("body panics") })
+        let watched = run_watched(Duration::from_secs(60), |_| -> u8 { panic!("body panics") })
             .expect("start the thread");
         assert!(matches!(watched, Watched::Panicked));
     }
 
-    /// `B.Contains(N)` with `A.Add(B); B.Add(A); N.Add(E)` locked `B` twice
-    /// on the interpreter thread, and the run waited on that thread for good
-    /// (SEC6-4). The runtime now compares a copy of `B`'s elements, and the
-    /// runner would stop waiting at the deadline plus [`DEADLINE_GRACE`].
+    /// `B.Contains(N)` with `A.Add(B); B.Add(A); N.Add(E)` compares a copy of
+    /// `B`'s elements, so it takes the lock once, and the runner stops waiting
+    /// at the deadline plus [`DEADLINE_GRACE`].
     #[tokio::test]
     async fn a_test_searching_a_list_in_a_cycle_ends_within_its_deadline() {
         let source = r#"codeunit 50392 "Cycle Tests"

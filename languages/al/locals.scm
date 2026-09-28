@@ -37,6 +37,9 @@
 (object_declaration
   name: (name_or_keyword (name (quoted_identifier) @local.definition.type)))
 
+(object_declaration
+  name: (name_or_keyword [(keyword) (kw_function) (metadata_keyword) (object_keyword) (property_keyword)] @local.definition.type))
+
 (procedure_declaration
   name: (name (identifier) @local.definition.method))
 
@@ -49,11 +52,17 @@
 (trigger_declaration
   name: (name_or_keyword (name (quoted_identifier) @local.definition.method)))
 
+(trigger_declaration
+  name: (name_or_keyword [(keyword) (kw_function) (metadata_keyword) (object_keyword) (property_keyword)] @local.definition.method))
+
 (event_declaration
   name: (name_or_keyword (name (identifier) @local.definition.method)))
 
 (event_declaration
   name: (name_or_keyword (name (quoted_identifier) @local.definition.method)))
+
+(event_declaration
+  name: (name_or_keyword [(keyword) (kw_function) (metadata_keyword) (object_keyword) (property_keyword)] @local.definition.method))
 
 (regular_variable_declaration
   name: (name_or_keyword (name (identifier) @local.definition.var)))
@@ -61,11 +70,26 @@
 (regular_variable_declaration
   name: (name_or_keyword (name (quoted_identifier) @local.definition.var)))
 
+(regular_variable_declaration
+  name: (name_or_keyword [(keyword) (kw_function) (metadata_keyword) (object_keyword) (property_keyword)] @local.definition.var))
+
+(label_declaration
+  name: (name_or_keyword (name (identifier) @local.definition.var)))
+
+(label_declaration
+  name: (name_or_keyword (name (quoted_identifier) @local.definition.var)))
+
+(label_declaration
+  name: (name_or_keyword [(keyword) (kw_function) (metadata_keyword) (object_keyword) (property_keyword)] @local.definition.var))
+
 (parameter
   name: (name_or_keyword (name (identifier) @local.definition.parameter)))
 
 (parameter
   name: (name_or_keyword (name (quoted_identifier) @local.definition.parameter)))
+
+(parameter
+  name: (name_or_keyword [(keyword) (kw_function) (metadata_keyword) (object_keyword) (property_keyword)] @local.definition.parameter))
 
 ; REFERENCES
 
@@ -73,3 +97,18 @@
 
 (quoted_identifier) @local.reference
 
+; Variables named after keywords, read or written as values
+
+(for_statement
+  iterator: (name_or_keyword [(keyword) (kw_function) (metadata_keyword) (object_keyword) (property_keyword)] @local.reference))
+
+(foreach_statement
+  iterator: (name_or_keyword [(keyword) (kw_function) (metadata_keyword) (object_keyword) (property_keyword)] @local.reference))
+
+(postfix_expression
+  (primary_expression [(object_keyword) (type_keyword)] @local.reference) .)
+
+(postfix_expression
+  (primary_expression [(object_keyword) (type_keyword)] @local.reference)
+  .
+  (index_suffix))

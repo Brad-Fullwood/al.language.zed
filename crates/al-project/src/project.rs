@@ -181,20 +181,7 @@ pub fn configured_symbol_packages(
     project_root: &Path,
     config: &crate::config::AlConfig,
 ) -> Result<SymbolPackageSelection, DiscoveryError> {
-    let packages_dir = config
-        .package_cache_path
-        .as_deref()
-        .map(|path| resolve_project_path(project_root, path))
-        .unwrap_or_else(|| project_root.join(".alpackages"));
-
-    let mut folders = Vec::with_capacity(1 + config.app_local_folder_paths.len());
-    folders.push(packages_dir.clone());
-    folders.extend(
-        config
-            .app_local_folder_paths
-            .iter()
-            .map(|path| resolve_project_path(project_root, path)),
-    );
+    let (packages_dir, mut folders) = symbol_package_folders(project_root, config);
     // A folder written inside the project that a repository link carries
     // outside it is read only once the project is trusted.
     folders.retain(|folder| {
@@ -213,6 +200,101 @@ pub fn configured_symbol_packages(
         packages_dir,
         packages,
     })
+}
+
+/// The package cache folder, and every folder `config` names for the
+/// project at `project_root` in the order they are searched, the package
+/// cache first.
+fn symbol_package_folders(
+    project_root: &Path,
+    config: &crate::config::AlConfig,
+) -> (PathBuf, Vec<PathBuf>) {
+    let packages_dir = config
+        .package_cache_path
+        .as_deref()
+        .map(|path| resolve_project_path(project_root, path))
+        .unwrap_or_else(|| project_root.join(".alpackages"));
+    let mut folders = Vec::with_capacity(1 + config.app_local_folder_paths.len());
+    folders.push(packages_dir.clone());
+    folders.extend(
+        config
+            .app_local_folder_paths
+            .iter()
+            .map(|path| resolve_project_path(project_root, path)),
+    );
+    (packages_dir, folders)
+}
+
+/// A stamp of the symbol package folders `config` names for the project at
+/// `project_root`: each folder's path, whether it is read, and the name,
+/// size and mtime of each `.app` file in it. A process that keeps packages
+/// loaded compares it to know when to read the folders again.
+///
+/// One directory listing per folder and one `stat` per `.app` file, so it
+/// can run before every request. The listing shows every file added, removed
+/// or renamed, so the folder's own mtime is left out: it also moves for the
+/// temporary files a download writes beside a package. A package rewritten
+/// in place keeps its name and changes its mtime.
+pub fn package_folders_fingerprint(project_root: &Path, config: &crate::config::AlConfig) -> u64 {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    let (_, folders) = symbol_package_folders(project_root, config);
+    for folder in &folders {
+        let path = folder.as_os_str().as_encoded_bytes();
+        hasher.update((path.len() as u64).to_le_bytes());
+        hasher.update(path);
+        // Trust decides whether a linked folder is read, so a grant or a
+        // revoke changes the packages as a new file does.
+        hasher.update([u8::from(crate::trust::escapes_untrusted_project(
+            project_root,
+            folder,
+        ))]);
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            hasher.update([0u8]);
+            continue;
+        };
+        let mut packages: Vec<(std::ffi::OsString, Option<(u64, u128)>)> = entries
+            .flatten()
+            .filter(|entry| {
+                Path::new(&entry.file_name())
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+            })
+            .map(|entry| {
+                // Follows a link, as the scan does, so a link pointed at
+                // another package moves the stamp.
+                let stamp = std::fs::metadata(entry.path()).ok().map(|metadata| {
+                    let modified = metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|since| since.as_nanos())
+                        .unwrap_or_default();
+                    (metadata.len(), modified)
+                });
+                (entry.file_name(), stamp)
+            })
+            .collect();
+        packages.sort();
+        hasher.update([1u8]);
+        hasher.update((packages.len() as u64).to_le_bytes());
+        for (name, stamp) in &packages {
+            let name = name.as_encoded_bytes();
+            hasher.update((name.len() as u64).to_le_bytes());
+            hasher.update(name);
+            match stamp {
+                Some((length, modified)) => {
+                    hasher.update([1u8]);
+                    hasher.update(length.to_le_bytes());
+                    hasher.update(modified.to_le_bytes());
+                }
+                None => hasher.update([0u8]),
+            }
+        }
+    }
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("sha256 is 32 bytes"))
 }
 
 pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
@@ -1161,6 +1243,51 @@ mod tests {
             project_files_fingerprint(&root),
             launch_added,
             "a debug.json written"
+        );
+    }
+
+    #[test]
+    fn package_folders_fingerprint_moves_with_the_packages_and_the_folders() {
+        let root = tempdir();
+        let config = AlConfig::default();
+        let stamp = || package_folders_fingerprint(&root, &config);
+        let missing = stamp();
+        assert_eq!(stamp(), missing, "nothing changed");
+
+        let packages = root.join(".alpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        let empty = stamp();
+        assert_ne!(empty, missing, "the folder created");
+
+        std::fs::write(packages.join("download.tmp"), "partial").unwrap();
+        assert_eq!(stamp(), empty, "a file that is not a package");
+
+        let first = packages.join("Tests_First_1.0.0.0.app");
+        std::fs::write(&first, "first").unwrap();
+        let copied = stamp();
+        assert_ne!(copied, empty, "a package copied in");
+
+        std::fs::write(&first, "first, rewritten").unwrap();
+        let rewritten = stamp();
+        assert_ne!(rewritten, copied, "a package rewritten in place");
+
+        std::fs::rename(&first, packages.join("Tests_First_1.0.0.1.app")).unwrap();
+        let renamed = stamp();
+        assert_ne!(renamed, rewritten, "a package renamed");
+
+        let local = root.join("vendor-symbols");
+        std::fs::create_dir_all(&local).unwrap();
+        let with_local = AlConfig {
+            app_local_folder_paths: vec![PathBuf::from("vendor-symbols")],
+            ..AlConfig::default()
+        };
+        let local_listed = package_folders_fingerprint(&root, &with_local);
+        assert_ne!(local_listed, renamed, "a folder added to the settings");
+        std::fs::write(local.join("Vendor.app"), "vendor").unwrap();
+        assert_ne!(
+            package_folders_fingerprint(&root, &with_local),
+            local_listed,
+            "a package in a folder from the settings"
         );
     }
 
