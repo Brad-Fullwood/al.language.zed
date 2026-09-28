@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-28 19:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-28 23:55 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,61 +8,33 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Headless session started 18:42 BST on 2026-09-28 by the watchdog (the 18:31 tick found Fable and
-Opus limited, reset 18:40). The 13:49 session's eight agents were dead with nothing pushed, and its
-gates on 34e8f8de stopped in the test stage (fmt, clippy, clippy semantic and rustdoc green, 38
-suites passed, then the session ended).
-Recovered at 18:50: `docs-recheck-5` (four docs commits, no completion note) merged 7717215c, gates
-running. The uncommitted work in the other worktrees stayed in place for the agents re-dispatched
-onto them: `fix-sec7-1` (eight commits, `build.rs` half converted), `fix-r13-runtime` (R13-RT-2
-committed 8495e4e1, the R13-RT-1 tests written and failing), `fix-r13-trust` (R13-TRUST-1 and
-R13-TRUST-2 committed, SEC7-2 half done: a byte budget, a hash memo, `O_NONBLOCK`), `sec7-review`
-(item 1 ticked, SEC7-1 to SEC7-5 recorded) and `r13-review` (items 1 to 4 ticked, seven findings,
-R13-LSP-1 new). `fix-formatter-case` had no work. The reviewers' scratch tests are saved as
-`.campaign/sec7-scratch-tests-3.patch` and `.campaign/r13-scratch-tests-3.patch`. The blog's
-article 9 checkout held an uncommitted wording pass.
+Headless session started 23:42 BST on 2026-09-28 by the watchdog, the last one the timer starts
+(`END_EPOCH` is 23:59). The 18:42 session ended at 19:30 at a usage limit, and Fable and Opus were
+limited until 23:40. Its gates on a298861f failed in the test stage: the 19:15 merges put
+`fix-r13-trust` (two private fields on `TrustDecision`) and `fix-sec7-1` (a test that builds one
+with a struct literal) together, the workspace test build failed on that literal, and PR 33's CI
+failed on it on all three platforms. Fixed by d82b8d01 (`TrustDecision::from_parts`).
 
-Merged at 19:15 BST (gates on a298861f running):
+Recovered at 23:47: the two review branches (`sec7-review`, review complete with SEC7-1 to SEC7-15,
+and `r13-review`, review complete with R13-TRUST-1 to R13-TEXT-1) and the three fix branches the
+18:55 agents left committed (`fix-r13-lsp` c1c2d9a4, `fix-sec7-daemon` 18d575b4, `fix-r13-runtime`
+407aa9e4, 5f0720d0, 421df58b, c7168021) merged in one pass (41ab5260). The reviewers' uncommitted
+scratch tests are saved as `.campaign/sec7-scratch-tests-4.patch` and
+`.campaign/r13-scratch-tests-4.patch`. Gates on 41ab5260 running (fmt, clippy, clippy semantic and
+rustdoc green at 23:50). Statuses marked 682b831f: sixteen findings fixed, twelve open.
 
-- `fix-sec7-1` (dfd6df9b): SEC7-1, every al-explorer text renderer escapes the names it prints
-  (`build.rs`, `debug.rs`, `env.rs`, `refactor.rs`, `trust.rs` on top of the eight inherited
-  commits), `tests/cli_text_escaping.rs` fails when a print site under `src/cli` interpolates a
-  raw `as_str()` or `.display()` value, the five crafted-name commands print `\u{1b}` under
-  `cat -v`. Left: `lib.rs:187` and `tui.rs:72` print a TUI startup error as `{e:?}`.
-- `fix-r13-trust` (8554630d): R13-TRUST-1, R13-TRUST-2, SEC7-2 (256 MiB per tree hash, whole
-  64 KiB reads so `/proc` files count, each tree hashed once per decision, `O_NONBLOCK` so a FIFO
-  fails the open), SEC7-4 (an analyzer or probing path the repository writes outside the project
-  is hashed, `not present` when absent, the search keeps repository entries whatever the trust
-  state and the record must list the file), the `refresh_trust` comment says seven stat calls.
-  Left for security round 8: `al.dotnetPath` and `binary.path` outside the project are still
-  recorded as text, and a record made before the change goes `Stale` once.
-- `fix-formatter-case` (6cae13c5): four `case` layout fixes checked against Microsoft's
-  formatter through a wrapper over `Microsoft.Dynamics.Nav.CodeAnalysis.Workspaces.dll` (569 of
-  1,200 generated procedures now match that did not, none stopped matching). Left: an `else`
-  after a `case ... end` with no `;` sits at the case's level, and a dangling `else` inside
-  nested openers lands at the outermost opener's level (both older than the campaign).
-- `fix-r13-runtime-2` (a298861f): R13-RT-5 (overloads chosen by the argument's enum type),
-  R13-RT-6 (`Split`, `Names`, `Ordinals`, `Keys` and `Values` build typed lists).
-- Blog `campaign/article-9-reread` (124e0bb, pushed): the wording pass checked, nineteen usage
-  limits counted three ways, `readTime` 17, `pnpm validate` green.
+Dispatched 23:52, each told to stop by 01:15 BST, each in a reused worktree directory:
 
-Still in flight (dispatched 18:55 and 19:05, each told to stop by 21:30 or 21:45):
+- `campaign/fix-sec7-bc-writes` (dir `docs-recheck-4`): SEC7-6, SEC7-8.
+- `campaign/fix-sec7-plugin` (dir `fix-r12-router-text`): SEC7-9, SEC7-10.
+- `campaign/fix-sec7-text` (dir `fix-r13-runtime-2`): SEC7-11, R13-TRUST-3, R13-TEXT-1.
+- `campaign/fix-sec7-identity` (dir `slop-splits-5`): SEC7-12.
+- `campaign/fix-sec7-daemon-life` (dir `fix-daemon`): SEC7-13, SEC7-14.
+- `campaign/fix-sec7-probing` (dir `fix-sec6-output`): SEC7-15.
+- `campaign/fix-r13-router` (dir `r13-review`): R13-ROUTER-1.
 
-- `campaign/fix-r13-runtime` (dir `fix-daemon`): R13-RT-1 (committed 407aa9e4), R13-RT-3 with
-  SEC7-3 (the test budget, committed), R13-RT-4, the SEC7-5 depth cap over the R13-RT-2 fix.
-- `campaign/fix-r13-lsp` (dir `test-snapshot`): R13-LSP-1.
-- `campaign/fix-sec7-daemon` (dir `fix-sec7-daemon`, from 63ec2f17): SEC7-6 (the snapshot and
-  profile downloads write through a link), SEC7-7 (three `named` arms write where the read
-  boundary reaches), SEC7-8 (nested snapshot paths canonicalised before the UNC guard).
-- `campaign/sec7-review` (dir `fix-sec6-output`): items 2, 3 and 6 ticked, SEC7-6 to SEC7-9
-  recorded, items 4 and 5 left.
-- `campaign/r13-review` (dir `r13-review`): item 8 ticked (R13-RT-5, R13-RT-6, R13-TRUST-3),
-  items 5 to 7 and 9 to 16 left.
-
-Statuses to mark when the review branches merge: SEC7-1 (dfd6df9b), SEC7-2 and SEC7-4 (8554630d)
-and the rest of SEC7 in `r7-security.md` (on `campaign/sec7-review`), R13-TRUST-1 and R13-TRUST-2
-(8554630d), R13-RT-5 and R13-RT-6 (a298861f) and the rest of R13 in `r13-session-review.md` (on
-`campaign/r13-review`). SEC7-5 and R13-RT-2 are one fix (8495e4e1).
+Spare worktree directories: `test-snapshot` (on `campaign/fix-r13-lsp`, merged) and
+`fix-sec7-daemon` (on `campaign/fix-sec7-daemon`, merged).
 
 ## Close-out (the window ends tonight)
 

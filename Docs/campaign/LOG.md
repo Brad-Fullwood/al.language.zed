@@ -827,3 +827,23 @@ Append-only. Newest entry last.
 - Found on the way, queued: two older `else` placements in the formatter (after a `case ... end`
   with no `;`, and a dangling `else` inside nested openers), `al.dotnetPath` and `binary.path`
   outside the project still recorded as text, two `{e:?}` prints outside `src/cli`.
+
+## 2026-09-28 23:55 BST: resume, the broken head fixed, five branches merged, seven agents dispatched
+
+- The 18:42 session ended at 19:30 at a usage limit. Its gates on a298861f failed in the test
+  stage: `fix-r13-trust` gave `TrustDecision` two private fields and `fix-sec7-1` added a test
+  in al-explorer that builds one with a struct literal, and the two met at the 19:15 merges.
+  PR 33's CI failed the same way on ubuntu, macOS and Windows. d82b8d01 adds
+  `TrustDecision::from_parts` and the test uses it.
+- Merged in one pass (41ab5260): `sec7-review` (SEC7-6 to SEC7-15 recorded, review complete),
+  `r13-review` (R13-DAEMON-1, R13-CLI-1, R13-ROUTER-1, R13-TRUST-3, R13-TEXT-1 recorded, review
+  complete), `fix-r13-lsp` (R13-LSP-1: `app.json` read again when it changes on disk),
+  `fix-sec7-daemon` (SEC7-7 and R13-DAEMON-1: `xlf.refresh`, `newProject`, snapshot and profiling
+  resolve the path they write under the project root, `named_write` in the registry),
+  `fix-r13-runtime` (R13-RT-1: nested lists compared and freed without a native frame per level,
+  R13-RT-3 with SEC7-3: one byte budget over a test's collections, R13-RT-4: a cancelled test
+  stops inside `List.Contains` and compare, SEC7-5: a depth cap on JSON `WriteTo` and copies).
+  The reviewers' scratch tests (958 and 1108 lines) saved as `.campaign/*-scratch-tests-4.patch`.
+- R13-CLI-1 was already covered by the SEC7-1 branch and R13-DAEMON-1 by the SEC7-7 commit,
+  so both are marked fixed (682b831f) with the other fourteen.
+- Seven agents dispatched at 23:52 for the twelve findings still open (see `STATE.md`).
