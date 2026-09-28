@@ -875,3 +875,13 @@ Append-only. Newest entry last.
 - Queued from the agents' notes (see `STATE.md`): the per request probing walk, unhashed
   `compilationOptions` paths, the bare member receivers the router still passes, the Windows
   hard link and rename gaps, a release build from a checkout without its bridge.
+
+## 2026-09-29 00:15 BST: the text fix branch merged
+
+- Gates on a1a9f46c green with the plugin fetch test and `check-plugin.sh` (124 suites, 0 failed),
+  pushed d785528f.
+- Merged: `fix-sec7-text` (c4d44d67, SEC7-11, R13-TRUST-3, R13-TEXT-1, what each does in
+  `STATE.md`). Gates on c4d44d67 running. Statuses marked. Open: SEC7-13 (committed on its branch)
+  and SEC7-14 (in flight).
+- Queued from the agent's notes: campaign labels left in code comments by the round 13 and SEC7
+  fix branches, and the unescaped `launch_config_error` in one MCP diagnostic.

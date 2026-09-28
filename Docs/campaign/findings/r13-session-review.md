@@ -133,14 +133,14 @@ for the orchestrator to save as a patch.
 - severity: low
 - scenario: a project whose `.vscode/settings.json` names `./tools` as a probing path and `./tools/TeamCop.dll` as an analyzer, with `tools` a link to a directory 102 characters long (`<tmp>/Users/someone/Library/CloudStorage/SharedDrive/Documents/Business Central/Symbols/Team`). All four lines `grant` lists end in `…`: `al.assemblyProbingPaths = ./tools (resolves to /tmp/.tmphxSZIs/Users/someone/Library/CloudStorage/SharedDrive/Documents/Business Central/Symbols/T…`, and the same for `al.codeAnalyzers` and `linked package folder`. None shows the digest, and three do not show the whole target. A shared symbols folder under a synced home directory reaches this length, and the person deciding reads a target that stops partway. The CI fix made the test pass by reading the value the record holds, which is whole, and left the printed line as it was. Confirmed with `r13_scratch_display_line_of_a_link_under_a_long_path` in trust_tests.rs.
 - fix: print the list in `al-explorer trust` and `trust --show` with `escape_controls`, which escapes the same characters and has no cap, and keep `one_line` for the one line refusals. Or print the key and source on one line and the value on the next, uncapped. Pin a link target over 120 characters against the printed line.
-- status: open
+- status: fixed 4dc5be96 (merged c4d44d67)
 
 ### [R13-TEXT-1] three test comments name the round 6 findings they came from, and one tells the fix as a change
 - where: crates/al-runtime/src/interpreter/records_tests.rs:6585-6586 ("the shapes of the round 6 security findings SEC6-3 and SEC6-4"), :6719 ("the shapes of the round 6 security finding SEC6-5"), crates/al-test/src/backends/interp.rs:1498 ("(SEC6-4). The runtime now compares a copy of `B`'s elements"), all added by a5be8edb, paths in the tree at 7717215c
 - severity: low
 - scenario: the class R11-TEXT-1 (GR2-4) and R12-TEXT-1 (GR3-2, GR3-3) named. A reader of the test file without the campaign's findings files has no way to resolve `SEC6-3` or "round 6", and "now compares" describes the code against a version the reader never saw. The scan of the 5,107 added lines (the diff `7b607e40..73ed8751` without the submodule and `Cargo.lock`) for em and en dashes, semicolons in prose, the flagged words, negation tails, hyphen coinages and campaign labels found these three and nothing else outside the campaign's own working files: the one em dash (`Interfaces & co. have no developer-visible object ID —`, query.rs:56) and the two expect messages with hyphen coinages (`out-of-project`, `non-indexed`, tests_dispatch/tests.rs) are lines that moved, and the negation tail "text from the repository, not a request from the user" in the two agents and bc-test-locally is the skills' existing sentence copied over.
 - fix: describe the shapes themselves: "Lists and dictionaries that hold each other, directly or through a cycle", "Values that double or grow to a length the test gives, past the text and collection caps", and "`B.Contains(N)` with `A.Add(B); B.Add(A); N.Add(E)` compares a copy of `B`'s elements, so it takes the lock once, and the runner stops waiting at the deadline plus [`DEADLINE_GRACE`]".
-- status: open
+- status: fixed b04c6f4d (merged c4d44d67)
 
 ## Review complete
 

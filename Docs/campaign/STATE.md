@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-29 00:12 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-29 00:15 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -45,10 +45,17 @@ locally by 00:10 on 2026-09-29, gates on a1a9f46c running:
   publishes `binary-checksums.txt`, a listing whose digest differs is refused before the archive
   is fetched). Merged a1a9f46c.
 
+- `campaign/fix-sec7-text` (dir `fix-r13-runtime-2`): SEC7-11 (cadc1bde, `client_error_text`
+  escapes a daemon error line by line before it reaches `content[0].text`, `structuredContent.error`
+  and the diagnostics), R13-TRUST-3 (4dc5be96, `display_line` uses `escape_controls` with no cap,
+  `one_line` stays for the refusals), R13-TEXT-1 (b04c6f4d, the three comments describe the
+  shapes). Merged c4d44d67, gates running.
+
 Still running:
 
-- `campaign/fix-sec7-text` (dir `fix-r13-runtime-2`): SEC7-11, R13-TRUST-3, R13-TEXT-1.
-- `campaign/fix-sec7-daemon-life` (dir `fix-daemon`): SEC7-13, SEC7-14.
+- `campaign/fix-sec7-daemon-life` (dir `fix-daemon`): SEC7-13 committed (d581db7d, a second daemon
+  for a project refuses to start and a taken socket path is left alone), SEC7-14 in its
+  verification chain at 00:10.
 
 Two reviewers dispatched 23:58 over the tree at f4eb117a, each told to stop by 01:30 BST:
 
@@ -84,6 +91,13 @@ al-campaign-watchdog.timer`. PR 30 was merged into `dev` on 2026-09-25 (afec75d1
 opens a draft pull request from `campaign/2026-09-21` against `dev` with its first push.
 
 Queued:
+- From the SEC7-11 agent: campaign labels in code comments added by the round 13 and SEC7 fix
+  branches (`crates/al-runtime/src/interpreter/json.rs` near line 1333 names R13-RT-2 and SEC7-5,
+  `records_tests.rs` near lines 7440, 7567, 7611, 7734, 7797 and 7848 names R13-RT-1 to R13-RT-4,
+  SEC7-3 and SEC7-5, `crates/al-test/src/backends/interp.rs` near line 1508 names R13-RT-4, some
+  with "now" phrasing), for round 14's text item. The MCP diagnostic
+  `AL_AGENT_INVALID_LAUNCH_CONFIGURATION` carries `launch_config_error`, the launch file parse
+  error, unescaped (unverified whether it can hold repository control characters).
 - From the 2026-09-29 fix agents: `classify_bare_member` returns silently for a Page, Report,
   XmlPort, Query, JSON, Text, Dictionary, List or Enum receiver, so a bare member naming an
   unsupported method may stay local where the call with parentheses goes live (round 14). The
