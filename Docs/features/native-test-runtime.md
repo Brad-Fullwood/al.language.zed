@@ -109,7 +109,9 @@ Instance methods that run locally:
 - JSON: `JsonObject`, `JsonArray`, `JsonToken` and `JsonValue` are references, as in AL. `B := A`
   shares one node, a token from `Get` changes its parent, and `ReadFrom` gives the variable a new
   node and leaves the old one where it was, so an alias made before the `ReadFrom` still sees the
-  old value. Objects support `Add`, `Get`, `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the
+  old value. `Add`, `Insert`, `Set` and `Replace` add a copy of a value that already sits in an
+  object or array, and of the container itself or a value that holds it (`JA.Add(JA)`), so a JSON
+  value never holds itself. Objects support `Add`, `Get`, `Contains`, `Remove`, `Replace`, `Keys`, `Values` and the
   typed getters, where `GetText`, `GetInteger` and the rest honour a second `DefaultIfNotFound`
   argument. Arrays support `Add`, `Get` (0-based), `Count`, `Insert`, `Set`, `RemoveAt`, `IndexOf`.
   Tokens support `IsObject`/`AsObject` and the like. Values support `AsText`, `AsInteger`,

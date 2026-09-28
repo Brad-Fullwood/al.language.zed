@@ -6655,26 +6655,31 @@ const CYCLIC_COLLECTIONS: &str = r#"codeunit 50390 "Cyclic Collections"
 }
 "#;
 
-/// Run `proc` of [`CYCLIC_COLLECTIONS`] on a thread with the interpreter's
-/// stack, as the test backend does, so a test measures the runtime's own
-/// guards and not the 2 MiB stack of a test thread. A procedure that has not
-/// returned after 60 seconds fails the test, and its thread is left behind.
-fn run_cyclic(proc: &'static str) -> Eval {
+/// Run `proc` of the codeunit `object` in `source` on a thread with the
+/// interpreter's stack, as the test backend does, so a test measures the
+/// runtime's own guards and not the 2 MiB stack of a test thread. A procedure
+/// that has not returned after 60 seconds fails the test, and its thread is
+/// left behind.
+fn run_on_interpreter_stack(
+    source: &'static str,
+    object: &'static str,
+    proc: &'static str,
+    args: Vec<Value>,
+) -> Eval {
     let (done, result) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .stack_size(crate::interpreter::dispatch::INTERP_STACK_BYTES)
         .spawn(move || {
-            let _ = done.send(run(
-                &[("/ws/Cyclic.al", CYCLIC_COLLECTIONS)],
-                "Cyclic Collections",
-                proc,
-                vec![],
-            ));
+            let _ = done.send(run(&[("/ws/Stack.al", source)], object, proc, args));
         })
         .expect("spawn the interpreter thread");
     result
         .recv_timeout(std::time::Duration::from_secs(60))
         .unwrap_or_else(|error| panic!("{proc} did not return: {error}"))
+}
+
+fn run_cyclic(proc: &'static str) -> Eval {
+    run_on_interpreter_stack(CYCLIC_COLLECTIONS, "Cyclic Collections", proc, vec![])
 }
 
 /// Comparing two lists that hold each other walked the cycle in `Value::cmp`
@@ -7428,5 +7433,133 @@ fn an_overload_is_chosen_by_the_object_of_its_codeunit_argument() {
     assert_eq!(
         ok(run_subtype_overload("ByCodeunitOverload")),
         Value::Text("b:b|a:a".into())
+    );
+}
+
+/// JSON values added to themselves or to a value they hold, the shapes of
+/// the round 13 finding R13-RT-2.
+const JSON_SELF_ADD: &str = r#"codeunit 50460 "Json Self Add"
+{
+    procedure ArrayAddedToItself(): Text
+    var
+        JA: JsonArray;
+        Out: Text;
+    begin
+        JA.Add(1);
+        JA.Add(JA);
+        JA.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure ArrayAddedToItselfTwice(): Text
+    var
+        JA: JsonArray;
+        Out: Text;
+    begin
+        JA.Add(1);
+        JA.Add(JA);
+        JA.Add(JA);
+        JA.WriteTo(Out);
+        exit(Format(JA.Count()) + ' ' + Out);
+    end;
+
+    procedure ObjectAddedToItself(): Text
+    var
+        JO: JsonObject;
+        Out: Text;
+    begin
+        JO.Add('a', 1);
+        JO.Add('self', JO);
+        JO.Replace('a', JO);
+        JO.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure ParentAddedToItsChild(): Text
+    var
+        JO: JsonObject;
+        JA: JsonArray;
+        Out: Text;
+        Child: Text;
+    begin
+        JO.Add('a', JA);
+        JA.Add(JO);
+        JA.Insert(0, JO);
+        JO.WriteTo(Out);
+        JA.WriteTo(Child);
+        exit(Out + ' ' + Child);
+    end;
+
+    procedure ArraySetToItself(): Text
+    var
+        JA: JsonArray;
+        Out: Text;
+    begin
+        JA.Add(1);
+        JA.Add(2);
+        JA.Set(1, JA);
+        JA.WriteTo(Out);
+        exit(Out);
+    end;
+
+    procedure RootAddedToADeepChild(): Text
+    var
+        JO: JsonObject;
+        Mid: JsonObject;
+        Inner: JsonArray;
+        Token: JsonToken;
+        Deep: JsonArray;
+        Out: Text;
+    begin
+        Mid.Add('inner', Inner);
+        JO.Add('outer', Mid);
+        JO.SelectToken('$.outer.inner', Token);
+        Deep := Token.AsArray();
+        Deep.Add(JO);
+        JO.WriteTo(Out);
+        exit(Out);
+    end;
+}
+"#;
+
+fn run_json_self_add(proc: &'static str) -> Eval {
+    run_on_interpreter_stack(JSON_SELF_ADD, "Json Self Add", proc, vec![])
+}
+
+/// `JA.Add(JA)` put the array's own node among its items, so the next
+/// `Add` or `WriteTo` walked the cycle until the stack overflowed and the
+/// process aborted. A JSON value added to itself, or to a value it holds,
+/// is now copied first, as a value that already has a parent is.
+#[test]
+fn a_json_value_added_to_itself_is_added_as_a_copy() {
+    assert_eq!(
+        ok(run_json_self_add("ArrayAddedToItself")),
+        Value::Text("[1,[1]]".into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("ArrayAddedToItselfTwice")),
+        Value::Text("3 [1,[1],[1,[1]]]".into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("ObjectAddedToItself")),
+        Value::Text(r#"{"a":{"a":1,"self":{"a":1}},"self":{"a":1}}"#.into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("ArraySetToItself")),
+        Value::Text("[1,[1,2]]".into())
+    );
+}
+
+/// A root added to its child, and through a token to its grandchild, is
+/// added as a copy of the root as it was before the call.
+#[test]
+fn a_json_value_added_to_a_value_it_holds_is_added_as_a_copy() {
+    assert_eq!(
+        ok(run_json_self_add("ParentAddedToItsChild")),
+        Value::Text(r#"{"a":[{"a":[{"a":[]}]},{"a":[]}]} [{"a":[{"a":[]}]},{"a":[]}]"#.into())
+    );
+    assert_eq!(
+        ok(run_json_self_add("RootAddedToADeepChild")),
+        Value::Text(r#"{"outer":{"inner":[{"outer":{"inner":[]}}]}}"#.into())
     );
 }

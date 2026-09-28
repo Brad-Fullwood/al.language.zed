@@ -137,16 +137,21 @@ impl JsonArena {
         self.push(node)
     }
 
-    /// The node to place inside a container for `value`: the referenced node
-    /// itself, a copy of it when it already has a parent, or a new scalar.
-    fn child_for(&mut self, value: &Value) -> Result<usize, String> {
+    /// The node to place inside the container `parent` for `value`: the
+    /// referenced node itself, a copy of it, or a new scalar.
+    ///
+    /// A node that already has a parent is copied, as BC does. So is the
+    /// container itself or a node that holds it (`JA.Add(JA)`): attaching
+    /// either would make a cycle, which `WriteTo` and the next copy would
+    /// follow until the stack overflowed.
+    fn child_for(&mut self, parent: usize, value: &Value) -> Result<usize, String> {
         let id = match value {
             Value::Json(JsonRef {
                 handle: Some(handle),
                 kind,
             }) => {
                 let node = self.target(*handle, *kind);
-                if self.attached.contains(&node) {
+                if self.attached.contains(&node) || self.holds(node, parent) {
                     self.deep_copy(node)
                 } else {
                     node
@@ -157,6 +162,22 @@ impl JsonArena {
         };
         self.attached.insert(id);
         Ok(id)
+    }
+
+    /// Whether `node` is `wanted` or holds it at any depth.
+    fn holds(&self, node: usize, wanted: usize) -> bool {
+        let mut pending = vec![node];
+        while let Some(id) = pending.pop() {
+            if id == wanted {
+                return true;
+            }
+            match &self.nodes[&id] {
+                Node::Object(entries) => pending.extend(entries.iter().map(|(_, child)| *child)),
+                Node::Array(items) => pending.extend(items.iter().copied()),
+                Node::Scalar(_) => {}
+            }
+        }
+        false
     }
 
     fn write(&self, id: usize, out: &mut String) {
@@ -1032,7 +1053,7 @@ fn run(
             if entries.iter().any(|(name, _)| *name == key) {
                 return Err(JsonError::Failed(format!("the key '{key}' already exists")));
             }
-            let child = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
+            let child = arena.child_for(node, args.get(1).ok_or("the value is missing")?)?;
             entries.push((key, child));
             arena.set(node, Node::Object(entries));
             Ok(Value::Boolean(true))
@@ -1042,7 +1063,7 @@ fn run(
             let Some(at) = entries.iter().position(|(name, _)| *name == key) else {
                 return Err(JsonError::Failed(format!("the key '{key}' does not exist")));
             };
-            entries[at].1 = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
+            entries[at].1 = arena.child_for(node, args.get(1).ok_or("the value is missing")?)?;
             arena.set(node, Node::Object(entries));
             Ok(Value::Boolean(true))
         }
@@ -1109,21 +1130,21 @@ fn run(
             }
         }
         (JsonKind::Array, "add", Node::Array(mut items)) => {
-            let child = arena.child_for(args.first().ok_or("the value is missing")?)?;
+            let child = arena.child_for(node, args.first().ok_or("the value is missing")?)?;
             items.push(child);
             arena.set(node, Node::Array(items));
             Ok(Value::Boolean(true))
         }
         (JsonKind::Array, "insert", Node::Array(mut items)) => {
             let at = index_arg(args.first(), items.len(), true)?;
-            let child = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
+            let child = arena.child_for(node, args.get(1).ok_or("the value is missing")?)?;
             items.insert(at, child);
             arena.set(node, Node::Array(items));
             Ok(Value::Boolean(true))
         }
         (JsonKind::Array, "set", Node::Array(mut items)) => {
             let at = index_arg(args.first(), items.len(), false)?;
-            items[at] = arena.child_for(args.get(1).ok_or("the value is missing")?)?;
+            items[at] = arena.child_for(node, args.get(1).ok_or("the value is missing")?)?;
             arena.set(node, Node::Array(items));
             Ok(Value::Boolean(true))
         }
@@ -1150,7 +1171,7 @@ fn run(
                     arena.text_of(node)
                 }
                 Some(other) => {
-                    let probe = arena.child_for(other)?;
+                    let probe = arena.child_for(node, other)?;
                     arena.text_of(probe)
                 }
                 None => return Err("the value is missing".into()),
