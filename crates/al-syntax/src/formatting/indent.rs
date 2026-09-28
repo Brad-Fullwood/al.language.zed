@@ -227,11 +227,11 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                 indent_level = (indent_level - 1).max(0);
                 in_var_section = false;
             }
-            // Inside case label body: determine if this end; closes a begin
-            // block within the label, or the label body / case itself
+            // Inside a case: determine if this end; closes a begin block
+            // within the case, or the label body / case itself
             if let Some(frame) = case_stack.last_mut() {
-                if frame.in_body && frame.begin_depth > 0 {
-                    // This end; closes a begin block within the case label body
+                if frame.begin_depth > 0 {
+                    // This end; closes a begin block within the case
                     frame.begin_depth -= 1;
                 } else if frame.in_body {
                     // No nested begin: this end; closes the case block itself
@@ -395,7 +395,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             indent_level += 1;
         } else if code_lower == "begin" || code_lower.ends_with(" begin") {
             indent_level += 1;
-            if let Some(frame) = case_stack.last_mut().filter(|frame| frame.in_body) {
+            if let Some(frame) = case_stack.last_mut() {
                 frame.begin_depth += 1;
             }
         } else if code_lower == "var" {
@@ -468,8 +468,9 @@ enum BlockKind {
 struct CaseFrame {
     /// A label line opened a branch body one level under the label.
     in_body: bool,
-    /// `begin` blocks open inside the branch body. An `end` at 0 closes the
-    /// case itself.
+    /// `begin` blocks open inside this case and outside any case nested in
+    /// it, including one opened on a label line (`1: begin`). An `end` at 0
+    /// closes the case itself.
     begin_depth: i32,
 }
 
@@ -900,6 +901,33 @@ end;
             4:
                 Message('c');
         end;
+    end;
+}
+",
+        );
+    }
+
+    /// A label with `begin` on its own line, `1: begin`. The `end;` closes
+    /// that block, so the next label and its statement keep their levels.
+    /// That `end;` used to close the whole case, which put `2:` and its
+    /// statement on one level. Microsoft's formatter moves `begin` to a line
+    /// of its own. This formatter keeps the lines as written and indents the
+    /// block the way it indents `if A then begin`.
+    #[test]
+    fn a_begin_on_a_label_line_is_closed_by_its_own_end() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case X of
+            1: begin
+                Message('a');
+            end;
+            2:
+                Message('b');
+        end;
+        Message('c');
     end;
 }
 ",
