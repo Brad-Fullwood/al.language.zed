@@ -66,15 +66,9 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // collapsed to the property's own level.
     let mut in_property_continuation = false;
 
-    // Track case...of nesting for label indentation
-    let mut case_depth: i32 = 0;
-
-    // Whether we are inside a case label body (indent +1 for label body)
-    let mut in_case_label_body = false;
-
-    // Track begin/end nesting depth within case label bodies.
-    // When > 0, an `end;` closes a begin block, not the case label body.
-    let mut case_begin_depth: i32 = 0;
+    // Open `case` statements, innermost last. A branch's statement can be
+    // another `case`, so each one keeps its own branch state.
+    let mut case_stack: Vec<CaseFrame> = Vec::new();
 
     // Block comments do not consume pending single-statement indentation.
     let mut in_block_comment = false;
@@ -194,7 +188,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // characters only when they occur OUTSIDE a string, so a quoted label
         // like `'a;b':` is still a label because its semicolon is quoted.
         let label_code = code.as_str();
-        let is_case_label = case_depth > 0
+        let is_case_label = !case_stack.is_empty()
             && label_code.ends_with(':')
             && !label_code.ends_with("::")
             // The colon must directly follow the last non-space character —
@@ -205,14 +199,16 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                 label_code.trim_end_matches(':'),
                 &[';', '=', '(', ')'],
             );
-        if is_case_label && in_case_label_body {
-            // Drain any single-stmt from within the previous label body
-            if single_stmt_depth > 0 {
-                indent_level = (indent_level - single_stmt_depth).max(0);
-                single_stmt_depth = 0;
+        if is_case_label {
+            if let Some(frame) = case_stack.last_mut().filter(|frame| frame.in_body) {
+                // Drain any single-stmt from within the previous label body
+                if single_stmt_depth > 0 {
+                    indent_level = (indent_level - single_stmt_depth).max(0);
+                    single_stmt_depth = 0;
+                }
+                indent_level = (indent_level - 1).max(0);
+                frame.in_body = false;
             }
-            indent_level = (indent_level - 1).max(0);
-            in_case_label_body = false;
         }
 
         let is_close = code_lower == "}"
@@ -233,19 +229,18 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             }
             // Inside case label body: determine if this end; closes a begin
             // block within the label, or the label body / case itself
-            if in_case_label_body && case_begin_depth > 0 {
-                // This end; closes a begin block within the case label body
-                case_begin_depth -= 1;
-            } else if in_case_label_body {
-                // No nested begin — this end; closes the case block itself
-                indent_level = (indent_level - 1).max(0);
-                in_case_label_body = false;
-                if case_depth > 0 {
-                    case_depth -= 1;
+            if let Some(frame) = case_stack.last_mut() {
+                if frame.in_body && frame.begin_depth > 0 {
+                    // This end; closes a begin block within the case label body
+                    frame.begin_depth -= 1;
+                } else if frame.in_body {
+                    // No nested begin: this end; closes the case block itself
+                    indent_level = (indent_level - 1).max(0);
+                    case_stack.pop();
+                } else if code_lower == "end;" || code_lower.starts_with("end;") {
+                    // Case block close without label body
+                    case_stack.pop();
                 }
-            } else if case_depth > 0 && (code_lower == "end;" || code_lower.starts_with("end;")) {
-                // Case block close without label body
-                case_depth -= 1;
             }
             indent_level = (indent_level - 1).max(0);
         }
@@ -400,8 +395,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             indent_level += 1;
         } else if code_lower == "begin" || code_lower.ends_with(" begin") {
             indent_level += 1;
-            if in_case_label_body {
-                case_begin_depth += 1;
+            if let Some(frame) = case_stack.last_mut().filter(|frame| frame.in_body) {
+                frame.begin_depth += 1;
             }
         } else if code_lower == "var" {
             indent_level += 1;
@@ -415,15 +410,17 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                 single_stmt_depth += 1 + pending_else;
                 pending_else = 0;
             }
-        } else if code_lower.starts_with("case ") && code_lower.ends_with(" of") {
+        } else if opens_case {
             indent_level += 1;
-            case_depth += 1;
+            case_stack.push(CaseFrame::default());
         }
 
         // Case labels: indent the body after a label (separate from single-stmt)
         if is_case_label {
             indent_level += 1;
-            in_case_label_body = true;
+            if let Some(frame) = case_stack.last_mut() {
+                frame.in_body = true;
+            }
         }
 
         // Single-statement openers: if...then, for...do, while...do, with...do
@@ -464,6 +461,16 @@ enum BlockKind {
     Begin,
     /// `repeat ... until`.
     Repeat,
+}
+
+/// The branch state of one open `case` statement.
+#[derive(Debug, Default)]
+struct CaseFrame {
+    /// A label line opened a branch body one level under the label.
+    in_body: bool,
+    /// `begin` blocks open inside the branch body. An `end` at 0 closes the
+    /// case itself.
+    begin_depth: i32,
 }
 
 /// `if B then begin`, `while B do begin`: an opener whose statement is the
@@ -835,6 +842,68 @@ end;
 }
 "#;
         assert_eq!(fmt(input), expected);
+    }
+
+    /// Formats `expected` once as it stands and once with every line's
+    /// indentation removed, and requires both runs to give `expected`.
+    fn assert_layout(expected: &str) {
+        assert_eq!(fmt(expected), expected, "already formatted input changed");
+        let flat: String = expected
+            .lines()
+            .map(|line| format!("{}\n", line.trim_start()))
+            .collect();
+        assert_eq!(fmt(&flat), expected, "flat input formatted differently");
+    }
+
+    /// A branch's statement is a `case` with no `begin` around it. The inner
+    /// `case` sits one level under its label and its own labels one level
+    /// under it. The inner case's first label used to close the outer
+    /// branch, which put it and the inner `end;` one level too shallow.
+    #[test]
+    fn a_case_that_is_a_branch_statement_indents_its_labels_under_it() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case X of
+            1:
+                case Y of
+                    2:
+                        Message('a');
+                end;
+        end;
+    end;
+}
+",
+        );
+    }
+
+    /// The same nesting with the inner branch's statement in a `begin` block.
+    #[test]
+    fn a_nested_case_whose_branch_is_a_begin_block_keeps_its_levels() {
+        assert_layout(
+            "codeunit 50100 Test
+{
+    procedure DoSomething()
+    begin
+        case X of
+            1:
+                case Y of
+                    2:
+                        begin
+                            Message('a');
+                        end;
+                    3:
+                        Message('b');
+                end;
+            4:
+                Message('c');
+        end;
+    end;
+}
+",
+        );
     }
 
     #[test]
