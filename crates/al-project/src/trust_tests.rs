@@ -1142,6 +1142,17 @@ fn a_replaced_dll_under_a_probing_path_makes_the_record_stale() {
     );
 }
 
+/// `tools` and `./tools` name one directory, and the search walks it for
+/// either spelling. The record held `tools` as text alone, so a file replaced
+/// under it left the record trusted.
+#[test]
+fn a_replaced_dll_under_a_probing_path_written_without_dot_slash_makes_the_record_stale() {
+    assert_a_replaced_file_makes_the_record_stale(
+        r#"{"al.assemblyProbingPaths": ["tools"]}"#,
+        "tools/net8.0/Helper.dll",
+    );
+}
+
 /// Trust is what lets a bare name resolve to a DLL the repository ships
 /// in `packages/`, so that DLL is part of the record too.
 #[test]
@@ -2145,6 +2156,33 @@ fn a_replaced_file_under_a_linked_probing_path_makes_the_record_stale() {
         b"reviewed dependency",
     );
     let project = project_with_settings(r#"{"al.assemblyProbingPaths": ["./tools"]}"#);
+    let root = project.path();
+    link(root, "tools", outside.path().to_str().unwrap());
+    grant(root).unwrap();
+
+    write_file(
+        outside.path(),
+        "deps/TeamCop.Rules.dll",
+        b"replaced by the other user",
+    );
+
+    assert_eq!(decide(root).unwrap().state, TrustState::Stale);
+}
+
+/// The same shape with the path written as `tools`. The record listed where
+/// the link leads and held the probing path as text, so a file replaced at
+/// the target left the record trusted.
+#[cfg(unix)]
+#[test]
+fn a_replaced_file_under_a_linked_probing_path_written_without_dot_slash_makes_the_record_stale() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    write_file(
+        outside.path(),
+        "deps/TeamCop.Rules.dll",
+        b"reviewed dependency",
+    );
+    let project = project_with_settings(r#"{"al.assemblyProbingPaths": ["tools"]}"#);
     let root = project.path();
     link(root, "tools", outside.path().to_str().unwrap());
     grant(root).unwrap();

@@ -1017,6 +1017,10 @@ enum Beside {
 /// outside the project too: `./tools` reads as a folder in the project, and
 /// was recorded as that text alone when `tools` linked elsewhere. A tree the
 /// record cannot hash adds its reason to `unhashable`.
+///
+/// An analyzer entry or a program without a separator is a name the search
+/// or `PATH` looks up, so it stays as written. A value that is a path however
+/// it is spelled goes to [`with_path_contents`].
 fn with_project_contents(
     value: &str,
     project_root: &Path,
@@ -1025,7 +1029,24 @@ fn with_project_contents(
 ) -> String {
     let path = Path::new(value.trim());
     let is_path = path.is_absolute() || value.contains(['/', '\\']);
-    if !is_path || !names_a_project_file(path, project_root) {
+    if !is_path {
+        return value.to_string();
+    }
+    with_path_contents(value, project_root, beside, unhashable)
+}
+
+/// [`with_project_contents`] for a value that names a path however it is
+/// spelled, such as an `al.assemblyProbingPaths` entry. `tools` names the
+/// same directory as `./tools`, and the search walks it, so a record that
+/// held `tools` as text alone let the files under it change.
+fn with_path_contents(
+    value: &str,
+    project_root: &Path,
+    beside: Beside,
+    unhashable: &mut Vec<String>,
+) -> String {
+    let path = Path::new(value.trim());
+    if !names_a_project_file(path, project_root) {
         return value.to_string();
     }
     let absolute = if path.is_absolute() {
@@ -1288,7 +1309,7 @@ fn privileged_changes(
             .assembly_probing_paths
             .iter()
             .map(|path| {
-                with_project_contents(
+                with_path_contents(
                     &path.display().to_string(),
                     project_root,
                     Beside::Assemblies,

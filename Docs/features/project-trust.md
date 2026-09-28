@@ -179,7 +179,8 @@ analyzer name that resolves to a DLL under `.netpackages`, `packages` or a relat
 path, the path is first resolved through any symbolic link, since the loader opens the target
 and reads its neighbours beside the target. The recorded value carries the resolved file's
 SHA-256 and, when the path is a link, where it resolves. For a probing directory inside the
-project it carries one hash over every file below it. The record also covers what the file
+project, written as `tools` or `./tools`, it carries one hash over every file below it. A
+probing path written without `./` used to be recorded as text alone. The record also covers what the file
 loads from beside it: for an analyzer, one hash over every file in its directory and below,
 since .NET resolves an analyzer's references and its native libraries (`.so`, `.dylib`) from
 its own directory, and for `al.dotnetPath`, one hash over every file beside the muxer and
