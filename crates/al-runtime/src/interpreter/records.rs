@@ -2459,10 +2459,13 @@ pub(crate) fn dispatch_list_method(
     let list = list.clone();
     // `AddRange(Other)` for a `List of [T]` adds Other's elements. Read them
     // before the list is locked: `L.AddRange(L)` doubles L.
-    let args = match (lower.as_str(), args.as_slice()) {
+    let mut args = match (lower.as_str(), args.as_slice()) {
         ("addrange", [Value::List(other)]) if adds_elements(&list, other) => other.snapshot(),
         _ => args,
     };
+    if let Err(error) = declared_elements(&lower, &mut args, list.member_type()) {
+        return eval_error(error);
+    }
     // Comparing with the list itself would lock it twice.
     if args
         .iter()
@@ -3134,27 +3137,28 @@ pub(crate) fn dict_lookup(
     let Some(Value::Dict(dict)) = stack.lookup(recv) else {
         return Err(format!("'{recv}' is not a Dictionary"));
     };
-    let key = declared_key(key, dict.member_type())?;
+    let key = declared_member(key, dict.member_type())?;
     Ok(dict
         .lock()
         .get(&dict_key(&key)?)
         .map(|(_, value)| value.clone()))
 }
 
-/// `key` converted to the dictionary's declared key type, as BC converts an
-/// argument to a typed parameter: a Code key is trimmed and upper-cased, one
-/// character of Text becomes a Char, a Char becomes Text or Code, and an
+/// `value` converted to `member_type`, the declared element type of a List
+/// or key type of a Dictionary, as BC converts an argument to a typed
+/// parameter: a Code value is trimmed and upper-cased, one character of Text
+/// becomes a Char, a Char becomes Text, Code or its Integer code, and an
 /// Integer becomes a Decimal.
-fn declared_key(key: &Value, key_type: Option<&str>) -> Result<Value, String> {
-    let Some(key_type) = key_type else {
-        return Ok(key.clone());
+fn declared_member(value: &Value, member_type: Option<&str>) -> Result<Value, String> {
+    let Some(member_type) = member_type else {
+        return Ok(value.clone());
     };
-    let base = key_type.split('[').next().unwrap_or_default().trim();
+    let base = member_type.split('[').next().unwrap_or_default().trim();
     let Some(slot) = Value::default_for(base) else {
-        return Ok(key.clone());
+        return Ok(value.clone());
     };
-    let capacity = crate::interpreter::dispatch::declared_text_length(key_type);
-    match (&slot, key) {
+    let capacity = crate::interpreter::dispatch::declared_text_length(member_type);
+    match (&slot, value) {
         (Value::Char(_), Value::Text(text) | Value::Code(text)) => {
             crate::interpreter::value::check_string_capacity(text, Some(1))?;
             Ok(Value::Char(text.chars().next().unwrap_or('\0')))
@@ -3162,8 +3166,32 @@ fn declared_key(key: &Value, key_type: Option<&str>) -> Result<Value, String> {
         (Value::Text(_) | Value::Code(_), Value::Char(c)) => {
             Value::coerce_into_slot(&slot, Value::Text(c.to_string()), capacity)
         }
-        _ => Value::coerce_into_slot(&slot, key.clone(), capacity),
+        (Value::Integer(_) | Value::BigInteger(_), Value::Char(c)) => {
+            Value::coerce_into_slot(&slot, Value::Integer(i64::from(u32::from(*c))), None)
+        }
+        _ => Value::coerce_into_slot(&slot, value.clone(), capacity),
     }
+}
+
+/// Convert the element arguments of the List method `method` to the list's
+/// declared element type: the value `Add`, `Insert` and `Set` store, every
+/// value `AddRange` stores, and the value `Contains`, `IndexOf`,
+/// `LastIndexOf` and `Remove` look for.
+fn declared_elements(
+    method: &str,
+    args: &mut [Value],
+    element_type: Option<&str>,
+) -> Result<(), String> {
+    let elements = match method {
+        "add" | "contains" | "indexof" | "lastindexof" | "remove" => args.get_mut(..1),
+        "insert" | "set" => args.get_mut(1..2),
+        "addrange" => Some(args),
+        _ => None,
+    };
+    for element in elements.unwrap_or_default() {
+        *element = declared_member(element, element_type)?;
+    }
+    Ok(())
 }
 
 /// Serialise a dictionary key value into the `Dict` map's string key space.
@@ -3217,7 +3245,7 @@ pub(crate) fn dispatch_dict_method(
         "add" | "set" | "get" | "containskey" | "remove"
     ) {
         if let Some(key) = args.first_mut() {
-            match declared_key(key, dict.member_type()) {
+            match declared_member(key, dict.member_type()) {
                 Ok(converted) => *key = converted,
                 Err(error) => return eval_error(error),
             }

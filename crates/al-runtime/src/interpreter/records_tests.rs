@@ -6878,3 +6878,178 @@ fn a_dictionary_past_the_limit_fails_the_test() {
     // Set on a key that is there replaces its value.
     assert!(!call("Set", 7).is_error());
 }
+
+/// A `List of [Code[20]]` and a `Dictionary of [Integer, Text]` whose
+/// arguments arrive as another type: Text for a Code element, a Char for an
+/// Integer key. Business Central converts each argument to the declared
+/// type, as it converts an argument to a typed parameter.
+const TYPED_COLLECTION_ARGUMENTS: &str = r#"table 50990 "Typed Item"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+}
+
+codeunit 50991 "Typed Collection Arguments"
+{
+    procedure CodeListFromText(): Text
+    var
+        L: List of [Code[20]];
+    begin
+        L.Add('abc');
+        if not L.Contains('ABC') then
+            exit('missing');
+        exit(L.Get(1));
+    end;
+
+    procedure CodeListIndexOf(): Integer
+    var
+        L: List of [Code[20]];
+        C: Code[20];
+    begin
+        C := 'xyz';
+        L.Add(C);
+        exit(L.IndexOf('XYZ'));
+    end;
+
+    procedure CodeListContainsCodeVariable(): Text
+    var
+        L: List of [Code[20]];
+        C: Code[20];
+        D: Code[20];
+    begin
+        C := 'xyz';
+        D := 'XYZ';
+        L.Add(C);
+        if L.Contains(D) then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure CodeListFromField(): Text
+    var
+        R: Record "Typed Item";
+        L: List of [Code[20]];
+    begin
+        R."No." := 'ITEM1';
+        R.Insert();
+        R.FindFirst();
+        L.Add(R."No.");
+        if L.Contains('ITEM1') then
+            exit('found');
+        exit('missing');
+    end;
+
+    procedure CodeListInsertSetAndRemove(): Text
+    var
+        L: List of [Code[20]];
+        Old: Code[20];
+    begin
+        L.Add('a');
+        L.Insert(1, 'b ');
+        L.Set(2, 'c', Old);
+        if not L.Remove('B') then
+            exit('remove missed');
+        exit(L.Get(1) + '/' + Old);
+    end;
+
+    procedure CodeListAddRangeOfTexts(): Integer
+    var
+        L: List of [Code[20]];
+    begin
+        L.AddRange('a', 'b');
+        exit(L.LastIndexOf('B'));
+    end;
+
+    procedure ShortCodeListOverflows()
+    var
+        L: List of [Code[2]];
+    begin
+        L.Add('abc');
+    end;
+
+    procedure IntegerKeyFromChar(): Text
+    var
+        D: Dictionary of [Integer, Text];
+        S: Text;
+    begin
+        S := 'abc';
+        D.Add(S[1], 'x');
+        if D.ContainsKey(97) then
+            exit('found');
+        exit('missing');
+    end;
+}
+"#;
+
+fn run_typed_collection(proc: &str) -> Eval {
+    run(
+        &[("/ws/TypedCollection.al", TYPED_COLLECTION_ARGUMENTS)],
+        "Typed Collection Arguments",
+        proc,
+        vec![],
+    )
+}
+
+/// `L.Add('abc')` on a `List of [Code[20]]` stores the Code `ABC`, so a
+/// search with a Text literal, a Code variable of another case, or a Code
+/// field's value finds it.
+#[test]
+fn a_list_of_code_converts_each_added_and_searched_value_to_code() {
+    assert_eq!(
+        ok(run_typed_collection("CodeListFromText")),
+        Value::Code("ABC".into())
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListIndexOf")),
+        Value::Integer(1)
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListContainsCodeVariable")),
+        Value::Text("found".into())
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListFromField")),
+        Value::Text("found".into())
+    );
+}
+
+/// `Insert`, `Set`, `AddRange` and `Remove` convert their element the same
+/// way, and the `var` old value of `Set` comes back as the stored Code:
+/// `[A]`, then `[B, A]`, then `[B, C]` with `A` as the old value, then `[C]`.
+#[test]
+fn every_list_method_that_takes_an_element_converts_it() {
+    assert_eq!(
+        ok(run_typed_collection("CodeListInsertSetAndRemove")),
+        Value::Text("C/A".into())
+    );
+    assert_eq!(
+        ok(run_typed_collection("CodeListAddRangeOfTexts")),
+        Value::Integer(2)
+    );
+}
+
+/// A value longer than the element's `Code[N]` raises the overflow text
+/// Business Central raises, as a Dictionary key does.
+#[test]
+fn a_list_element_longer_than_its_declared_length_raises() {
+    assert!(
+        error_message(run_typed_collection("ShortCodeListOverflows"))
+            .contains("must be less than or equal to 2")
+    );
+}
+
+/// `D.Add(S[1], 'x')` on a `Dictionary of [Integer, Text]` keys by the
+/// character's code, so `ContainsKey(97)` finds the entry for `a`.
+#[test]
+fn an_integer_key_given_as_a_char_is_its_character_code() {
+    assert_eq!(
+        ok(run_typed_collection("IntegerKeyFromChar")),
+        Value::Text("found".into())
+    );
+}
