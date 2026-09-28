@@ -124,10 +124,12 @@ automatically. To control it:
   subprocess backend, which does not route through this FFI bridge.
 - Analyzer names resolve through `al_project::analyzers::discover_custom_analyzer` to an installed
   analyzer DLL or an explicit DLL path, and the project's own folders are searched only when the
-  project is trusted. A copy found there loads only when the trust record lists that file with the
-  hash it has now. Custom analyzer DLLs run in-process and must be treated as trusted code, so an
-  `al.codeAnalyzers` entry that is not a built-in token and comes from the repository's own
-  settings applies only after `al-explorer trust`. See [project trust](./project-trust.md).
+  project is trusted. A file the project supplies, a copy found in those folders or the file a path
+  into the project names, loads only when the trust record lists that file with the hash it has now,
+  also when a link in the project leads outside it. Custom analyzer DLLs run in-process and must
+  be treated as trusted code, so an `al.codeAnalyzers` entry that is not a built-in token and comes
+  from the repository's own settings applies only after `al-explorer trust`. See
+  [project trust](./project-trust.md).
 - `al.enableExternalRulesets`, `al.ruleSetPath`, and `al.outputAnalyzerStatistics` apply to the
   official `alc` backend, where Microsoft defines their behavior, and do not alter this per-document
   bridge. `al.assemblyProbingPaths` reaches `alc` as `/assemblyprobingpaths:` and is also where both
