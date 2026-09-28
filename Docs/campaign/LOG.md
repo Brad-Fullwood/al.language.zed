@@ -768,3 +768,9 @@ Append-only. Newest entry last.
 - Gates on 83820e8d green (`.campaign/gates-83820e8d.log`): fmt, clippy, clippy semantic, rustdoc,
   125 suites, 5822 passed, 0 failed, 20 ignored, harness green. `findings/grammar-query-drift.md`
   committed with the result.
+- 14:30: `fix-r12-mut` merged (34e8f8de, R12-MUT-1): four indent tests read valid AL, two keep a
+  mid-edit input and assert idempotence plus the level of the line below, one compares the `else`
+  after a nested `if` with the `else` after a single call. Each rewritten test was broken by hand
+  and failed. The agent found two layout bugs on the way (a case `else` indented at the branch
+  body's level, a nested `case` without `begin` one level too shallow): fix agent dispatched on
+  `campaign/fix-formatter-case`. Gates on 34e8f8de running.
