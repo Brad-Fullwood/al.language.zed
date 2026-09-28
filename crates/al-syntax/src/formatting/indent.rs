@@ -622,27 +622,27 @@ end;
         assert_eq!(fmt(input), expected);
     }
 
-    /// An `end` closing a block that carried a nested single-statement slot
-    /// (`if A then if B then begin ... end`), with no `;` and no following
-    /// `else`: the outer slot drains before the next line.
+    /// `if A then if B then begin ... end` is the last statement of the
+    /// procedure, where AL lets the block's `end` go without a `;`. An
+    /// `else` could still follow that `end`, so the formatter holds the
+    /// outer `if`'s indent until it reads the next line. That line is the
+    /// procedure's `end;`, so the indent is given back and `end;` sits at
+    /// the procedure's level.
     #[test]
     fn end_without_semicolon_defers_its_slot_until_the_next_line_is_not_else() {
-        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif A then\nif B then begin\nMessage('a');\nend\nMessage('after');\nend;\n}";
-        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if A then\n            if B then begin\n                Message('a');\n            end\n        Message('after');\n    end;\n}\n";
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif A then\nif B then begin\nMessage('a');\nend\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if A then\n            if B then begin\n                Message('a');\n            end\n    end;\n}\n";
         assert_eq!(fmt(input), expected);
     }
 
-    /// A line ending in " begin" that is not the bare keyword "begin" and is
-    /// not itself a single-statement opener written on the same line (like
-    /// `if B then begin`) must still drain an outer pending single-statement
-    /// slot, the same way a bare `begin` does. `MyLabel: begin` stands in
-    /// for any such line. The formatter's indentation state machine does not
-    /// care whether the label is valid AL, only that the text ends in
-    /// " begin".
+    /// `if x > 0 then` with its `begin` on the next line. A `begin` on its
+    /// own line after an opener takes the opener's level, so `begin`, the
+    /// block's `end;` and the statement after the block sit at the `if`'s
+    /// level, and the statement inside the block sits one level deeper.
     #[test]
-    fn a_begin_ending_line_that_is_not_bare_begin_drains_a_pending_single_statement() {
-        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif x > 0 then\nMyLabel: begin\nMessage('a');\nend;\nend;\n}";
-        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if x > 0 then\n        MyLabel: begin\n            Message('a');\n        end;\n    end;\n}\n";
+    fn a_begin_on_its_own_line_takes_the_level_of_its_opener() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif x > 0 then\nbegin\nMessage('a');\nend;\nMessage('b');\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if x > 0 then\n        begin\n            Message('a');\n        end;\n        Message('b');\n    end;\n}\n";
         assert_eq!(fmt(input), expected);
     }
 
@@ -686,13 +686,14 @@ end;
         assert_eq!(fmt(input), expected);
     }
 
-    /// A line that ends in a colon outside any `case` is not a case label: it
-    /// must not gain the label's extra indent. Pins the `case_depth > 0`
-    /// guard against a line that merely looks like a label.
+    /// A variable declaration split after its colon: `Total:` on one line
+    /// and `Decimal;` on the next. The first line ends in a colon, but no
+    /// `case` is open, so it is not a case label and the type line stays at
+    /// the declaration's level instead of taking a branch's indent.
     #[test]
-    fn a_trailing_colon_line_outside_any_case_is_not_a_label() {
-        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nMyGlobalLabel:\nMessage('a');\nend;\n}";
-        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        MyGlobalLabel:\n        Message('a');\n    end;\n}\n";
+    fn a_declaration_split_after_its_colon_is_not_a_case_label() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nvar\nTotal:\nDecimal;\nbegin\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    var\n        Total:\n        Decimal;\n    begin\n    end;\n}\n";
         assert_eq!(fmt(input), expected);
     }
 
@@ -717,13 +718,15 @@ end;
         assert_eq!(fmt(input), expected);
     }
 
-    /// An incomplete `if` condition with no `then` must not be treated as a
-    /// single-statement opener: it must not gain the extra indent level a
-    /// real `if ... then` gives its statement.
+    /// `if x > 0 then Message('a');` on one line. A line opens a single
+    /// statement only when it starts with an opener keyword and ends in
+    /// ` then` or ` do`. This one starts with `if ` and ends in the call, so
+    /// it is a whole statement and the next statement stays at the `if`'s
+    /// level.
     #[test]
-    fn an_if_with_no_then_is_not_a_single_statement_opener() {
-        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif x > 0\nMessage('a');\nend;\n}";
-        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if x > 0\n        Message('a');\n    end;\n}\n";
+    fn an_if_with_its_statement_on_the_same_line_does_not_indent_the_next_line() {
+        let input = "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nif x > 0 then Message('a');\nMessage('b');\nend;\n}";
+        let expected = "codeunit 50100 Test\n{\n    procedure DoSomething()\n    begin\n        if x > 0 then Message('a');\n        Message('b');\n    end;\n}\n";
         assert_eq!(fmt(input), expected);
     }
 
