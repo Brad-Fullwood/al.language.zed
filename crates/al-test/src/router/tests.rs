@@ -2259,3 +2259,167 @@ end;
         stub_only.reasons
     );
 }
+
+/// AL accepts a record method without parentheses (`R.LockTable;`), and the
+/// runtime runs such a member as a call when the table declares no field of
+/// that name. The router classified a record method only from a call suffix,
+/// so `R.LockTable();` went to live BC while `R.LockTable;` stayed local and
+/// failed at run time as a missing field. A field read, a FlowField read, a
+/// supported method and a table procedure route as they did. A field a table
+/// extension adds is one the runtime does not read (it loads the base table's
+/// fields only), so a read of it goes to live BC with the other members the
+/// runtime lacks.
+#[test]
+fn a_record_method_without_parentheses_routes_as_the_call_with_them() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LockedItem.Table.al"),
+        r#"table 50980 "Locked Item"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Amount; Decimal) { }
+        field(3; "Line Count"; Integer)
+        {
+            FieldClass = FlowField;
+            CalcFormula = count("Locked Item");
+        }
+    }
+    keys
+    {
+        key(PK; "No.") { }
+    }
+
+    procedure Stamp()
+    begin
+    end;
+}"#
+        .to_string(),
+    );
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/LockedItemExt.TableExt.al"),
+        r#"tableextension 50981 "Locked Item Ext" extends "Locked Item"
+{
+    fields
+    {
+        field(50000; "Ext Note"; Text[50]) { }
+    }
+}"#
+        .to_string(),
+    );
+    for (id, name, body) in [
+        (50982, "WithParens", "R.LockTable();"),
+        (50983, "WithoutParens", "R.LockTable;"),
+        (50984, "SupportedWithoutParens", "R.Insert;"),
+        (50985, "TableProcedureWithoutParens", "R.Stamp;"),
+        (50986, "FieldRead", "if R.\"No.\" = '' then R.Amount := 1;"),
+        (
+            50987,
+            "FlowFieldRead",
+            "if R.\"Line Count\" = 0 then R.Amount := 1;",
+        ),
+        (
+            50988,
+            "ExtensionFieldRead",
+            "if R.\"Ext Note\" = '' then R.Amount := 1;",
+        ),
+    ] {
+        workspace.file_index.add_file(
+            std::path::PathBuf::from(format!("/tmp/{name}.Codeunit.al")),
+            format!(
+                r#"codeunit {id} "{name}"
+{{
+Subtype = Test;
+[Test]
+procedure {name}()
+var R: Record "Locked Item";
+begin
+    R."No." := 'A';
+    {body}
+end;
+}}"#
+            ),
+        );
+    }
+    let results = classify_all(&workspace).unwrap();
+    let result = |name: &str| {
+        results
+            .iter()
+            .find(|result| result.method_name == name)
+            .unwrap_or_else(|| panic!("no classification for {name}"))
+    };
+    let messages = |name: &str| -> Vec<&str> {
+        result(name)
+            .reasons
+            .iter()
+            .map(|reason| reason.message.as_str())
+            .collect()
+    };
+    let unsupported = "calls unsupported Record.LockTable (requires BC semantics)";
+
+    assert_eq!(result("WithParens").decision, RoutingDecision::LiveBc);
+    assert!(
+        messages("WithParens").contains(&unsupported),
+        "{:?}",
+        messages("WithParens")
+    );
+    assert_eq!(
+        result("WithoutParens").decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        messages("WithoutParens")
+    );
+    assert!(
+        messages("WithoutParens").contains(&unsupported),
+        "{:?}",
+        messages("WithoutParens")
+    );
+
+    assert_eq!(
+        result("SupportedWithoutParens").decision,
+        RoutingDecision::InterpRecord
+    );
+    assert!(
+        messages("SupportedWithoutParens").contains(&"calls supported Record.Insert"),
+        "{:?}",
+        messages("SupportedWithoutParens")
+    );
+    assert_eq!(
+        result("TableProcedureWithoutParens").decision,
+        RoutingDecision::InterpRecord
+    );
+    assert!(
+        messages("TableProcedureWithoutParens").contains(&"calls table procedure R.Stamp"),
+        "{:?}",
+        messages("TableProcedureWithoutParens")
+    );
+
+    for name in ["FieldRead", "FlowFieldRead"] {
+        assert_eq!(
+            result(name).decision,
+            RoutingDecision::InterpRecord,
+            "{name}"
+        );
+        assert!(
+            messages(name)
+                .iter()
+                .all(|message| !message.contains("Record.")),
+            "{name}: a field read is not a call: {:?}",
+            messages(name)
+        );
+    }
+
+    assert_eq!(
+        result("ExtensionFieldRead").decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        messages("ExtensionFieldRead")
+    );
+    assert!(
+        messages("ExtensionFieldRead")
+            .contains(&"calls unsupported Record.Ext Note (requires BC semantics)"),
+        "{:?}",
+        messages("ExtensionFieldRead")
+    );
+}

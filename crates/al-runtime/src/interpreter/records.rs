@@ -766,6 +766,17 @@ fn parse_key_fields(key: Node<'_>, source: &[u8]) -> Result<Vec<String>, String>
     Ok(names)
 }
 
+/// Whether workspace table `table` declares a field named `field`, read from
+/// the table's source as the store reads it. The test router asks this for a
+/// member written without parentheses (`R.LockTable;`), so it and the runtime
+/// agree on which members are field reads.
+pub fn declares_field_in(source: &dyn al_types::ProcedureSource, table: &str, field: &str) -> bool {
+    load_table_meta(source, table).is_ok_and(|meta| {
+        meta.field_by_name
+            .contains_key(&field.unquote_identifier().to_ascii_lowercase())
+    })
+}
+
 /// True if `method` is a record API method implemented by the local runtime.
 ///
 /// The test router consumes this same capability predicate so classification

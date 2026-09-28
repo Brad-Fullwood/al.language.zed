@@ -43,7 +43,7 @@ impl<T> Shared<T> {
 
     /// The contents, locked until the guard drops.
     pub fn lock(&self) -> MutexGuard<'_, T> {
-        // A panic while locked leaves the contents as they were; use them.
+        // A panic while locked leaves the contents as they were. Use them.
         self.0.lock().unwrap_or_else(PoisonError::into_inner)
     }
 

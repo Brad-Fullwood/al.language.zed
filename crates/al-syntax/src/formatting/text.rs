@@ -466,7 +466,7 @@ codeunit 50100 Test
     #[test]
     fn first_top_level_skips_nested_parens_and_brackets() {
         // A `;` inside `(...)` and another inside `[...]` must both be
-        // skipped; only the `;` after both close is top level.
+        // skipped. Only the `;` after both close is top level.
         let s = "Foo(x;y)[x;y];z;";
         assert_eq!(first_top_level(s, b';'), Some(13));
         assert_eq!(first_top_level("no target here", b';'), None);
