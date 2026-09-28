@@ -409,6 +409,98 @@ pub(super) fn table_platform_capability(
     None
 }
 
+/// Where a method call on a record variable takes the test. A procedure the
+/// table declares runs locally as table code, which is classified with the
+/// table. A method the runtime implements runs locally. Any other needs live
+/// BC.
+fn record_method_route(
+    workspace: &Workspace,
+    catalog: &ProcedureCatalog,
+    table: Option<&str>,
+    receiver: &str,
+    method: &str,
+) -> (RoutingDecision, String) {
+    let table_procedure = table.is_some_and(|table| {
+        catalog.contains_key(&(table.to_ascii_lowercase(), method.to_ascii_lowercase()))
+            && workspace
+                .file_index
+                .object_path_of_kind(table, &["table"])
+                .is_some()
+    });
+    if table_procedure {
+        (
+            RoutingDecision::InterpRecord,
+            format!("calls table procedure {receiver}.{method}"),
+        )
+    } else if al_runtime::interpreter::records::supports_record_method(method) {
+        (
+            RoutingDecision::InterpRecord,
+            format!("calls supported Record.{method}"),
+        )
+    } else {
+        (
+            RoutingDecision::LiveBc,
+            format!("calls unsupported Record.{method} (requires BC semantics)"),
+        )
+    }
+}
+
+/// A member of a record variable written without parentheses (`R.Insert;`,
+/// `if R.FindFirst then`, `R.LockTable;`). The runtime reads it as a field
+/// when the table declares one of that name and runs it as a call otherwise,
+/// so the router asks the same question: a field adds no reason, and a call
+/// takes the rule `R.Insert()` takes.
+#[allow(clippy::too_many_arguments)]
+fn classify_bare_member(
+    workspace: &Workspace,
+    resolver: &al_syntax::TypeResolver<'_>,
+    catalog: &ProcedureCatalog,
+    (primary, suffix): (tree_sitter::Node<'_>, tree_sitter::Node<'_>),
+    receiver: &str,
+    source: &[u8],
+    file: &std::path::Path,
+    (decision, reasons): (&mut RoutingDecision, &mut Vec<RoutingReason>),
+    reachable: bool,
+) {
+    let Some(member_node) = suffix.child_by_field_name("member") else {
+        return;
+    };
+    let member = member_node
+        .utf8_text(source)
+        .unwrap_or("")
+        .unquote_identifier();
+    let Some(decl) = resolver.resolve_type(receiver, syntax_position(primary, source)) else {
+        return;
+    };
+    if !decl.type_name.eq_ignore_ascii_case("record") {
+        return;
+    }
+    let Some(table) = decl.type_subtype.as_deref() else {
+        return;
+    };
+    // A table outside the workspace already takes the test to live BC.
+    if workspace
+        .file_index
+        .object_path_of_kind(table, &["table"])
+        .is_none()
+    {
+        return;
+    }
+    if al_runtime::interpreter::records::declares_field_in(&*workspace.file_index, table, &member) {
+        return;
+    }
+    let (floor, message) = record_method_route(workspace, catalog, Some(table), receiver, &member);
+    promote(
+        decision,
+        reasons,
+        floor,
+        &message,
+        file,
+        member_node,
+        reachable,
+    );
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) struct CallRoutingContext<'a> {
     reachable: bool,
@@ -637,6 +729,20 @@ pub(super) fn classify_call(
         return;
     }
 
+    if suffix.kind() == "member_suffix" && children.len() == 2 {
+        classify_bare_member(
+            workspace,
+            resolver,
+            catalog,
+            (primary, suffix),
+            &receiver,
+            source,
+            file,
+            (decision, reasons),
+            reachable,
+        );
+        return;
+    }
     if !matches!(suffix.kind(), "member_call_suffix" | "scope_call_suffix") {
         return;
     }
@@ -703,33 +809,13 @@ pub(super) fn classify_call(
         }
     }
     if type_name == "record" {
-        // A procedure the table declares runs locally as table code, which
-        // is classified with the table.
-        let table_procedure = decl.type_subtype.as_deref().is_some_and(|table| {
-            catalog.contains_key(&(table.to_ascii_lowercase(), method.to_ascii_lowercase()))
-                && workspace
-                    .file_index
-                    .object_path_of_kind(table, &["table"])
-                    .is_some()
-        });
-        let local =
-            table_procedure || al_runtime::interpreter::records::supports_record_method(&method);
-        let (floor, message) = if table_procedure {
-            (
-                RoutingDecision::InterpRecord,
-                format!("calls table procedure {receiver}.{method}"),
-            )
-        } else if local {
-            (
-                RoutingDecision::InterpRecord,
-                format!("calls supported Record.{method}"),
-            )
-        } else {
-            (
-                RoutingDecision::LiveBc,
-                format!("calls unsupported Record.{method} (requires BC semantics)"),
-            )
-        };
+        let (floor, message) = record_method_route(
+            workspace,
+            catalog,
+            decl.type_subtype.as_deref(),
+            &receiver,
+            &method,
+        );
         promote(
             decision,
             reasons,
