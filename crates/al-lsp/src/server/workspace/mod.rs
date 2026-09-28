@@ -597,7 +597,7 @@ async fn refresh_current_symbol_generation(
         })
         .await;
 
-        let (project, symbols, loaded) = match staged {
+        let (mut project, symbols, loaded) = match staged {
             Ok(Ok(staged)) => staged,
             Ok(Err(error)) => return Err(error),
             Err(error) => return Err(format!("package-index worker failed: {error}")),
@@ -611,6 +611,7 @@ async fn refresh_current_symbol_generation(
         // As in `publish_complete_generation`: no await between the first swap
         // and the revision bump.
         let mut published_project = workspace.project.write().await;
+        keep_published_project_files(&mut project, published_project.as_ref());
         workspace.symbols.replace_with(&symbols);
         *published_project = Some(project);
         set_package_info(workspace, &loaded);
@@ -623,6 +624,22 @@ async fn refresh_current_symbol_generation(
         drop(publication);
         return Ok(counts);
     }
+}
+
+/// Give a project staged from an older copy the manifest and debug
+/// configuration of the published one. Package staging takes seconds, and
+/// [`al_workspace::refresh_manifest_files`] may read `app.json` again in that
+/// time. The daemon's package refresh keeps them the same way.
+pub(crate) fn keep_published_project_files(
+    staged: &mut al_project::project::AlProject,
+    published: Option<&al_project::project::AlProject>,
+) {
+    let Some(published) = published.filter(|published| published.root == staged.root) else {
+        return;
+    };
+    staged.app_json = published.app_json.clone();
+    staged.server_configs = published.server_configs.clone();
+    staged.launch_config_error = published.launch_config_error.clone();
 }
 
 /// How many *transitive* dependency waves are resolved after the direct

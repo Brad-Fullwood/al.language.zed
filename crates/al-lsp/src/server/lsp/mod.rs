@@ -52,6 +52,15 @@ const WORKSPACE_DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration:
 /// generation moved under it. See [`AlServer::offload_after_ready`].
 const MAX_OFFLOAD_ATTEMPTS: u32 = 3;
 
+/// The files the server asks the client to watch: the `.al` sources, and the
+/// project files [`al_workspace::refresh_manifest_files`] reads.
+const WATCHED_FILE_GLOBS: [&str; 4] = [
+    "**/*.al",
+    "**/app.json",
+    "**/.zed/debug.json",
+    "**/.vscode/launch.json",
+];
+
 /// Every `al.*` command the server advertises in `executeCommandProvider` and
 /// handles in [`AlServer::execute_command`]. Single source of truth: the
 /// capability list and the dispatch both derive from this slice, and the
@@ -1197,31 +1206,39 @@ impl LanguageServer for AlServer {
 
         // Without a watcher the index only learns about files the editor has
         // open, so a `git checkout` or a generator left every other file stale
-        // until it was opened. The registration is a request to the client;
-        // it runs on its own so `initialized` does not wait on the reply.
+        // until it was opened. The editor sends this server no JSON document,
+        // so without one an edit to `app.json` or a debug configuration file
+        // reached a symbol download only after `al.reindex`. The registration
+        // is a request to the client. It runs on its own so `initialized` does
+        // not wait on the reply.
         if self.watched_files_registration.load(Ordering::Relaxed) {
             let client = self.client.clone();
             tokio::spawn(async move {
                 let options = DidChangeWatchedFilesRegistrationOptions {
-                    watchers: vec![FileSystemWatcher {
-                        glob_pattern: GlobPattern::String("**/*.al".to_string()),
-                        kind: None,
-                    }],
+                    watchers: WATCHED_FILE_GLOBS
+                        .iter()
+                        .map(|glob| FileSystemWatcher {
+                            glob_pattern: GlobPattern::String((*glob).to_string()),
+                            kind: None,
+                        })
+                        .collect(),
                 };
                 let registration = Registration {
-                    id: "al-lsp-watched-al-files".to_string(),
+                    id: "al-lsp-watched-files".to_string(),
                     method: "workspace/didChangeWatchedFiles".to_string(),
                     register_options: serde_json::to_value(options).ok(),
                 };
                 if let Err(error) = client.register_capability(vec![registration]).await {
-                    tracing::warn!(%error, "could not register the .al file watcher");
+                    tracing::warn!(%error, "could not register the file watchers");
                 }
             });
         }
     }
 
     /// Re-read `.al` files changed outside the editor. An open document is
-    /// skipped: its editor text is newer than the disk.
+    /// skipped: its editor text is newer than the disk. A change to the
+    /// project's `app.json` or debug configuration reads those files into the
+    /// loaded project again.
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         match self.await_ready().await {
             Ok(generation) => drop(generation),
@@ -1236,6 +1253,17 @@ impl LanguageServer for AlServer {
             .await
             .as_ref()
             .map(|project| project.root.clone());
+        if let Some(root) = project_root.as_deref() {
+            if params
+                .changes
+                .iter()
+                .any(|event| is_project_file(root, &event.uri))
+            {
+                let publication = self.workspace.generation_lock.write().await;
+                al_workspace::refresh_manifest_files(&self.workspace).await;
+                drop(publication);
+            }
+        }
         let scan_root = match project_root {
             Some(root) => root,
             None => match self
@@ -1799,7 +1827,7 @@ impl LanguageServer for AlServer {
             })
             .await;
 
-            let (project, symbols, loaded, attempted) = match staged {
+            let (mut project, symbols, loaded, attempted) = match staged {
                 Ok(Ok(staged)) => staged,
                 Ok(Err(error)) => {
                     tracing::error!(%error, "configured symbol package generation rejected");
@@ -1847,6 +1875,7 @@ impl LanguageServer for AlServer {
             // while it waits for the project deadlocks against this one.
             let mut published_project = self.workspace.project.write().await;
             let mut published_config = self.workspace.config.write().await;
+            workspace::keep_published_project_files(&mut project, published_project.as_ref());
             self.workspace.symbols.replace_with(&symbols);
             *published_project = Some(project);
             gate.record();
@@ -2400,6 +2429,13 @@ impl LanguageServer for AlServer {
         // A command can build, run tests or download from feeds, so it uses
         // the trust decision as it stands now.
         self.refresh_trust().await;
+        // And the manifest and debug configuration as they stand now, as the
+        // daemon reads them before each request: the client may have no file
+        // watcher, or deliver the event for a save after the command.
+        {
+            let _publication = self.workspace.generation_lock.write().await;
+            al_workspace::refresh_manifest_files(&self.workspace).await;
+        }
 
         // An optional `config` argument names the launch configuration to act
         // on, following the convention `al_debug` already established.
@@ -2628,6 +2664,19 @@ fn build_runnables(
         }
     }
     runnables
+}
+
+/// Whether `uri` names the `app.json` or a debug configuration file of the
+/// project at `root`. A watcher glob also matches the files of an app nested
+/// in the project, which are not the loaded project's.
+fn is_project_file(root: &std::path::Path, uri: &Url) -> bool {
+    let Ok(path) = uri.to_file_path() else {
+        return false;
+    };
+    let [zed_debug, vscode_launch] = al_bc::launch::launch_file_paths(root);
+    [root.join("app.json"), zed_debug, vscode_launch]
+        .iter()
+        .any(|file| file.file_name() == path.file_name() && paths_equivalent(file, &path))
 }
 
 fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) -> bool {

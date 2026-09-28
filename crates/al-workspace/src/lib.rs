@@ -1705,18 +1705,37 @@ pub fn refresh_workspace_files(
 /// before in place. Calls run one at a time, so every request after an edit
 /// sees it.
 pub async fn refresh_project_files(workspace: &Workspace) {
-    let Some(root) = workspace
-        .project
-        .read()
-        .await
-        .as_ref()
-        .map(|project| project.root.clone())
-    else {
+    let Some(root) = loaded_project_root(workspace).await else {
         return;
     };
     let mut stamps = workspace.project_file_stamps.lock().await;
     refresh_manifest_and_launch_files(workspace, &root, &mut stamps.files).await;
     refresh_package_folders(workspace, &root, &mut stamps.packages).await;
+}
+
+/// Read `app.json` and the debug configuration files into the loaded project
+/// again when they changed since the last call, by the rule
+/// [`refresh_project_files`] applies to them.
+///
+/// For the language server. Its editor overlays are `.al` documents only: the
+/// editor sends it no `app.json` or debug configuration file, so the disk
+/// holds the newest copy of them. It loads the symbol package folders through
+/// its own generation publication, so they are left out here.
+pub async fn refresh_manifest_files(workspace: &Workspace) {
+    let Some(root) = loaded_project_root(workspace).await else {
+        return;
+    };
+    let mut stamps = workspace.project_file_stamps.lock().await;
+    refresh_manifest_and_launch_files(workspace, &root, &mut stamps.files).await;
+}
+
+async fn loaded_project_root(workspace: &Workspace) -> Option<PathBuf> {
+    workspace
+        .project
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone())
 }
 
 /// The `app.json` and debug configuration part of [`refresh_project_files`].
