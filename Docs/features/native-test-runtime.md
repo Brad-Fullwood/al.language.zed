@@ -41,7 +41,7 @@ values can be map keys. `Label` declarations bind to their text.
 `continue`, and `asserterror`. The `for` loop variable can be a quoted name (`"My Index"`) or a name
 that is also a keyword (`Value`), as in `foreach`.
 
-**Expressions (`interpreter/eval_expr.rs`):** literals (including Date/Time/BigInteger), identifiers
+**Expressions (`interpreter/eval_expr/`):** literals (including Date/Time/BigInteger), identifiers
 (case-insensitive, and a quoted name such as `"Line No."` by its text inside the quotes), unary and
 binary operators with the documented AL precedence and left associativity, inclusive ranges and
 `in [...]` sets, workspace-enum scope access with declared ordinals, member calls, and string
@@ -133,9 +133,9 @@ Randomness is seedable. Thread-local state is reset between test methods.
 
 ## Workspace-record runtime
 
-`Value::Record` handles connect through `interpreter/records.rs` to the BTreeMap-backed
-`mock::MockRecord` store. Record variables for the same table share a physical table inside one
-test, while each variable keeps its own filter set, iteration cursor, and field buffer (BC's
+`Value::Record` handles connect through `interpreter/records/` to the BTreeMap-backed
+`mock::record::MockRecord` store. Record variables for the same table share a physical table inside
+one test, while each variable keeps its own filter set, iteration cursor, and field buffer (BC's
 per-variable view semantics). The complete store is discarded before the next test. A temporary
 record variable (`Record "Sales Line" temporary`) has a store of its own, and passing it by value
 copies the rows it holds.

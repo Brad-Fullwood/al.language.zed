@@ -888,6 +888,8 @@ pub(crate) async fn dispatch_request(
     req: Request,
     shutdown: &Notify,
 ) -> Response {
+    // Trust first: it swaps in the configuration whose package folders the
+    // project refresh lists.
     refresh_trust(workspace).await;
     al_workspace::refresh_project_files(workspace).await;
     refresh_workspace_files(workspace).await;
