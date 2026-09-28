@@ -66,8 +66,8 @@ Not covered: a project with `.alpackages`, which is what `bc-upgrade-impact`'s
 `package-diff` and the base-app half of `bc-symbol-lookup` and
 `bc-base-app-source` need. The bundled fixture declares no dependencies, so
 `package-diff` and a base-app `source` lookup have nothing to run against
-here; adding a case for them needs a fixture with two versions of a package on
-disk, which does not exist in this repository.
+here. A case for them needs a fixture with two versions of a package on disk,
+which does not exist in this repository.
 
 ## Running
 
@@ -79,14 +79,15 @@ make plugin-evals                      # the same, via the Makefile
 
 `run.sh` resolves `al-explorer` in this order: `$AL_EXPLORER_BIN`, `PATH`,
 then `target/release/al-explorer` under the repository root. `al-explorer`
-resolves its own `al-lsp` the same way to start the daemon
+finds the `al-lsp` it starts the daemon with in its own order
 (`crates/al-protocol/src/client/mod.rs`, `find_al_lsp_binary`): beside
 `al-explorer`, then `PATH`, refusing a `PATH` `al-lsp` of a different version.
-Before any case runs, `run.sh` makes one call through `al-explorer` and skips
-every case with that refusal as the reason when the call fails. If
-`al-explorer` itself is missing, every case prints as skipped rather than
-failed: a missing binary is a missing prerequisite, not a wrong answer. Build
-both first:
+Before any case runs, `run.sh` runs `al-explorer doctor` once on a copy of the
+fixture. When that call prints an error, such as a missing or mismatched
+`al-lsp`, every case is skipped with the error as the reason. If
+`al-explorer` itself is missing, every case prints as skipped, since a missing
+binary is a missing prerequisite. A wrong answer fails its case. Build both
+first:
 
 ```bash
 cargo build --release -p al-explorer

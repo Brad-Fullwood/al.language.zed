@@ -700,3 +700,77 @@ Append-only. Newest entry last.
 - Runtime session close-out: `CHECKPOINT-2026-09-27-close.md` (its commits, the two CI fixes at
   the pause, open items it touches) and `HANDOFF-tree-sitter.md` (the grammar brief: R12-GR-1, an
   argument field on call arguments, the query drift check, and the steps to move the pointer).
+
+## 2026-09-28 03:55 BST: resume, five agent branches recovered and merged
+
+- The 02:25 interactive session dispatched five agents at 02:40 and reached its usage limit about
+  03:00. Its merge of `fix-r12-runtime` (77308d91: R12-LIST-1, R12-LIST-2, R12-RT-1, R12-RT-2) had
+  green gates in `.campaign/gate-*.log` (96 suites, 5428 passed, 0 failed, harness 29 suites, 353
+  passed) and was not pushed. Pushed.
+- The other four branches were complete or nearly so. `fix-sec6-output` merged d9225520 (SEC6-8:
+  control characters escaped in every text renderer, the dotnet advisory names the settings file
+  before the cap, SEC6-7: the quoting rule in every skill and both agents with a fixture codeunit
+  named `It's Here` and eval case 13). `fix-daemon` merged 5f74977c (SEC6-6: every method with a
+  path parameter declares `named` and refuses through `containment.rs` with one error code, the CLI
+  hint reworded). `fix-r12-router-text` merged a624bdf4 (R12-KW-1: a record member without
+  parentheses routes as the call it is, R12-MERGE-1: the runtime doc paragraphs restored, and the
+  agent's uncommitted R12-TEXT-1 rewording of 49 comment lines committed as 43d98f9e after a check
+  that every flagged line was covered). `grammar` merged 73ed8751 (pointer and `extension.toml` at
+  fc80b85, which is AL-Tree-Sitter `dev`: the `for` iterator is a `name_or_keyword` and each call
+  argument is the field `argument`, interpreter test for a quoted loop variable). R12-DAEMON-1 and
+  R12-MUT-1 were not started; re-dispatched.
+- Findings files updated: eight R12 statuses and SEC6-6 to SEC6-8 fixed. Gates on 73ed8751 running.
+- Seven agents dispatched (see `STATE.md`): R12-MUT-1, R12-DAEMON-1, security round 7, round 13
+  review, the al-runtime file splits, docs re-check 4, the grammar query drift check.
+
+## 2026-09-28 08:55 BST: resume, two branches merged, eight agents dispatched
+
+- The 03:41 session's seven agents were dead by 08:43 with no branch pushed. `docs-recheck-4`
+  (11 docs commits over `Docs/features`, `Docs/reference`, `plugin/`, no completion note) merged
+  8bb95bcc. `slop-splits-5` (41c4190b, `records.rs` 3632 lines into a module directory of seven
+  files, no logic moved, `records_tests.rs` unchanged) merged c0e143b7. Gates on c0e143b7 green:
+  fmt, clippy, clippy semantic, rustdoc, 5795 passed, 0 failed, 20 ignored, harness green
+  (`.campaign/gates-c0e143b7.log`).
+- `fix-r12-mut` held only `#[ignore]` on the seven R12-MUT-1 tests: discarded. `fix-daemon` (651
+  uncommitted lines for R12-DAEMON-1), `test-snapshot` (117 lines in `snapshot.rs`) and the grammar
+  worktree (`corpus_queries.rs`, 667 lines, not wired in) kept their work for the agents
+  re-dispatched onto them. `sec7-review` had SEC7-1 (the SEC6-8 escaping covers six renderers and
+  the rest print names raw) and no coverage item ticked. `r13-review` had the brief and a false
+  `## Review complete` line.
+- Eight agents dispatched at 08:52 (see `STATE.md`): R12-DAEMON-1, R12-MUT-1, security round 7,
+  round 13, the `eval_expr.rs` split, the grammar query drift check, `snapshot.rs` testable, and
+  the SEC7-1 fix on a new branch `campaign/fix-sec7-1`.
+
+## 2026-09-28 14:00 BST: resume, three branches merged, seven agents dispatched
+
+- The 08:43 session merged `fix-r12-daemon` (fc04be15, gates green, 5801 passed, 0 failed) and hit
+  the session limit about 09:56 without pushing. Every watchdog attempt until 13:39 was limited.
+  Pushed at 13:52.
+- Merged: `slop-splits-5` (bd40b490, `eval_expr.rs` 2644 lines into seven files, no logic moved),
+  `test-snapshot` (fc24b434, `al-test/backends/snapshot.rs` behind debugger and runner traits, 926
+  lines of unit tests, the mutants run recorded), `grammar-queries` (83820e8d, pointer and
+  `extension.toml` at baf782b, AL-Tree-Sitter `dev`: `corpus_queries.rs` runs the shipped queries
+  over every corpus entry with ten tests, highlight and locals fixes for signs, signed case labels,
+  collection element types, names after keywords, trigger and property names on the leaf,
+  punctuation and key sections, 125 corpus tests, the `folds.scm` doc line corrected instead of
+  adding an attribute fold). The seven shared query files match byte for byte after the merge.
+- The blog's article 9 re-read from the 03:41 session was found on blog branch
+  `campaign/article-9-reread` (11c5be3, 0a44564) with an uncommitted wording pass, committed
+  35e6756 and pushed.
+- Scratch tests from the dead reviewers saved: `.campaign/r13-scratch-tests-2.patch` (455 lines
+  over trust, records and workspace tests), `.campaign/sec7-scratch-tests.patch` (276 lines).
+- Worktrees: `grammar` removed, `fix-daemon` now holds `campaign/fix-r13-runtime`, `slop-splits-5`
+  holds `campaign/fix-r13-trust`, `test-snapshot` holds `campaign/docs-recheck-5`. Merged branches
+  deleted locally.
+- Seven agents dispatched at 13:57 (see `STATE.md`): SEC7-1, R12-MUT-1, round 13 from item 3,
+  security round 7 from item 1, the R13 trust fixes with SEC7-2, the R13 runtime fixes with
+  SEC7-3, article 9. Docs re-check 5 dispatched at 14:05.
+- Gates on 83820e8d green (`.campaign/gates-83820e8d.log`): fmt, clippy, clippy semantic, rustdoc,
+  125 suites, 5822 passed, 0 failed, 20 ignored, harness green. `findings/grammar-query-drift.md`
+  committed with the result.
+- 14:30: `fix-r12-mut` merged (34e8f8de, R12-MUT-1): four indent tests read valid AL, two keep a
+  mid-edit input and assert idempotence plus the level of the line below, one compares the `else`
+  after a nested `if` with the `else` after a single call. Each rewritten test was broken by hand
+  and failed. The agent found two layout bugs on the way (a case `else` indented at the branch
+  body's level, a nested `case` without `begin` one level too shallow): fix agent dispatched on
+  `campaign/fix-formatter-case`. Gates on 34e8f8de running.

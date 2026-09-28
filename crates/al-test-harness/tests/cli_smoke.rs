@@ -493,6 +493,80 @@ fn a_running_daemon_sees_an_app_json_edit() {
     );
 }
 
+/// A symbol package declaring one table, as a `.app` file holds it.
+fn table_package(app_id: &str, name: &str, table_id: i32, table: &str) -> Vec<u8> {
+    use std::io::Write;
+    let manifest = format!(
+        r#"<?xml version="1.0"?><Package><App Id="{app_id}" Name="{name}" Publisher="Tests" Version="1.0.0.0" /></Package>"#
+    );
+    let symbols = serde_json::json!({
+        "Tables": [{ "Id": table_id, "Name": table, "Fields": [], "Methods": [] }]
+    })
+    .to_string();
+    let mut archive = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut archive));
+        let options = zip::write::SimpleFileOptions::default();
+        zip.start_file("NavxManifest.xml", options).unwrap();
+        zip.write_all(manifest.as_bytes()).unwrap();
+        zip.start_file("SymbolReference.json", options).unwrap();
+        zip.write_all(symbols.as_bytes()).unwrap();
+        zip.finish().unwrap();
+    }
+    let mut bytes = b"NAVX".to_vec();
+    bytes.resize(40, 0);
+    bytes.extend_from_slice(&archive);
+    bytes
+}
+
+/// The daemon listed `.alpackages` once at startup, so a package copied in by
+/// hand, by `git pull` or by the VS Code AL extension's download was missing
+/// from `packages` and from every symbol lookup until `daemon-shutdown`.
+#[test]
+fn a_running_daemon_sees_a_package_copied_into_alpackages() {
+    let project = isolated_test_project();
+    let package_names = || {
+        let output = run_al_in(project.path(), &["--json", "packages"]);
+        assert!(output.status.success(), "packages failed: {output:?}");
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("packages returns JSON");
+        let mut names: Vec<String> = value
+            .as_array()
+            .expect("packages lists the loaded packages")
+            .iter()
+            .filter_map(|package| package["name"].as_str().map(str::to_string))
+            .collect();
+        names.sort();
+        names
+    };
+    let before = package_names();
+
+    let packages = project.path().join(".alpackages");
+    std::fs::create_dir_all(&packages).expect("create .alpackages");
+    std::fs::write(
+        packages.join("Tests_Copied Package_1.0.0.0.app"),
+        table_package(
+            "00000000-0000-0000-0000-0000000001c1",
+            "Copied Package",
+            50_142,
+            "Copied Package Table",
+        ),
+    )
+    .expect("copy the package");
+    let after = package_names();
+    let table = run_al_in(project.path(), &["--json", "by-id", "table", "50142"]);
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(
+        !before.contains(&"Copied Package".to_string()),
+        "{before:?}"
+    );
+    assert!(after.contains(&"Copied Package".to_string()), "{after:?}");
+    assert!(table.status.success(), "by-id failed: {table:?}");
+    let table = String::from_utf8_lossy(&table.stdout);
+    assert!(table.contains("Copied Package Table"), "{table}");
+}
+
 /// `test-run <id>` without `--name` left the daemon filling `codeunitName`
 /// with the ID as a string, and the interpreter then used "50145" as the
 /// current object, so an unqualified call to a sibling procedure failed with

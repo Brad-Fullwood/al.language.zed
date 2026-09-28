@@ -57,6 +57,7 @@ None found so far.
 | `al-syntax/src/lint.rs` | 152 | 128 | 15 | 7 | 2 |
 | `al-symbols/src/composition.rs` | 11 | 9 | 0 | 2 | 0 |
 | `al-test/src/output/cobertura.rs` | 50 | 49 | 0 | 1 | 0 |
+| `al-test/src/backends/snapshot.rs` | 25 | 7 | 3 | 15 | 0 |
 
 ## Runs
 
@@ -471,3 +472,60 @@ crates/al-test/src/output/cobertura.rs:368:50: replace * with + in write_cobertu
   read 100% and 51%.
 
 Re-run after the three new tests: 50 mutants, 49 caught, 1 unviable, 0 missed.
+
+### al-test: `crates/al-test/src/backends/snapshot.rs`
+
+This file was not on the shortlist. The capture logic called `NativeDebugSession` and
+`TestRunnerClient` directly, so the one test stopped at the empty breakpoint check. c4f2fbff
+put those calls behind two private traits, `SnapshotDebugger` and `SnapshotTestRunner`, and
+`capture_live_snapshot` now passes a session start future and a runner constructor to a
+generic `capture`. 7384e01e added 21 tests that drive `capture` with scripted fakes.
+
+```bash
+cargo mutants --in-place -p al-test --file crates/al-test/src/backends/snapshot.rs
+```
+
+The run used `CARGO_BUILD_JOBS=2` and no `--jobs`, which cargo-mutants 27 rejects together
+with `--in-place` (see Setup).
+
+25 mutants in 2 minutes: 7 caught, 3 missed, 15 unviable, 0 timeout. The same run on
+c4f2fbff, before the tests: 0 caught, 10 missed, 15 unviable. The 15 unviable mutants
+replace a function with a value built from `Default`, and `BreakpointInfo`, `DebugState`,
+`Snapshot` and `TestCodeunitResult` do not implement `Default`. The 7 caught mutants are in
+the breakpoint reply check (`infos.len() != points.len()`, `!info.verified || info.id <= 0`)
+and the check that the run reported exactly the requested method.
+
+`missed.txt`:
+
+```text
+crates/al-test/src/backends/snapshot.rs:138:9: replace <impl SnapshotDebugger for NativeDebugSession>::set_breakpoints -> al_dap::dap::Result<Vec<BreakpointInfo>> with Ok(vec![])
+crates/al-test/src/backends/snapshot.rs:147:9: replace <impl SnapshotDebugger for NativeDebugSession>::continue_exec -> al_dap::dap::Result<()> with Ok(())
+crates/al-test/src/backends/snapshot.rs:151:9: replace <impl SnapshotDebugger for NativeDebugSession>::stop -> al_dap::dap::Result<()> with Ok(())
+```
+
+- `snapshot.rs:138`, `147` and `151`: deferred. Each is the line that forwards a trait
+  method to the `NativeDebugSession` method of the same name. Outside al-dap only
+  `NativeDebugSession::start` builds a session, and it connects to a live BC debug hub. The
+  fake hub that al-dap's own tests use is compiled only under `#[cfg(test)]` in al-dap, so
+  an al-test test cannot build one. Covering these lines needs that fake exported from
+  al-dap, for example behind a cargo feature.
+
+cargo-mutants does not mutate code inside a macro call, so the body of the `tokio::select!`
+loop produced no mutants. That body holds the paused check, the filter that matches a stop
+to a breakpoint, the ambiguous and unexpected stop errors, and the iteration count. 15 hand
+mutations of it were applied one at a time, tested with
+`cargo test -p al-test --lib backends::snapshot` and reverted. All 15 were caught:
+
+- `!=` to `==` on the paused check.
+- `==` to `!=` on the line, object type, object ID and file comparisons.
+- `&&` to `||` between the line, object and file conditions, and between object type and
+  object ID.
+- `||` to `&&` between the empty file check and the file comparison.
+- `is_none_or` to `is_some_and` on the reported object.
+- `+=` to `*=` and to `-=` on the iteration count.
+- `None` for the object in `UnexpectedStop`, 0 for the count in `AmbiguousStop`, and `None`
+  for the sample's condition.
+
+No test reaches `SnapshotCaptureError::MissingBreakpointId`. Every breakpoint in the request
+has its `(object type, object ID, line)` key in `breakpoint_ids` before the run starts, and a
+stop only matches a breakpoint from the request, so the lookup always finds an ID.

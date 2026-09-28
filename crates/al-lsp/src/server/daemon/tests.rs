@@ -1327,6 +1327,121 @@ mod dispatch_tests {
         assert!(error.contains("debug.json"), "{error}");
     }
 
+    /// A symbol package declaring one table, as a `.app` file holds it.
+    fn write_table_package(path: &Path, app_id: &str, name: &str, table_id: i32, table: &str) {
+        use std::io::Write;
+        let manifest = format!(
+            r#"<?xml version="1.0"?><Package><App Id="{app_id}" Name="{name}" Publisher="Tests" Version="1.0.0.0" /></Package>"#
+        );
+        let symbols = serde_json::json!({
+            "Tables": [{ "Id": table_id, "Name": table, "Fields": [], "Methods": [] }]
+        })
+        .to_string();
+        let mut archive = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut archive));
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("NavxManifest.xml", options).unwrap();
+            zip.write_all(manifest.as_bytes()).unwrap();
+            zip.start_file("SymbolReference.json", options).unwrap();
+            zip.write_all(symbols.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let mut bytes = b"NAVX".to_vec();
+        bytes.resize(40, 0);
+        bytes.extend_from_slice(&archive);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// The daemon listed `.alpackages` once at startup, so a package copied in
+    /// by hand, by `git pull` or by another editor's download was missing from
+    /// `packages` and from every symbol lookup until the daemon exited.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_package_copied_into_alpackages_is_in_the_next_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "Package Copy",
+                "publisher": "Tests",
+                "version": "1.0.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let packages = dir.path().join(".alpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        write_table_package(
+            &packages.join("Tests_First_1.0.0.0.app"),
+            "00000000-0000-0000-0000-0000000001a1",
+            "First",
+            50_140,
+            "First Package Table",
+        );
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        *ws.config.write().await = al_project::trust::evaluate(dir.path()).unwrap().config;
+        super::initialize_daemon_workspace(&ws, dir.path())
+            .await
+            .expect("the project loads");
+        let shutdown = Notify::new();
+        let package_names = |id: u64| {
+            let ws = std::sync::Arc::clone(&ws);
+            let shutdown = &shutdown;
+            async move {
+                let result = dispatch_request(&ws, Request::new(id, "packages", None), shutdown)
+                    .await
+                    .result
+                    .expect("packages answers");
+                let mut names: Vec<String> = result
+                    .as_array()
+                    .expect("packages lists the loaded packages")
+                    .iter()
+                    .filter_map(|package| package["name"].as_str().map(str::to_string))
+                    .collect();
+                names.sort();
+                names
+            }
+        };
+        assert_eq!(package_names(1).await, ["First"]);
+
+        write_table_package(
+            &packages.join("Tests_Second_1.0.0.0.app"),
+            "00000000-0000-0000-0000-0000000001a2",
+            "Second",
+            50_141,
+            "Second Package Table",
+        );
+
+        assert_eq!(package_names(2).await, ["First", "Second"]);
+        let table = dispatch_request(
+            &ws,
+            Request::new(
+                3,
+                "byId",
+                Some(serde_json::json!({ "kind": "table", "id": 50_141 })),
+            ),
+            &shutdown,
+        )
+        .await
+        .result
+        .expect("the copied package's table is found");
+        assert!(
+            table.to_string().contains("Second Package Table"),
+            "{table}"
+        );
+        let project = ws.project.read().await;
+        assert_eq!(
+            project
+                .as_ref()
+                .expect("a project is loaded")
+                .packages
+                .len(),
+            2,
+            "the project lists the copied package"
+        );
+    }
+
     /// A client whose request is blocked on the dependency source index needs
     /// to be able to see that from a second connection, or a timeout carries
     /// no reason and the natural response is a retry into the next one.

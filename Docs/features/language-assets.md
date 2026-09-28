@@ -9,25 +9,26 @@ files, snippets, themes, and JSON schemas for project files.
 > ⚠️ **Generated, do not hand-edit.** Everything in `languages/al/` is generated output (canonical
 > `.scm` queries are copied from `tree-sitter-al/queries`. Zed-specific config and supplemental queries
 > come from generator templates), and `themes/bc-themes.json` is generated from Business Central VS
-> Code theme data. Edit the generators or templates. Run `make language` for `languages/al/`, and
-> run `make grammar` for grammar data or themes. The generator rejects unknown files under
+> Code theme data. Edit the generators or templates. `brackets.scm`, `indents.scm` and `outline.scm`
+> have no generator: edit them in `tree-sitter-al/queries`. Run `make language` for `languages/al/`,
+> and run `make grammar` for grammar data or themes. The generator rejects unknown files under
 > `languages/al/`.
 
 ## `languages/al/`
 
 | File | Purpose |
 | --- | --- |
-| `config.toml` | Zed language registration: name "AL", grammar "al", `.al` suffix, `//` comments, bracket pairs, word chars, `al-lsp` server |
-| `highlights.scm` | syntax highlighting captures (keywords, types, functions, comments, strings, numbers, operators) derived for parity with the VS Code AL grammar |
-| `outline.scm` | document outline (objects, procedures/triggers, events, keys, enum values, and the executable scopes nested under a callable: `begin`, `if`, `case`, `for`, `foreach`, `while`, `repeat`, `with`, each named after its own expression) |
-| `locals.scm` | local variable scope & resolution (scopes for blocks/case/events/loops/objects, definitions for objects/methods/vars/parameters) |
-| `textobjects.scm` | text-object selection (objects, procedures, triggers, events, statements) |
-| `folds.scm` | folding regions (objects, procedures, blocks, control statements, attribute lists) |
+| `config.toml` | Zed language registration: name "AL", grammar "al", `.al` suffix, `//` and `/* */` comments, bracket pairs with their autoclose and newline rules, word chars, `al-lsp` server |
+| `highlights.scm` | syntax highlighting: keywords, types (including the element types in `List of [...]`, `Dictionary of [...]` and `array[N] of`), object names, procedure, trigger and event names, calls, variables, labels and parameters (including names that are keywords), properties, attributes, literals, comments, preprocessor directives and inactive code, operators (including a leading sign) and punctuation. The keyword lists and the capture for each token class come from the TextMate grammar in Microsoft's AL extension |
+| `outline.scm` | document outline (objects, procedures/triggers, events, keys, enum values, and the executable scopes nested under a callable: `if`, `case`, `for`, `foreach`, `while`, `repeat` and `with`, each named after its own expression, and `begin`, named by its keyword) |
+| `locals.scm` | scopes (the file, objects, procedures, triggers, events, `begin` blocks, `if`, `case`, loops and `with`), definitions (objects, procedures, triggers, events, variables, labels and parameters, including names that are keywords) and references (identifiers, and a variable named after a keyword where it is a loop variable or a value) |
+| `textobjects.scm` | text objects: procedures, triggers and events as functions (the `begin` block as the inside), objects, sections and keys as classes, and comments |
+| `folds.scm` | folding regions (objects, sections, keys, enum values, procedures, triggers, events, `var` sections, blocks, control statements, case branches, argument lists, `#region` blocks) |
 | `indents.scm` | auto-indentation rules |
-| `brackets.scm` | auto-bracket pairing with newline rules |
-| `inline_values.scm` | inline value hints (procedure parameters) |
+| `brackets.scm` | bracket matching for `()`, `[]`, `{}` and the keyword pairs `begin`/`end`, `case`/`end`, `repeat`/`until`, and `while`, `for` and `foreach` with their `do` |
+| `inline_values.scm` | inline value hints while debugging (variable and parameter declarations) |
 | `injections.scm` | language injection points |
-| `overrides.scm` | tree-sitter quirk overrides |
+| `overrides.scm` | marks comments and strings as the `comment` and `string` scopes, which the `not_in` bracket rules in `config.toml` read |
 | `semantic_token_rules.json` | maps the LSP semantic token types (from `al-lsp`) to Zed theme classes (e.g. `builtinType→@type.builtin`, `tableField→@property`, `excludedCode→@comment.unused`) |
 | `tasks.json` | the AL task list Zed's task picker shows: compile, package, download symbols, authenticate, lint/format/fix, symbol and dependency queries, analysis reports, workspace fixups, and test runs, all `al-explorer` subcommands |
 | `runnables.scm` | inline run buttons next to `[Test]`, `[TestPermissions]`, `[HandlerFunctions]`, `[EventSubscriber]`, `[IntegrationEvent]` and `[BusinessEvent]` procedures, tagged `al-test` / `al-event-subscriber` / `al-event-publisher` |

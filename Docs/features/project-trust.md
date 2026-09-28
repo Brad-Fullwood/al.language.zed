@@ -245,14 +245,13 @@ file. Before, the copy was found ahead of the NuGet cache and the file at the pa
 To use a file in the project, write the entry in the project's settings or in
 `~/.config/al-lsp/settings.json`.
 
-A link in the project does not change this. A copy found under `.netpackages`, `packages` or a
-relative probing path, and the file a path such as `./tools/TeamCop.dll` names, belong to the
-project even when a link carries them outside it. The record hashes such a file where it
-resolves, and the search loads it only when the record lists it. Before, such a file loaded at
-once when its resolved path was outside the project, and a path through such a link loaded even
-in an untrusted project. The rule sits in
-`al_project::analyzers::CustomAnalyzerSearch`, which every build, publish, debug launch and
-semantic analysis goes through.
+The rule holds through a link in the project. A copy found under `.netpackages`, `packages` or
+a relative probing path, and the file a path such as `./tools/TeamCop.dll` names, belong to the
+project wherever a link carries them. The record hashes such a file where it resolves, and the
+search loads it only when the record lists it. Before, such a file loaded at once when its
+resolved path was outside the project, and a path through such a link loaded even in an
+untrusted project. The rule is in `al_project::analyzers::CustomAnalyzerSearch`, which every
+build, publish, debug launch and semantic analysis goes through.
 
 A credential you supply yourself is the same: `BC_USERNAME`, `BC_PASSWORD` and
 `BC_ACCESS_TOKEN` apply without trust. What still needs trust is the *server* those
