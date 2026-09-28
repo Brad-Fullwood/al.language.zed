@@ -740,3 +740,37 @@ Append-only. Newest entry last.
 - Eight agents dispatched at 08:52 (see `STATE.md`): R12-DAEMON-1, R12-MUT-1, security round 7,
   round 13, the `eval_expr.rs` split, the grammar query drift check, `snapshot.rs` testable, and
   the SEC7-1 fix on a new branch `campaign/fix-sec7-1`.
+
+## 2026-09-28 14:00 BST: resume, three branches merged, seven agents dispatched
+
+- The 08:43 session merged `fix-r12-daemon` (fc04be15, gates green, 5801 passed, 0 failed) and hit
+  the session limit about 09:56 without pushing. Every watchdog attempt until 13:39 was limited.
+  Pushed at 13:52.
+- Merged: `slop-splits-5` (bd40b490, `eval_expr.rs` 2644 lines into seven files, no logic moved),
+  `test-snapshot` (fc24b434, `al-test/backends/snapshot.rs` behind debugger and runner traits, 926
+  lines of unit tests, the mutants run recorded), `grammar-queries` (83820e8d, pointer and
+  `extension.toml` at baf782b, AL-Tree-Sitter `dev`: `corpus_queries.rs` runs the shipped queries
+  over every corpus entry with ten tests, highlight and locals fixes for signs, signed case labels,
+  collection element types, names after keywords, trigger and property names on the leaf,
+  punctuation and key sections, 125 corpus tests, the `folds.scm` doc line corrected instead of
+  adding an attribute fold). The seven shared query files match byte for byte after the merge.
+- The blog's article 9 re-read from the 03:41 session was found on blog branch
+  `campaign/article-9-reread` (11c5be3, 0a44564) with an uncommitted wording pass, committed
+  35e6756 and pushed.
+- Scratch tests from the dead reviewers saved: `.campaign/r13-scratch-tests-2.patch` (455 lines
+  over trust, records and workspace tests), `.campaign/sec7-scratch-tests.patch` (276 lines).
+- Worktrees: `grammar` removed, `fix-daemon` now holds `campaign/fix-r13-runtime`, `slop-splits-5`
+  holds `campaign/fix-r13-trust`, `test-snapshot` holds `campaign/docs-recheck-5`. Merged branches
+  deleted locally.
+- Seven agents dispatched at 13:57 (see `STATE.md`): SEC7-1, R12-MUT-1, round 13 from item 3,
+  security round 7 from item 1, the R13 trust fixes with SEC7-2, the R13 runtime fixes with
+  SEC7-3, article 9. Docs re-check 5 dispatched at 14:05.
+- Gates on 83820e8d green (`.campaign/gates-83820e8d.log`): fmt, clippy, clippy semantic, rustdoc,
+  125 suites, 5822 passed, 0 failed, 20 ignored, harness green. `findings/grammar-query-drift.md`
+  committed with the result.
+- 14:30: `fix-r12-mut` merged (34e8f8de, R12-MUT-1): four indent tests read valid AL, two keep a
+  mid-edit input and assert idempotence plus the level of the line below, one compares the `else`
+  after a nested `if` with the `else` after a single call. Each rewritten test was broken by hand
+  and failed. The agent found two layout bugs on the way (a case `else` indented at the branch
+  body's level, a nested `case` without `begin` one level too shallow): fix agent dispatched on
+  `campaign/fix-formatter-case`. Gates on 34e8f8de running.
