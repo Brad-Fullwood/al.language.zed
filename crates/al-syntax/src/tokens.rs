@@ -487,7 +487,11 @@ fn classify_name_like_node(
             if has_ancestor_kind(node, "type_reference") {
                 Some(token_types::TYPE)
             } else if matches!(node.kind(), "string" | "verbatim_string") {
-                Some(token_types::STRING)
+                if is_subscribed_event_name(node, source) {
+                    Some(token_types::EVENT_CREATION)
+                } else {
+                    Some(token_types::STRING)
+                }
             } else if let Some(role) = name_role(node, source) {
                 // A name in a scope access or a property value. In code a
                 // name is a field or a variable, which the grammar's
@@ -608,6 +612,45 @@ fn doc_comment_parts(comment: &str) -> Vec<(u32, u32, u32)> {
     }
     push(text_start, chars.len(), token_types::DOC_COMMENT_TEXT);
     parts
+}
+
+/// Whether a string is the event name in `[EventSubscriber(ObjectType, Object,
+/// 'EventName', …)]`, its third argument, which Microsoft colors as the event.
+fn is_subscribed_event_name(node: Node<'_>, source: &[u8]) -> bool {
+    let mut current = node;
+    let argument = loop {
+        let Some(parent) = current.parent() else {
+            return false;
+        };
+        if parent.kind() == "attribute_argument" {
+            break parent;
+        }
+        if !matches!(
+            parent.kind(),
+            "expression" | "unary_expression" | "postfix_expression" | "primary_expression"
+        ) {
+            return false;
+        }
+        current = parent;
+    };
+    let Some(list) = argument.parent() else {
+        return false;
+    };
+    let is_subscriber = list
+        .parent()
+        .filter(|attribute| attribute.kind() == "attribute")
+        .and_then(|attribute| attribute.child_by_field_name("name"))
+        .and_then(|name| name.utf8_text(source).ok())
+        .is_some_and(|name| name.eq_ignore_ascii_case("EventSubscriber"));
+    if !is_subscriber {
+        return false;
+    }
+    let mut cursor = list.walk();
+    let position = list
+        .children(&mut cursor)
+        .filter(|child| child.kind() == "attribute_argument")
+        .position(|child| child.id() == argument.id());
+    position == Some(2)
 }
 
 /// Whether `node` is the name of a `property_assignment`.
@@ -1259,6 +1302,19 @@ mod tests {
                 token_types::FUNCTION
             ],
             "Report.Run and Codeunit.Run are built in, a variable's Run is not"
+        );
+    }
+
+    #[test]
+    fn the_event_name_of_a_subscriber_is_the_event() {
+        let src = "codeunit 50000 C\n{\n    [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Whse.-Post Receipt\", 'OnAfterRun', '', false, false)]\n    local procedure H()\n    begin\n        Message('OnAfterRun');\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_eq!(
+            token_types_for_text(src, &tokens, "'OnAfterRun'"),
+            vec![token_types::EVENT_CREATION, token_types::STRING],
+            "only the attribute's event name is the event"
         );
     }
 
