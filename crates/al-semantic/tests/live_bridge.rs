@@ -10,7 +10,9 @@
 
 use std::path::PathBuf;
 
-use al_semantic::{AnalyzeProjectRequest, AnalyzeRequest, OpenDocument, SemanticBridge};
+use al_semantic::{
+    AnalyzeProjectRequest, AnalyzeRequest, OpenDocument, ProjectContext, SemanticBridge,
+};
 
 fn code_analysis_dll() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("AL_TOOL_PATH")?);
@@ -82,6 +84,7 @@ async fn live_bridge_satisfies_its_public_contracts() {
             (6, 9),
             Some(source),
             package_cache_opt,
+            None,
         )
         .await
         .expect("typeAt should not fail")
@@ -94,6 +97,7 @@ async fn live_bridge_satisfies_its_public_contracts() {
                 (4, 10_000),
                 Some(source),
                 package_cache_opt,
+                None,
             )
             .await
             .expect("an invalid position should be handled")
@@ -108,6 +112,7 @@ async fn live_bridge_satisfies_its_public_contracts() {
             (6, 14),
             Some(&completion_source),
             package_cache_opt,
+            None,
         )
         .await
         .expect("member completions should not fail");
@@ -369,5 +374,74 @@ async fn live_bridge_analyzes_every_file_of_a_project() {
     assert!(
         diagnostics.iter().all(|d| d.file.starts_with(&root)),
         "every finding names a project file: {diagnostics:#?}"
+    );
+}
+
+/// Hover and completion answer from the project compilation: a field that a
+/// sibling file's table extension adds to a dependency table has a type and
+/// is offered after `Customer.`. Compiled alone, the file knew neither the
+/// table nor the field.
+#[tokio::test]
+#[ignore = "requires AL_TOOL_PATH, AL_PACKAGE_CACHE_PATH and the Microsoft AL toolchain; run with --ignored"]
+async fn live_bridge_hover_and_completion_see_the_project() {
+    let dll = code_analysis_dll().expect(
+        "AL_TOOL_PATH must point to a directory containing Microsoft.Dynamics.Nav.CodeAnalysis.dll",
+    );
+    let package_cache = PathBuf::from(
+        std::env::var_os("AL_PACKAGE_CACHE_PATH")
+            .expect("AL_PACKAGE_CACHE_PATH must point to a BC 26+ Microsoft symbol set"),
+    );
+    let bridge = SemanticBridge::new(&dll, "live-project-hover")
+        .expect("the real CodeAnalysis bridge should initialize");
+
+    let project = tempfile::tempdir().expect("temp project");
+    let root = project.path().to_path_buf();
+    std::fs::write(root.join("app.json"), PROBE_APP_JSON).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/ProbeCustomer.TableExt.al"), PROBE_TABLE_EXT).unwrap();
+    let target = root.join("src/ProbeUsage.Codeunit.al");
+    let source = probe_codeunit("Customer.\"Probe Flag\" := true;");
+    std::fs::write(&target, &source).unwrap();
+    let context = ProjectContext {
+        root: root.clone(),
+        open_documents: Vec::new(),
+    };
+
+    // Line 6 is `        Customer."Probe Flag" := true;`, column 20 is inside the field.
+    let hover = bridge
+        .type_at_with_package_cache(
+            &target,
+            (6, 20),
+            Some(&source),
+            Some(&package_cache),
+            Some(&context),
+        )
+        .await
+        .expect("typeAt should not fail")
+        .expect("the sibling file's field has a type");
+    assert!(
+        hover.name.eq_ignore_ascii_case("Boolean"),
+        "unexpected type for the field: {hover:#?}"
+    );
+
+    let completion_source = probe_codeunit("Customer.");
+    let items = bridge
+        .completions_at_with_package_cache(
+            &target,
+            (6, 17),
+            Some(&completion_source),
+            Some(&package_cache),
+            Some(&context),
+        )
+        .await
+        .expect("completions should not fail");
+    assert!(
+        items.iter().any(|item| item.label.contains("Probe Flag")),
+        "the sibling file's field is offered: {:?}",
+        items
+            .iter()
+            .map(|item| &item.label)
+            .take(40)
+            .collect::<Vec<_>>()
     );
 }

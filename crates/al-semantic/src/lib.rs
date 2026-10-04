@@ -13,7 +13,7 @@ pub mod lifecycle;
 
 pub use bridge::{
     AnalyzeProjectRequest, AnalyzeRequest, BuiltinMethod, BuiltinType, CompletionItem,
-    DiagnosticEntry, ErrorCodeInfo, MethodParameter, OpenDocument, SemanticBridge, SemanticError,
-    TypeInfo,
+    DiagnosticEntry, ErrorCodeInfo, MethodParameter, OpenDocument, ProjectContext, SemanticBridge,
+    SemanticError, TypeInfo,
 };
 pub use lifecycle::SemanticCache;

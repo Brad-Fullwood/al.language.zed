@@ -777,26 +777,6 @@ pub(crate) fn snapshot_is_current(
         })
 }
 
-/// Editor buffers of the project's other `.al` files. The semantic pass
-/// compiles their unsaved text in place of the files on disk.
-fn project_open_documents(
-    open: impl IntoIterator<Item = (PathBuf, Arc<String>)>,
-    root: &Path,
-    target: &Path,
-) -> Vec<crate::semantic::OpenDocument> {
-    open.into_iter()
-        .filter(|(path, _)| path != target && path.starts_with(root))
-        .filter(|(path, _)| {
-            path.extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("al"))
-        })
-        .map(|(file, text)| crate::semantic::OpenDocument {
-            file,
-            source: text.as_str().to_owned(),
-        })
-        .collect()
-}
-
 /// Run semantic analysis via .NET bridge if enabled. Returns diagnostics or empty vec.
 ///
 /// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
@@ -889,21 +869,11 @@ async fn run_semantic_analysis(
     // Inside its project, the file is compiled with the project's other files
     // and dependencies. A file outside it (a rendered symbol file, for one) is
     // compiled alone.
-    let project_root = project
-        .as_ref()
-        .map(|project| project.root.clone())
-        .filter(|root| file_path.starts_with(root));
-    let open_documents = match &project_root {
-        Some(root) => {
-            let documents = &server.workspace.documents;
-            let open = documents
-                .open_uris()
-                .into_iter()
-                .filter(|uri| documents.get_client_version(uri).is_some())
-                .filter_map(|uri| Some((uri.to_file_path().ok()?, documents.get_text_arc(&uri)?)));
-            project_open_documents(open, root, &file_path)
-        }
-        None => Vec::new(),
+    let project_context =
+        al_workspace::semantic_project_context(&server.workspace, &file_path).await;
+    let (project_root, open_documents) = match project_context {
+        Some(context) => (Some(context.root), context.open_documents),
+        None => (None, Vec::new()),
     };
 
     let req = crate::semantic::AnalyzeRequest {
@@ -1067,7 +1037,7 @@ pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
         versions.insert(uri, version);
         open.push((path, text));
     }
-    let open_documents = project_open_documents(open, &root, Path::new(""));
+    let open_documents = al_workspace::project_open_documents(open, &root, Path::new(""));
 
     let started = std::time::Instant::now();
     let outcome = {
@@ -1445,50 +1415,6 @@ mod tests {
         assert_eq!(
             native_rules_covered_by(&["codecop".to_string()]),
             vec!["AL-NL007"]
-        );
-    }
-
-    /// The semantic pass compiles the analyzed file with its project, so the
-    /// other open `.al` buffers of that project travel with the request. The
-    /// analyzed file itself goes as the request's own source, and buffers of
-    /// other folders or other file kinds are not part of the compilation.
-    #[test]
-    fn only_other_al_buffers_of_the_project_are_sent_with_a_semantic_request() {
-        let root = PathBuf::from("/work/app");
-        let target = root.join("src/Target.Codeunit.al");
-        let open = vec![
-            (target.clone(), Arc::new("target".to_string())),
-            (
-                root.join("src/Sibling.Table.al"),
-                Arc::new("sibling".to_string()),
-            ),
-            (
-                root.join("src/Upper.Page.AL"),
-                Arc::new("upper".to_string()),
-            ),
-            (root.join("app.json"), Arc::new("{}".to_string())),
-            (
-                PathBuf::from("/work/other/Other.al"),
-                Arc::new("other".to_string()),
-            ),
-        ];
-
-        let sent = project_open_documents(open, &root, &target);
-
-        let mut files: Vec<_> = sent.iter().map(|d| d.file.clone()).collect();
-        files.sort();
-        assert_eq!(
-            files,
-            vec![
-                root.join("src/Sibling.Table.al"),
-                root.join("src/Upper.Page.AL")
-            ]
-        );
-        assert_eq!(
-            sent.iter()
-                .find(|d| d.file.ends_with("Sibling.Table.al"))
-                .map(|d| d.source.as_str()),
-            Some("sibling")
         );
     }
 

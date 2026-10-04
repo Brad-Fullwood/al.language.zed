@@ -62,6 +62,36 @@ pub struct AnalyzeProjectRequest {
     pub open_documents: Vec<OpenDocument>,
 }
 
+/// The project a hover or completion request belongs to. With it the bridge
+/// answers from the project compilation, which sees the project's other files
+/// and its dependencies.
+#[derive(Debug, Clone)]
+pub struct ProjectContext {
+    /// Folder holding the project's `app.json`.
+    pub root: PathBuf,
+    /// Editor buffers of the project's other files.
+    pub open_documents: Vec<OpenDocument>,
+}
+
+/// Add a [`ProjectContext`] to a request's parameters.
+fn add_project(
+    params: &mut serde_json::Value,
+    project: Option<&ProjectContext>,
+) -> Result<(), SemanticError> {
+    let Some(project) = project else {
+        return Ok(());
+    };
+    for document in &project.open_documents {
+        check_text_size(Some(&document.source))?;
+    }
+    params["projectRoot"] = serde_json::Value::String(path_as_utf8(&project.root)?.to_string());
+    if !project.open_documents.is_empty() {
+        params["openDocuments"] = serde_json::to_value(&project.open_documents)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
+    }
+    Ok(())
+}
+
 /// An editor buffer sent along with an [`AnalyzeRequest`].
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -598,7 +628,8 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
     ) -> Result<Option<TypeInfo>, SemanticError> {
-        self.type_at_with_package_cache(file, pos, text, None).await
+        self.type_at_with_package_cache(file, pos, text, None, None)
+            .await
     }
 
     /// Resolve a type using the current editor buffer and project package
@@ -610,6 +641,7 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
         package_cache: Option<&Path>,
+        project: Option<&ProjectContext>,
     ) -> Result<Option<TypeInfo>, SemanticError> {
         let file = path_as_utf8(file)?;
         let mut params = serde_json::json!({
@@ -624,6 +656,7 @@ impl SemanticBridge {
         if let Some(cache) = package_cache {
             params["packageCache"] = serde_json::Value::String(path_as_utf8(cache)?.to_string());
         }
+        add_project(&mut params, project)?;
         let result = self.call("typeAt", params).await?;
         if result.is_null() {
             return Ok(None);
@@ -646,7 +679,7 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
     ) -> Result<Vec<CompletionItem>, SemanticError> {
-        self.completions_at_with_package_cache(file, pos, text, None)
+        self.completions_at_with_package_cache(file, pos, text, None, None)
             .await
     }
 
@@ -658,6 +691,7 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
         package_cache: Option<&Path>,
+        project: Option<&ProjectContext>,
     ) -> Result<Vec<CompletionItem>, SemanticError> {
         let file = path_as_utf8(file)?;
         let mut params = serde_json::json!({
@@ -672,6 +706,7 @@ impl SemanticBridge {
         if let Some(cache) = package_cache {
             params["packageCache"] = serde_json::Value::String(path_as_utf8(cache)?.to_string());
         }
+        add_project(&mut params, project)?;
         let result = self.call("completions", params).await?;
         Self::parse_response(result)
     }

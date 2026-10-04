@@ -477,6 +477,42 @@ internal class CodeAnalysisBridge
         return diagnostics;
     }
 
+    /// <summary>
+    /// The project compilation and the syntax tree of <paramref name="file"/>
+    /// with <paramref name="source"/> as its text, when the request names the
+    /// project the file belongs to (<c>projectRoot</c>, <c>packageCache</c>,
+    /// <c>openDocuments</c>). Hover and completion then see the project's
+    /// other files and its dependencies, as diagnostics do. A
+    /// <paramref name="probe"/> text replaces the file for this request only:
+    /// completion inserts a placeholder member that must not reach the cached
+    /// compilation. Null outside a project.
+    /// </summary>
+    private (object Compilation, object Tree)? ProjectCompilationFor(
+        JsonElement prms, string file, string source, string? probe = null)
+    {
+        var root = GetOptionalString(prms, "projectRoot");
+        if (string.IsNullOrEmpty(root)) return null;
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        if (!File.Exists(Path.Combine(root, "app.json"))) return null;
+        var target = Path.GetFullPath(file);
+        if (!IsUnder(target, root)) return null;
+        var project = GetOrCreateProject(root, GetOptionalString(prms, "packageCache"));
+        if (project == null) return null;
+
+        var openDocuments = ReadOpenDocuments(prms);
+        openDocuments[target] = source;
+        UpdateProjectTrees(project, root, openDocuments);
+        var tree = project.Trees[target].Tree;
+        if (probe == null || probe == source) return (project.Compilation, tree);
+
+        var probeTree = ParseProjectTree(probe, target, project);
+        var replace = project.Compilation.GetType().GetMethod("ReplaceSyntaxTree", BindingFlags.Public | BindingFlags.Instance)
+            ?? throw new MissingMethodException("Compilation.ReplaceSyntaxTree was not found.");
+        var compilation = replace.Invoke(project.Compilation, new[] { tree, probeTree })
+            ?? throw new InvalidOperationException("Compilation.ReplaceSyntaxTree returned null.");
+        return (compilation, probeTree);
+    }
+
     private object GetSemanticModel(object comp, object tree)
     {
         var getSM = comp.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
@@ -736,7 +772,8 @@ internal class CodeAnalysisBridge
             if (!File.Exists(file)) return null;
             source = File.ReadAllText(file);
         }
-        var tree = ParseSource(source, file)
+        var inProject = ProjectCompilationFor(prms, file, source);
+        var tree = inProject?.Tree ?? ParseSource(source, file)
             ?? throw new InvalidOperationException("CodeAnalysis returned no syntax tree.");
 
         var root = _getCompilationUnitRootMethod?.Invoke(tree, null);
@@ -760,7 +797,7 @@ internal class CodeAnalysisBridge
 
         var tt = token.GetType();
 
-        var comp = CreateCompilation(new[] { tree }, pkgCache)
+        var comp = inProject?.Compilation ?? CreateCompilation(new[] { tree }, pkgCache)
             ?? throw new InvalidOperationException("Could not create an AL compilation for type lookup.");
         var getSM = comp.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
             .Where(m => m.Name == "GetSemanticModel")
@@ -817,10 +854,11 @@ internal class CodeAnalysisBridge
                 lookupOffset = dot;
         }
 
-        var tree = ParseSource(analysisSource, file)
+        var inProject = ProjectCompilationFor(prms, file, source, analysisSource);
+        var tree = inProject?.Tree ?? ParseSource(analysisSource, file)
             ?? throw new InvalidOperationException("CodeAnalysis returned no syntax tree.");
 
-        var comp = CreateCompilation(new[] { tree }, pkgCache)
+        var comp = inProject?.Compilation ?? CreateCompilation(new[] { tree }, pkgCache)
             ?? throw new InvalidOperationException("Could not create an AL compilation for completion lookup.");
 
         var getSM = comp.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)

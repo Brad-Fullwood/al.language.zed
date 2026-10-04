@@ -382,6 +382,9 @@ pub async fn hover_full(
     };
     // The bridge uses the same zero-based coordinates as LSP.
     let pos = (position.line, position.character);
+    // Inside its project the file is looked up in the project compilation, so
+    // objects from other project files are known.
+    let project = al_workspace::semantic_project_context(workspace, &path).await;
     // Open-document text takes precedence over on-disk content.
     let unsaved_text = workspace.documents.get_text(uri);
     let configured_package_cache = workspace.config.read().await.package_cache_path.clone();
@@ -400,6 +403,7 @@ pub async fn hover_full(
             pos,
             unsaved_text.as_deref(),
             package_cache.as_deref(),
+            project.as_ref(),
         )
         .await
     {
