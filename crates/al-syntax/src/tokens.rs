@@ -679,6 +679,8 @@ const OBJECT_KIND_PREFIXES: &[&str] = &[
 /// Properties whose unquoted value names an object.
 const OBJECT_REFERENCE_PROPERTIES: &[&str] = &[
     "cardpageid",
+    "defaultlayout",
+    "defaultrenderinglayout",
     "drilldownpageid",
     "lookuppageid",
     "sourcetable",
@@ -697,6 +699,8 @@ fn name_role(node: Node<'_>, source: &[u8]) -> Option<Option<u32>> {
     let name = node.parent().filter(|parent| parent.kind() == "name")?;
     let holder = name.parent()?;
     match holder.kind() {
+        // `extends Item`, `implements "My Interface"`.
+        "implements_clause" => Some(Some(token_types::TYPE)),
         "scope_suffix" => {
             let member = holder.child_by_field_name("member")?;
             if member.id() != name.id() {
@@ -729,6 +733,10 @@ fn name_role(node: Node<'_>, source: &[u8]) -> Option<Option<u32>> {
                     .prev_sibling()
                     .is_some_and(|prev| prev.kind() == "property_keyword");
                 return Some(after_kind.then_some(token_types::TYPE));
+            }
+            let text = node.utf8_text(source).unwrap_or_default();
+            if text.eq_ignore_ascii_case("true") || text.eq_ignore_ascii_case("false") {
+                return Some(None);
             }
             if node.kind() == "quoted_identifier"
                 || OBJECT_REFERENCE_PROPERTIES.contains(&property.as_str())
@@ -1007,6 +1015,13 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
         .filter_map(|i| paren_block.child(i))
         .find(|child| !matches!(child.kind(), "(" | ")"))?;
     if first_meaningful.id() != node.id() {
+        return None;
+    }
+    // Only a name: a string in a table view filter is a literal.
+    if matches!(
+        node.kind(),
+        "string" | "verbatim_string" | "integer" | "decimal" | "number"
+    ) {
         return None;
     }
 
@@ -1315,6 +1330,20 @@ mod tests {
             token_types_for_text(src, &tokens, "'OnAfterRun'"),
             vec![token_types::EVENT_CREATION, token_types::STRING],
             "only the attribute's event name is the event"
+        );
+    }
+
+    #[test]
+    fn extended_objects_layouts_and_booleans_get_their_own_types() {
+        let src = "tableextension 50001 \"AUK Item\" extends Item\n{\n}\nreport 50002 R\n{\n    UseRequestPage = false;\n    DefaultRenderingLayout = RDLCLayout;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(src, &tokens, "Item", token_types::TYPE);
+        assert_token_type_for_text(src, &tokens, "RDLCLayout", token_types::TYPE);
+        assert!(
+            !token_types_for_text(src, &tokens, "false").contains(&token_types::ENUM_MEMBER),
+            "a boolean value is not an enum member"
         );
     }
 
