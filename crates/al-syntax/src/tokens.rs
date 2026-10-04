@@ -441,6 +441,14 @@ fn classify_name_like_node(
                 None
             }
         }
+        // `Comment`, `Locked`, `MaxLength` after a label's text.
+        "label_property" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::KEYWORD)
+            } else {
+                None
+            }
+        }
         "attribute" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::ATTRIBUTE_NAME)
@@ -498,6 +506,9 @@ fn classify_name_like_node(
                 // highlighting already colors.
                 role
             } else if matches!(node.kind(), "identifier") {
+                if is_subscribed_event_name(node, source) {
+                    return Some(token_types::EVENT_CREATION);
+                }
                 if let Ok(text) = node.utf8_text(source) {
                     if is_global_builtin_call(node, text)
                         && super::language_data::is_builtin_function(text)
@@ -575,6 +586,9 @@ fn doc_comment_parts(comment: &str) -> Vec<(u32, u32, u32)> {
                 let attribute: String = chars[attr_start..i].iter().collect();
                 push(attr_start, i, token_types::DOC_COMMENT_ATTRIBUTE);
                 while i < chars.len() && (chars[i] == '=' || chars[i].is_whitespace()) {
+                    if chars[i] == '=' {
+                        push(i, i + 1, token_types::DOC_COMMENT_DELIMITER);
+                    }
                     i += 1;
                 }
                 if let Some(&quote) = chars.get(i).filter(|c| matches!(c, '"' | '\'')) {
@@ -614,8 +628,9 @@ fn doc_comment_parts(comment: &str) -> Vec<(u32, u32, u32)> {
     parts
 }
 
-/// Whether a string is the event name in `[EventSubscriber(ObjectType, Object,
-/// 'EventName', …)]`, its third argument, which Microsoft colors as the event.
+/// Whether a string or name is the event name in `[EventSubscriber(ObjectType,
+/// Object, 'EventName', …)]`, its third argument, which Microsoft colors as the
+/// event.
 fn is_subscribed_event_name(node: Node<'_>, source: &[u8]) -> bool {
     let mut current = node;
     let argument = loop {
@@ -627,7 +642,11 @@ fn is_subscribed_event_name(node: Node<'_>, source: &[u8]) -> bool {
         }
         if !matches!(
             parent.kind(),
-            "expression" | "unary_expression" | "postfix_expression" | "primary_expression"
+            "expression"
+                | "unary_expression"
+                | "postfix_expression"
+                | "primary_expression"
+                | "name"
         ) {
             return false;
         }
@@ -1384,6 +1403,18 @@ mod tests {
         let tokens = extract_semantic_tokens(&result.tree, src);
         assert_token_type_for_text(src, &tokens, "ItemLedgerEntry", token_types::VARIABLE);
         assert_token_type_for_text(src, &tokens, "CustomerItem", token_types::QUERY_DATA_ITEM);
+    }
+
+    #[test]
+    fn label_options_unquoted_event_names_and_doc_equals_follow_microsoft() {
+        let src = "codeunit 50000 C\n{\n    var\n        BinErr: Label 'Bin', Comment = 'x', Locked = true;\n\n    /// <param name=\"Qty\">Amount.</param>\n    [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Whse.-Post Receipt\", OnAfterRun, '', false, false)]\n    local procedure H(Qty: Decimal)\n    begin\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(src, &tokens, "Comment", token_types::KEYWORD);
+        assert_token_type_for_text(src, &tokens, "Locked", token_types::KEYWORD);
+        assert_token_type_for_text(src, &tokens, "OnAfterRun", token_types::EVENT_CREATION);
+        assert_token_type_for_text(src, &tokens, "=", token_types::DOC_COMMENT_DELIMITER);
     }
 
     #[test]
