@@ -151,6 +151,18 @@ pub enum ReleaseChoice {
     Fail { message: String },
 }
 
+/// Pick an `al-lsp` that needs no release lookup: `al-lsp` on the worktree's
+/// PATH, then the binary this session already resolved. `None` sends the
+/// caller to the release lookup.
+///
+/// PATH comes before the session cache because the AL Tools context server
+/// resolves with no worktree, so it can only reach a release. When it started
+/// first, its release sat in the cache and the language server never asked
+/// PATH.
+pub fn known_binary(on_path: Option<String>, cached: Option<String>) -> Option<String> {
+    on_path.or(cached)
+}
+
 /// Pick a binary from what is cached and what the release lookup said.
 ///
 /// The lookup runs first so a published upgrade is picked up: an earlier
@@ -472,14 +484,16 @@ impl AlExtension {
             return Ok(path.to_string());
         }
 
-        if let Some(path) = &self.cached_binary_path {
-            if fs::metadata(path).is_ok_and(|m| m.is_file()) {
-                return Ok(path.clone());
-            }
+        if self
+            .cached_binary_path
+            .as_ref()
+            .is_some_and(|path| !fs::metadata(path).is_ok_and(|m| m.is_file()))
+        {
             self.cached_binary_path = None;
         }
 
-        if let Some(path) = worktree.and_then(|worktree| worktree.which("al-lsp")) {
+        let on_path = worktree.and_then(|worktree| worktree.which("al-lsp"));
+        if let Some(path) = known_binary(on_path, self.cached_binary_path.clone()) {
             self.cached_binary_path = Some(path.clone());
             return Ok(path);
         }
