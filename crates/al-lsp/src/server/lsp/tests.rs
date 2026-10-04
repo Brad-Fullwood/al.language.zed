@@ -17,7 +17,7 @@ mod session_lifecycle_tests {
 
     #[tokio::test]
     async fn language_server_shutdown_cancels_background_transport_access() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
 
         assert!(!server.session.is_cancelled());
@@ -53,7 +53,7 @@ mod symbol_package_configuration_tests {
 
     #[tokio::test]
     async fn configuration_reload_replaces_package_cache_and_local_folder_paths() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         let root = tempfile::tempdir().unwrap();
         let cache = root.path().join("symbols-cache");
@@ -97,7 +97,7 @@ mod symbol_package_configuration_tests {
 
     #[tokio::test]
     async fn rejected_package_reload_retains_previous_config_project_and_symbols() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         let root = tempfile::tempdir().unwrap();
         let cache = root.path().join("symbols-cache");
@@ -151,7 +151,7 @@ mod document_close_generation_tests {
 
     #[tokio::test]
     async fn close_restores_saved_source_instead_of_leaving_unsaved_overlay() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server.workspace.config.write().await.diagnostics_scope =
             al_project::config::DiagnosticsScope::OpenFiles;
@@ -196,7 +196,7 @@ mod document_close_generation_tests {
 
     #[tokio::test]
     async fn close_removes_a_never_saved_transient_document() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server.workspace.config.write().await.diagnostics_scope =
             al_project::config::DiagnosticsScope::OpenFiles;
@@ -441,8 +441,8 @@ mod diagnostics_debounce_tests {
 
     use super::*;
 
-    async fn server_with_documents(sources: &[(&str, &str)]) -> (LspService<AlServer>, Vec<Url>) {
-        let (service, _socket) = LspService::new(AlServer::new);
+    async fn server_with_documents(sources: &[(&str, &str)]) -> (LspService<AlLsp>, Vec<Url>) {
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server
             .workspace_init_state
@@ -604,7 +604,7 @@ mod workspace_init_state_tests {
 
     #[tokio::test]
     async fn ready_state_releases_requests() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         service
             .inner()
             .workspace_init_state
@@ -618,7 +618,7 @@ mod workspace_init_state_tests {
 
     #[tokio::test]
     async fn failed_state_returns_the_retained_initialization_error() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         service
             .inner()
             .workspace_init_state
@@ -639,7 +639,7 @@ mod workspace_init_state_tests {
 
     #[tokio::test]
     async fn semantic_phase_waits_for_the_initialized_workspace_generation() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let state = service.inner().workspace_init_state.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -706,7 +706,7 @@ mod trust_gate_tests {
         .unwrap();
         al_project::trust::grant(project.path()).unwrap();
 
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         let root = Url::from_file_path(project.path()).unwrap();
         *server.root_uri.write().await = Some(root.clone());
@@ -749,7 +749,7 @@ mod trust_gate_tests {
         .unwrap();
         al_project::trust::grant(project.path()).unwrap();
 
-        let (service, mut socket) = LspService::new(AlServer::new);
+        let (service, mut socket) = LspService::new(AlLsp::new);
         // `show_message` is sent before `initialize` too, and a send waits
         // until the socket takes the message, so the socket is drained.
         tokio::spawn(async move {
@@ -822,7 +822,7 @@ mod generation_guard_tests {
     /// while the slow request is still running.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_edit_lands_while_a_slow_request_is_in_flight() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server
             .workspace_init_state
@@ -889,7 +889,7 @@ mod generation_guard_tests {
     /// other file.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_unrelated_generation_bump_is_recomputed_not_reported() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server
             .workspace_init_state
@@ -925,7 +925,7 @@ mod generation_guard_tests {
     /// answers is worse than one answered from a generation old by a keystroke.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_read_request_answers_while_the_workspace_keeps_churning() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server
             .workspace_init_state
@@ -959,7 +959,7 @@ mod implementation_capability_tests {
 
     #[tokio::test]
     async fn native_lsp_advertises_and_serves_go_to_implementation() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server
             .workspace_init_state
@@ -1031,8 +1031,8 @@ mod document_symbol_capability_tests {
 
     /// Build an in-process server with the document open and `await_ready`
     /// short-circuited, then run `initialize` with the given client capabilities.
-    async fn server_after_initialize(caps: ClientCapabilities) -> (LspService<AlServer>, Url) {
-        let (service, _socket) = LspService::new(AlServer::new);
+    async fn server_after_initialize(caps: ClientCapabilities) -> (LspService<AlLsp>, Url) {
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         // Skip the 30s workspace-init wait in `await_ready`.
         server
@@ -1135,8 +1135,8 @@ mod definition_link_support_tests {
     // resolves intra-file to the declaration, needing only an open document.
     const SRC: &str = "codeunit 50100 \"Test\"\n{\n    procedure Foo()\n    var\n        MyVar: Integer;\n    begin\n        MyVar := 42;\n    end;\n}\n";
 
-    async fn server_after_initialize(caps: ClientCapabilities) -> (LspService<AlServer>, Url) {
-        let (service, _socket) = LspService::new(AlServer::new);
+    async fn server_after_initialize(caps: ClientCapabilities) -> (LspService<AlLsp>, Url) {
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server
             .workspace_init_state
@@ -1233,8 +1233,8 @@ mod code_lens_command_wiring_tests {
     // session below adds a profiler lens for TestAlpha.
     const SRC: &str = "codeunit 50200 \"My Tests\"\n{\n    Subtype = Test;\n\n    [Test]\n    procedure TestAlpha()\n    begin\n        TestBeta();\n    end;\n\n    [Test]\n    procedure TestBeta()\n    begin\n    end;\n}\n";
 
-    fn build_server() -> (LspService<AlServer>, Url) {
-        let (service, _socket) = LspService::new(AlServer::new);
+    fn build_server() -> (LspService<AlLsp>, Url) {
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         // Skip the workspace-init wait in `await_ready`.
         server
@@ -1465,8 +1465,8 @@ mod workspace_diagnostic_tests {
     const GOOD_BG_SRC: &str =
         "codeunit 50101 OtherCodeunit\n{\n    trigger OnRun()\n    begin\n    end;\n}\n";
 
-    fn new_ready_server() -> LspService<AlServer> {
-        let (service, _socket) = LspService::new(AlServer::new);
+    fn new_ready_server() -> LspService<AlLsp> {
+        let (service, _socket) = LspService::new(AlLsp::new);
         // Skip the 30s workspace-init wait in `await_ready`.
         service
             .inner()
@@ -1605,7 +1605,7 @@ mod project_diagnostics_convergence_tests {
     /// publication.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn project_diagnostics_publish_while_the_workspace_keeps_changing() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server
             .workspace_init_state
@@ -1664,7 +1664,7 @@ mod project_diagnostics_close_tests {
 
     /// Answer `initialize` through the service so the in-process client sends
     /// notifications. Before that it drops every one of them.
-    async fn initialize(service: &mut LspService<AlServer>) {
+    async fn initialize(service: &mut LspService<AlLsp>) {
         futures::future::poll_fn(|cx| service.poll_ready(cx))
             .await
             .expect("the service accepts requests");
@@ -1752,7 +1752,7 @@ mod project_diagnostics_close_tests {
     /// `saved` is the text on disk that a close restores, `None` when the file
     /// is not on disk.
     async fn close_during_a_project_pass(saved: Option<&str>) {
-        let (mut service, socket) = LspService::new(AlServer::new);
+        let (mut service, socket) = LspService::new(AlLsp::new);
         let uri = Url::parse("file:///proj/Ghost.Codeunit.al").unwrap();
         let path = uri.to_file_path().unwrap();
         let publishes = record_publishes(socket, uri.clone());
@@ -1864,7 +1864,7 @@ mod project_diagnostics_close_tests {
     }
 
     async fn edit_during_a_project_pass() {
-        let (mut service, socket) = LspService::new(AlServer::new);
+        let (mut service, socket) = LspService::new(AlLsp::new);
         let uri = Url::parse("file:///proj/Ghost.Codeunit.al").unwrap();
         let publishes = record_publishes(socket, uri.clone());
         let take_publishes = || std::mem::take(&mut *publishes.lock().unwrap());
@@ -1967,6 +1967,149 @@ mod project_diagnostics_close_tests {
             "a skipped clear keeps {uri} in the published set so a later pass clears it"
         );
     }
+
+    const CLEAN: &str = "codeunit 50100 Clean\n{\n    procedure Fine()\n    begin\n    end;\n}\n";
+
+    /// A Microsoft finding as the semantic pass would have cached it.
+    fn compiler_finding() -> Diagnostic {
+        Diagnostic {
+            range: Range::new(Position::new(2, 4), Position::new(2, 13)),
+            severity: Some(DiagnosticSeverity::ERROR),
+            code: Some(NumberOrString::String("AL0118".to_string())),
+            message: "The name 'Missing' does not exist in the current context.".to_string(),
+            ..Diagnostic::default()
+        }
+    }
+
+    fn has_compiler_finding(diagnostics: &[serde_json::Value]) -> bool {
+        diagnostics.iter().any(|d| d["code"] == "AL0118")
+    }
+
+    /// Open `uri` with a cached compiler finding, in a ready workspace with no
+    /// AL toolchain, where no semantic pass can run.
+    async fn open_with_cached_finding(server: &AlLsp, uri: &Url) -> Arc<String> {
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+        server
+            .workspace
+            .documents
+            .open_with_client_version(uri.clone(), CLEAN.to_string(), 1)
+            .unwrap();
+        al_workspace::on_document_change(&server.workspace, uri, CLEAN);
+        server.semantic_diagnostic_cache.lock().await.insert(
+            uri.clone(),
+            diagnostics::CachedSemanticDiagnostics {
+                diagnostics: vec![compiler_finding()],
+            },
+        );
+        server.workspace.documents.get_text_arc(uri).unwrap()
+    }
+
+    /// Phase 1 of a publish used to send native diagnostics only, so every
+    /// compiler and analyzer finding vanished until the semantic pass came
+    /// back, and stayed gone when no pass could run.
+    #[tokio::test]
+    async fn a_publish_keeps_the_last_microsoft_findings_until_a_pass_replaces_them() {
+        let (mut service, socket) = LspService::new(AlLsp::new);
+        let uri = Url::parse("file:///proj/Clean.Codeunit.al").unwrap();
+        let publishes = record_publishes(socket, uri.clone());
+        initialize(&mut service).await;
+        let server = service.inner();
+        let text = open_with_cached_finding(server, &uri).await;
+
+        diagnostics::publish_diagnostics(server, &uri, text, 1).await;
+        settle().await;
+
+        let sent = std::mem::take(&mut *publishes.lock().unwrap());
+        assert!(!sent.is_empty(), "the publish reached the client");
+        for diagnostics in &sent {
+            assert!(
+                has_compiler_finding(diagnostics),
+                "a publish dropped the cached compiler finding: {sent:?}"
+            );
+        }
+    }
+
+    /// The project pass staged native diagnostics and merged Microsoft ones
+    /// only for the exact text snapshot they came from, so a pass that ran
+    /// after an edit published a native-only set over them.
+    #[tokio::test]
+    async fn the_project_pass_publishes_the_latest_microsoft_findings_of_a_file() {
+        let (mut service, socket) = LspService::new(AlLsp::new);
+        let uri = Url::parse("file:///proj/Clean.Codeunit.al").unwrap();
+        let publishes = record_publishes(socket, uri.clone());
+        initialize(&mut service).await;
+        let server = service.inner();
+        server.workspace.config.write().await.diagnostics_scope =
+            al_project::config::DiagnosticsScope::Project;
+        open_with_cached_finding(server, &uri).await;
+
+        let published = diagnostics::publish_workspace_diagnostics_parts(
+            Arc::clone(&server.workspace),
+            server.client.clone(),
+            Arc::clone(&server.semantic_diagnostic_cache),
+            Arc::clone(&server.workspace_diagnostic_uris),
+            None,
+            &server.session,
+        )
+        .await;
+        settle().await;
+
+        assert!(published, "the project pass published");
+        let sent = std::mem::take(&mut *publishes.lock().unwrap());
+        assert!(
+            sent.last()
+                .is_some_and(|diagnostics| has_compiler_finding(diagnostics)),
+            "the project pass left out the file's compiler finding: {sent:?}"
+        );
+    }
+
+    /// An edit used to delete the file's Microsoft findings and republish
+    /// native diagnostics only, so they disappeared on every keystroke and came
+    /// back on save.
+    #[tokio::test]
+    async fn an_edit_keeps_the_microsoft_findings_on_screen() {
+        let (mut service, socket) = LspService::new(AlLsp::new);
+        let uri = Url::parse("file:///proj/Clean.Codeunit.al").unwrap();
+        let publishes = record_publishes(socket, uri.clone());
+        initialize(&mut service).await;
+        let server = service.inner();
+        open_with_cached_finding(server, &uri).await;
+
+        server
+            .did_change(DidChangeTextDocumentParams {
+                text_document: VersionedTextDocumentIdentifier::new(uri.clone(), 2),
+                content_changes: vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text: format!("{CLEAN}\n"),
+                }],
+            })
+            .await;
+        tokio::time::sleep(DIAGNOSTICS_DEBOUNCE * 2).await;
+        settle().await;
+
+        let sent = std::mem::take(&mut *publishes.lock().unwrap());
+        assert!(
+            !sent.is_empty(),
+            "the edit's diagnostics reached the client"
+        );
+        for diagnostics in &sent {
+            assert!(
+                has_compiler_finding(diagnostics),
+                "an edit dropped the compiler finding: {sent:?}"
+            );
+        }
+        assert!(
+            server
+                .semantic_diagnostic_cache
+                .lock()
+                .await
+                .contains_key(&uri),
+            "the edit deleted the cached findings"
+        );
+    }
 }
 
 mod did_change_offload_tests {
@@ -1989,7 +2132,7 @@ mod did_change_offload_tests {
     /// of step: after the call returns, both reflect the new text.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_offloaded_reindex_leaves_the_store_and_the_index_in_step() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server
             .workspace_init_state
@@ -2069,7 +2212,7 @@ mod lock_order_tests {
     /// and waits for the config, so each waited on the other for good.
     #[tokio::test]
     async fn pull_diagnostics_do_not_hold_the_config_while_waiting_for_the_project() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server.workspace.config.write().await.enable_code_analysis = false;
         let uri = Url::parse("file:///proj/Foo.Codeunit.al").unwrap();
@@ -2093,7 +2236,7 @@ mod lock_order_tests {
     /// The push path shares the syntax pass, and with it the same lock order.
     #[tokio::test]
     async fn push_diagnostics_do_not_hold_the_config_while_waiting_for_the_project() {
-        let (service, _socket) = LspService::new(AlServer::new);
+        let (service, _socket) = LspService::new(AlLsp::new);
         let server = service.inner();
         server.workspace.config.write().await.enable_code_analysis = false;
         let uri = Url::parse("file:///proj/Foo.Codeunit.al").unwrap();

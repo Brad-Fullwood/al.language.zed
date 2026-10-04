@@ -264,12 +264,18 @@ fn classify_node(
             }
             Some(token_types::KEYWORD)
         }
-        "keyword" => Some(token_types::KEYWORD),
+        // A keyword that names a property (`DataClassification = …`) is the
+        // property. Anywhere else, the value of a property included
+        // (`tabledata` in `Permissions`), it is a keyword.
+        "keyword" | "metadata_keyword" | "property_keyword" => {
+            if is_property_name(node) {
+                Some(token_types::PROPERTY)
+            } else {
+                Some(token_types::KEYWORD)
+            }
+        }
         "object_keyword" => Some(token_types::OBJECT_KEYWORD),
-        "metadata_keyword" => Some(token_types::KEYWORD),
         "type_keyword" => Some(token_types::BUILTIN_TYPE),
-
-        "property_keyword" => Some(token_types::PROPERTY),
 
         "operator_word" | "op_and" | "op_or" | "op_not" | "op_div" | "op_mod" | "op_xor"
         | "op_is" | "op_as" => Some(token_types::OPERATOR),
@@ -457,8 +463,10 @@ fn classify_name_like_node(
             } else if matches!(node.kind(), "string" | "verbatim_string") {
                 Some(token_types::STRING)
             } else if matches!(node.kind(), "quoted_identifier") {
-                // Double-quoted identifiers in AL are always object/identifier references
-                Some(token_types::TYPE)
+                // A quoted name in a scope access or a property value names an
+                // object. In code it is a field or a variable, which the
+                // grammar's highlighting already colors.
+                is_object_reference(node).then_some(token_types::TYPE)
             } else if matches!(node.kind(), "identifier") {
                 if let Ok(text) = node.utf8_text(source) {
                     if is_global_builtin_call(node, text)
@@ -477,6 +485,35 @@ fn classify_name_like_node(
                 None
             }
         }
+    }
+}
+
+/// Whether `node` is the name of a `property_assignment`.
+fn is_property_name(node: Node<'_>) -> bool {
+    node.parent()
+        .filter(|parent| parent.kind() == "property_assignment")
+        .and_then(|parent| parent.child_by_field_name("name"))
+        .is_some_and(|name| name.id() == node.id())
+}
+
+/// Whether a quoted name names an object: the member of a scope access
+/// (`Page::"Item Card"`) or a name in a property's value (`tabledata "Item"`
+/// in `Permissions`, `TableRelation = "Customer"`).
+fn is_object_reference(node: Node<'_>) -> bool {
+    let Some(name) = node.parent().filter(|parent| parent.kind() == "name") else {
+        return false;
+    };
+    let Some(holder) = name.parent() else {
+        return false;
+    };
+    match holder.kind() {
+        "scope_suffix" => holder
+            .child_by_field_name("member")
+            .is_some_and(|member| member.id() == name.id()),
+        "property_assignment" => holder
+            .child_by_field_name("name")
+            .is_none_or(|property| property.id() != name.id()),
+        _ => false,
     }
 }
 
@@ -779,6 +816,53 @@ mod tests {
             });
 
         assert!(found, "Expected token {:?} with type {}", text, expected);
+    }
+
+    fn token_types_for_text(source: &str, tokens: &[SemanticToken], text: &str) -> Vec<u32> {
+        decoded_tokens(tokens)
+            .into_iter()
+            .filter(|&(line, col, len, _)| token_text_at(source, line, col, len) == Some(text))
+            .map(|(_, _, _, token_type)| token_type)
+            .collect()
+    }
+
+    /// A quoted name in an expression is a field or a variable. It was sent
+    /// as a type, so `SetRange("AUK Active", true)` drew the field in the
+    /// type color. Only a scope access such as `Page::"Item Card"` names an
+    /// object.
+    #[test]
+    fn a_quoted_name_is_a_type_only_in_a_scope_access() {
+        let src = "codeunit 50010 X\n{\n    procedure P()\n    begin\n        Rec.SetRange(\"AUK Field\", 1);\n        Rec.\"My Field\" := 1;\n        Page.Run(Page::\"Item Card\");\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert!(
+            !token_types_for_text(src, &tokens, "\"AUK Field\"").contains(&token_types::TYPE),
+            "a field argument is not a type"
+        );
+        assert!(
+            !token_types_for_text(src, &tokens, "\"My Field\"").contains(&token_types::TYPE),
+            "a field member is not a type"
+        );
+        assert_token_type_for_text(src, &tokens, "\"Item Card\"", token_types::TYPE);
+    }
+
+    /// Microsoft's theme draws a property name in the foreground and the
+    /// keywords in its value, such as `tabledata`, in the keyword color. A
+    /// property named by a keyword was sent as a keyword, and `tabledata` as
+    /// a property.
+    #[test]
+    fn a_property_name_is_a_property_and_a_keyword_in_its_value_is_a_keyword() {
+        let src = "codeunit 50010 X\n{\n    Permissions = tabledata \"Item Ledger Entry\" = r;\n}\ntable 50000 T\n{\n    fields\n    {\n        field(1; Code; Code[20])\n        {\n            DataClassification = CustomerContent;\n        }\n    }\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(src, &tokens, "Permissions", token_types::PROPERTY);
+        assert_token_type_for_text(src, &tokens, "DataClassification", token_types::PROPERTY);
+        assert_token_type_for_text(src, &tokens, "tabledata", token_types::KEYWORD);
+        assert_token_type_for_text(src, &tokens, "\"Item Ledger Entry\"", token_types::TYPE);
     }
 
     #[test]
