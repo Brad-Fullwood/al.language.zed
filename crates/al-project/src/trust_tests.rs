@@ -2182,3 +2182,32 @@ fn a_replaced_runtime_beside_a_linked_dotnet_is_dropped_before_the_next_spawn() 
     assert!(advisory.contains("changed since"), "{advisory}");
     assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
 }
+
+/// A launch file that does not parse is the only problem in this project, so
+/// the advisory says that, names the file, and leaves the parser's error,
+/// which quotes the file, to the terminal command.
+#[test]
+fn an_unparseable_launch_file_is_reported_as_such() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings("{}");
+    std::fs::write(
+        project.path().join(".vscode/launch.json"),
+        r#"{"configurations":[{"type":"al","request":"launch","name":"Sandbox",
+            "environmentType":"Sandboclaclx"}]}"#,
+    )
+    .unwrap();
+
+    let advisory = evaluate(project.path())
+        .unwrap()
+        .decision
+        .advisory()
+        .expect("an unparseable launch file produces an advisory");
+
+    assert!(
+        advisory.starts_with(".vscode/launch.json could not be parsed"),
+        "{advisory}"
+    );
+    assert!(advisory.contains(TRUST_COMMAND), "{advisory}");
+    assert!(!advisory.contains("not trusted"), "{advisory}");
+    assert!(!advisory.contains("Sandboclaclx"), "{advisory}");
+}

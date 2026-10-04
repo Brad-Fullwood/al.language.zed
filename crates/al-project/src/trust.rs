@@ -311,32 +311,52 @@ impl TrustDecision {
         if !self.has_ignored_settings() {
             return None;
         }
-        let mut message = String::new();
-        let reason = match self.state {
-            TrustState::Stale => {
-                "These settings changed since this project was trusted, so they were ignored:"
-            }
-            _ => "This project is not trusted, so these settings from its own files were ignored:",
-        };
-        message.push_str(reason);
-        let mut keys: Vec<&'static str> = self
+        let root = one_line(&self.root.display().to_string());
+        let (launch_files, settings): (Vec<&PrivilegedSetting>, Vec<&PrivilegedSetting>) = self
             .privileged
             .iter()
-            .map(|setting| advisory_key(&setting.key))
-            .collect();
-        keys.sort_unstable();
-        keys.dedup();
-        for key in keys {
-            message.push_str("\n  ");
-            message.push_str(key);
+            .partition(|setting| setting.key == UNREADABLE_LAUNCH_KEY);
+        let mut lines = Vec::new();
+        // The source is the launch file's own fixed name, `.vscode/launch.json`
+        // or `.zed/debug.json`. The parser's error quotes the file, so it is
+        // left to the terminal command.
+        for file in launch_files {
+            lines.push(format!(
+                "{} could not be parsed, so its launch configurations are not used. To see \
+                 the parser's error, the user runs this in a terminal: {TRUST_COMMAND} --show \
+                 {root}",
+                one_line(&file.source)
+            ));
         }
-        message.push_str(&format!(
-            "\nThey can load code, run programs or receive credentials. Their values are not \
-             repeated here. To read them and decide, the user runs this in a terminal: \
-             {TRUST_COMMAND} --show {}",
-            one_line(&self.root.display().to_string())
-        ));
-        Some(message)
+        if !settings.is_empty() {
+            let mut message = String::new();
+            message.push_str(match self.state {
+                TrustState::Stale => {
+                    "These settings changed since this project was trusted, so they were ignored:"
+                }
+                _ => {
+                    "This project is not trusted, so these settings from its own files were \
+                     ignored:"
+                }
+            });
+            let mut keys: Vec<&'static str> = settings
+                .iter()
+                .map(|setting| advisory_key(&setting.key))
+                .collect();
+            keys.sort_unstable();
+            keys.dedup();
+            for key in keys {
+                message.push_str("\n  ");
+                message.push_str(key);
+            }
+            message.push_str(&format!(
+                "\nThey can load code, run programs or receive credentials. Their values are \
+                 not repeated here. To read them and decide, the user runs this in a terminal: \
+                 {TRUST_COMMAND} --show {root}"
+            ));
+            lines.push(message);
+        }
+        Some(lines.join("\n"))
     }
 }
 

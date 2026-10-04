@@ -199,18 +199,18 @@ fn collect_tokens(
 
     while let Some(current) = stack.pop() {
         let kind = current.kind();
-        if kind == "comment" && current.start_position().row == current.end_position().row {
+        // The grammar gives a documentation comment (exactly three slashes)
+        // its parts as children.
+        if kind == "comment" && current.named_child_count() > 0 {
             if let Ok(comment) = current.utf8_text(source) {
-                if comment.starts_with("///") {
-                    let start = current.start_position();
-                    let line_bytes = line_index.line_bytes(start.row);
-                    let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
-                    let utf16_col = super::byte_col_to_utf16_col(line_str, start.column);
-                    for (offset, len, token_type) in doc_comment_parts(comment) {
-                        tokens.push((start.row as u32, utf16_col + offset, len, token_type));
-                    }
-                    continue;
+                let start = current.start_position();
+                let line_bytes = line_index.line_bytes(start.row);
+                let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
+                let utf16_col = super::byte_col_to_utf16_col(line_str, start.column);
+                for (offset, len, token_type) in doc_comment_parts(comment) {
+                    tokens.push((start.row as u32, utf16_col + offset, len, token_type));
                 }
+                continue;
             }
         }
         if let Some(token_type) = classify_node(kind, current, source, type_resolver) {
@@ -387,7 +387,8 @@ fn classify_name_like_node(
             if parent.child_by_field_name("member").map(|n| n.id()) == Some(node.id()) {
                 if parent.kind() == "member_call_suffix"
                     && (is_builtin_record_member(parent, node, source, type_resolver)
-                        || has_object_kind_receiver(parent, source))
+                        || has_object_kind_receiver(parent, source)
+                        || is_enum_value_method(node, source))
                 {
                     Some(token_types::BUILTIN_FUNCTION)
                 } else {
@@ -483,7 +484,14 @@ fn classify_name_like_node(
         // Covers: pageView names, reportLayout names, xmlport element names, queryFilter
         // names, and table field names (`field(1; Name; Type)` in a table).
         "parenthesized_block" => classify_parenthesized_block_name(node, parent, source)
-            .or_else(|| classify_table_field_name(node, parent, source)),
+            .or_else(|| classify_table_field_name(node, parent, source))
+            .or_else(|| {
+                let text = node.utf8_text(source).ok()?;
+                (node.kind() == "identifier"
+                    && is_global_builtin_call(node, text, source)
+                    && super::language_data::is_builtin_function(text))
+                .then_some(token_types::BUILTIN_FUNCTION)
+            }),
         "object_declaration" => {
             if is_object_name(node, parent) {
                 Some(token_types::TYPE)
@@ -510,7 +518,7 @@ fn classify_name_like_node(
                     return Some(token_types::EVENT_CREATION);
                 }
                 if let Ok(text) = node.utf8_text(source) {
-                    if is_global_builtin_call(node, text)
+                    if is_global_builtin_call(node, text, source)
                         && super::language_data::is_builtin_function(text)
                     {
                         return Some(token_types::BUILTIN_FUNCTION);
@@ -835,9 +843,24 @@ fn name_role(node: Node<'_>, source: &[u8]) -> Option<Option<u32>> {
     }
 }
 
-fn is_global_builtin_call(node: Node<'_>, text: &str) -> bool {
+/// Whether `node` is the name of a call that is not a member call: `Name(…)`
+/// in code, or in a section's arguments, which the grammar keeps as a flat
+/// list, `column(Date; Format(Rec.Date))`.
+fn is_global_builtin_call(node: Node<'_>, text: &str, source: &[u8]) -> bool {
     if text.is_empty() {
         return false;
+    }
+    if node
+        .parent()
+        .is_some_and(|parent| parent.kind() == "parenthesized_block")
+    {
+        let called = node
+            .next_sibling()
+            .is_some_and(|next| next.kind() == "parenthesized_block");
+        let member = node.prev_sibling().is_some_and(|previous| {
+            previous.kind() == "operator" && matches!(previous.utf8_text(source), Ok("." | "::"))
+        });
+        return called && !member;
     }
     let Some(name) = node.parent().filter(|parent| parent.kind() == "name") else {
         return false;
@@ -950,6 +973,14 @@ fn is_builtin_record_member(
     type_resolver
         .resolve_type(&receiver, position)
         .is_some_and(|declaration| declaration.type_name.eq_ignore_ascii_case("Record"))
+}
+
+/// Whether `member` is `AsInteger`, the method every enum value has. No other
+/// built-in type has a method of that name.
+fn is_enum_value_method(member: Node<'_>, source: &[u8]) -> bool {
+    member
+        .utf8_text(source)
+        .is_ok_and(|name| name.eq_ignore_ascii_case("AsInteger"))
 }
 
 fn is_record_builtin_method(name: &str) -> bool {
@@ -1369,6 +1400,51 @@ mod tests {
         assert_eq!(
             token_types::LEGEND[token_types::DOC_COMMENT_TEXT as usize],
             "docCommentText"
+        );
+    }
+
+    /// A built-in called in a report column's source expression is a
+    /// built-in, as in code.
+    #[test]
+    fn a_builtin_called_in_a_column_expression_is_a_builtin() {
+        let src = "report 50100 R\n{\n    dataset\n    {\n        dataitem(Item; Item)\n        {\n            column(PostingDate; Format(Item.\"Last Date Modified\", 0, 4)) { }\n            column(Shown; 'x' + Format(Item.\"No.\")) { }\n            column(Member; Item.Format()) { }\n        }\n    }\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        // The two calls, one after `+`, are built-ins. `Item.Format()` is a
+        // member call.
+        let builtins = token_types_for_text(src, &tokens, "Format")
+            .into_iter()
+            .filter(|token_type| *token_type == token_types::BUILTIN_FUNCTION)
+            .count();
+        assert_eq!(builtins, 2);
+    }
+
+    /// Microsoft sends `AsInteger` on an enum value as a built-in.
+    #[test]
+    fn as_integer_on_an_enum_value_is_a_builtin() {
+        let src = "codeunit 50100 C\n{\n    procedure P(Line: Record \"Item Journal Line\"): Integer\n    begin\n        exit(Line.\"Entry Type\".AsInteger());\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(src, &tokens, "AsInteger", token_types::BUILTIN_FUNCTION);
+    }
+
+    /// Microsoft treats four or more slashes as a plain comment.
+    #[test]
+    fn four_slashes_start_a_plain_comment() {
+        let src = "codeunit 50000 C\n{\n    //// <b>not documentation</b>\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "//// <b>not documentation</b>",
+            token_types::COMMENT,
         );
     }
 

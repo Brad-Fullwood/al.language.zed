@@ -2,6 +2,24 @@
 
 ; Literals
 (comment) @comment
+
+; Documentation comments, in the parts Microsoft's server colors. The value
+; of a `name` attribute names a parameter.
+(doc_comment_delimiter) @comment.doc.delimiter.al
+(doc_comment_name) @comment.doc.name.al
+(doc_comment_attribute) @comment.doc.attribute.al
+(doc_comment_quote) @comment.doc.attribute.al
+(doc_comment_value) @comment.doc.attribute.al
+(doc_comment_text) @comment.doc.text.al
+(doc_comment_tag
+  (doc_comment_attribute) @_attribute
+  .
+  (doc_comment_delimiter)
+  .
+  (doc_comment_quote)
+  .
+  (doc_comment_value) @variable.parameter
+  (#match? @_attribute "^[nN][aA][mM][eE]$"))
 (string) @string
 (verbatim_string) @string
 (integer) @number
@@ -100,6 +118,7 @@
 (kw_database) @type.builtin.al
 (kw_dataclassification) @type.builtin.al
 (kw_datascope) @type.builtin.al
+(kw_datasourcecontext) @type.builtin.al
 (kw_datatransfer) @type.builtin.al
 (kw_date) @type.builtin.al
 (kw_dateformula) @type.builtin.al
@@ -562,7 +581,14 @@
 (postfix_expression
   (primary_expression (name (identifier) @function.builtin.al))
   (call_suffix)
-  (#match? @function.builtin.al "^(?i)(Abs|ApplicationPath|ArrayLen|CalcDate|Clear|ClearAll|ClearLastError|Commit|CompanyName|CompressArray|Confirm|ConvertStr|CopyArray|CopyStr|CreateDateTime|CreateGuid|CurrentDateTime|DMY2Date|DT2Date|DT2Time|Date2DMY|DelChr|DelStr|Dialog|Download|DownloadFromStream|Error|Evaluate|FieldCaption|FieldNo|Format|FromInteger|GetDotNetType|GetLastErrorCode|GetLastErrorText|GlobalLanguage|GuiAllowed|Hyperlink|IncStr|InsStr|IsNull|IsNullGuid|LowerCase|Maximum|Message|Minimum|Names|NormalDate|NullGuid|Ordinals|PadStr|Power|Random|Randomize|Rollback|Round|Run|RunModal|SelectStr|Sleep|SortArray|Sqrt|StrLen|StrMenu|StrPos|StrSubstNo|TableCaption|TenantId|Time|Today|TypeHelper|Upload|UploadIntoStream|UpperCase|UserId|Variant2Date|Variant2Time|View|ViewFromStream|WindowsLanguage|WorkDate)$"))
+  (#match? @function.builtin.al "^(?i)(Abs|ApplicationPath|ArrayLen|CalcDate|Clear|ClearAll|ClearLastError|Commit|CompanyName|CompressArray|Confirm|ConvertStr|CopyArray|CopyStr|CreateDateTime|CreateGuid|CurrentDateTime|DMY2Date|DT2Date|DT2Time|Date2DMY|DelChr|DelStr|Dialog|Download|DownloadFromStream|Error|Evaluate|FieldCaption|FieldNo|Format|FromInteger|GetDotNetType|GetLastErrorCode|GetLastErrorText|GlobalLanguage|GuiAllowed|Hyperlink|IncStr|InsStr|IsNull|IsNullGuid|LowerCase|MaxStrLen|Maximum|Message|Minimum|Names|NormalDate|NullGuid|Ordinals|PadStr|Power|Random|Randomize|Rollback|Round|Run|RunModal|SelectStr|Sleep|SortArray|Sqrt|StrLen|StrMenu|StrPos|StrSubstNo|TableCaption|TenantId|Time|Today|TypeHelper|Upload|UploadIntoStream|UpperCase|UserId|Variant2Date|Variant2Time|View|ViewFromStream|WindowsLanguage|WorkDate)$"))
+; A section's arguments are a flat list, so a call there is a name followed by
+; its bracketed arguments: `column(Date; Format(Rec.Date))`.
+(parenthesized_block
+  (identifier) @function.builtin.al
+  .
+  (parenthesized_block)
+  (#match? @function.builtin.al "^(?i)(Abs|ApplicationPath|ArrayLen|CalcDate|Clear|ClearAll|ClearLastError|Commit|CompanyName|CompressArray|Confirm|ConvertStr|CopyArray|CopyStr|CreateDateTime|CreateGuid|CurrentDateTime|DMY2Date|DT2Date|DT2Time|Date2DMY|DelChr|DelStr|Dialog|Download|DownloadFromStream|Error|Evaluate|FieldCaption|FieldNo|Format|FromInteger|GetDotNetType|GetLastErrorCode|GetLastErrorText|GlobalLanguage|GuiAllowed|Hyperlink|IncStr|InsStr|IsNull|IsNullGuid|LowerCase|MaxStrLen|Maximum|Message|Minimum|Names|NormalDate|NullGuid|Ordinals|PadStr|Power|Random|Randomize|Rollback|Round|Run|RunModal|SelectStr|Sleep|SortArray|Sqrt|StrLen|StrMenu|StrPos|StrSubstNo|TableCaption|TenantId|Time|Today|TypeHelper|Upload|UploadIntoStream|UpperCase|UserId|Variant2Date|Variant2Time|View|ViewFromStream|WindowsLanguage|WorkDate)$"))
 (member_call_suffix
   member: (name (identifier) @function.builtin.al)
   (#match? @function.builtin.al "^(?i)(AddLink|AddLoadFields|AreFieldsLoaded|Ascending|CalcFields|CalcSums|ChangeCompany|ClearMarks|Consistent|Copy|CopyFilter|CopyFilters|CopyLinks|Count|CountApprox|CurrentCompany|CurrentKey|Delete|DeleteAll|DeleteLink|DeleteLinks|FieldActive|FieldCaption|FieldError|FieldName|FieldNo|FilterGroup|Find|FindFirst|FindLast|FindSet|FullyQualifiedName|Get|GetAscending|GetBySystemId|GetFilter|GetFilters|GetPosition|GetRangeMax|GetRangeMin|GetView|HasFilter|HasLinks|Init|Insert|IsEmpty|IsTemporary|LoadFields|LockTable|Mark|MarkedOnly|Modify|ModifyAll|Next|ReadConsistency|ReadIsolation|ReadPermission|RecordId|RecordLevelLocking|Relation|Rename|Reset|SecurityFiltering|SetAscending|SetAutoCalcFields|SetBaseLoadFields|SetCurrentKey|SetFilter|SetLoadFields|SetPermissionFilter|SetPosition|SetRange|SetRecFilter|SetView|TableCaption|TableName|TestField|TransferFields|Truncate|Validate|WritePermission)$"))
@@ -570,6 +596,10 @@
   (primary_expression) @_receiver
   (member_call_suffix member: (name (identifier) @function.builtin.al))
   (#match? @_receiver "^(?i)(Codeunit|Database|Page|Query|Report|XmlPort|Session|System|CurrentSession|CompanyProperty|NavApp|NumberSequence|TaskScheduler|Debugger|IsolatedStorage|ProductName)$"))
+; `AsInteger` is the method every enum value has.
+(member_call_suffix
+  member: (name (identifier) @function.builtin.al)
+  (#match? @function.builtin.al "^(?i)AsInteger$"))
 
 ; Scope references. A name after `::` is an enum or option member
 ; (`Status::Released`, `"Document Type"::"Purchase Receipt"`), unless what
