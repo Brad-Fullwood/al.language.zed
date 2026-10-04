@@ -9,6 +9,7 @@
 #   SETTLE       secs to wait before trusting     (default: 16)
 #   POST         secs after trust for LSP/paint   (default: 14)
 #   KEYS         extra shell run after trust (e.g. 'wtype -M ctrl -k p -m ctrl')
+#   ZED_SETTINGS_JSON  a Zed settings.json to use (theme, LSP settings)
 set -uo pipefail
 REPO=${REPO:-/repo}
 PROJ_SUBDIR=${PROJ_SUBDIR:-crates/al-test-harness/data/test_al_project}
@@ -38,6 +39,12 @@ else
   echo "  index.json: not provided — Zed will regenerate from installed/"
 fi
 echo "  extension.wasm: $(stat -c%s "$EXT/installed/al/extension.wasm") bytes"
+
+if [ -n "${ZED_SETTINGS_JSON:-}" ] && [ -f "$ZED_SETTINGS_JSON" ]; then
+  mkdir -p "$HOME/.config/zed"
+  cp "$ZED_SETTINGS_JSON" "$HOME/.config/zed/settings.json"
+  echo "  settings.json: provided"
+fi
 
 echo "=== al-lsp on PATH (host-built binary, runs in this container) ==="
 mkdir -p "$HOME/.local/bin"
