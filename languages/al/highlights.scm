@@ -321,6 +321,45 @@
     .
     [(identifier) (quoted_identifier)] @type.builtin)
   (#match? @_section "^(?i)(dataitem|part)$"))
+; A report's data items, under `dataset`, are variables in report code, and
+; Microsoft colors their names as variables. Query data items stay types.
+; Three levels of nesting are matched.
+(object_section
+  keyword: (_) @_dataset
+  body: (object_body
+    (object_section
+      keyword: (_) @_dataitem
+      (parenthesized_block . [(identifier) (quoted_identifier)] @variable)))
+  (#match? @_dataset "^(?i)dataset$")
+  (#match? @_dataitem "^(?i)dataitem$"))
+(object_section
+  keyword: (_) @_dataset
+  body: (object_body
+    (object_section
+      keyword: (_) @_outer
+      body: (object_body
+        (object_section
+          keyword: (_) @_dataitem
+          (parenthesized_block . [(identifier) (quoted_identifier)] @variable)))))
+  (#match? @_dataset "^(?i)dataset$")
+  (#match? @_outer "^(?i)dataitem$")
+  (#match? @_dataitem "^(?i)dataitem$"))
+(object_section
+  keyword: (_) @_dataset
+  body: (object_body
+    (object_section
+      keyword: (_) @_outer
+      body: (object_body
+        (object_section
+          keyword: (_) @_middle
+          body: (object_body
+            (object_section
+              keyword: (_) @_dataitem
+              (parenthesized_block . [(identifier) (quoted_identifier)] @variable)))))))
+  (#match? @_dataset "^(?i)dataset$")
+  (#match? @_outer "^(?i)dataitem$")
+  (#match? @_middle "^(?i)dataitem$")
+  (#match? @_dataitem "^(?i)dataitem$"))
 ; The object an extension extends, or an interface a codeunit implements.
 (implements_clause (name [(identifier) (quoted_identifier)] @type))
 
