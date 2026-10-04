@@ -5,7 +5,8 @@
 //! a network or a Zed host.
 
 use crate::{
-    check_bridge_files, choose_release, expected_sha256, known_binary, CachedRelease, ReleaseChoice,
+    check_bridge_files, choose_release, expected_sha256, known_binary, recorded_path_binary,
+    CachedRelease, ReleaseChoice,
 };
 use std::time::{Duration, SystemTime};
 
@@ -290,4 +291,16 @@ fn the_cache_answers_when_nothing_is_on_path() {
 #[test]
 fn nothing_known_means_the_release_lookup_runs() {
     assert_eq!(known_binary(None, None), None);
+}
+
+/// The context server runs the `al-lsp` the language server found on PATH,
+/// so both run the same build.
+#[test]
+fn the_context_server_runs_the_recorded_path_binary() {
+    assert_eq!(
+        recorded_path_binary(Some("/home/dev/.local/bin/al-lsp\n".to_string())).as_deref(),
+        Some("/home/dev/.local/bin/al-lsp")
+    );
+    assert_eq!(recorded_path_binary(Some("  ".to_string())), None);
+    assert_eq!(recorded_path_binary(None), None);
 }

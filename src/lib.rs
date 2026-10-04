@@ -163,6 +163,20 @@ pub fn known_binary(on_path: Option<String>, cached: Option<String>) -> Option<S
     on_path.or(cached)
 }
 
+/// The file in the extension's work directory that names the `al-lsp` the
+/// language server last found on PATH.
+const PATH_BINARY_RECORD: &str = "al-lsp-on-path";
+
+/// The `al-lsp` the AL Tools context server runs when the language server has
+/// recorded one on PATH. The context server has no worktree to ask PATH, so
+/// without the record it ran the downloaded release while the language server
+/// ran a developer build. `None` sends it to the release.
+pub fn recorded_path_binary(record: Option<String>) -> Option<String> {
+    record
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+}
+
 /// Pick a binary from what is cached and what the release lookup said.
 ///
 /// The lookup runs first so a published upgrade is picked up: an earlier
@@ -493,6 +507,12 @@ impl AlExtension {
         }
 
         let on_path = worktree.and_then(|worktree| worktree.which("al-lsp"));
+        if worktree.is_some() {
+            let _ = match &on_path {
+                Some(path) => fs::write(PATH_BINARY_RECORD, path),
+                None => fs::remove_file(PATH_BINARY_RECORD),
+            };
+        }
         if let Some(path) = known_binary(on_path, self.cached_binary_path.clone()) {
             self.cached_binary_path = Some(path.clone());
             return Ok(path);
@@ -764,11 +784,14 @@ impl zed::Extension for AlExtension {
         context_server_id: &zed::ContextServerId,
         project: &zed::Project,
     ) -> Result<zed::Command> {
-        // A Project does not expose `which`, but the release cache/download
-        // portion of the resolver is worktree-independent. This makes a fresh
-        // gallery install self-contained instead of silently depending on a
-        // developer `make install`.
-        let al_lsp_path = self.find_or_download_binary(None, None, None)?;
+        // A Project does not expose `which`, so the PATH binary comes from the
+        // language server's record. Without one the release cache/download
+        // part of the resolver, which needs no worktree, keeps a fresh gallery
+        // install self-contained.
+        let al_lsp_path = match recorded_path_binary(fs::read_to_string(PATH_BINARY_RECORD).ok()) {
+            Some(path) => path,
+            None => self.find_or_download_binary(None, None, None)?,
+        };
 
         // `cached_dotnet_path` is only populated once an LSP session has
         // started (`language_server_command`). A `Project` cannot resolve

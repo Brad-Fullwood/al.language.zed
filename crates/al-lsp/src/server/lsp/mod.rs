@@ -1353,7 +1353,7 @@ impl LanguageServer for AlLsp {
         let uri = params.text_document.uri.clone();
         let text = params.text_document.text.clone();
         let client_version = params.text_document.version;
-        tracing::info!(uri = %uri, len = text.len(), "did_open");
+        tracing::debug!(uri = %uri, len = text.len(), "did_open");
 
         if let Err(error) = self.workspace.documents.open_with_client_version(
             uri.clone(),
@@ -1512,7 +1512,7 @@ impl LanguageServer for AlLsp {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
-        tracing::info!(uri = %uri, "did_close");
+        tracing::debug!(uri = %uri, "did_close");
         let generation = self.workspace.generation_lock.write().await;
         if !self.workspace.documents.close(&uri) {
             drop(generation);

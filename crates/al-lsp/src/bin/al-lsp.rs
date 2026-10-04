@@ -6,6 +6,51 @@ use std::path::PathBuf;
 
 use tracing_subscriber::prelude::*;
 
+/// The stderr line an editor's log view shows: the level padded to five
+/// characters, so it reads as a column, then the UTC time of day, the names of
+/// the enclosing spans, and the message with its fields.
+struct EditorLogFormat;
+
+impl<S, N> tracing_subscriber::fmt::FormatEvent<S, N> for EditorLogFormat
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        let level = match *event.metadata().level() {
+            tracing::Level::ERROR => "ERROR",
+            tracing::Level::WARN => "WARN ",
+            tracing::Level::INFO => "INFO ",
+            tracing::Level::DEBUG => "DEBUG",
+            tracing::Level::TRACE => "TRACE",
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let seconds = now.as_secs() % 86_400;
+        write!(
+            writer,
+            "{level} {:02}:{:02}:{:02}.{:03}Z ",
+            seconds / 3600,
+            seconds / 60 % 60,
+            seconds % 60,
+            now.subsec_millis()
+        )?;
+        if let Some(scope) = ctx.event_scope() {
+            for span in scope.from_root() {
+                write!(writer, "{}: ", span.name())?;
+            }
+        }
+        tracing_subscriber::fmt::FormatFields::format_fields(ctx, writer.by_ref(), event)?;
+        writeln!(writer)
+    }
+}
+
 fn log_dir() -> PathBuf {
     let dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -209,11 +254,24 @@ async fn run() {
         .with_thread_ids(true);
 
     // An editor shows stderr as plain text (Zed's "Server Logs"), where color
-    // codes print as escape sequences. Color only a terminal.
-    let stderr_layer = tracing_subscriber::fmt::layer()
-        .with_writer(std::io::stderr)
-        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
-        .with_target(false);
+    // codes print as escape sequences and the level is the only way to tell an
+    // error from information. Color only a terminal, and give an editor the
+    // level as the first column.
+    let stderr_layer: Box<dyn tracing_subscriber::Layer<_> + Send + Sync> =
+        if std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+            Box::new(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_target(false),
+            )
+        } else {
+            Box::new(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(std::io::stderr)
+                    .with_ansi(false)
+                    .event_format(EditorLogFormat),
+            )
+        };
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
@@ -537,5 +595,53 @@ async fn run() {
         }
     } else {
         al_lsp::server::run_lsp().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::EditorLogFormat;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Buffer {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Each line starts with its level, so errors stand out in an editor's
+    /// plain text log view.
+    #[test]
+    fn an_editor_log_line_starts_with_its_level() {
+        let buffer = Buffer::default();
+        let writer = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .event_format(EditorLogFormat)
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::error!(file = "a.al", "semantic analysis failed");
+            tracing::info!("ready");
+        });
+
+        let output = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines.len(), 2, "{output}");
+        assert!(lines[0].starts_with("ERROR "), "{output}");
+        assert!(
+            lines[0].ends_with("semantic analysis failed file=\"a.al\""),
+            "{output}"
+        );
+        assert!(lines[1].starts_with("INFO  "), "{output}");
+        assert!(!output.contains('\u{1b}'), "{output}");
     }
 }
