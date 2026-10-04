@@ -312,7 +312,7 @@
 (object_section
   keyword: (_) @_section
   (parenthesized_block . [(identifier) (quoted_identifier) (control_keyword)] @type)
-  (#match? @_section "^(?i)(field|group|part|repeater|cuegroup|fixed|grid|usercontrol|systempart|label|addfirst|addlast|addafter|addbefore|movefirst|movelast|moveafter|movebefore|modify|action|actionref|separator|customaction|fileuploadaction|systemaction|column|dataitem|filter|view|layout|textelement|fieldelement|fieldattribute|tableelement)$"))
+  (#match? @_section "^(?i)(field|group|part|repeater|cuegroup|fixed|grid|usercontrol|systempart|label|addfirst|addlast|addafter|addbefore|movefirst|movelast|moveafter|movebefore|modify|action|actionref|separator|customaction|fileuploadaction|systemaction|column|dataitem|filter|view|layout|textelement|fieldelement|fieldattribute|tableelement|fieldgroup)$"))
 ; The table of a data item and the page of a part name an object.
 (object_section
   keyword: (_) @_section
@@ -360,6 +360,38 @@
   (#match? @_outer "^(?i)dataitem$")
   (#match? @_middle "^(?i)dataitem$")
   (#match? @_dataitem "^(?i)dataitem$"))
+; A table key's name. Microsoft colors it as a type.
+(key_declaration
+  keyword: (kw_key)
+  name: (name_or_keyword (name [(identifier) (quoted_identifier)] @type)))
+; `Comment`, `Locked` and `MaxLength` after a label's text are keywords.
+(label_property name: (identifier) @keyword)
+; The table in `TableRelation = Vendor."No."`. The fields after it stay
+; variables.
+(property_assignment
+  name: (_) @_property
+  value: (qualified_name . (name [(identifier) (quoted_identifier)] @type.builtin))
+  (#match? @_property "^(?i)(SourceTable|TableRelation|LookupPageId|DrillDownPageId|CardPageId|RunObject|LinkedObject|DataItemTable|SourceTableView|PageId|TableNo)$"))
+; The event an [EventSubscriber] handles, its third argument, is colored as
+; the event, quoted or not.
+(attribute
+  name: (identifier) @_attribute
+  (attribute_argument_list
+    .
+    (attribute_argument)
+    .
+    (comma)
+    .
+    (attribute_argument)
+    .
+    (comma)
+    .
+    (attribute_argument
+      (expression
+        (unary_expression
+          (postfix_expression
+            (primary_expression [(string) (name (identifier))] @function))))))
+  (#match? @_attribute "^(?i)EventSubscriber$"))
 ; The object an extension extends, or an interface a codeunit implements.
 (implements_clause (name [(identifier) (quoted_identifier)] @type))
 
