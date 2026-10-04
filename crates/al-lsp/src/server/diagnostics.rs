@@ -141,6 +141,17 @@ pub(crate) async fn native_lint_config(
     config
 }
 
+/// Remove native findings of rules `config` turns off.
+fn drop_silenced_native_rules(
+    diagnostics: &mut Vec<Diagnostic>,
+    config: &al_project::config::AlConfig,
+) {
+    diagnostics.retain(|diagnostic| match &diagnostic.code {
+        Some(NumberOrString::String(code)) => config.native_lint_rules.get(code) != Some(&false),
+        _ => true,
+    });
+}
+
 /// Phase 1 syntax and lint diagnostics for `uri`.
 ///
 /// The project root is read and released before the config guard is taken, so
@@ -659,6 +670,12 @@ pub(crate) async fn publish_diagnostics(
             diagnostics: semantic_diags.clone(),
         },
     );
+    // The native pass can run before the toolchain is found, when no native
+    // rule is silenced yet. By phase 2 the compiler pass has run, so the rules
+    // its analyzers cover are dropped here.
+    let config = server.workspace.config.read().await.clone();
+    let config = native_lint_config(&server.workspace, config).await;
+    drop_silenced_native_rules(&mut diagnostics, &config);
     // Always published, also when the semantic pass found nothing: phase 1
     // may hold findings this pass no longer reports.
     {
@@ -1383,6 +1400,33 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_findings_of_a_silenced_rule_are_dropped() {
+        let finding = |code: &str| Diagnostic {
+            code: Some(NumberOrString::String(code.to_string())),
+            ..Diagnostic::default()
+        };
+        let mut config = al_project::config::AlConfig::default();
+        config
+            .native_lint_rules
+            .insert("AL-NL007".to_string(), false);
+        config
+            .native_lint_rules
+            .insert("AL-NL005".to_string(), true);
+        let mut diagnostics = vec![finding("AL-NL007"), finding("AL-NL005"), finding("AA0218")];
+
+        drop_silenced_native_rules(&mut diagnostics, &config);
+
+        let codes: Vec<_> = diagnostics.iter().map(|d| d.code.clone()).collect();
+        assert_eq!(
+            codes,
+            vec![
+                Some(NumberOrString::String("AL-NL005".to_string())),
+                Some(NumberOrString::String("AA0218".to_string())),
+            ]
+        );
+    }
 
     /// Native rules that repeat a configured analyzer's rule were reported
     /// twice: every page field without a tooltip got AL-NL007 and CodeCop's
