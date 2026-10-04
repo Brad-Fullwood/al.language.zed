@@ -17,6 +17,7 @@ pub mod definition;
 pub mod deps;
 pub mod diagnostics;
 pub mod duplicates;
+pub mod events;
 pub mod folding;
 pub mod format;
 pub mod free_ids;

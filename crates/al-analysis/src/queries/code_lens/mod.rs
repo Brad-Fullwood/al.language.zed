@@ -20,6 +20,10 @@ pub enum CodeLensKind {
     /// e.g. `"⏱ 42ms · 3 samples"`
     Profiler(String),
     Test(TestLensStatus),
+    /// On an event publisher: how many workspace subscribers it has.
+    Subscribers(usize),
+    /// On an event subscriber: the event it handles, as shown in the title.
+    EventSource(String),
 }
 
 impl CodeLensKind {
@@ -35,13 +39,21 @@ impl CodeLensKind {
             CodeLensKind::Reference(_) => "al.findReferences",
             CodeLensKind::Profiler(_) => "al.showProfiler",
             CodeLensKind::Test(_) => "al.runTest",
+            CodeLensKind::Subscribers(_) => "al.showSubscribers",
+            CodeLensKind::EventSource(_) => "al.showEventSource",
         }
     }
 }
 
 /// Every command id any `CodeLensKind` can emit. The LSP server asserts each is
 /// backed by an `executeCommand` handler so no clickable lens is a no-op.
-pub const LENS_COMMAND_IDS: &[&str] = &["al.findReferences", "al.showProfiler", "al.runTest"];
+pub const LENS_COMMAND_IDS: &[&str] = &[
+    "al.findReferences",
+    "al.showProfiler",
+    "al.runTest",
+    "al.showSubscribers",
+    "al.showEventSource",
+];
 
 /// Status of a single `[Test]` procedure as shown in a CodeLens.
 ///
@@ -182,9 +194,65 @@ pub fn code_lens(workspace: &Workspace, uri: &Url) -> Result<Vec<CodeLensEntry>,
         }
     }
 
+    lenses.extend(event_lenses(workspace, &text, &tree, &symbols));
     lenses.extend(profiler_lenses(workspace, uri, &text, &tree)?);
 
     Ok(lenses)
+}
+
+/// A lens on each event publisher with its subscriber count, and on each
+/// event subscriber naming the event it handles. Clicking one goes to the
+/// other side of the event.
+fn event_lenses(
+    workspace: &Workspace,
+    text: &str,
+    tree: &tree_sitter::Tree,
+    symbols: &[al_syntax::SyntaxDocumentSymbol],
+) -> Vec<CodeLensEntry> {
+    let procedures = symbols
+        .iter()
+        .flat_map(|symbol| std::iter::once(symbol).chain(symbol.children.iter().flatten()))
+        .filter(|symbol| super::is_procedure_symbol(symbol.kind.into()));
+    let mut lenses = Vec::new();
+    let mut subscribers = None;
+    for procedure in procedures {
+        let range: Range = procedure.selection_range.into();
+        match super::events::event_role(text, tree, range.start) {
+            Some(super::events::EventRole::Publisher { object, event }) => {
+                let subscribers = subscribers
+                    .get_or_insert_with(|| super::events::workspace_subscribers(workspace));
+                let count = subscribers
+                    .get(&(object.to_lowercase(), event.to_lowercase()))
+                    .map_or(0, Vec::len);
+                let title = if count == 1 {
+                    "1 subscriber".to_string()
+                } else {
+                    format!("{count} subscribers")
+                };
+                lenses.push(CodeLensEntry {
+                    range,
+                    title,
+                    kind: CodeLensKind::Subscribers(count),
+                    test_target: None,
+                });
+            }
+            Some(super::events::EventRole::Subscriber {
+                object_type,
+                object,
+                event,
+            }) => {
+                let label = format!("Handles {object_type} \"{object}\".{event}");
+                lenses.push(CodeLensEntry {
+                    range,
+                    title: label.clone(),
+                    kind: CodeLensKind::EventSource(label),
+                    test_target: None,
+                });
+            }
+            None => {}
+        }
+    }
+    lenses
 }
 
 fn profiler_lenses(
@@ -432,10 +500,24 @@ mod tests {
             LENS_COMMAND_IDS.len(),
             "LENS_COMMAND_IDS contains duplicates"
         );
+        let kinds = [
+            CodeLensKind::Reference(0),
+            CodeLensKind::Profiler(String::new()),
+            CodeLensKind::Test(TestLensStatus::NotRun),
+            CodeLensKind::Subscribers(0),
+            CodeLensKind::EventSource(String::new()),
+        ];
+        for kind in &kinds {
+            assert!(
+                LENS_COMMAND_IDS.contains(&kind.command_id()),
+                "{} is missing from LENS_COMMAND_IDS",
+                kind.command_id()
+            );
+        }
         assert_eq!(
             LENS_COMMAND_IDS.len(),
-            3,
-            "expected exactly 3 lens commands"
+            kinds.len(),
+            "LENS_COMMAND_IDS lists a command no lens emits"
         );
     }
 
@@ -571,6 +653,56 @@ codeunit 50100 MyCodeunit
     /// `record_member_bindings` used to read only the file's *first* object
     /// declaration, so a subscriber to an event published by the second object
     /// in a file bound to nothing and the event's lens read "0 references".
+    /// An event publisher shows how many subscribers it has, and a subscriber
+    /// names the event it handles. Each opens the other side of the event,
+    /// which a global editor task used to do for whatever the cursor was on.
+    #[test]
+    fn event_lenses_link_a_publisher_and_its_subscribers() {
+        let publisher_uri = Url::parse("file:///project/Publishers.al").unwrap();
+        let publishers = r#"codeunit 50101 "Second CU"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnAfterShip()
+    begin
+    end;
+}"#;
+        let subscriber_uri = Url::parse("file:///project/Subscriber.al").unwrap();
+        let subscriber = r#"codeunit 50102 "Subscriber"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Second CU", 'OnAfterShip', '', false, false)]
+    local procedure HandleAfterShip()
+    begin
+    end;
+}"#;
+        let ws = workspace_with_doc(&publisher_uri, publishers);
+        ws.documents
+            .open(subscriber_uri.clone(), subscriber.to_string())
+            .unwrap();
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/project/Subscriber.al"),
+            subscriber.to_string(),
+        );
+
+        let lenses = code_lens(&ws, &publisher_uri).unwrap();
+        let publisher_lens = lenses
+            .iter()
+            .find(|lens| matches!(lens.kind, CodeLensKind::Subscribers(_)))
+            .expect("the publisher has a subscriber lens");
+        assert_eq!(publisher_lens.title, "1 subscriber");
+        assert_eq!(publisher_lens.kind.command_id(), "al.showSubscribers");
+
+        let lenses = code_lens(&ws, &subscriber_uri).unwrap();
+        let subscriber_lens = lenses
+            .iter()
+            .find(|lens| matches!(lens.kind, CodeLensKind::EventSource(_)))
+            .expect("the subscriber has an event lens");
+        assert_eq!(
+            subscriber_lens.title,
+            "Handles Codeunit \"Second CU\".OnAfterShip"
+        );
+        assert_eq!(subscriber_lens.kind.command_id(), "al.showEventSource");
+    }
+
     #[test]
     fn reference_lens_counts_a_subscriber_to_a_second_object_in_the_file() {
         let publisher_uri = Url::parse("file:///project/Publishers.al").unwrap();

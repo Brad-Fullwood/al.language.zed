@@ -79,6 +79,9 @@ pub(crate) const SUPPORTED_COMMANDS: &[&str] = &[
     "al.findReferences",
     "al.showProfiler",
     "al.runTest",
+    "al.showSubscribers",
+    "al.showEventSource",
+    "al.showReport",
 ];
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -2349,12 +2352,21 @@ impl LanguageServer for AlLsp {
                     CodeLensKind::Test(status) => {
                         serde_json::json!({ "kind": "test", "status": status })
                     }
+                    CodeLensKind::Subscribers(count) => {
+                        serde_json::json!({ "kind": "subscribers", "count": count })
+                    }
+                    CodeLensKind::EventSource(label) => {
+                        serde_json::json!({ "kind": "eventSource", "label": label })
+                    }
                 };
                 let lsp_range: Range = e.range.into();
                 let arguments = match &e.kind {
                     // Position the handler at the lens's symbol so it can run
                     // the reference search / resolve the profiled procedure.
-                    CodeLensKind::Reference(_) | CodeLensKind::Profiler(_) => Some(vec![
+                    CodeLensKind::Reference(_)
+                    | CodeLensKind::Profiler(_)
+                    | CodeLensKind::Subscribers(_)
+                    | CodeLensKind::EventSource(_) => Some(vec![
                         serde_json::json!({ "uri": uri, "position": lsp_range.start }),
                     ]),
                     // `al.runTest` needs the codeunit/method, not a position.
@@ -2457,6 +2469,21 @@ impl LanguageServer for AlLsp {
                     .await
                     .map_err(internal_error)?,
             )),
+            "al.showSubscribers" => Ok(Some(
+                commands::show_subscribers(self, &params.arguments)
+                    .await
+                    .map_err(internal_error)?,
+            )),
+            "al.showEventSource" => Ok(Some(
+                commands::show_event_source(self, &params.arguments)
+                    .await
+                    .map_err(internal_error)?,
+            )),
+            "al.showReport" => Ok(Some(
+                commands::show_report(self, &params.arguments)
+                    .await
+                    .map_err(internal_error)?,
+            )),
             "al.showProfiler" => Ok(Some(
                 commands::show_profiler(self, &params.arguments).map_err(internal_error)?,
             )),
@@ -2482,7 +2509,7 @@ pub async fn run_lsp() {
     Server::new(stdin, stdout, socket).serve(service).await;
 }
 
-fn resolve_explorer_binary() -> std::result::Result<std::path::PathBuf, String> {
+pub(crate) fn resolve_explorer_binary() -> std::result::Result<std::path::PathBuf, String> {
     if let Some(explicit) = std::env::var_os("AL_EXPLORER_PATH") {
         let path = std::path::PathBuf::from(explicit);
         if path.as_os_str().is_empty() {
