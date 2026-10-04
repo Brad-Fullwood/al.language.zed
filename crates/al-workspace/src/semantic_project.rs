@@ -12,7 +12,10 @@ use crate::Workspace;
 /// The project context for a request about `file`, or `None` when the file
 /// is outside the loaded project (a rendered symbol file, for one), which the
 /// bridge then compiles alone.
-pub async fn semantic_project_context(workspace: &Workspace, file: &Path) -> Option<ProjectContext> {
+pub async fn semantic_project_context(
+    workspace: &Workspace,
+    file: &Path,
+) -> Option<ProjectContext> {
     let root = workspace
         .project
         .read()
@@ -67,10 +70,19 @@ mod tests {
         let target = root.join("src/Target.Codeunit.al");
         let open = vec![
             (target.clone(), Arc::new("target".to_string())),
-            (root.join("src/Sibling.Table.al"), Arc::new("sibling".to_string())),
-            (root.join("src/Upper.Page.AL"), Arc::new("upper".to_string())),
+            (
+                root.join("src/Sibling.Table.al"),
+                Arc::new("sibling".to_string()),
+            ),
+            (
+                root.join("src/Upper.Page.AL"),
+                Arc::new("upper".to_string()),
+            ),
             (root.join("app.json"), Arc::new("{}".to_string())),
-            (PathBuf::from("/work/other/Other.al"), Arc::new("other".to_string())),
+            (
+                PathBuf::from("/work/other/Other.al"),
+                Arc::new("other".to_string()),
+            ),
         ];
 
         let sent = project_open_documents(open, &root, &target);
@@ -79,7 +91,10 @@ mod tests {
         files.sort();
         assert_eq!(
             files,
-            vec![root.join("src/Sibling.Table.al"), root.join("src/Upper.Page.AL")]
+            vec![
+                root.join("src/Sibling.Table.al"),
+                root.join("src/Upper.Page.AL")
+            ]
         );
         assert_eq!(
             sent.iter()

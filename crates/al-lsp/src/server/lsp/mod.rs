@@ -292,6 +292,9 @@ pub struct AlServer {
     /// otherwise the server must return a flat `SymbolInformation[]`. Captured
     /// from the `initialize` capabilities.
     pub(crate) document_symbol_hierarchical: AtomicBool,
+    /// Whether the client shows `$/progress` work-done progress
+    /// (`window.workDoneProgress`).
+    pub(crate) work_done_progress: AtomicBool,
     /// URIs that received non-empty project-scope diagnostics in the previous
     /// complete publication. The next generation clears only entries that
     /// became clean instead of sending empty arrays for every indexed file.
@@ -350,6 +353,7 @@ impl AlServer {
             definition_link_support: AtomicBool::new(false),
             watched_files_registration: AtomicBool::new(false),
             document_symbol_hierarchical: AtomicBool::new(false),
+            work_done_progress: AtomicBool::new(false),
             workspace_diagnostic_uris: Arc::new(Mutex::new(std::collections::HashSet::new())),
             semantic_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
@@ -995,6 +999,14 @@ impl LanguageServer for AlLsp {
             .unwrap_or(false);
         self.document_symbol_hierarchical
             .store(hierarchical_symbols, Ordering::Relaxed);
+        let work_done_progress = params
+            .capabilities
+            .window
+            .as_ref()
+            .and_then(|window| window.work_done_progress)
+            .unwrap_or(false);
+        self.work_done_progress
+            .store(work_done_progress, Ordering::Relaxed);
 
         if let Some(init_opts) = params.initialization_options {
             let al_settings = extract_al_settings(init_opts);
@@ -2095,35 +2107,37 @@ impl LanguageServer for AlLsp {
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
-        // spawn_blocking — semantic_tokens_full traverses the entire
-        // tree-sitter tree on big AL files; cancellation-friendliness matters.
+        // The tokens come from the open document's own parse, so they are
+        // served while the workspace is still loading: the first file opened
+        // gets its colors at once instead of after initialization. The work
+        // traverses the whole tree, so it runs on the blocking pool.
         let workspace = Arc::clone(&self.workspace);
         let uri_for_log = uri.clone();
-        let result = self
-            .offload_after_ready("semantic-tokens", move || {
-                // A document the server has not loaded and a document with no
-                // tokens are both "no result" to the editor.
-                let tokens =
-                    al_analysis::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri)?;
-                if tokens.is_empty() {
-                    return None;
-                }
-                let lsp_tokens: Vec<SemanticToken> = tokens
-                    .into_iter()
-                    .map(|t| SemanticToken {
-                        delta_line: t.delta_line,
-                        delta_start: t.delta_start,
-                        length: t.length,
-                        token_type: t.token_type,
-                        token_modifiers_bitset: t.token_modifiers,
-                    })
-                    .collect();
-                Some(SemanticTokensResult::Tokens(SemanticTokens {
-                    result_id: None,
-                    data: lsp_tokens,
-                }))
-            })
-            .await?;
+        let result = tokio::task::spawn_blocking(move || {
+            // A document the server has not loaded and a document with no
+            // tokens are both "no result" to the editor.
+            let tokens =
+                al_analysis::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri)?;
+            if tokens.is_empty() {
+                return None;
+            }
+            let lsp_tokens: Vec<SemanticToken> = tokens
+                .into_iter()
+                .map(|t| SemanticToken {
+                    delta_line: t.delta_line,
+                    delta_start: t.delta_start,
+                    length: t.length,
+                    token_type: t.token_type,
+                    token_modifiers_bitset: t.token_modifiers,
+                })
+                .collect();
+            Some(SemanticTokensResult::Tokens(SemanticTokens {
+                result_id: None,
+                data: lsp_tokens,
+            }))
+        })
+        .await
+        .map_err(|error| internal_error(format!("semantic-tokens worker failed: {error}")))?;
         let count = result
             .as_ref()
             .map(|r| match r {

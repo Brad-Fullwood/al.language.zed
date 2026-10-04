@@ -2178,6 +2178,35 @@ mod project_diagnostics_close_tests {
         assert_eq!(shown[0]["uri"], "file:///proj/Handler.Codeunit.al");
         assert_eq!(shown[0]["selection"]["start"]["line"], 3);
     }
+
+    /// The tokens come from the open document's own parse. They used to wait
+    /// for workspace initialization, so the first file opened got its
+    /// highlighting late.
+    #[tokio::test]
+    async fn semantic_tokens_do_not_wait_for_workspace_initialization() {
+        let (mut service, _socket) = LspService::new(AlLsp::new);
+        initialize(&mut service).await;
+        let server = service.inner();
+        let uri = Url::parse("file:///proj/Clean.Codeunit.al").unwrap();
+        server
+            .workspace
+            .documents
+            .open_with_client_version(uri.clone(), CLEAN.to_string(), 1)
+            .unwrap();
+
+        let tokens = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            server.semantic_tokens_full(SemanticTokensParams {
+                text_document: TextDocumentIdentifier::new(uri),
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            }),
+        )
+        .await
+        .expect("tokens are answered while the workspace is still initializing")
+        .expect("the request succeeds");
+        assert!(tokens.is_some(), "the open document has tokens");
+    }
 }
 
 mod did_change_offload_tests {

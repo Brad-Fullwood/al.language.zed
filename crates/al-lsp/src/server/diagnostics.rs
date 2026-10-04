@@ -973,6 +973,68 @@ fn semantic_entry_to_lsp(
     diag
 }
 
+/// Work-done progress for the whole-project compiler pass, shown in the
+/// editor's status bar. The first pass on a project loads every dependency's
+/// symbols and takes seconds, and without progress nothing shows it running.
+struct ProjectProgress {
+    token: Option<NumberOrString>,
+}
+
+impl ProjectProgress {
+    async fn begin(server: &AlServer) -> Self {
+        if !server
+            .work_done_progress
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Self { token: None };
+        }
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let token = NumberOrString::String(format!(
+            "al-project-analysis-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let created = server
+            .client
+            .send_request::<request::WorkDoneProgressCreate>(WorkDoneProgressCreateParams {
+                token: token.clone(),
+            })
+            .await;
+        if created.is_err() {
+            return Self { token: None };
+        }
+        server
+            .client
+            .send_notification::<notification::Progress>(ProgressParams {
+                token: token.clone(),
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(
+                    WorkDoneProgressBegin {
+                        title: "AL compiler".to_string(),
+                        cancellable: Some(false),
+                        message: Some("Analyzing the project".to_string()),
+                        percentage: None,
+                    },
+                )),
+            })
+            .await;
+        Self { token: Some(token) }
+    }
+
+    async fn end(self, server: &AlServer, message: &str) {
+        let Some(token) = self.token else {
+            return;
+        };
+        server
+            .client
+            .send_notification::<notification::Progress>(ProgressParams {
+                token,
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(WorkDoneProgressEnd {
+                    message: Some(message.to_string()),
+                })),
+            })
+            .await;
+    }
+}
+
 /// Compile and analyze the whole project in the background and store each
 /// file's compiler and analyzer findings, then republish the project.
 ///
@@ -1040,29 +1102,53 @@ pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
     let open_documents = al_workspace::project_open_documents(open, &root, Path::new(""));
 
     let started = std::time::Instant::now();
-    let outcome = {
-        let Some(guard) = server.get_or_init_bridge().await else {
-            return;
-        };
-        let Some(bridge) = guard.as_ref() else {
-            return;
-        };
-        bridge
-            .analyze_project(crate::semantic::AnalyzeProjectRequest {
-                project_root: root.clone(),
-                package_cache,
-                analyzers,
-                open_documents,
-            })
-            .await
+    let progress = ProjectProgress::begin(server).await;
+    let outcome = match server.get_or_init_bridge().await {
+        Some(guard) => match guard.as_ref() {
+            Some(bridge) => Some(
+                bridge
+                    .analyze_project(crate::semantic::AnalyzeProjectRequest {
+                        project_root: root.clone(),
+                        package_cache,
+                        analyzers,
+                        open_documents,
+                    })
+                    .await,
+            ),
+            None => None,
+        },
+        None => None,
+    };
+    let Some(outcome) = outcome else {
+        progress
+            .end(server, "The AL compiler is not available.")
+            .await;
+        return;
     };
     let entries = match outcome {
         Ok(entries) => entries,
         Err(error) => {
             tracing::warn!(%error, "project semantic analysis failed");
+            progress
+                .end(server, "The AL compiler pass failed. See the log.")
+                .await;
             return;
         }
     };
+    progress
+        .end(
+            server,
+            &format!(
+                "{} in {:.1} s",
+                if entries.len() == 1 {
+                    "1 finding".to_string()
+                } else {
+                    format!("{} findings", entries.len())
+                },
+                started.elapsed().as_secs_f64()
+            ),
+        )
+        .await;
     server.ensure_error_codes_loaded().await;
     tracing::info!(
         findings = entries.len(),

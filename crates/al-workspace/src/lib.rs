@@ -15,11 +15,11 @@ pub use dependency_sources::{
     DependencySourceMemoryStats, DependencySources, PackageSourceSummary,
 };
 pub use doctor::{doctor, DoctorReport, ProjectInfo, ToolchainInfo};
-pub use semantic_project::{project_open_documents, semantic_project_context};
 pub use semantic_lifecycle::{
     ensure_builtins_loaded, ensure_error_codes_loaded, get_or_init_bridge, restart_bridge,
     restart_bridge_if_current, set_builtins, shutdown_bridge,
 };
+pub use semantic_project::{project_open_documents, semantic_project_context};
 pub use source_cache::{PackageKey, SourceSummaryCache};
 pub use test_results::{project_data_dir, TestResultStore};
 
