@@ -24,7 +24,7 @@ pub fn cmd_rules(json: bool) -> ExitCode {
             let desc = r.get("description").and_then(|v| v.as_str()).unwrap_or("?");
             println!("{:<10} {:<8} {:<25} {}", code, sev, name, desc);
         }
-        eprintln!("\n{} rules", rules.len());
+        eprintln!("\n{}", count_of(rules.len(), "rule"));
     })
 }
 
@@ -206,7 +206,7 @@ pub fn cmd_hints(
                         let label = hint["label"].as_str().unwrap_or("?");
                         println!("{line}:{col}  {label}");
                     }
-                    eprintln!("\n{} hints", hints.len());
+                    eprintln!("\n{}", count_of(hints.len(), "hint"));
                     print_page_footer(&result);
                 }
             }

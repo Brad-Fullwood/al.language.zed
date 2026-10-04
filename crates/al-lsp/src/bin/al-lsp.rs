@@ -208,8 +208,11 @@ async fn run() {
         .with_target(true)
         .with_thread_ids(true);
 
+    // An editor shows stderr as plain text (Zed's "Server Logs"), where color
+    // codes print as escape sequences. Color only a terminal.
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .with_target(false);
 
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()

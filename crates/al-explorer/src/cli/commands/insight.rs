@@ -240,7 +240,7 @@ pub fn cmd_impact(symbol: &str, table: bool, json: bool) -> ExitCode {
                             .unwrap_or("");
                         println!("{:<15} {:<30} {:<15} {}", kind, name, impact_type, detail);
                     }
-                    eprintln!("\n{} consumers", impacted.len());
+                    eprintln!("\n{}", super::count_of(impacted.len(), "consumer"));
                 }
                 // Be explicit about coverage. Call-site consumers (who calls /
                 // reads / writes this symbol) are derived from workspace AL
