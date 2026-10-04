@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use al_semantic::{AnalyzeRequest, OpenDocument, SemanticBridge};
+use al_semantic::{AnalyzeProjectRequest, AnalyzeRequest, OpenDocument, SemanticBridge};
 
 fn code_analysis_dll() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("AL_TOOL_PATH")?);
@@ -309,5 +309,65 @@ async fn live_bridge_analyzes_a_file_within_its_project() {
     assert!(
         diagnostics.iter().all(|d| d.file == target),
         "analyzer findings from other files must not be returned: {diagnostics:#?}"
+    );
+}
+
+/// The whole-project pass reports each file's findings under that file, the
+/// files nobody opened included, and nothing without a file.
+#[tokio::test]
+#[ignore = "requires AL_TOOL_PATH, AL_PACKAGE_CACHE_PATH and the Microsoft AL toolchain; run with --ignored"]
+async fn live_bridge_analyzes_every_file_of_a_project() {
+    let dll = code_analysis_dll().expect(
+        "AL_TOOL_PATH must point to a directory containing Microsoft.Dynamics.Nav.CodeAnalysis.dll",
+    );
+    let package_cache = PathBuf::from(
+        std::env::var_os("AL_PACKAGE_CACHE_PATH")
+            .expect("AL_PACKAGE_CACHE_PATH must point to a BC 26+ Microsoft symbol set"),
+    );
+    let bridge = SemanticBridge::new(&dll, "live-project-pass")
+        .expect("the real CodeAnalysis bridge should initialize");
+
+    let project = tempfile::tempdir().expect("temp project");
+    let root = project.path().to_path_buf();
+    std::fs::write(root.join("app.json"), PROBE_APP_JSON).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/ProbeCustomer.TableExt.al"), PROBE_TABLE_EXT).unwrap();
+    let broken = root.join("src/ProbeBroken.Codeunit.al");
+    std::fs::write(&broken, PROBE_BROKEN).unwrap();
+    let usage = root.join("src/ProbeUsage.Codeunit.al");
+    std::fs::write(
+        &usage,
+        probe_codeunit("Customer.Name := 'x';").replace(
+            "        Customer: Record Customer;\n",
+            "        Customer: Record Customer;\n        Unused: Integer;\n",
+        ),
+    )
+    .unwrap();
+
+    let diagnostics = bridge
+        .analyze_project(AnalyzeProjectRequest {
+            project_root: root.clone(),
+            package_cache,
+            analyzers: vec!["CodeCop".to_string()],
+            open_documents: Vec::new(),
+        })
+        .await
+        .expect("the project pass should succeed");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.file == broken && d.severity == "error"),
+        "the unopened broken file's compiler error is reported: {diagnostics:#?}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.file == usage && d.code == "AA0137"),
+        "CodeCop's finding in another file is reported: {diagnostics:#?}"
+    );
+    assert!(
+        diagnostics.iter().all(|d| d.file.starts_with(&root)),
+        "every finding names a project file: {diagnostics:#?}"
     );
 }

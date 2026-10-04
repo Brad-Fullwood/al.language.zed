@@ -49,6 +49,19 @@ pub struct AnalyzeRequest {
     pub open_documents: Vec<OpenDocument>,
 }
 
+/// A request for the diagnostics of every file in a project.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyzeProjectRequest {
+    /// Folder holding the project's `app.json`.
+    pub project_root: PathBuf,
+    pub package_cache: PathBuf,
+    pub analyzers: Vec<String>,
+    /// Editor buffers whose text replaces the files on disk.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open_documents: Vec<OpenDocument>,
+}
+
 /// An editor buffer sent along with an [`AnalyzeRequest`].
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -164,6 +177,11 @@ pub enum SemanticError {
     #[error("Bridge in cooldown after recent timeout/hang ({0})")]
     Cooldown(&'static str),
 
+    /// Another call held the bridge for longer than a caller waits. Nothing
+    /// is wrong with the bridge, so this does not restart it.
+    #[error("Bridge busy with another call for over {0:?}")]
+    Busy(Duration),
+
     /// The caller-supplied document buffer exceeds `MAX_TEXT_BYTES`. Rejected
     /// at the bridge boundary before JSON serialization so a pathologically
     /// large open document can't balloon the bridge's memory footprint.
@@ -267,6 +285,13 @@ pub struct SemanticBridge {
 }
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Limit on a whole-project analysis, which compiles and analyzes every file.
+const PROJECT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How long a call waits for the bridge while another call runs. Longer than
+/// [`PROJECT_TIMEOUT`], so a file's pass waits out a project pass.
+const QUEUE_WAIT_LIMIT: Duration = Duration::from_secs(660);
 
 /// Cooldown after a timeout: bridge calls are short-circuited to `Poisoned`
 /// for this duration, then we let them through again. A still-hung Mutex
@@ -459,6 +484,20 @@ impl SemanticBridge {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, SemanticError> {
+        self.call_with_timeout(method, params, DEFAULT_TIMEOUT)
+            .await
+    }
+
+    /// [`Self::call`] with its own limit on the call itself. Waiting for the
+    /// bridge, which runs one call at a time, is bounded separately by
+    /// `QUEUE_WAIT_LIMIT` and ends in [`SemanticError::Busy`]: a file's pass
+    /// queued behind a whole-project pass is not a hung bridge.
+    async fn call_with_timeout(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, SemanticError> {
         let now = monotonic_secs();
         match cooldown_gate(
             &self.last_timeout_secs,
@@ -476,10 +515,13 @@ impl SemanticBridge {
         let call_gate = Arc::clone(&self.call_gate);
         let method = method.to_string();
 
-        let operation = async move {
-            let permit = call_gate.acquire_owned().await.map_err(|_| {
+        let permit = match tokio::time::timeout(QUEUE_WAIT_LIMIT, call_gate.acquire_owned()).await {
+            Ok(permit) => permit.map_err(|_| {
                 SemanticError::HostInit("semantic bridge call gate was closed".to_string())
-            })?;
+            })?,
+            Err(_) => return Err(SemanticError::Busy(QUEUE_WAIT_LIMIT)),
+        };
+        let operation = async move {
             tokio::task::spawn_blocking(move || {
                 // Keep the async permit alive in the blocking task. If the
                 // outer timeout drops its JoinHandle, the in-flight call still
@@ -495,7 +537,7 @@ impl SemanticBridge {
             })?
         };
 
-        let result = tokio::time::timeout(DEFAULT_TIMEOUT, operation).await;
+        let result = tokio::time::timeout(timeout, operation).await;
 
         match result {
             Ok(inner) => inner,
@@ -503,9 +545,27 @@ impl SemanticBridge {
                 let now = monotonic_secs();
                 self.last_timeout_secs
                     .store(now, std::sync::atomic::Ordering::Relaxed);
-                Err(SemanticError::Timeout(DEFAULT_TIMEOUT))
+                Err(SemanticError::Timeout(timeout))
             }
         }
+    }
+
+    /// Compiler and analyzer diagnostics of every file in a project, as a
+    /// build reports them. Runs under [`PROJECT_TIMEOUT`], since a large
+    /// project with several analyzers takes far longer than one file.
+    pub async fn analyze_project(
+        &self,
+        req: AnalyzeProjectRequest,
+    ) -> Result<Vec<DiagnosticEntry>, SemanticError> {
+        for document in &req.open_documents {
+            check_text_size(Some(&document.source))?;
+        }
+        let params = serde_json::to_value(&req)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
+        let result = self
+            .call_with_timeout("analyzeProject", params, PROJECT_TIMEOUT)
+            .await?;
+        Self::parse_response(result)
     }
 
     pub async fn analyze(

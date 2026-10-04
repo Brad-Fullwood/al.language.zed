@@ -159,6 +159,7 @@ public static class Bridge
                 {
                     "ping" => new { status = "ok", initialized = _bridge is not null },
                     "analyze" => _bridge?.HandleAnalyze(prms),
+                    "analyzeProject" => _bridge?.HandleAnalyzeProject(prms),
                     "builtins" => _bridge?.HandleBuiltins(),
                     "typeAt" => _bridge?.HandleTypeAt(prms),
                     "completions" => _bridge?.HandleCompletions(prms),
@@ -363,6 +364,33 @@ internal class CodeAnalysisBridge
 
         if (analyzers.Count > 0) diags.AddRange(RunAnalyzers(comp, analyzers));
         return diags;
+    }
+
+    /// <summary>
+    /// Compiler and analyzer diagnostics of every file in the project at
+    /// <c>projectRoot</c>, as alc reports them for a build. Diagnostics that
+    /// belong to no source file are left out. A folder without a usable
+    /// app.json returns no diagnostics.
+    /// </summary>
+    public object? HandleAnalyzeProject(JsonElement prms)
+    {
+        var root = GetOptionalString(prms, "projectRoot");
+        var pkgCache = GetOptionalString(prms, "packageCache");
+        var analyzers = new List<string>();
+        if (prms.TryGetProperty("analyzers", out var a) && a.ValueKind == JsonValueKind.Array)
+            foreach (var item in a.EnumerateArray()) { var n = item.GetString(); if (n != null) analyzers.Add(n); }
+        if (string.IsNullOrEmpty(root)) return Array.Empty<object>();
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        if (!File.Exists(Path.Combine(root, "app.json"))) return Array.Empty<object>();
+
+        var project = GetOrCreateProject(root, pkgCache);
+        if (project == null) return Array.Empty<object>();
+        UpdateProjectTrees(project, root, ReadOpenDocuments(prms));
+
+        var diagnostics = ExtractDiagnostics(project.Compilation, "", anyTree: true);
+        if (analyzers.Count > 0)
+            diagnostics.AddRange(RunAnalyzers(project.Compilation, analyzers, anyTree: true));
+        return diagnostics;
     }
 
     // ── Project compilation ─────────────────────────────────────────────
@@ -994,7 +1022,9 @@ internal class CodeAnalysisBridge
 
     /// <param name="onlyTree">When set, diagnostics located in any other
     /// syntax tree, or in none, are dropped.</param>
-    private List<object> ExtractDiagnostics(object src, string defaultFile, object? onlyTree = null)
+    /// <param name="anyTree">When set, diagnostics located in no syntax tree
+    /// are dropped.</param>
+    private List<object> ExtractDiagnostics(object src, string defaultFile, object? onlyTree = null, bool anyTree = false)
     {
         var results = new List<object>();
         var overloads = src.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
@@ -1033,12 +1063,15 @@ internal class CodeAnalysisBridge
         if (diagObj is not System.Collections.IEnumerable en) return results;
         foreach (var d in en)
         {
-            if (d == null || !IsInTree(d, onlyTree)) continue;
+            if (d == null || !IsInTree(d, onlyTree) || (anyTree && !HasTree(d))) continue;
             try { results.Add(ConvertDiag(d, defaultFile)); }
             catch { /* skip */ }
         }
         return results;
     }
+
+    private static bool HasTree(object diagnostic) =>
+        Prop(Prop(diagnostic, "Location"), "SourceTree") != null;
 
     private static bool IsInTree(object diagnostic, object? tree) =>
         tree == null || ReferenceEquals(Prop(Prop(diagnostic, "Location"), "SourceTree"), tree);
@@ -1096,7 +1129,9 @@ internal class CodeAnalysisBridge
 
     /// <param name="tree">When set, only this syntax tree is analyzed and
     /// only its diagnostics are returned.</param>
-    private List<object> RunAnalyzers(object comp, List<string> names, object? tree = null)
+    /// <param name="anyTree">When set, findings located in no syntax tree
+    /// are dropped.</param>
+    private List<object> RunAnalyzers(object comp, List<string> names, object? tree = null, bool anyTree = false)
     {
         var results = new List<object>();
         if (_diagnosticAnalyzerType == null)
@@ -1134,7 +1169,7 @@ internal class CodeAnalysisBridge
                     throw new InvalidOperationException($"'{dllPath}' contains no AL diagnostic analyzers that load.");
                 // One run per assembly: the analysis binds the code once for
                 // all of its analyzers.
-                results.AddRange(RunAnalyzerBatch(comp, analyzers, tree));
+                results.AddRange(RunAnalyzerBatch(comp, analyzers, tree, anyTree));
             }
             catch (Exception ex)
             {
@@ -1161,7 +1196,7 @@ internal class CodeAnalysisBridge
         message = $"Analyzer '{analyzer}' {problem}",
     };
 
-    private List<object> RunAnalyzerBatch(object comp, object[] analyzers, object? tree)
+    private List<object> RunAnalyzerBatch(object comp, object[] analyzers, object? tree, bool anyTree = false)
     {
         var results = new List<object>();
         if (_diagnosticAnalyzerType == null)
@@ -1203,7 +1238,7 @@ internal class CodeAnalysisBridge
                 var cwa = ctor.Invoke(args)
                     ?? throw new InvalidOperationException("CompilationWithAnalyzers could not be constructed.");
                 foreach (var d in WholeCompilationDiagnostics(cwaType, cwa))
-                    if (d != null) results.Add(ConvertDiag(d, ""));
+                    if (d != null && (!anyTree || HasTree(d))) results.Add(ConvertDiag(d, ""));
                 return results;
             }
             catch (Exception ex) { lastError = ex; }
