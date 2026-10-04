@@ -743,7 +743,47 @@ fn name_role(node: Node<'_>, source: &[u8]) -> Option<Option<u32>> {
     }
     let name = node.parent().filter(|parent| parent.kind() == "name")?;
     let holder = name.parent()?;
+    // `TableRelation = Vendor."No."`: the receiver of an expression in a
+    // property value is the property's object.
+    if holder.kind() == "primary_expression" {
+        let mut up = holder;
+        while let Some(parent) = up.parent() {
+            match parent.kind() {
+                "postfix_expression" | "unary_expression" | "expression" => up = parent,
+                "property_assignment" => {
+                    let property = parent
+                        .child_by_field_name("name")
+                        .and_then(|property| property.utf8_text(source).ok())
+                        .map(|text| text.trim().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    return OBJECT_REFERENCE_PROPERTIES
+                        .contains(&property.as_str())
+                        .then_some(Some(token_types::TYPE));
+                }
+                _ => return None,
+            }
+        }
+        return None;
+    }
     match holder.kind() {
+        // `TableRelation = Vendor."No."`: the first name is the object, the
+        // rest are its fields.
+        "qualified_name" => {
+            let property = holder
+                .parent()
+                .filter(|parent| parent.kind() == "property_assignment")?
+                .child_by_field_name("name")
+                .and_then(|property| property.utf8_text(source).ok())
+                .map(|text| text.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if !OBJECT_REFERENCE_PROPERTIES.contains(&property.as_str()) {
+                return None;
+            }
+            let first = holder
+                .named_child(0)
+                .is_some_and(|first| first.id() == name.id());
+            Some(first.then_some(token_types::TYPE))
+        }
         // `extends Item`, `implements "My Interface"`.
         "implements_clause" => Some(Some(token_types::TYPE)),
         "scope_suffix" => {
@@ -890,6 +930,12 @@ fn is_builtin_record_member(
             .all(|character| character.is_alphanumeric() || character == '_')
     {
         return false;
+    }
+
+    // `Rec` and `xRec` are the current record wherever a page or table uses
+    // them, though their table is not declared in the file.
+    if receiver.eq_ignore_ascii_case("rec") || receiver.eq_ignore_ascii_case("xrec") {
+        return true;
     }
 
     // Tree-sitter columns are byte offsets, but the type resolver expects
@@ -1415,6 +1461,16 @@ mod tests {
         assert_token_type_for_text(src, &tokens, "Locked", token_types::KEYWORD);
         assert_token_type_for_text(src, &tokens, "OnAfterRun", token_types::EVENT_CREATION);
         assert_token_type_for_text(src, &tokens, "=", token_types::DOC_COMMENT_DELIMITER);
+    }
+
+    #[test]
+    fn a_table_relation_target_and_rec_builtins_follow_microsoft() {
+        let src = "tableextension 50000 E extends \"Lot No. Information\"\n{\n    fields\n    {\n        field(50002; \"AUK Vendor No.\"; Code[20])\n        {\n            TableRelation = Vendor.\"No.\";\n        }\n    }\n    trigger OnAfterModify()\n    begin\n        Rec.CalcFields(\"AUK Vendor No.\");\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(src, &tokens, "Vendor", token_types::TYPE);
+        assert_token_type_for_text(src, &tokens, "CalcFields", token_types::BUILTIN_FUNCTION);
     }
 
     #[test]
