@@ -192,7 +192,7 @@ impl<'a> CustomAnalyzerSearch<'a> {
     /// added under `.netpackages`, ahead of the NuGet cache, and such a path to
     /// a file a later commit added at it, while the record still matched.
     pub fn resolve(&self, entry: &str) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
-        let entry = entry.trim();
+        let entry = without_analyzer_folder(entry.trim());
         if entry.is_empty() || is_builtin_analyzer(entry) {
             return Ok(None);
         }
@@ -354,15 +354,8 @@ fn discover(
     }
 
     if let Some(home) = crate::project::home_dir() {
-        for extension_root in [
-            home.join(".vscode/extensions"),
-            home.join(".vscode-insiders/extensions"),
-        ] {
-            for candidate_root in matching_immediate_directories(&extension_root, &package_name)? {
-                if let Some(path) = find_best_below(&candidate_root, &file_name, false)? {
-                    return Ok(Some(Found::new(path, false, project_root)));
-                }
-            }
+        if let Some(path) = find_in_editor_extensions(&home, &package_name, &file_name)? {
+            return Ok(Some(Found::new(path, false, project_root)));
         }
     }
 
@@ -377,6 +370,74 @@ fn discover(
     }
 
     Ok(None)
+}
+
+/// Editors whose extension folders hold AL analyzers, relative to the home
+/// folder.
+const EDITOR_EXTENSION_ROOTS: &[&str] = &[
+    ".vscode/extensions",
+    ".vscode-insiders/extensions",
+    ".cursor/extensions",
+    ".vscode-oss/extensions",
+    ".windsurf/extensions",
+];
+
+/// Prefix of Microsoft's AL extension folder, followed by its version.
+const AL_EXTENSION_PREFIX: &str = "ms-dynamics-smb.al-";
+
+/// An analyzer installed with an editor: an extension folder named after the
+/// analyzer package, then the `bin` folder of the newest Microsoft AL
+/// extension, which ships the ALCops analyzers.
+fn find_in_editor_extensions(
+    home: &Path,
+    package_name: &str,
+    file_name: &str,
+) -> Result<Option<PathBuf>, AnalyzerDiscoveryError> {
+    let roots: Vec<PathBuf> = EDITOR_EXTENSION_ROOTS
+        .iter()
+        .map(|root| home.join(root))
+        .collect();
+    for root in &roots {
+        for candidate_root in matching_immediate_directories(root, package_name)? {
+            if let Some(path) = find_best_below(&candidate_root, file_name, false)? {
+                return Ok(Some(path));
+            }
+        }
+    }
+
+    let mut al_extensions: Vec<(Vec<u64>, PathBuf)> = Vec::new();
+    for root in &roots {
+        let Ok(entries) = std::fs::read_dir(root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(version) = name.strip_prefix(AL_EXTENSION_PREFIX) else {
+                continue;
+            };
+            let version: Option<Vec<u64>> =
+                version.split('.').map(|part| part.parse().ok()).collect();
+            if let Some(version) = version {
+                al_extensions.push((version, entry.path()));
+            }
+        }
+    }
+    al_extensions.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, extension) in al_extensions {
+        for folder in ["bin", "bin/Analyzers"] {
+            if let Some(path) = canonical_file(&extension.join(folder).join(file_name)) {
+                return Ok(Some(path));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// An `al.codeAnalyzers` entry with VS Code's `${analyzerFolder}` prefix
+/// removed. The prefix names the AL extension's analyzer folder, which
+/// [`find_in_editor_extensions`] searches for the bare file name.
+fn without_analyzer_folder(entry: &str) -> &str {
+    entry.strip_prefix("${analyzerFolder}").unwrap_or(entry)
 }
 
 /// The directories inside the project that discovery searches for a bare
@@ -1267,6 +1328,46 @@ mod tests {
                 PathBuf::from("/b"),
                 PathBuf::from("/c")
             ]
+        );
+    }
+
+    /// Microsoft's AL extension ships the ALCops analyzers in its own `bin`
+    /// folder, and Cursor keeps its extensions under `~/.cursor`. A name such
+    /// as `ALCops.LinterCop.dll` was looked up only in folders named after the
+    /// analyzer under `~/.vscode`, so the copy Cursor runs was never found.
+    #[test]
+    fn an_analyzer_bundled_with_the_newest_al_extension_is_found_in_any_editor() {
+        let home = tempfile::tempdir().unwrap();
+        for version in ["17.0.9", "18.0.2819426", "18.0.2732683"] {
+            let bin = home.path().join(format!(
+                ".cursor/extensions/ms-dynamics-smb.al-{version}/bin"
+            ));
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("ALCops.LinterCop.dll"), version).unwrap();
+        }
+
+        let found =
+            find_in_editor_extensions(home.path(), "alcops.lintercop", "ALCops.LinterCop.dll")
+                .unwrap()
+                .expect("the bundled copy should be found");
+
+        assert_eq!(
+            found,
+            home.path().join(
+                ".cursor/extensions/ms-dynamics-smb.al-18.0.2819426/bin/ALCops.LinterCop.dll"
+            )
+        );
+    }
+
+    #[test]
+    fn an_analyzer_folder_entry_names_the_bundled_file() {
+        assert_eq!(
+            without_analyzer_folder("${analyzerFolder}ALCops.LinterCop.dll"),
+            "ALCops.LinterCop.dll"
+        );
+        assert_eq!(
+            without_analyzer_folder("ALCops.LinterCop.dll"),
+            "ALCops.LinterCop.dll"
         );
     }
 

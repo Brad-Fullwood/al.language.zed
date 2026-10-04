@@ -5,7 +5,6 @@
 //
 // Architecture: Rust (all logic) -> netcorehost -> this DLL -> CodeAnalysis.dll
 
-using System.Collections.Immutable;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -46,7 +45,6 @@ public static class Bridge
     [UnmanagedCallersOnly]
     public static unsafe int Init(byte* pathPtr, int pathLen)
     {
-        ResolveEventHandler? resolver = null;
         try
         {
             if (pathPtr == null || pathLen <= 0 || pathLen > MaxRequestBytes)
@@ -67,29 +65,14 @@ public static class Bridge
                         "A process can host only one AL CodeAnalysis toolchain.");
                 }
 
-                var alExtDir = Path.GetDirectoryName(path)
+                var requestedDir = Path.GetDirectoryName(path)
                     ?? throw new InvalidOperationException("CodeAnalysis assembly has no parent directory.");
+                var codeAnalysis = BuildForThisRuntime(path);
+                var alExtDir = Path.GetDirectoryName(codeAnalysis)!;
 
-                resolver = (_, args) =>
-                {
-                    var name = new AssemblyName(args.Name);
-                    var candidates = new[]
-                    {
-                        Path.Combine(alExtDir, name.Name + ".dll"),
-                        Path.Combine(alExtDir, "..", "Analyzers", name.Name + ".dll"),
-                    };
-                    foreach (var candidate in candidates)
-                    {
-                        if (!File.Exists(candidate)) continue;
-                        try { return Assembly.LoadFrom(candidate); }
-                        catch { /* try the next probing location */ }
-                    }
-                    return null;
-                };
-                AppDomain.CurrentDomain.AssemblyResolve += resolver;
-
-                var asm = Assembly.LoadFrom(path);
-                var bridge = new CodeAnalysisBridge(asm, alExtDir);
+                var context = new ToolchainLoadContext(alExtDir, Path.Combine(alExtDir, "..", "Analyzers"));
+                var asm = context.LoadFromAssemblyPath(codeAnalysis);
+                var bridge = new CodeAnalysisBridge(asm, alExtDir, context, requestedDir);
                 _bridge = bridge;
                 _codeAnalysisPath = path;
                 _lastInitError = null;
@@ -98,7 +81,6 @@ public static class Bridge
         }
         catch (Exception ex)
         {
-            if (resolver != null) AppDomain.CurrentDomain.AssemblyResolve -= resolver;
             // Capture the exception so HandleRequest can surface it back to
             // Rust on the next call. Previously the catch was bare and the
             // caller saw only "code -2", which made remote diagnosis of a
@@ -106,6 +88,34 @@ public static class Bridge
             _lastInitError = ex.ToString();
             return -2;
         }
+    }
+
+    /// <summary>
+    /// The CodeAnalysis build for the newest framework this runtime can run.
+    /// A dotnet tool lays its builds out as <c>tools/&lt;framework&gt;/any</c>,
+    /// and the AL 18 tool has <c>net8.0</c> and <c>net10.0</c>. Discovery picks
+    /// <c>net8.0</c>, which runs everywhere. On .NET 10 the <c>net10.0</c> build
+    /// is used, so analyzers built for .NET 10 can load. Any other layout is
+    /// used as given.
+    /// </summary>
+    internal static string BuildForThisRuntime(string codeAnalysisPath)
+    {
+        var anyDir = Path.GetDirectoryName(codeAnalysisPath);
+        var frameworkDir = anyDir == null ? null : Path.GetDirectoryName(anyDir);
+        var toolsDir = frameworkDir == null ? null : Path.GetDirectoryName(frameworkDir);
+        if (anyDir == null || toolsDir == null || Path.GetFileName(anyDir) != "any" || Path.GetFileName(toolsDir) != "tools")
+            return codeAnalysisPath;
+
+        var fileName = Path.GetFileName(codeAnalysisPath);
+        var runtimeMajor = Environment.Version.Major;
+        var best = Directory.EnumerateDirectories(toolsDir, "net*.0")
+            .Select(dir => (dir, major: int.TryParse(Path.GetFileName(dir)[3..^2], out var m) ? m : -1))
+            .Where(build => build.major > 0 && build.major <= runtimeMajor
+                && File.Exists(Path.Combine(build.dir, "any", fileName)))
+            .OrderByDescending(build => build.major)
+            .Select(build => Path.Combine(build.dir, "any", fileName))
+            .FirstOrDefault();
+        return best ?? codeAnalysisPath;
     }
 
     /// <summary>
@@ -216,10 +226,53 @@ public static class Bridge
     public static unsafe void FreeBuffer(byte* ptr) => Marshal.FreeCoTaskMem((nint)ptr);
 }
 
+/// <summary>
+/// Loads the AL toolchain with the library versions it ships. AL 18's
+/// CodeAnalysis references System.Collections.Immutable 9.0 and
+/// System.Text.Json 10.0, which it carries in its own folder. This bridge runs
+/// on the .NET 8 shared framework, whose older copies are already loaded in the
+/// default context, so loading the toolchain there fails on every compiler type.
+/// A library found in a probe folder loads here. Anything else, the runtime
+/// itself included, comes from the default context.
+/// </summary>
+internal sealed class ToolchainLoadContext : System.Runtime.Loader.AssemblyLoadContext
+{
+    private readonly List<string> _folders;
+
+    public ToolchainLoadContext(params string[] folders) : base("AL toolchain")
+    {
+        _folders = folders.Where(Directory.Exists).Select(Path.GetFullPath).ToList();
+    }
+
+    /// <summary>Probe an analyzer's folder too, for the libraries it brings.</summary>
+    public void AddFolder(string folder)
+    {
+        var full = Path.GetFullPath(folder);
+        if (Directory.Exists(full) && !_folders.Contains(full)) _folders.Add(full);
+    }
+
+    protected override Assembly? Load(AssemblyName assemblyName)
+    {
+        foreach (var folder in _folders)
+        {
+            var candidate = Path.Combine(folder, assemblyName.Name + ".dll");
+            if (File.Exists(candidate)) return LoadFromAssemblyPath(candidate);
+        }
+        return null;
+    }
+}
+
 internal class CodeAnalysisBridge
 {
     private readonly Assembly _asm;
     private readonly string _alExtDir;
+    private readonly ToolchainLoadContext _loadContext;
+    // The toolchain folder the caller named. A built-in cop it passes from
+    // there is loaded from the build in use (_alExtDir) instead.
+    private readonly string _requestedDir;
+    // ImmutableArray as the toolchain sees it, which may be a newer version
+    // than the bridge's own.
+    private readonly Type _immutableArrayType;
 
     private readonly Type? _syntaxTreeType;
     private readonly Type? _sourceTextType;
@@ -234,10 +287,14 @@ internal class CodeAnalysisBridge
     private readonly MethodInfo? _sourceTextFromStringMethod;
     private readonly MethodInfo? _getCompilationUnitRootMethod;
 
-    public CodeAnalysisBridge(Assembly asm, string alExtDir)
+    public CodeAnalysisBridge(Assembly asm, string alExtDir, ToolchainLoadContext loadContext, string requestedDir)
     {
         _asm = asm;
         _alExtDir = alExtDir;
+        _requestedDir = Path.GetFullPath(requestedDir);
+        _loadContext = loadContext;
+        _immutableArrayType = loadContext.LoadFromAssemblyName(new AssemblyName("System.Collections.Immutable"))
+            .GetType("System.Collections.Immutable.ImmutableArray", throwOnError: true)!;
 
         _syntaxTreeType = F("Microsoft.Dynamics.Nav.CodeAnalysis.Syntax.SyntaxTree");
         _sourceTextType = F("Microsoft.Dynamics.Nav.CodeAnalysis.Text.SourceText");
@@ -286,6 +343,13 @@ internal class CodeAnalysisBridge
         if (prms.TryGetProperty("packageCache", out var p)) pkgCache = p.GetString() ?? "";
         if (string.IsNullOrEmpty(pkgCache) && prms.TryGetProperty("package_cache", out var p2)) pkgCache = p2.GetString() ?? "";
 
+        var projectRoot = GetOptionalString(prms, "projectRoot");
+        if (!string.IsNullOrEmpty(projectRoot))
+        {
+            var inProject = AnalyzeInProject(projectRoot, pkgCache, file, source, ReadOpenDocuments(prms), analyzers);
+            if (inProject != null) return inProject;
+        }
+
         var tree = ParseSource(source, file)
             ?? throw new InvalidOperationException("CodeAnalysis returned no syntax tree.");
 
@@ -300,6 +364,301 @@ internal class CodeAnalysisBridge
         if (analyzers.Count > 0) diags.AddRange(RunAnalyzers(comp, analyzers));
         return diags;
     }
+
+    // ── Project compilation ─────────────────────────────────────────────
+    // A file inside a project is compiled the way alc compiles it: with every
+    // .al file under the project folder and the app.json dependencies loaded
+    // from the package cache. Compiled alone, a file reports every dependency
+    // table and every sibling object as missing (AL0185, AL0118, AL0791).
+    //
+    // The compilation is kept per project and updated one syntax tree at a
+    // time, so the dependency symbols load on the first request only.
+
+    private const int MaxCachedProjects = 4;
+    private static readonly StringComparer PathComparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+    private readonly Dictionary<string, ProjectCompilation> _projects = new(PathComparer);
+    private long _projectClock;
+
+    private sealed class ProjectCompilation
+    {
+        public ProjectCompilation(string stamp, object? parseOptions, object compilation)
+        {
+            Stamp = stamp;
+            ParseOptions = parseOptions;
+            Compilation = compilation;
+        }
+
+        // app.json text plus the package cache listing. A change to either
+        // rebuilds the compilation.
+        public string Stamp { get; }
+        public object? ParseOptions { get; }
+        public object Compilation { get; set; }
+        public Dictionary<string, ProjectTree> Trees { get; } = new(PathComparer);
+        public long LastUsed { get; set; }
+    }
+
+    // A tree parsed from disk records the file's write time and length. A tree
+    // parsed from an editor buffer records length -1, so the file is read
+    // again once the buffer stops being sent.
+    private sealed record ProjectTree(object Tree, string Text, DateTime WriteTimeUtc, long Length);
+
+    private static Dictionary<string, string> ReadOpenDocuments(JsonElement prms)
+    {
+        var documents = new Dictionary<string, string>(PathComparer);
+        if (!prms.TryGetProperty("openDocuments", out var list) || list.ValueKind != JsonValueKind.Array)
+            return documents;
+        foreach (var item in list.EnumerateArray())
+        {
+            var path = item.TryGetProperty("file", out var f) ? f.GetString() : null;
+            var text = item.TryGetProperty("source", out var s) ? s.GetString() : null;
+            if (!string.IsNullOrEmpty(path) && text != null) documents[Path.GetFullPath(path)] = text;
+        }
+        return documents;
+    }
+
+    private static bool IsUnder(string path, string root)
+    {
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar) ? root : root + Path.DirectorySeparatorChar;
+        return path.StartsWith(prefix, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Analyze <paramref name="file"/> as part of the project at
+    /// <paramref name="root"/>. Returns null when the folder holds no usable
+    /// app.json or the file lies outside it, so the caller compiles the file
+    /// alone.
+    /// </summary>
+    private List<object>? AnalyzeInProject(string root, string pkgCache, string file, string source,
+        Dictionary<string, string> openDocuments, List<string> analyzers)
+    {
+        root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        if (!File.Exists(Path.Combine(root, "app.json"))) return null;
+        var target = Path.GetFullPath(file);
+        if (!IsUnder(target, root)) return null;
+        openDocuments[target] = source;
+
+        var project = GetOrCreateProject(root, pkgCache);
+        if (project == null) return null;
+        UpdateProjectTrees(project, root, openDocuments);
+
+        var tree = project.Trees[target].Tree;
+        var model = GetSemanticModel(project.Compilation, tree);
+        var diagnostics = ExtractDiagnostics(model, file, tree);
+        if (analyzers.Count > 0) diagnostics.AddRange(RunAnalyzers(project.Compilation, analyzers, tree));
+        return diagnostics;
+    }
+
+    private object GetSemanticModel(object comp, object tree)
+    {
+        var getSM = comp.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .Where(m => m.Name == "GetSemanticModel")
+            .Where(m => m.GetParameters().Length >= 1 && m.GetParameters()[0].ParameterType.IsAssignableFrom(tree.GetType()))
+            .OrderBy(m => m.GetParameters().Length)
+            .FirstOrDefault()
+            ?? throw new MissingMemberException("CodeAnalysis does not expose a semantic model.");
+        return getSM.Invoke(comp, MakeArgs(getSM.GetParameters(), tree))
+            ?? throw new InvalidOperationException("CodeAnalysis returned no semantic model.");
+    }
+
+    private static string ProjectStamp(string root, string pkgCache)
+    {
+        var stamp = new StringBuilder(File.ReadAllText(Path.Combine(root, "app.json")));
+        if (!string.IsNullOrEmpty(pkgCache) && Directory.Exists(pkgCache))
+        {
+            foreach (var app in Directory.EnumerateFiles(pkgCache, "*.app").OrderBy(p => p, StringComparer.Ordinal))
+            {
+                var info = new FileInfo(app);
+                stamp.Append('\n').Append(info.Name).Append('|').Append(info.Length)
+                    .Append('|').Append(info.LastWriteTimeUtc.Ticks);
+            }
+        }
+        return stamp.ToString();
+    }
+
+    private ProjectCompilation? GetOrCreateProject(string root, string pkgCache)
+    {
+        var stamp = ProjectStamp(root, pkgCache);
+        if (_projects.TryGetValue(root, out var cached) && cached.Stamp == stamp)
+        {
+            cached.LastUsed = ++_projectClock;
+            return cached;
+        }
+        _projects.Remove(root);
+
+        // alc's own command-line parser reads app.json into the compilation
+        // options, the parse options (runtime, preprocessor symbols) and the
+        // manifest, so this compilation is configured exactly as alc's is.
+        var parserType = F("Microsoft.Dynamics.Nav.CodeAnalysis.CommandLine.CommandLineParser")
+            ?? throw new MissingMemberException("CodeAnalysis does not expose CommandLineParser.");
+        var parser = parserType.GetField("Default", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)?.GetValue(null)
+            ?? throw new MissingMemberException("CommandLineParser.Default was not found.");
+        var parse = parserType.GetMethods(BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance)
+            .Where(m => m.Name == "Parse" && m.GetParameters().Length >= 2
+                && m.GetParameters()[0].ParameterType == typeof(IEnumerable<string>)
+                && m.GetParameters()[1].ParameterType == typeof(string))
+            .OrderBy(m => m.GetParameters().Length)
+            .FirstOrDefault()
+            ?? throw new MissingMethodException("CommandLineParser.Parse(IEnumerable<string>, string) was not found.");
+        var cliArgs = new List<string> { $"/project:{root}" };
+        if (!string.IsNullOrEmpty(pkgCache)) cliArgs.Add($"/packagecachepath:{pkgCache}");
+        var parseArgs = new object?[parse.GetParameters().Length];
+        parseArgs[0] = cliArgs;
+        parseArgs[1] = root;
+        var arguments = parse.Invoke(parser, parseArgs)
+            ?? throw new InvalidOperationException("CommandLineParser returned no arguments.");
+
+        var manifest = Prop(arguments, "ProjectManifest");
+        var appManifest = Prop(manifest, "AppManifest");
+        if (manifest == null || appManifest == null) return null;
+
+        var create = _compilationType?.GetMethods(BindingFlags.Public | BindingFlags.Static)
+            .Where(m => m.Name == "Create")
+            .Where(m => m.GetParameters().Any(p => p.Name == "syntaxTrees") && m.GetParameters().Any(p => p.Name == "options"))
+            .OrderByDescending(m => m.GetParameters().Length)
+            .FirstOrDefault()
+            ?? throw new MissingMethodException("Compilation.Create(moduleName, …, syntaxTrees, options) was not found.");
+        var values = new Dictionary<string, object?>
+        {
+            ["moduleName"] = Prop(appManifest, "AppName") ?? "",
+            ["publisher"] = Prop(appManifest, "AppPublisher"),
+            ["version"] = Prop(appManifest, "AppVersion"),
+            ["appId"] = Prop(appManifest, "AppId"),
+            ["alternateIds"] = Prop(appManifest, "AppAlternateIds"),
+            ["options"] = Prop(arguments, "CompilationOptions"),
+            ["syntaxTrees"] = Array.CreateInstance(_syntaxTreeType!, 0),
+        };
+        var createArgs = create.GetParameters().Select(p =>
+            p.Name != null && values.TryGetValue(p.Name, out var v) && v != null && p.ParameterType.IsInstanceOfType(v)
+                ? v
+                : (p.HasDefaultValue ? p.DefaultValue : null)).ToArray();
+        var comp = create.Invoke(null, createArgs)
+            ?? throw new InvalidOperationException("Compilation.Create returned no compilation.");
+
+        // Same rule as alc: references need a package cache to load from.
+        var caches = (Prop(arguments, "PackageCacheDirectories") as IEnumerable<string>)?.ToArray() ?? Array.Empty<string>();
+        var getRefs = manifest.GetType().GetMethod("GetAllReferences", BindingFlags.Public | BindingFlags.Instance);
+        var references = getRefs?.Invoke(manifest, new object?[getRefs.GetParameters().Length]);
+        if (references != null && caches.Length > 0)
+        {
+            comp = InvokeSingle(comp, "AddReferences", references);
+            var factory = F("Microsoft.Dynamics.Nav.CodeAnalysis.SymbolReference.ReferenceLoaderFactory")
+                ?? throw new MissingMemberException("CodeAnalysis does not expose ReferenceLoaderFactory.");
+            var createLoader = factory.GetMethod("CreateReferenceLoader", BindingFlags.Public | BindingFlags.Static, null,
+                    new[] { typeof(IEnumerable<string>) }, null)
+                ?? throw new MissingMethodException("ReferenceLoaderFactory.CreateReferenceLoader(IEnumerable<string>) was not found.");
+            var loader = createLoader.Invoke(null, new object[] { caches })
+                ?? throw new InvalidOperationException("ReferenceLoaderFactory returned no loader.");
+            comp = InvokeSingle(comp, "WithReferenceLoader", loader);
+        }
+
+        if (_projects.Count >= MaxCachedProjects)
+            _projects.Remove(_projects.MinBy(kv => kv.Value.LastUsed).Key);
+        var project = new ProjectCompilation(stamp, Prop(arguments, "ParseOptions"), comp) { LastUsed = ++_projectClock };
+        _projects[root] = project;
+        return project;
+    }
+
+    /// <summary>Call the one-argument instance method whose parameter accepts <paramref name="arg"/>.</summary>
+    private static object InvokeSingle(object target, string name, object arg)
+    {
+        var method = target.GetType().GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .FirstOrDefault(m => m.Name == name && m.GetParameters().Length == 1
+                && m.GetParameters()[0].ParameterType.IsInstanceOfType(arg))
+            ?? throw new MissingMethodException($"{target.GetType().Name}.{name}({arg.GetType().Name}) was not found.");
+        return method.Invoke(target, new[] { arg })
+            ?? throw new InvalidOperationException($"{target.GetType().Name}.{name} returned null.");
+    }
+
+    private Array TreeArray(IReadOnlyList<object> trees)
+    {
+        var array = Array.CreateInstance(_syntaxTreeType!, trees.Count);
+        for (int i = 0; i < trees.Count; i++) array.SetValue(trees[i], i);
+        return array;
+    }
+
+    /// <summary>
+    /// Bring the project's syntax trees in line with the .al files under
+    /// <paramref name="root"/> (as alc enumerates them) and the editor
+    /// buffers in <paramref name="openDocuments"/>.
+    /// </summary>
+    private void UpdateProjectTrees(ProjectCompilation project, string root, Dictionary<string, string> openDocuments)
+    {
+        var paths = new HashSet<string>(PathComparer);
+        foreach (var path in Directory.EnumerateFiles(root, "*.al", SearchOption.AllDirectories))
+            paths.Add(Path.GetFullPath(path));
+        foreach (var path in openDocuments.Keys)
+            if (IsUnder(path, root) && path.EndsWith(".al", StringComparison.OrdinalIgnoreCase)) paths.Add(path);
+
+        var removed = new List<object>();
+        var added = new List<object>();
+        var replaced = new List<(object Old, object New)>();
+
+        foreach (var path in project.Trees.Keys.Where(p => !paths.Contains(p)).ToList())
+        {
+            removed.Add(project.Trees[path].Tree);
+            project.Trees.Remove(path);
+        }
+
+        foreach (var path in paths)
+        {
+            project.Trees.TryGetValue(path, out var existing);
+            ProjectTree next;
+            if (openDocuments.TryGetValue(path, out var buffer))
+            {
+                if (existing != null && existing.Text == buffer)
+                {
+                    project.Trees[path] = existing with { WriteTimeUtc = default, Length = -1 };
+                    continue;
+                }
+                next = new ProjectTree(ParseProjectTree(buffer, path, project), buffer, default, -1);
+            }
+            else
+            {
+                FileInfo info;
+                string text;
+                try
+                {
+                    info = new FileInfo(path);
+                    if (existing != null && existing.Length >= 0
+                        && existing.Length == info.Length && existing.WriteTimeUtc == info.LastWriteTimeUtc)
+                        continue;
+                    text = File.ReadAllText(path);
+                }
+                catch (IOException)
+                {
+                    if (existing != null) { removed.Add(existing.Tree); project.Trees.Remove(path); }
+                    continue;
+                }
+                if (existing != null && existing.Text == text)
+                {
+                    project.Trees[path] = existing with { WriteTimeUtc = info.LastWriteTimeUtc, Length = info.Length };
+                    continue;
+                }
+                next = new ProjectTree(ParseProjectTree(text, path, project), text, info.LastWriteTimeUtc, info.Length);
+            }
+
+            if (existing != null) replaced.Add((existing.Tree, next.Tree));
+            else added.Add(next.Tree);
+            project.Trees[path] = next;
+        }
+
+        var comp = project.Compilation;
+        if (removed.Count > 0) comp = InvokeSingle(comp, "RemoveSyntaxTrees", TreeArray(removed));
+        foreach (var (oldTree, newTree) in replaced)
+        {
+            var replace = comp.GetType().GetMethod("ReplaceSyntaxTree", BindingFlags.Public | BindingFlags.Instance)
+                ?? throw new MissingMethodException("Compilation.ReplaceSyntaxTree was not found.");
+            comp = replace.Invoke(comp, new[] { oldTree, newTree })
+                ?? throw new InvalidOperationException("Compilation.ReplaceSyntaxTree returned null.");
+        }
+        if (added.Count > 0) comp = InvokeSingle(comp, "AddSyntaxTrees", TreeArray(added));
+        project.Compilation = comp;
+    }
+
+    private object ParseProjectTree(string text, string path, ProjectCompilation project) =>
+        ParseSource(text, path, project.ParseOptions)
+            ?? throw new InvalidOperationException($"CodeAnalysis returned no syntax tree for '{path}'.");
 
     public object? HandleBuiltins()
     {
@@ -498,7 +857,7 @@ internal class CodeAnalysisBridge
         return results;
     }
 
-    private object? ParseSource(string source, string filePath)
+    private object? ParseSource(string source, string filePath, object? parseOptions = null)
     {
         if (_parseObjectTextMethod == null || _sourceTextFromStringMethod == null) return null;
 
@@ -515,6 +874,7 @@ internal class CodeAnalysisBridge
             var pt = pp[i].ParameterType;
             if (pt == _sourceTextType || pt.IsAssignableFrom(sourceText.GetType())) parseArgs[i] = sourceText;
             else if (pt == typeof(string)) parseArgs[i] = filePath;
+            else if (parseOptions != null && pt.IsInstanceOfType(parseOptions)) parseArgs[i] = parseOptions;
             else if (pp[i].HasDefaultValue) parseArgs[i] = pp[i].DefaultValue;
             else parseArgs[i] = null;
         }
@@ -632,7 +992,9 @@ internal class CodeAnalysisBridge
             ?? throw new InvalidOperationException("WithReferenceLoader returned no compilation.");
     }
 
-    private List<object> ExtractDiagnostics(object src, string defaultFile)
+    /// <param name="onlyTree">When set, diagnostics located in any other
+    /// syntax tree, or in none, are dropped.</param>
+    private List<object> ExtractDiagnostics(object src, string defaultFile, object? onlyTree = null)
     {
         var results = new List<object>();
         var overloads = src.GetType().GetMethods(BindingFlags.Instance | BindingFlags.Public)
@@ -671,12 +1033,15 @@ internal class CodeAnalysisBridge
         if (diagObj is not System.Collections.IEnumerable en) return results;
         foreach (var d in en)
         {
-            if (d == null) continue;
+            if (d == null || !IsInTree(d, onlyTree)) continue;
             try { results.Add(ConvertDiag(d, defaultFile)); }
             catch { /* skip */ }
         }
         return results;
     }
+
+    private static bool IsInTree(object diagnostic, object? tree) =>
+        tree == null || ReferenceEquals(Prop(Prop(diagnostic, "Location"), "SourceTree"), tree);
 
     private object ConvertDiag(object d, string defaultFile)
     {
@@ -729,7 +1094,9 @@ internal class CodeAnalysisBridge
         return new { file, line, column = col, endLine = eLine, endColumn = eCol, severity = NormSev(sev), code = id, message = msg };
     }
 
-    private List<object> RunAnalyzers(object comp, List<string> names)
+    /// <param name="tree">When set, only this syntax tree is analyzed and
+    /// only its diagnostics are returned.</param>
+    private List<object> RunAnalyzers(object comp, List<string> names, object? tree = null)
     {
         var results = new List<object>();
         if (_diagnosticAnalyzerType == null)
@@ -741,45 +1108,84 @@ internal class CodeAnalysisBridge
                 ?? throw new FileNotFoundException($"Requested analyzer '{name}' could not be resolved.");
             try
             {
-                var aAsm = Assembly.LoadFrom(dllPath);
-                var analyzerTypes = aAsm.GetTypes()
-                    .Where(t => !t.IsAbstract && _diagnosticAnalyzerType.IsAssignableFrom(t))
-                    .ToArray();
-                if (analyzerTypes.Length == 0)
-                    throw new InvalidOperationException($"'{dllPath}' contains no AL diagnostic analyzers.");
-                foreach (var at in analyzerTypes)
+                var sameBuild = Path.Combine(_alExtDir, Path.GetFileName(dllPath));
+                if (string.Equals(Path.GetDirectoryName(Path.GetFullPath(dllPath)), _requestedDir, StringComparison.Ordinal)
+                    && File.Exists(sameBuild))
+                    dllPath = sameBuild;
+                _loadContext.AddFolder(Path.GetDirectoryName(dllPath)!);
+                var aAsm = _loadContext.LoadFromAssemblyPath(Path.GetFullPath(dllPath));
+                // An analyzer assembly built against another CodeAnalysis
+                // version can fail to load some of its types. The ones that
+                // load still run, and the rest are reported.
+                Type[] types;
+                try { types = aAsm.GetTypes(); }
+                catch (ReflectionTypeLoadException ex)
                 {
-                    var analyzer = Activator.CreateInstance(at)
-                        ?? throw new InvalidOperationException($"Could not construct analyzer '{at.FullName}'.");
-                    results.AddRange(RunSingleAnalyzer(comp, analyzer));
+                    types = ex.Types.Where(t => t != null).ToArray()!;
+                    var reasons = ex.LoaderExceptions.Where(e => e != null).Select(e => e!.Message).Distinct().Take(3);
+                    results.Add(AnalyzerProblem(name, $"some analyzers could not be loaded: {string.Join(" | ", reasons)}"));
                 }
+                var analyzers = types
+                    .Where(t => !t.IsAbstract && _diagnosticAnalyzerType.IsAssignableFrom(t))
+                    .Select(t => Activator.CreateInstance(t)
+                        ?? throw new InvalidOperationException($"Could not construct analyzer '{t.FullName}'."))
+                    .ToArray();
+                if (analyzers.Length == 0)
+                    throw new InvalidOperationException($"'{dllPath}' contains no AL diagnostic analyzers that load.");
+                // One run per assembly: the analysis binds the code once for
+                // all of its analyzers.
+                results.AddRange(RunAnalyzerBatch(comp, analyzers, tree));
             }
             catch (Exception ex)
             {
-                throw new InvalidOperationException($"Analyzer '{name}' failed: {ex.Message}", ex);
+                // One analyzer that fails is reported on its own, so the
+                // compiler's diagnostics and the other analyzers still arrive.
+                var root = ex;
+                while (root.InnerException != null) root = root.InnerException;
+                results.Add(AnalyzerProblem(name, $"{root.GetType().Name}: {root.Message}"));
             }
         }
         return results;
     }
 
-    private List<object> RunSingleAnalyzer(object comp, object analyzer)
+    /// <summary>A warning at the top of the file that names an analyzer that did not run fully.</summary>
+    private static object AnalyzerProblem(string analyzer, string problem) => new
+    {
+        file = "",
+        line = 0u,
+        column = 0u,
+        endLine = 0u,
+        endColumn = 0u,
+        severity = "warning",
+        code = "AL-ANALYZER",
+        message = $"Analyzer '{analyzer}' {problem}",
+    };
+
+    private List<object> RunAnalyzerBatch(object comp, object[] analyzers, object? tree)
     {
         var results = new List<object>();
-        var cwaType = F("Microsoft.Dynamics.Nav.CodeAnalysis.Diagnostics.CompilationWithAnalyzers");
-        if (cwaType == null)
-            throw new MissingMemberException("CodeAnalysis does not expose CompilationWithAnalyzers.");
-
-        var immCreate = typeof(ImmutableArray).GetMethods(BindingFlags.Static | BindingFlags.Public)
-            .FirstOrDefault(m => m.Name == "Create" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsArray)
-            ?? throw new MissingMemberException("ImmutableArray.Create<T>(T[]) was not found.");
         if (_diagnosticAnalyzerType == null)
             throw new MissingMemberException("CodeAnalysis does not expose DiagnosticAnalyzer.");
 
+        var immCreate = _immutableArrayType.GetMethods(BindingFlags.Static | BindingFlags.Public)
+            .FirstOrDefault(m => m.Name == "Create" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsArray)
+            ?? throw new MissingMemberException("ImmutableArray.Create<T>(T[]) was not found.");
         var gc = immCreate.MakeGenericMethod(_diagnosticAnalyzerType);
-        var arr = Array.CreateInstance(_diagnosticAnalyzerType, 1);
-        arr.SetValue(analyzer, 0);
-        var immAnalyzers = gc.Invoke(null, new object[] { arr });
+        var arr = Array.CreateInstance(_diagnosticAnalyzerType, analyzers.Length);
+        for (int i = 0; i < analyzers.Length; i++) arr.SetValue(analyzers[i], i);
+        var immAnalyzers = gc.Invoke(null, new object[] { arr })
+            ?? throw new InvalidOperationException("ImmutableArray.Create returned null.");
 
+        if (tree != null)
+        {
+            foreach (var d in DocumentAnalyzerDiagnostics(comp, tree, immAnalyzers))
+                if (d != null && IsInTree(d, tree)) results.Add(ConvertDiag(d, ""));
+            return results;
+        }
+
+        var cwaType = F("Microsoft.Dynamics.Nav.CodeAnalysis.Diagnostics.CompilationWithAnalyzers");
+        if (cwaType == null)
+            throw new MissingMemberException("CodeAnalysis does not expose CompilationWithAnalyzers.");
         Exception? lastError = null;
         foreach (var ctor in cwaType.GetConstructors(BindingFlags.Public | BindingFlags.Instance))
         {
@@ -794,20 +1200,9 @@ internal class CodeAnalysisBridge
                     else if (pars[i].HasDefaultValue) args[i] = pars[i].DefaultValue;
                     else args[i] = null;
                 }
-                var cwa = ctor.Invoke(args);
-                var getDiags = cwaType.GetMethod("GetAnalyzerDiagnosticsAsync",
-                    BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
-                    ?? cwaType.GetMethod("GetAllDiagnosticsAsync",
-                        BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
-                    ?? throw new MissingMethodException("No analyzer diagnostics method was found.");
-                var task = getDiags.Invoke(cwa, null)
-                    ?? throw new InvalidOperationException("Analyzer diagnostics returned no task.");
-                task.GetType().GetMethod("Wait", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
-                    ?.Invoke(task, null);
-                var diagResult = task.GetType().GetProperty("Result")?.GetValue(task);
-                if (diagResult is not System.Collections.IEnumerable en)
-                    throw new InvalidOperationException("Analyzer diagnostics returned an unexpected result.");
-                foreach (var d in en)
+                var cwa = ctor.Invoke(args)
+                    ?? throw new InvalidOperationException("CompilationWithAnalyzers could not be constructed.");
+                foreach (var d in WholeCompilationDiagnostics(cwaType, cwa))
                     if (d != null) results.Add(ConvertDiag(d, ""));
                 return results;
             }
@@ -815,6 +1210,63 @@ internal class CodeAnalysisBridge
         }
         throw new InvalidOperationException(
             "No compatible CompilationWithAnalyzers constructor succeeded.", lastError);
+    }
+
+    // Analyzer diagnostics of one syntax tree, computed the way Microsoft's AL
+    // language server does for its "File" analysis scope. The public per-tree
+    // methods of CompilationWithAnalyzers return nothing on a fresh instance
+    // (they analyze only compilation events already queued), so the internal
+    // helper the language server calls is used instead.
+    private IEnumerable<object?> DocumentAnalyzerDiagnostics(object comp, object tree, object analyzers)
+    {
+        var helper = F("Microsoft.Dynamics.Nav.CodeAnalysis.Analyzers.AnalyzersHelper")
+            ?? throw new MissingMemberException("CodeAnalysis does not expose AnalyzersHelper.");
+        var method = helper.GetMethod("GetAnalyzerDiagnosticsForDocument", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException("AnalyzersHelper.GetAnalyzerDiagnosticsForDocument was not found.");
+        var pars = method.GetParameters();
+        var args = new object?[pars.Length];
+        for (int i = 0; i < pars.Length; i++)
+        {
+            var pt = pars[i].ParameterType;
+            if (pt.IsInstanceOfType(tree)) args[i] = tree;
+            else if (pt.IsInstanceOfType(comp)) args[i] = comp;
+            else if (pt.IsInstanceOfType(analyzers)) args[i] = analyzers;
+            else if (pt == typeof(string)) args[i] = "AlBridge";
+            else if (pt == typeof(CancellationToken)) args[i] = CancellationToken.None;
+            else if (pars[i].HasDefaultValue) args[i] = pars[i].DefaultValue;
+            else args[i] = null;
+        }
+        var task = method.Invoke(null, args)
+            ?? throw new InvalidOperationException("AnalyzersHelper returned no task.");
+        task.GetType().GetMethod("Wait", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
+            ?.Invoke(task, null);
+        // The result is (CompilationDiagnostics, AnalysisDiagnostics). The
+        // compiler's own diagnostics already come from the semantic model.
+        var result = task.GetType().GetProperty("Result")?.GetValue(task)
+            ?? throw new InvalidOperationException("AnalyzersHelper returned no result.");
+        if (result.GetType().GetField("Item2")?.GetValue(result) is not System.Collections.IEnumerable analysis)
+            throw new InvalidOperationException("AnalyzersHelper returned an unexpected result.");
+        return analysis.Cast<object?>();
+    }
+
+    private static IEnumerable<object?> WholeCompilationDiagnostics(Type cwaType, object cwa)
+    {
+        var getDiags = cwaType.GetMethod("GetAnalyzerDiagnosticsAsync",
+            BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
+            ?? cwaType.GetMethod("GetAllDiagnosticsAsync",
+                BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
+            ?? throw new MissingMethodException("No analyzer diagnostics method was found.");
+        return AwaitDiagnostics(getDiags.Invoke(cwa, null));
+    }
+
+    private static IEnumerable<object?> AwaitDiagnostics(object? task)
+    {
+        if (task == null) throw new InvalidOperationException("Analyzer diagnostics returned no task.");
+        task.GetType().GetMethod("Wait", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
+            ?.Invoke(task, null);
+        if (task.GetType().GetProperty("Result")?.GetValue(task) is not System.Collections.IEnumerable result)
+            throw new InvalidOperationException("Analyzer diagnostics returned an unexpected result.");
+        return result.Cast<object?>();
     }
 
     // An analyzer is an absolute path, or a built-in cop's name looked up in the

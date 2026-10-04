@@ -646,6 +646,26 @@ pub(crate) fn snapshot_is_current(
         })
 }
 
+/// Editor buffers of the project's other `.al` files. The semantic pass
+/// compiles their unsaved text in place of the files on disk.
+fn project_open_documents(
+    open: impl IntoIterator<Item = (PathBuf, Arc<String>)>,
+    root: &Path,
+    target: &Path,
+) -> Vec<crate::semantic::OpenDocument> {
+    open.into_iter()
+        .filter(|(path, _)| path != target && path.starts_with(root))
+        .filter(|(path, _)| {
+            path.extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("al"))
+        })
+        .map(|(file, text)| crate::semantic::OpenDocument {
+            file,
+            source: text.as_str().to_owned(),
+        })
+        .collect()
+}
+
 /// Run semantic analysis via .NET bridge if enabled. Returns diagnostics or empty vec.
 ///
 /// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
@@ -733,11 +753,33 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     };
     let bridge_generation = bridge.generation();
 
+    // Inside its project, the file is compiled with the project's other files
+    // and dependencies. A file outside it (a rendered symbol file, for one) is
+    // compiled alone.
+    let project_root = project
+        .as_ref()
+        .map(|project| project.root.clone())
+        .filter(|root| file_path.starts_with(root));
+    let open_documents = match &project_root {
+        Some(root) => {
+            let documents = &server.workspace.documents;
+            let open = documents
+                .open_uris()
+                .into_iter()
+                .filter(|uri| documents.get_client_version(uri).is_some())
+                .filter_map(|uri| Some((uri.to_file_path().ok()?, documents.get_text_arc(&uri)?)));
+            project_open_documents(open, root, &file_path)
+        }
+        None => Vec::new(),
+    };
+
     let req = crate::semantic::AnalyzeRequest {
         file: file_path,
         source: text.to_string(),
         analyzers,
         package_cache,
+        project_root,
+        open_documents,
     };
 
     let semantic_start = std::time::Instant::now();
@@ -1072,6 +1114,50 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The semantic pass compiles the analyzed file with its project, so the
+    /// other open `.al` buffers of that project travel with the request. The
+    /// analyzed file itself goes as the request's own source, and buffers of
+    /// other folders or other file kinds are not part of the compilation.
+    #[test]
+    fn only_other_al_buffers_of_the_project_are_sent_with_a_semantic_request() {
+        let root = PathBuf::from("/work/app");
+        let target = root.join("src/Target.Codeunit.al");
+        let open = vec![
+            (target.clone(), Arc::new("target".to_string())),
+            (
+                root.join("src/Sibling.Table.al"),
+                Arc::new("sibling".to_string()),
+            ),
+            (
+                root.join("src/Upper.Page.AL"),
+                Arc::new("upper".to_string()),
+            ),
+            (root.join("app.json"), Arc::new("{}".to_string())),
+            (
+                PathBuf::from("/work/other/Other.al"),
+                Arc::new("other".to_string()),
+            ),
+        ];
+
+        let sent = project_open_documents(open, &root, &target);
+
+        let mut files: Vec<_> = sent.iter().map(|d| d.file.clone()).collect();
+        files.sort();
+        assert_eq!(
+            files,
+            vec![
+                root.join("src/Sibling.Table.al"),
+                root.join("src/Upper.Page.AL")
+            ]
+        );
+        assert_eq!(
+            sent.iter()
+                .find(|d| d.file.ends_with("Sibling.Table.al"))
+                .map(|d| d.source.as_str()),
+            Some("sibling")
+        );
+    }
 
     /// Analyzer paths for a toolchain in `dir`, with CodeCop installed and the
     /// other cops missing.

@@ -38,6 +38,23 @@ pub struct AnalyzeRequest {
     pub source: String,
     pub analyzers: Vec<String>,
     pub package_cache: PathBuf,
+    /// Folder holding the file's `app.json`. With it, the file is compiled
+    /// together with every `.al` file of the project and the `app.json`
+    /// dependencies, as `alc` would. Without it, the file is compiled alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<PathBuf>,
+    /// Editor buffers of other project files. Their text replaces the file on
+    /// disk for this analysis.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open_documents: Vec<OpenDocument>,
+}
+
+/// An editor buffer sent along with an [`AnalyzeRequest`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenDocument {
+    pub file: PathBuf,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -676,11 +693,36 @@ mod tests {
             source: "table 50100 MyTable { }".to_string(),
             analyzers: vec!["CodeCop".to_string(), "UICop".to_string()],
             package_cache: PathBuf::from("/packages"),
+            project_root: None,
+            open_documents: Vec::new(),
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["file"], "/src/MyTable.al");
         assert_eq!(json["analyzers"].as_array().unwrap().len(), 2);
         assert!(json.get("packageCache").is_some());
+        // A request with no project omits the project fields, so the bridge
+        // compiles the file alone.
+        assert!(json.get("projectRoot").is_none());
+        assert!(json.get("openDocuments").is_none());
+    }
+
+    #[test]
+    fn test_analyze_request_serializes_the_project() {
+        let req = AnalyzeRequest {
+            file: PathBuf::from("/app/src/A.al"),
+            source: "codeunit 50000 A { }".to_string(),
+            analyzers: Vec::new(),
+            package_cache: PathBuf::from("/app/.alpackages"),
+            project_root: Some(PathBuf::from("/app")),
+            open_documents: vec![OpenDocument {
+                file: PathBuf::from("/app/src/B.al"),
+                source: "codeunit 50001 B { }".to_string(),
+            }],
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["projectRoot"], "/app");
+        assert_eq!(json["openDocuments"][0]["file"], "/app/src/B.al");
+        assert_eq!(json["openDocuments"][0]["source"], "codeunit 50001 B { }");
     }
 
     #[test]
@@ -854,6 +896,8 @@ mod tests {
             source: String::new(),
             analyzers: vec![],
             package_cache: PathBuf::from(".alpackages"),
+            project_root: None,
+            open_documents: Vec::new(),
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json["analyzers"].as_array().unwrap().is_empty());
@@ -901,6 +945,8 @@ mod tests {
             source: "a".repeat(MAX_TEXT_BYTES + 1),
             analyzers: Vec::new(),
             package_cache: std::path::PathBuf::from("/tmp/.alpackages"),
+            project_root: None,
+            open_documents: Vec::new(),
         };
         match check_text_size(Some(&req.source)) {
             Err(SemanticError::InputTooLarge { size, max }) => {

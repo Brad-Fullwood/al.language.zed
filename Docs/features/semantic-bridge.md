@@ -13,7 +13,7 @@ process and communicate via C-ABI function pointers.
 
 | Bridge method | Used for | Rust caller |
 | --- | --- | --- |
-| `analyze(file, source, analyzers[], packageCache)` | compilation diagnostics + CodeCop/UICop/AppSourceCop/PerTenantCop | `server/diagnostics.rs` (phase 2) |
+| `analyze(file, source, analyzers[], packageCache, [projectRoot], [openDocuments])` | compilation diagnostics + CodeCop/UICop/AppSourceCop/PerTenantCop | `server/diagnostics.rs` (phase 2) |
 | `typeAt(file, pos, [unsavedText], packageCache)` | hover fallback (semantic type at cursor) | `queries/hover.rs` |
 | `completions(file, pos, [unsavedText], packageCache)` | member-access completion fallback | `queries/completions.rs` |
 | `builtins()` | built-in types/methods catalog | LSP startup → `SemanticCache` |
@@ -51,8 +51,19 @@ plausible empty results.
   not shifted back to the previous character.
 - **Unsaved text:** when `text` is supplied, the bridge uses the editor buffer instead of
   reading disk, so hover/completion reflect unsaved edits.
+- **Project compilation:** `analyze` compiles a file inside the project folder the way `alc` does.
+  The bridge passes `/project:<root>` and `/packagecachepath:<dir>` to Microsoft's own command-line
+  parser, so `app.json` sets the compilation options, parse options and dependency references. Every
+  `.al` file under the folder is part of the compilation, and the language server sends the text of
+  the project's other open buffers in `openDocuments`, which replaces those files on disk. The
+  compilation is kept per project (up to four) and updated one syntax tree at a time, so the dependency
+  symbols load once: about 8 s on the first request for a Base Application project, then tens of
+  milliseconds. Diagnostics are returned for the analyzed file only. Analyzers run through the per-file
+  helper Microsoft's language server uses for its `File` analysis scope. A file outside the project
+  folder, such as a rendered symbol file, is compiled alone.
 - **Project context:** hover and completion forward `al.packageCachePath`, or the discovered project's
-  package directory, so dependency symbols participate in binding.
+  package directory. They still compile the document alone, so they do not see objects declared in
+  other project files.
 - **Resource limits:** 16 MiB per document, 32 MiB per JSON request, 256 MiB max response. Paths crossing
   the JSON/FFI boundary must be valid UTF-8 and fail explicitly otherwise.
 
@@ -81,8 +92,9 @@ true) further gates whether the bridge is initialized at all.
 
 The bridge executes Microsoft's `CodeAnalysis` engine and compiler/analyzer diagnostic APIs. It does
 not reimplement their binding rules. It is not identical to the complete official AL Language Server:
-this project constructs a focused single-document compilation and forwards a package cache, while the
-official server owns more project/session configuration and editor behavior. Claims of parity should
+diagnostics come from a project compilation configured by `alc`'s own parser, hover and completion
+from a single-document compilation, while the official server owns more project/session configuration
+and editor behavior. Claims of parity should
 therefore be scoped to the CodeAnalysis operations actually exercised by the live contract test, not
 the whole official extension.
 

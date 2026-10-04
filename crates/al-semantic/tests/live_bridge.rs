@@ -10,7 +10,7 @@
 
 use std::path::PathBuf;
 
-use al_semantic::{AnalyzeRequest, SemanticBridge};
+use al_semantic::{AnalyzeRequest, OpenDocument, SemanticBridge};
 
 fn code_analysis_dll() -> Option<PathBuf> {
     let dir = PathBuf::from(std::env::var_os("AL_TOOL_PATH")?);
@@ -49,6 +49,8 @@ async fn live_bridge_satisfies_its_public_contracts() {
             source: source.to_owned(),
             analyzers: Vec::new(),
             package_cache: package_cache.clone(),
+            project_root: None,
+            open_documents: Vec::new(),
         })
         .await
         .expect("valid AL should be analyzable");
@@ -64,6 +66,8 @@ async fn live_bridge_satisfies_its_public_contracts() {
             source: invalid_source,
             analyzers: Vec::new(),
             package_cache: package_cache.clone(),
+            project_root: None,
+            open_documents: Vec::new(),
         })
         .await
         .expect("semantic errors should be returned as diagnostics");
@@ -118,6 +122,8 @@ async fn live_bridge_satisfies_its_public_contracts() {
             source: source.to_owned(),
             analyzers: vec!["CodeCop".to_string()],
             package_cache,
+            project_root: None,
+            open_documents: Vec::new(),
         })
         .await
         .expect("the built-in CodeCop analyzer should resolve and run");
@@ -135,5 +141,173 @@ async fn live_bridge_satisfies_its_public_contracts() {
     assert!(
         error_codes.len() > 100,
         "error-code catalog is implausibly small"
+    );
+}
+
+const PROBE_APP_JSON: &str = r#"{
+  "id": "6e3a3a52-0d8f-4f3a-9a53-5b1d1f7f0c01",
+  "name": "Semantic Probe",
+  "publisher": "Probe",
+  "version": "1.0.0.0",
+  "platform": "1.0.0.0",
+  "application": "26.0.0.0",
+  "idRanges": [{ "from": 50000, "to": 50099 }],
+  "runtime": "13.0"
+}"#;
+
+const PROBE_TABLE_EXT: &str = "tableextension 50000 \"Probe Customer\" extends Customer\n{\n    fields\n    {\n        field(50000; \"Probe Flag\"; Boolean)\n        {\n            DataClassification = CustomerContent;\n        }\n    }\n}\n";
+
+const PROBE_BROKEN: &str =
+    "codeunit 50001 \"Probe Broken\"\n{\n    procedure Broken()\n    begin\n        UnknownThing();\n    end;\n}\n";
+
+fn probe_codeunit(statement: &str) -> String {
+    format!(
+        "codeunit 50000 \"Probe Usage\"\n{{\n    procedure Touch()\n    var\n        Customer: Record Customer;\n    begin\n        {statement}\n    end;\n}}\n"
+    )
+}
+
+fn errors(diagnostics: &[al_semantic::DiagnosticEntry]) -> Vec<&al_semantic::DiagnosticEntry> {
+    diagnostics
+        .iter()
+        .filter(|d| d.severity == "error")
+        .collect()
+}
+
+/// A file is analyzed as part of its project: `app.json` dependencies resolve
+/// from the package cache and objects declared in other workspace files bind.
+/// Before this, every file was compiled alone with no references, so a
+/// `Record Customer` or a table-extension field from a sibling file produced
+/// AL0185/AL0118/AL0791 errors that `alc` does not report.
+#[tokio::test]
+#[ignore = "requires AL_TOOL_PATH, AL_PACKAGE_CACHE_PATH and the Microsoft AL toolchain; run with --ignored"]
+async fn live_bridge_analyzes_a_file_within_its_project() {
+    let dll = code_analysis_dll().expect(
+        "AL_TOOL_PATH must point to a directory containing Microsoft.Dynamics.Nav.CodeAnalysis.dll",
+    );
+    let package_cache = PathBuf::from(
+        std::env::var_os("AL_PACKAGE_CACHE_PATH")
+            .expect("AL_PACKAGE_CACHE_PATH must point to a BC 26+ Microsoft symbol set"),
+    );
+    let bridge = SemanticBridge::new(&dll, "live-project")
+        .expect("the real CodeAnalysis bridge should initialize");
+
+    let project = tempfile::tempdir().expect("temp project");
+    let root = project.path().to_path_buf();
+    std::fs::write(root.join("app.json"), PROBE_APP_JSON).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/ProbeCustomer.TableExt.al"), PROBE_TABLE_EXT).unwrap();
+    std::fs::write(root.join("src/ProbeBroken.Codeunit.al"), PROBE_BROKEN).unwrap();
+    let target = root.join("src/ProbeUsage.Codeunit.al");
+    let on_disk = probe_codeunit("Customer.Name := 'x';");
+    std::fs::write(&target, &on_disk).unwrap();
+
+    let analyze = |source: String, open_documents: Vec<OpenDocument>| {
+        bridge.analyze(AnalyzeRequest {
+            file: target.clone(),
+            source,
+            analyzers: Vec::new(),
+            package_cache: package_cache.clone(),
+            project_root: Some(root.clone()),
+            open_documents,
+        })
+    };
+
+    // A dependency table and a field from a sibling table extension bind.
+    let diagnostics = analyze(
+        probe_codeunit("Customer.Name := 'x'; Customer.\"Probe Flag\" := true;"),
+        Vec::new(),
+    )
+    .await
+    .expect("project analysis should succeed");
+    assert!(
+        errors(&diagnostics).is_empty(),
+        "project symbols should bind: {diagnostics:#?}"
+    );
+    // Another file's error belongs to that file, not to the one analyzed.
+    assert!(
+        diagnostics.iter().all(|d| d.file == target),
+        "only the analyzed file's diagnostics are returned: {diagnostics:#?}"
+    );
+
+    // A real error is still reported.
+    let diagnostics = analyze(
+        probe_codeunit("Customer.\"Missing Field\" := true;"),
+        Vec::new(),
+    )
+    .await
+    .expect("project analysis should succeed");
+    assert!(
+        !errors(&diagnostics).is_empty(),
+        "an unknown field must still be an error: {diagnostics:#?}"
+    );
+
+    // An unsaved buffer of another file wins over its file on disk.
+    let edited_ext = PROBE_TABLE_EXT.replace(
+        "    }\n}\n",
+        "        field(50001; \"Probe Note\"; Text[50])\n        {\n            DataClassification = CustomerContent;\n        }\n    }\n}\n",
+    );
+    let diagnostics = analyze(
+        probe_codeunit("Customer.\"Probe Note\" := 'n';"),
+        vec![OpenDocument {
+            file: root.join("src/ProbeCustomer.TableExt.al"),
+            source: edited_ext.clone(),
+        }],
+    )
+    .await
+    .expect("project analysis should succeed");
+    assert!(
+        errors(&diagnostics).is_empty(),
+        "an open document's unsaved text should be compiled: {diagnostics:#?}"
+    );
+
+    // Once the buffer is closed, the file on disk is used again, and a later
+    // save to disk is picked up.
+    let diagnostics = analyze(
+        probe_codeunit("Customer.\"Probe Note\" := 'n';"),
+        Vec::new(),
+    )
+    .await
+    .expect("project analysis should succeed");
+    assert!(
+        !errors(&diagnostics).is_empty(),
+        "a closed buffer's unsaved text must not linger: {diagnostics:#?}"
+    );
+    std::fs::write(root.join("src/ProbeCustomer.TableExt.al"), &edited_ext).unwrap();
+    let diagnostics = analyze(
+        probe_codeunit("Customer.\"Probe Note\" := 'n';"),
+        Vec::new(),
+    )
+    .await
+    .expect("project analysis should succeed");
+    assert!(
+        errors(&diagnostics).is_empty(),
+        "a file changed on disk should be recompiled: {diagnostics:#?}"
+    );
+
+    // Analyzers run on the analyzed file only. The unused variable is a
+    // CodeCop finding (AA0137) in the target; the sibling files have their own
+    // findings, which stay out.
+    let unused = probe_codeunit("Customer.Name := 'x';").replace(
+        "        Customer: Record Customer;\n",
+        "        Customer: Record Customer;\n        Unused: Integer;\n",
+    );
+    let diagnostics = bridge
+        .analyze(AnalyzeRequest {
+            file: target.clone(),
+            source: unused,
+            analyzers: vec!["CodeCop".to_string()],
+            package_cache: package_cache.clone(),
+            project_root: Some(root.clone()),
+            open_documents: Vec::new(),
+        })
+        .await
+        .expect("CodeCop should run on a file within its project");
+    assert!(
+        diagnostics.iter().any(|d| d.code == "AA0137"),
+        "CodeCop should report the unused variable: {diagnostics:#?}"
+    );
+    assert!(
+        diagnostics.iter().all(|d| d.file == target),
+        "analyzer findings from other files must not be returned: {diagnostics:#?}"
     );
 }
