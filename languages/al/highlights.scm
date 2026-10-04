@@ -77,144 +77,146 @@
 (op_not) @keyword.operator
 
 ; Type keywords (override control keyword captures)
-(kw_action) @type.builtin
-(kw_actionref) @type.builtin
-(kw_analysisview) @type.builtin
-(kw_analysisviews) @type.builtin
-(kw_array) @type.builtin
-(kw_auditcategory) @type.builtin
-(kw_automation) @type.builtin
-(kw_biginteger) @type.builtin
-(kw_bigtext) @type.builtin
-(kw_blob) @type.builtin
-(kw_boolean) @type.builtin
-(kw_byte) @type.builtin
-(kw_char) @type.builtin
-(kw_clienttype) @type.builtin
-(kw_code) @type.builtin
-(kw_codeunit) @type.builtin
-(kw_completiontriggererrorlevel) @type.builtin
-(kw_connectiontype) @type.builtin
-(kw_cookie) @type.builtin
-(kw_customaction) @type.builtin
-(kw_database) @type.builtin
-(kw_dataclassification) @type.builtin
-(kw_datascope) @type.builtin
-(kw_datatransfer) @type.builtin
-(kw_date) @type.builtin
-(kw_dateformula) @type.builtin
-(kw_datetime) @type.builtin
-(kw_decimal) @type.builtin
-(kw_defaultlayout) @type.builtin
-(kw_dialog) @type.builtin
-(kw_dictionary) @type.builtin
-(kw_dotnet) @type.builtin
-(kw_dotnetassembly) @type.builtin
-(kw_dotnettypedeclaration) @type.builtin
-(kw_duration) @type.builtin
-(kw_enum) @type.builtin
-(kw_errorinfo) @type.builtin
-(kw_errortype) @type.builtin
-(kw_executioncontext) @type.builtin
-(kw_executionmode) @type.builtin
-(kw_fieldclass) @type.builtin
-(kw_fieldref) @type.builtin
-(kw_fieldtype) @type.builtin
-(kw_file) @type.builtin
-(kw_fileupload) @type.builtin
-(kw_fileuploadaction) @type.builtin
-(kw_filterpagebuilder) @type.builtin
-(kw_guid) @type.builtin
-(kw_httpclient) @type.builtin
-(kw_httpcontent) @type.builtin
-(kw_httpheaders) @type.builtin
-(kw_httprequestmessage) @type.builtin
-(kw_httprequesttype) @type.builtin
-(kw_httpresponsemessage) @type.builtin
-(kw_instream) @type.builtin
-(kw_integer) @type.builtin
-(kw_interface) @type.builtin
-(kw_isolationlevel) @type.builtin
-(kw_joker) @type.builtin
-(kw_jsonarray) @type.builtin
-(kw_jsonobject) @type.builtin
-(kw_jsontoken) @type.builtin
-(kw_jsonvalue) @type.builtin
-(kw_keyref) @type.builtin
-(kw_list) @type.builtin
-(kw_media) @type.builtin
-(kw_mediaset) @type.builtin
-(kw_moduledependencyinfo) @type.builtin
-(kw_moduleinfo) @type.builtin
-(kw_none) @type.builtin
-(kw_notification) @type.builtin
-(kw_notificationscope) @type.builtin
-(kw_objecttype) @type.builtin
-(kw_option) @type.builtin
-(kw_outstream) @type.builtin
-(kw_page) @type.builtin
-(kw_pagebackgroundtaskerrorlevel) @type.builtin
-(kw_pageresult) @type.builtin
-(kw_pagestyle) @type.builtin
-(kw_query) @type.builtin
-(kw_record) @type.builtin
-(kw_recordid) @type.builtin
-(kw_recordref) @type.builtin
-(kw_report) @type.builtin
-(kw_reportformat) @type.builtin
-(kw_secrettext) @type.builtin
-(kw_securityfilter) @type.builtin
-(kw_securityfiltering) @type.builtin
-(kw_securityoperationresult) @type.builtin
-(kw_sessionsettings) @type.builtin
-(kw_systemaction) @type.builtin
-(kw_table) @type.builtin
-(kw_tableconnectiontype) @type.builtin
-(kw_tablefilter) @type.builtin
-(kw_testaction) @type.builtin
-(kw_testfield) @type.builtin
-(kw_testfilterfield) @type.builtin
-(kw_testhttprequestmessage) @type.builtin
-(kw_testhttpresponsemessage) @type.builtin
-(kw_testpage) @type.builtin
-(kw_testpermissions) @type.builtin
-(kw_testrequestpage) @type.builtin
-(kw_text) @type.builtin
-(kw_textbuilder) @type.builtin
-(kw_textconst) @type.builtin
-(kw_textencoding) @type.builtin
-(kw_time) @type.builtin
-(kw_transactionmodel) @type.builtin
-(kw_transactiontype) @type.builtin
-(kw_variant) @type.builtin
-(kw_verbosity) @type.builtin
-(kw_version) @type.builtin
-(kw_view) @type.builtin
-(kw_views) @type.builtin
-(kw_webserviceactioncontext) @type.builtin
-(kw_webserviceactionresultcode) @type.builtin
-(kw_xmlattribute) @type.builtin
-(kw_xmlattributecollection) @type.builtin
-(kw_xmlcdata) @type.builtin
-(kw_xmlcomment) @type.builtin
-(kw_xmldeclaration) @type.builtin
-(kw_xmldocument) @type.builtin
-(kw_xmldocumenttype) @type.builtin
-(kw_xmlelement) @type.builtin
-(kw_xmlnamespacemanager) @type.builtin
-(kw_xmlnametable) @type.builtin
-(kw_xmlnode) @type.builtin
-(kw_xmlnodelist) @type.builtin
-(kw_xmlport) @type.builtin
-(kw_xmlprocessinginstruction) @type.builtin
-(kw_xmlreadoptions) @type.builtin
-(kw_xmltext) @type.builtin
-(kw_xmlwriteoptions) @type.builtin
+(kw_action) @type.builtin.al
+(kw_actionref) @type.builtin.al
+(kw_analysisview) @type.builtin.al
+(kw_analysisviews) @type.builtin.al
+(kw_array) @type.builtin.al
+(kw_auditcategory) @type.builtin.al
+(kw_automation) @type.builtin.al
+(kw_biginteger) @type.builtin.al
+(kw_bigtext) @type.builtin.al
+(kw_blob) @type.builtin.al
+(kw_boolean) @type.builtin.al
+(kw_byte) @type.builtin.al
+(kw_char) @type.builtin.al
+(kw_clienttype) @type.builtin.al
+(kw_code) @type.builtin.al
+(kw_codeunit) @type.builtin.al
+(kw_completiontriggererrorlevel) @type.builtin.al
+(kw_connectiontype) @type.builtin.al
+(kw_cookie) @type.builtin.al
+(kw_customaction) @type.builtin.al
+(kw_database) @type.builtin.al
+(kw_dataclassification) @type.builtin.al
+(kw_datascope) @type.builtin.al
+(kw_datatransfer) @type.builtin.al
+(kw_date) @type.builtin.al
+(kw_dateformula) @type.builtin.al
+(kw_datetime) @type.builtin.al
+(kw_decimal) @type.builtin.al
+(kw_defaultlayout) @type.builtin.al
+(kw_dialog) @type.builtin.al
+(kw_dictionary) @type.builtin.al
+(kw_dotnet) @type.builtin.al
+(kw_dotnetassembly) @type.builtin.al
+(kw_dotnettypedeclaration) @type.builtin.al
+(kw_duration) @type.builtin.al
+(kw_enum) @type.builtin.al
+(kw_errorinfo) @type.builtin.al
+(kw_errortype) @type.builtin.al
+(kw_executioncontext) @type.builtin.al
+(kw_executionmode) @type.builtin.al
+(kw_fieldclass) @type.builtin.al
+(kw_fieldref) @type.builtin.al
+(kw_fieldtype) @type.builtin.al
+(kw_file) @type.builtin.al
+(kw_fileupload) @type.builtin.al
+(kw_fileuploadaction) @type.builtin.al
+(kw_filterpagebuilder) @type.builtin.al
+(kw_guid) @type.builtin.al
+(kw_httpclient) @type.builtin.al
+(kw_httpcontent) @type.builtin.al
+(kw_httpheaders) @type.builtin.al
+(kw_httprequestmessage) @type.builtin.al
+(kw_httprequesttype) @type.builtin.al
+(kw_httpresponsemessage) @type.builtin.al
+(kw_instream) @type.builtin.al
+(kw_integer) @type.builtin.al
+(kw_interface) @type.builtin.al
+(kw_isolationlevel) @type.builtin.al
+(kw_joker) @type.builtin.al
+(kw_jsonarray) @type.builtin.al
+(kw_jsonobject) @type.builtin.al
+(kw_jsontoken) @type.builtin.al
+(kw_jsonvalue) @type.builtin.al
+(kw_keyref) @type.builtin.al
+(kw_list) @type.builtin.al
+(kw_media) @type.builtin.al
+(kw_mediaset) @type.builtin.al
+(kw_moduledependencyinfo) @type.builtin.al
+(kw_moduleinfo) @type.builtin.al
+(kw_none) @type.builtin.al
+(kw_notification) @type.builtin.al
+(kw_notificationscope) @type.builtin.al
+(kw_objecttype) @type.builtin.al
+(kw_option) @type.builtin.al
+(kw_outstream) @type.builtin.al
+(kw_page) @type.builtin.al
+(kw_pagebackgroundtaskerrorlevel) @type.builtin.al
+(kw_pageresult) @type.builtin.al
+(kw_pagestyle) @type.builtin.al
+(kw_query) @type.builtin.al
+(kw_record) @type.builtin.al
+(kw_recordid) @type.builtin.al
+(kw_recordref) @type.builtin.al
+(kw_report) @type.builtin.al
+(kw_reportformat) @type.builtin.al
+(kw_secrettext) @type.builtin.al
+(kw_securityfilter) @type.builtin.al
+(kw_securityfiltering) @type.builtin.al
+(kw_securityoperationresult) @type.builtin.al
+(kw_sessionsettings) @type.builtin.al
+(kw_systemaction) @type.builtin.al
+(kw_table) @type.builtin.al
+(kw_tableconnectiontype) @type.builtin.al
+(kw_tablefilter) @type.builtin.al
+(kw_testaction) @type.builtin.al
+(kw_testfield) @type.builtin.al
+(kw_testfilterfield) @type.builtin.al
+(kw_testhttprequestmessage) @type.builtin.al
+(kw_testhttpresponsemessage) @type.builtin.al
+(kw_testpage) @type.builtin.al
+(kw_testpermissions) @type.builtin.al
+(kw_testrequestpage) @type.builtin.al
+(kw_text) @type.builtin.al
+(kw_textbuilder) @type.builtin.al
+(kw_textconst) @type.builtin.al
+(kw_textencoding) @type.builtin.al
+(kw_time) @type.builtin.al
+(kw_transactionmodel) @type.builtin.al
+(kw_transactiontype) @type.builtin.al
+(kw_variant) @type.builtin.al
+(kw_verbosity) @type.builtin.al
+(kw_version) @type.builtin.al
+(kw_view) @type.builtin.al
+(kw_views) @type.builtin.al
+(kw_webserviceactioncontext) @type.builtin.al
+(kw_webserviceactionresultcode) @type.builtin.al
+(kw_xmlattribute) @type.builtin.al
+(kw_xmlattributecollection) @type.builtin.al
+(kw_xmlcdata) @type.builtin.al
+(kw_xmlcomment) @type.builtin.al
+(kw_xmldeclaration) @type.builtin.al
+(kw_xmldocument) @type.builtin.al
+(kw_xmldocumenttype) @type.builtin.al
+(kw_xmlelement) @type.builtin.al
+(kw_xmlnamespacemanager) @type.builtin.al
+(kw_xmlnametable) @type.builtin.al
+(kw_xmlnode) @type.builtin.al
+(kw_xmlnodelist) @type.builtin.al
+(kw_xmlport) @type.builtin.al
+(kw_xmlprocessinginstruction) @type.builtin.al
+(kw_xmlreadoptions) @type.builtin.al
+(kw_xmltext) @type.builtin.al
+(kw_xmlwriteoptions) @type.builtin.al
 
 
 (operator_word) @keyword.operator
 (object_keyword) @keyword
-(type_keyword) @type.builtin
+; A builtin type used in code (`Database`, `ObjectType`) is a builtin type
+; keyword, which BC themes draw in the keyword color.
+(type_keyword) @type.builtin.al
 (metadata_keyword) @keyword
 (property_keyword) @keyword
 (keyword) @keyword
@@ -254,31 +256,51 @@
 
 ; Object declarations. The leaf is captured rather than the name_or_keyword
 ; wrapper so the generic (identifier)/(quoted_identifier) captures above do not
-; win inside the wrapper's span.
-(object_declaration name: (name_or_keyword (name (quoted_identifier) @title)))
-(object_declaration name: (name_or_keyword (name (identifier) @title)))
+; win inside the wrapper's span. The name is a type, as Microsoft's AL
+; extension tags it (`class`).
+(object_declaration name: (name_or_keyword (name (quoted_identifier) @type)))
+(object_declaration name: (name_or_keyword (name (identifier) @type)))
 (object_declaration
   name: (name_or_keyword [
     (object_keyword)
     (metadata_keyword)
     (property_keyword)
     (keyword)
-  ] @title))
+  ] @type))
 
 ; Properties. Each capture is on a leaf: a capture on the name wrapper loses
 ; to the identifier capture inside it.
 (property_assignment name: [(property_keyword) (metadata_keyword) (keyword)] @property)
 (property_assignment name: (name [(identifier) (quoted_identifier)] @property))
 
+; A word in a property's value is one of the property's values, an enum
+; member (`DataClassification = ToBeClassified`), except `true` and `false`.
 (property_assignment
   name: (_)
-  (name (identifier) @constant.builtin))
+  (name (identifier) @constant.enum.al)
+  (#not-match? @constant.enum.al "^([tT][rR][uU][eE]|[fF][aA][lL][sS][eE])$"))
 (property_assignment
   name: (_)
   (name (quoted_identifier) @type.builtin))
+; The value of a property that names an object is that object.
+(property_assignment
+  name: (_) @_property
+  (name (identifier) @type.builtin)
+  (#match? @_property "^(?i)(SourceTable|TableRelation|LookupPageId|DrillDownPageId|CardPageId|RunObject|LinkedObject|DataItemTable|SourceTableView|PageId|TableNo)$"))
+; In `Permissions`, the object after `tabledata` (or another object kind) is
+; that object, and the permission letters (`r`, `rimd`) are plain text.
+(property_assignment
+  name: (_) @_property
+  (name (identifier) @permission.al)
+  (#match? @_property "^(?i)Permissions$"))
+(property_assignment
+  value: (property_keyword)
+  .
+  value: (name (identifier) @type.builtin))
 
-; Attributes
-(attribute name: (identifier) @attribute)
+; Attributes. Microsoft's AL extension scopes an attribute name
+; entity.other.attribute, which BC themes draw in the foreground.
+(attribute name: (identifier) @attribute.al)
 
 ; Definitions
 (procedure_declaration name: (name (identifier) @function))
@@ -436,6 +458,18 @@
 (scope_call_suffix member: (name (identifier) @function.call))
 (scope_call_suffix member: (name (quoted_identifier) @function.call))
 
-; Scope references
-(scope_suffix member: (name (identifier) @type.builtin))
+; Scope references. A word after `::` is an enum or option member
+; (`Status::Released`), unless what precedes `::` is an object kind,
+; `Database`, `Enum` or `Interface`, which names an object. A quoted name after
+; `::` is an object.
+(scope_suffix member: (name (identifier) @constant.enum.al))
 (scope_suffix member: (name (quoted_identifier) @type.builtin))
+(postfix_expression
+  (primary_expression (object_keyword))
+  .
+  (scope_suffix member: (name (identifier) @type.builtin)))
+(postfix_expression
+  (primary_expression (type_keyword) @_scope)
+  .
+  (scope_suffix member: (name (identifier) @type.builtin))
+  (#match? @_scope "^(?i)(Database|Enum|Interface)$"))

@@ -28,7 +28,7 @@ files, snippets, themes, and JSON schemas for project files.
 | `inline_values.scm` | inline value hints (procedure parameters) |
 | `injections.scm` | language injection points |
 | `overrides.scm` | tree-sitter quirk overrides |
-| `semantic_token_rules.json` | maps the LSP semantic token types (from `al-lsp`) to Zed theme classes (e.g. `builtinType→@type.builtin`, `tableField→@property`, `excludedCode→@comment.unused`) |
+| `semantic_token_rules.json` | maps the LSP semantic token types (from `al-lsp`) to Zed theme classes, each the style Microsoft's AL extension gives the same construct (e.g. `builtinType→@type.builtin.al`, `tableField→@variable.other.member`, `excludedCode→@comment.unused`). The `.al` classes are defined by the BC themes and fall back to their generic prefix in other themes |
 | `tasks.json` | the AL task list Zed's task picker shows: compile, package, download symbols, authenticate, project-wide lint and format, dependency queries, project analysis reports, workspace fixups and test runs, all `al-explorer` subcommands. Work on the symbol or line under the cursor (subscribers of an event, the source of a subscriber, composed objects, impact, suggested events, sorting members) is a code lens or code action on that line instead, so it cannot run in the wrong place |
 | `runnables.scm` | inline run buttons next to `[Test]`, `[TestPermissions]` and `[HandlerFunctions]` procedures, tagged `al-test` |
 
