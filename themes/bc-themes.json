@@ -144,6 +144,11 @@
             "font_weight": null
           },
           "property": {
+            "color": "#D4D4D4",
+            "font_style": null,
+            "font_weight": null
+          },
+          "property.json_key": {
             "color": "#4EC9B0",
             "font_style": null,
             "font_weight": null
@@ -332,6 +337,11 @@
             "font_weight": null
           },
           "property": {
+            "color": "#202428",
+            "font_style": null,
+            "font_weight": null
+          },
+          "property.json_key": {
             "color": "#56616C",
             "font_style": null,
             "font_weight": null
