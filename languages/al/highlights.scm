@@ -286,21 +286,43 @@
 (property_assignment
   name: (_) @_property
   (name (identifier) @type.builtin)
-  (#match? @_property "^(?i)(SourceTable|TableRelation|LookupPageId|DrillDownPageId|CardPageId|RunObject|LinkedObject|DataItemTable|SourceTableView|PageId|TableNo)$"))
-; In `Permissions`, the object after `tabledata` (or another object kind) is
-; that object, and the permission letters (`r`, `rimd`) are plain text.
+  (#match? @_property "^(?i)(SourceTable|TableRelation|LookupPageId|DrillDownPageId|CardPageId|RunObject|LinkedObject|DataItemTable|SourceTableView|PageId|TableNo|DefaultRenderingLayout|DefaultLayout)$"))
+; In `Permissions`, a name is an object (`tabledata Item`), and a name made
+; only of permission letters (`r`, `rimd`, `X`) is the permissions, drawn as
+; plain text.
+(property_assignment
+  name: (_) @_property
+  (name (identifier) @type.builtin)
+  (#match? @_property "^(?i)Permissions$"))
 (property_assignment
   name: (_) @_property
   (name (identifier) @permission.al)
-  (#match? @_property "^(?i)Permissions$"))
-(property_assignment
-  value: (property_keyword)
-  .
-  value: (name (identifier) @type.builtin))
+  (#match? @_property "^(?i)Permissions$")
+  (#match? @permission.al "^(?i)[rimdx]+$"))
 
 ; Attributes. Microsoft's AL extension scopes an attribute name
 ; entity.other.attribute, which BC themes draw in the foreground.
 (attribute name: (identifier) @attribute.al)
+
+; Names of page controls and actions, report and query columns and data items,
+; page views, report layouts and xmlport elements: the first name in
+; `keyword(Name ...)`. Microsoft scopes them entity.name.class, the type
+; color. A table field starts with its number, so `field(1; Name; Type)` does
+; not match.
+(object_section
+  keyword: (_) @_section
+  (parenthesized_block . [(identifier) (quoted_identifier) (control_keyword)] @type)
+  (#match? @_section "^(?i)(field|group|part|repeater|cuegroup|fixed|grid|usercontrol|systempart|label|addfirst|addlast|addafter|addbefore|movefirst|movelast|moveafter|movebefore|modify|action|actionref|separator|customaction|fileuploadaction|systemaction|column|dataitem|filter|view|layout|textelement|fieldelement|fieldattribute|tableelement)$"))
+; The table of a data item and the page of a part name an object.
+(object_section
+  keyword: (_) @_section
+  (parenthesized_block
+    (semicolon) @_separator
+    .
+    [(identifier) (quoted_identifier)] @type.builtin)
+  (#match? @_section "^(?i)(dataitem|part)$"))
+; The object an extension extends, or an interface a codeunit implements.
+(implements_clause (name [(identifier) (quoted_identifier)] @type))
 
 ; Definitions
 (procedure_declaration name: (name (identifier) @function))
@@ -386,7 +408,7 @@
 (type_reference (name_or_keyword (name (identifier) @type.builtin)))
 (type_reference (name_or_keyword (name (quoted_identifier) @type.builtin)))
 (type_reference (qualified_name (name [(identifier) (quoted_identifier)] @type.builtin)))
-(label_declaration type: (_) @type.builtin)
+(label_declaration type: (_) @type.builtin.al)
 
 ; Element types after `of`: `array[3] of Enum "Level"`, `List of [Text]`,
 ; `Dictionary of [Code[20], List of [Integer]]`. The words inside the brackets
@@ -458,18 +480,37 @@
 (scope_call_suffix member: (name (identifier) @function.call))
 (scope_call_suffix member: (name (quoted_identifier) @function.call))
 
-; Scope references. A word after `::` is an enum or option member
-; (`Status::Released`), unless what precedes `::` is an object kind,
-; `Database`, `Enum` or `Interface`, which names an object. A quoted name after
-; `::` is an object.
-(scope_suffix member: (name (identifier) @constant.enum.al))
-(scope_suffix member: (name (quoted_identifier) @type.builtin))
+; Built-in calls. Microsoft's AL extension scopes a built-in function
+; support.function, which BC themes draw in the foreground, and the language
+; server sends these as builtinFunction tokens. A global built-in comes from
+; data/builtin_functions.json. A member is built in when its name is a Record
+; method (Microsoft's TableClass metadata, as in al-syntax's
+; record_methods.json) or when it is called on an object kind or a system
+; scope (`Report.Run`, `Session.SessionId`). A query cannot see the receiver's
+; type, so a user procedure named like a Record method also matches.
 (postfix_expression
-  (primary_expression (object_keyword))
+  (primary_expression (name (identifier) @function.builtin.al))
+  (call_suffix)
+  (#match? @function.builtin.al "^(?i)(Abs|ApplicationPath|ArrayLen|CalcDate|Clear|ClearAll|ClearLastError|Commit|CompanyName|CompressArray|Confirm|ConvertStr|CopyArray|CopyStr|CreateDateTime|CreateGuid|CurrentDateTime|DMY2Date|DT2Date|DT2Time|Date2DMY|DelChr|DelStr|Dialog|Download|DownloadFromStream|Error|Evaluate|FieldCaption|FieldNo|Format|FromInteger|GetDotNetType|GetLastErrorCode|GetLastErrorText|GlobalLanguage|GuiAllowed|Hyperlink|IncStr|InsStr|IsNull|IsNullGuid|LowerCase|Maximum|Message|Minimum|Names|NormalDate|NullGuid|Ordinals|PadStr|Power|Random|Randomize|Rollback|Round|Run|RunModal|SelectStr|Sleep|SortArray|Sqrt|StrLen|StrMenu|StrPos|StrSubstNo|TableCaption|TenantId|Time|Today|TypeHelper|Upload|UploadIntoStream|UpperCase|UserId|Variant2Date|Variant2Time|View|ViewFromStream|WindowsLanguage|WorkDate)$"))
+(member_call_suffix
+  member: (name (identifier) @function.builtin.al)
+  (#match? @function.builtin.al "^(?i)(AddLink|AddLoadFields|AreFieldsLoaded|Ascending|CalcFields|CalcSums|ChangeCompany|ClearMarks|Consistent|Copy|CopyFilter|CopyFilters|CopyLinks|Count|CountApprox|CurrentCompany|CurrentKey|Delete|DeleteAll|DeleteLink|DeleteLinks|FieldActive|FieldCaption|FieldError|FieldName|FieldNo|FilterGroup|Find|FindFirst|FindLast|FindSet|FullyQualifiedName|Get|GetAscending|GetBySystemId|GetFilter|GetFilters|GetPosition|GetRangeMax|GetRangeMin|GetView|HasFilter|HasLinks|Init|Insert|IsEmpty|IsTemporary|LoadFields|LockTable|Mark|MarkedOnly|Modify|ModifyAll|Next|ReadConsistency|ReadIsolation|ReadPermission|RecordId|RecordLevelLocking|Relation|Rename|Reset|SecurityFiltering|SetAscending|SetAutoCalcFields|SetBaseLoadFields|SetCurrentKey|SetFilter|SetLoadFields|SetPermissionFilter|SetPosition|SetRange|SetRecFilter|SetView|TableCaption|TableName|TestField|TransferFields|Truncate|Validate|WritePermission)$"))
+(postfix_expression
+  (primary_expression) @_receiver
+  (member_call_suffix member: (name (identifier) @function.builtin.al))
+  (#match? @_receiver "^(?i)(Codeunit|Database|Page|Query|Report|XmlPort|Session|System|CurrentSession|CompanyProperty|NavApp|NumberSequence|TaskScheduler|Debugger|IsolatedStorage|ProductName)$"))
+
+; Scope references. A name after `::` is an enum or option member
+; (`Status::Released`, `"Document Type"::"Purchase Receipt"`), unless what
+; precedes `::` is an object kind, `Database`, `Enum` or `Interface`, which
+; names an object (`Codeunit::"Sales-Post"`).
+(scope_suffix member: (name [(identifier) (quoted_identifier)] @constant.enum.al))
+(postfix_expression
+  (primary_expression (object_keyword)) @_scope
   .
-  (scope_suffix member: (name (identifier) @type.builtin)))
+  (scope_suffix member: (name [(identifier) (quoted_identifier)] @type.builtin)))
 (postfix_expression
   (primary_expression (type_keyword) @_scope)
   .
-  (scope_suffix member: (name (identifier) @type.builtin))
+  (scope_suffix member: (name [(identifier) (quoted_identifier)] @type.builtin))
   (#match? @_scope "^(?i)(Database|Enum|Interface)$"))

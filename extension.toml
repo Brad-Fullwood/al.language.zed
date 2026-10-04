@@ -36,4 +36,4 @@ name = "AL Tools"
 #        <(echo "extension"; cd tree-sitter-al && git rev-parse HEAD)
 [grammars.al]
 repository = "https://github.com/Brad-Fullwood/AL-Tree-Sitter"
-rev = "e7df842a39a7188b36a4e755d245044e03a73abe"
+rev = "6990834791f627e781f50a22f0af09db9de50650"
