@@ -653,6 +653,26 @@ fn is_subscribed_event_name(node: Node<'_>, source: &[u8]) -> bool {
     position == Some(2)
 }
 
+/// A data item's name: a query's data item has its own token type, while
+/// Microsoft's server reports a report's data item as a variable, which is how
+/// report code uses it.
+fn data_item_type(node: Node<'_>) -> u32 {
+    let mut ancestor = node.parent();
+    while let Some(candidate) = ancestor {
+        if candidate.kind() == "object_declaration" {
+            let in_report = candidate
+                .child_by_field_name("kind")
+                .is_some_and(|kind| matches!(kind.kind(), "kw_report" | "kw_reportextension"));
+            if in_report {
+                return token_types::VARIABLE;
+            }
+            break;
+        }
+        ancestor = candidate.parent();
+    }
+    token_types::QUERY_DATA_ITEM
+}
+
 /// Whether `node` is the name of a `property_assignment`.
 fn is_property_name(node: Node<'_>) -> bool {
     node.parent()
@@ -679,12 +699,18 @@ const OBJECT_KIND_PREFIXES: &[&str] = &[
 /// Properties whose unquoted value names an object.
 const OBJECT_REFERENCE_PROPERTIES: &[&str] = &[
     "cardpageid",
+    "dataitemtable",
     "defaultlayout",
     "defaultrenderinglayout",
     "drilldownpageid",
+    "linkedobject",
     "lookuppageid",
+    "pageid",
+    "runobject",
     "sourcetable",
+    "sourcetableview",
     "tablerelation",
+    "tableno",
 ];
 
 /// The token of an identifier or quoted name that sits in a scope access or
@@ -941,7 +967,7 @@ fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -
 
     match kw.as_str() {
         "key" => Some(token_types::TABLE_KEY),
-        "dataitem" => Some(token_types::QUERY_DATA_ITEM),
+        "dataitem" => Some(data_item_type(node)),
         "column" => Some(token_types::QUERY_COLUMN),
         "tableelement" => Some(token_types::XMLPORT_TABLE_ELEMENT),
         _ => None,
@@ -1048,6 +1074,9 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
         .find(|(name, _)| kw.eq_ignore_ascii_case(name))
         .map(|(_, ty)| *ty)
     {
+        if ty == token_types::QUERY_DATA_ITEM {
+            return Some(data_item_type(node));
+        }
         return Some(ty);
     }
     page_member_name(paren_block, kw, source)
@@ -1345,6 +1374,16 @@ mod tests {
             !token_types_for_text(src, &tokens, "false").contains(&token_types::ENUM_MEMBER),
             "a boolean value is not an enum member"
         );
+    }
+
+    #[test]
+    fn a_report_data_item_is_a_variable_and_a_query_data_item_is_not() {
+        let src = "report 50000 R\n{\n    dataset\n    {\n        dataitem(ItemLedgerEntry; \"Item Ledger Entry\")\n        {\n        }\n    }\n}\nquery 50001 Q\n{\n    elements\n    {\n        dataitem(CustomerItem; Customer)\n        {\n        }\n    }\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(src, &tokens, "ItemLedgerEntry", token_types::VARIABLE);
+        assert_token_type_for_text(src, &tokens, "CustomerItem", token_types::QUERY_DATA_ITEM);
     }
 
     #[test]
