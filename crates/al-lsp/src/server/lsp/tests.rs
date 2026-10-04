@@ -2110,6 +2110,74 @@ mod project_diagnostics_close_tests {
             "the edit deleted the cached findings"
         );
     }
+
+    /// A lens click used to return its locations to the editor, which Zed
+    /// does not show. Clicking a publisher's subscriber lens must open the
+    /// subscriber with `window/showDocument`.
+    #[tokio::test]
+    async fn the_subscriber_lens_opens_the_subscriber() {
+        use futures::SinkExt;
+        let (mut service, mut socket) = LspService::new(AlLsp::new);
+        let shown = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let sink = Arc::clone(&shown);
+        initialize(&mut service).await;
+        let server = service.inner();
+        server
+            .workspace_init_state
+            .send_replace(WorkspaceInitState::Ready);
+        tokio::spawn(async move {
+            while let Some(message) = socket.next().await {
+                if message.method() == "window/showDocument" {
+                    sink.lock()
+                        .unwrap()
+                        .push(message.params().cloned().unwrap());
+                    if let Some(id) = message.id().cloned() {
+                        let reply = tower_lsp::jsonrpc::Response::from_ok(
+                            id,
+                            serde_json::json!({ "success": true }),
+                        );
+                        let _ = socket.send(reply).await;
+                    }
+                }
+            }
+        });
+
+        let publisher = Url::parse("file:///proj/Events.Codeunit.al").unwrap();
+        let publisher_text = "codeunit 50100 \"Pallet Events\"\n{\n    [IntegrationEvent(false, false)]\n    procedure OnAfterPost()\n    begin\n    end;\n}\n";
+        server
+            .workspace
+            .documents
+            .open_with_client_version(publisher.clone(), publisher_text.to_string(), 1)
+            .unwrap();
+        al_workspace::on_document_change(&server.workspace, &publisher, publisher_text);
+        server.workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/Handler.Codeunit.al"),
+            "codeunit 50101 Handler\n{\n    [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Pallet Events\", 'OnAfterPost', '', false, false)]\n    local procedure HandleAfterPost()\n    begin\n    end;\n}\n".to_string(),
+        );
+
+        let result = server
+            .execute_command(ExecuteCommandParams {
+                command: "al.showSubscribers".to_string(),
+                arguments: vec![serde_json::json!({
+                    "uri": publisher,
+                    "position": { "line": 3, "character": 14 },
+                })],
+                work_done_progress_params: Default::default(),
+            })
+            .await
+            .expect("the command runs");
+        settle().await;
+
+        assert_eq!(result.unwrap().as_array().map(Vec::len), Some(1));
+        let shown = shown.lock().unwrap().clone();
+        assert_eq!(
+            shown.len(),
+            1,
+            "one subscriber is opened directly: {shown:?}"
+        );
+        assert_eq!(shown[0]["uri"], "file:///proj/Handler.Codeunit.al");
+        assert_eq!(shown[0]["selection"]["start"]["line"], 3);
+    }
 }
 
 mod did_change_offload_tests {
