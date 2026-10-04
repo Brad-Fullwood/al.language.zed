@@ -29,14 +29,14 @@ files, snippets, themes, and JSON schemas for project files.
 | `injections.scm` | language injection points |
 | `overrides.scm` | tree-sitter quirk overrides |
 | `semantic_token_rules.json` | maps the LSP semantic token types (from `al-lsp`) to Zed theme classes (e.g. `builtinType→@type.builtin`, `tableField→@property`, `excludedCode→@comment.unused`) |
-| `tasks.json` | the AL task list Zed's task picker shows: compile, package, download symbols, authenticate, lint/format/fix, symbol and dependency queries, analysis reports, workspace fixups, and test runs, all `al-explorer` subcommands |
-| `runnables.scm` | inline run buttons next to `[Test]`, `[TestPermissions]`, `[HandlerFunctions]`, `[EventSubscriber]`, `[IntegrationEvent]` and `[BusinessEvent]` procedures, tagged `al-test` / `al-event-subscriber` / `al-event-publisher` |
+| `tasks.json` | the AL task list Zed's task picker shows: compile, package, download symbols, authenticate, project-wide lint and format, dependency queries, project analysis reports, workspace fixups and test runs, all `al-explorer` subcommands. Work on the symbol or line under the cursor (subscribers of an event, the source of a subscriber, composed objects, impact, suggested events, sorting members) is a code lens or code action on that line instead, so it cannot run in the wrong place |
+| `runnables.scm` | inline run buttons next to `[Test]`, `[TestPermissions]` and `[HandlerFunctions]` procedures, tagged `al-test` |
 
 ### `al-explorer` must be on `PATH`
 
-`tasks.json` and `runnables.scm` are a pair: the runnable queries emit the `al-test`,
-`al-event-publisher` and `al-event-subscriber` tags that task entries subscribe to, so a tag added to
-one needs a task in the other or the inline run button resolves to nothing. The smoke test
+`tasks.json` and `runnables.scm` are a pair: the runnable queries emit the `al-test` tag that task
+entries subscribe to, so a tag added to one needs a task in the other or the inline run button
+resolves to nothing. The smoke test
 `every_runnable_tag_has_a_task_that_subscribes_to_it` enforces that.
 
 Both invoke a bare `al-explorer`. Stable Zed task JSON cannot address a binary inside the extension

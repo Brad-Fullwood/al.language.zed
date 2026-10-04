@@ -216,15 +216,41 @@
 (object_keyword) @keyword
 (type_keyword) @type.builtin
 (metadata_keyword) @keyword
-(property_keyword) @property
+(property_keyword) @keyword
 (keyword) @keyword
 (control_keyword) @keyword.control
+(kw_keys) @keyword
+(kw_key) @keyword
+(movement_directive) @keyword
 
 ; Punctuation and operators
 (operator) @operator
+; A sign is a leaf. The `not` form wraps op_not, which has its own capture.
+((unary_operator) @operator
+ (#match? @operator "^[-+!]$"))
 (semicolon) @punctuation
 (comma) @punctuation
+["." ":" "::"] @punctuation
+"=" @operator
 ["(" ")" "[" "]" "{" "}"] @punctuation.bracket
+
+; A case label with a leading minus is one token: `-1`, `-Limit`,
+; `-Level::Gold.AsInteger()`. A number reads as a number, anything else as a
+; variable.
+(signed_case_label) @variable
+((signed_case_label) @number
+ (#match? @number "^-[ \t\r\n]*[0-9]"))
+
+; The kind of an object declaration is a keyword, as Microsoft's BC themes draw
+; it. `codeunit`, `table` and the other kinds that also name a variable type are
+; type.builtin above, so this pattern comes later.
+(object_declaration kind: _ @keyword)
+
+; Namespace names, in `namespace` and `using`, are drawn as types, as Microsoft's
+; BC themes color entity.name.namespace.
+(namespace_or_using_declaration name: (name [(identifier) (quoted_identifier)] @type))
+(namespace_or_using_declaration
+  name: (qualified_name (name [(identifier) (quoted_identifier)] @type)))
 
 ; Object declarations. The leaf is captured rather than the name_or_keyword
 ; wrapper so the generic (identifier)/(quoted_identifier) captures above do not
@@ -239,8 +265,10 @@
     (keyword)
   ] @title))
 
-; Properties
-(property_assignment name: (_) @property)
+; Properties. Each capture is on a leaf: a capture on the name wrapper loses
+; to the identifier capture inside it.
+(property_assignment name: [(property_keyword) (metadata_keyword) (keyword)] @property)
+(property_assignment name: (name [(identifier) (quoted_identifier)] @property))
 
 (property_assignment
   name: (_)
@@ -255,20 +283,139 @@
 ; Definitions
 (procedure_declaration name: (name (identifier) @function))
 (procedure_declaration name: (name (quoted_identifier) @function))
-(trigger_declaration name: (_) @function)
-(event_declaration name: (_) @function)
+(trigger_declaration name: (name_or_keyword (name [(identifier) (quoted_identifier)] @function)))
+(trigger_declaration
+  name: (name_or_keyword [
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (kw_function)
+    (keyword)
+  ] @function))
+(event_declaration name: (name_or_keyword (name [(identifier) (quoted_identifier)] @function)))
+(event_declaration
+  name: (name_or_keyword [
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (kw_function)
+    (keyword)
+  ] @function))
 
 ; Variables
 (regular_variable_declaration name: (name_or_keyword (name (identifier) @variable.declaration)))
 (regular_variable_declaration name: (name_or_keyword (name (quoted_identifier) @variable.declaration)))
 (parameter name: (name_or_keyword (name (identifier) @variable.parameter)))
 (parameter name: (name_or_keyword (name (quoted_identifier) @variable.parameter)))
+(label_declaration name: (name_or_keyword (name [(identifier) (quoted_identifier)] @variable.declaration)))
+
+; A variable, label or parameter may be named after a keyword (Page, Value,
+; Code). Where it is declared, and where it is used as a plain value, it keeps
+; the variable capture. Before a member or scope suffix the word may be the
+; object itself (Page.RunModal), so there it keeps the keyword capture.
+(regular_variable_declaration
+  name: (name_or_keyword [
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (kw_function)
+    (keyword)
+  ] @variable.declaration))
+(label_declaration
+  name: (name_or_keyword [
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (kw_function)
+    (keyword)
+  ] @variable.declaration))
+(parameter
+  name: (name_or_keyword [
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (kw_function)
+    (keyword)
+  ] @variable.parameter))
+(for_statement
+  iterator: (name_or_keyword [
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (kw_function)
+    (keyword)
+  ] @variable))
+(foreach_statement
+  iterator: (name_or_keyword [
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (kw_function)
+    (keyword)
+  ] @variable))
+(postfix_expression
+  (primary_expression [(object_keyword) (type_keyword)] @variable) .)
+(postfix_expression
+  (primary_expression [(object_keyword) (type_keyword)] @variable)
+  .
+  (index_suffix))
 
 ; Types
 (type_reference (name_or_keyword (name (identifier) @type.builtin)))
 (type_reference (name_or_keyword (name (quoted_identifier) @type.builtin)))
-(type_reference (qualified_name) @type.builtin)
+(type_reference (qualified_name (name [(identifier) (quoted_identifier)] @type.builtin)))
 (label_declaration type: (_) @type.builtin)
+
+; Element types after `of`: `array[3] of Enum "Level"`, `List of [Text]`,
+; `Dictionary of [Code[20], List of [Integer]]`. The words inside the brackets
+; are plain tokens in the tree, so each nesting level has its own pattern.
+(of_clause (name_or_keyword (name [(identifier) (quoted_identifier)] @type.builtin)))
+(of_clause
+  (name_or_keyword [
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (keyword)
+  ] @type.builtin))
+(of_clause
+  (bracketed_block [
+    (control_keyword)
+    (type_keyword)
+    (object_keyword)
+    (metadata_keyword)
+    (property_keyword)
+    (keyword)
+    (identifier)
+    (quoted_identifier)
+  ] @type.builtin))
+(of_clause
+  (bracketed_block
+    (bracketed_block [
+      (control_keyword)
+      (type_keyword)
+      (object_keyword)
+      (metadata_keyword)
+      (property_keyword)
+      (keyword)
+      (identifier)
+      (quoted_identifier)
+    ] @type.builtin)))
+(of_clause
+  (bracketed_block
+    (bracketed_block
+      (bracketed_block [
+        (control_keyword)
+        (type_keyword)
+        (object_keyword)
+        (metadata_keyword)
+        (property_keyword)
+        (keyword)
+        (identifier)
+        (quoted_identifier)
+      ] @type.builtin))))
+; The `of` of a nested List or Dictionary type is a control keyword token.
+((control_keyword) @keyword.control
+ (#match? @keyword.control "^[oO][fF]$"))
 
 ; Calls
 (postfix_expression
@@ -276,6 +423,11 @@
   (call_suffix))
 (postfix_expression
   (primary_expression (name (quoted_identifier) @function.call))
+  (call_suffix))
+; A method named after a keyword, such as TestField in table code.
+(postfix_expression
+  (primary_expression [(object_keyword) (type_keyword)] @function.call)
+  .
   (call_suffix))
 
 (member_call_suffix member: (name (identifier) @function.method.call))

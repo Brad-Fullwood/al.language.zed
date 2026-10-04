@@ -1,5 +1,17 @@
 [
   {
+    "token_type": "parameter",
+    "style": ["variable.parameter", "variable"]
+  },
+  {
+    "token_type": "enumMember",
+    "style": ["variable.other.enummember", "variable"]
+  },
+  {
+    "token_type": "namespace",
+    "style": ["namespace", "type"]
+  },
+  {
     "token_type": "directive",
     "style": ["keyword.directive", "keyword"]
   },

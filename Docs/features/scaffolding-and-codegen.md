@@ -94,8 +94,8 @@ Test generation requires `--subject` so each emitted `[Test]` procedure targets 
 
 MCP reaches the same dispatcher operations through `al_call`: `newProject`, `permissions`,
 `generate`, `sortMembers`, and `organizeFiles`. The language package's tasks include *AL: New
-Project*, *AL: Generate Permission Set*, *AL: Sort Members (Current File)* and *AL: Organize File
-Names*, which run `al-explorer` from `PATH`. No LSP execute command covers scaffolding.
+Project*, *AL: Generate Permission Set* and *AL: Organize File Names*, which run `al-explorer`
+from `PATH`. No LSP execute command covers scaffolding.
 
 ## Compatibility boundaries
 
