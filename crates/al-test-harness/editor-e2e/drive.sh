@@ -102,7 +102,7 @@ fi
 echo "=== running headless $MODE (isolated container; your desktop is untouched) ==="
 podman run --rm --userns=keep-id \
   -v "$ROOT":/repo:ro -v "$OUTDIR":/out:rw \
-  -e OPEN_FILE="$OPEN_FILE" -e OUTD=/out "${INDEX_ENV[@]}" ${KEYS:+-e KEYS="$KEYS"} ${PROJ:+-e PROJ_SUBDIR="$PROJ"} \
+  -e OPEN_FILE="$OPEN_FILE" -e OUTD=/out "${INDEX_ENV[@]}" ${KEYS:+-e KEYS="$KEYS"} ${PROJ:+-e PROJ_SUBDIR="$PROJ"} ${ZED_SHELL:+-e ZED_SHELL="$ZED_SHELL"} \
   "$IMG" "$SCRIPT" 2>&1 | tee "$LOG"
 
 # 3. Collect screenshot(s).

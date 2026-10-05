@@ -104,7 +104,9 @@ pub struct OpenDocument {
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticEntry {
     pub file: PathBuf,
+    /// 1-based. 0 for a finding with no location in a source file.
     pub line: u32,
+    /// 1-based, in UTF-16 code units.
     pub column: u32,
     pub end_line: u32,
     pub end_column: u32,
