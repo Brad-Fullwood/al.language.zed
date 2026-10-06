@@ -341,9 +341,10 @@ impl TrustDecision {
         Some(format!(
             "{} (from {}). The trust record hashes every file a privileged path loads, and it \
              does not follow a symbolic link, walk more than {MAX_HASHED_ENTRIES} entries or \
-             read more than {} MiB of one file or directory, so it cannot vouch for this path. \
-             Nothing was recorded. Replace the link with the file it names, or move the file \
-             into a directory of its own, then run {TRUST_COMMAND} again.",
+             read more than {} MiB, for one file or directory or for every path of the project \
+             together, so it cannot vouch for this path. Nothing was recorded. Replace the link \
+             with the file it names, move the file into a directory of its own, or name fewer \
+             paths, then run {TRUST_COMMAND} again.",
             one_line(&unhashable.value),
             one_line(&unhashable.source),
             hashed_bytes_budget() / (1024 * 1024)
@@ -678,12 +679,18 @@ fn project_analyzer_copies(
 /// [`project_analyzer_copies`] records a copy under the relative path it sits
 /// at, so only that entry can match: a settings value has a settings file as
 /// its source. The hash is taken again here, so a file replaced after the
-/// decision was made does not match either.
-pub(crate) fn lists_project_copy(decision: &TrustDecision, found: &Path) -> bool {
+/// decision was made does not match either. `hashes` holds what the checks of
+/// one analyzer search read, so a directory several entries share is read
+/// once and all of them together read at most the budget of one decision.
+pub(crate) fn lists_project_copy(
+    decision: &TrustDecision,
+    found: &Path,
+    hashes: &mut Hashes,
+) -> bool {
     let relative = shown_within(found, &decision.root);
     let mut unhashable = None;
     let contents = file_and_neighbours_sha256(
-        &mut Hashes::default(),
+        hashes,
         found,
         &decision.root,
         Beside::Assemblies,
@@ -811,8 +818,9 @@ pub fn deny_privileged(config: &mut AlConfig) {
 ///
 /// This is up to seven `stat` calls, a read of the user and repository
 /// settings files, and one `stat` per file under each probing path the
-/// repository sets, at most `MAX_HASHED_ENTRIES` per path, so it can run per
-/// request. A change in any of them means the decision has to be made again.
+/// repository sets, at most `MAX_HASHED_ENTRIES` for all of them together, so
+/// it can run per request. A change in any of them means the decision has to
+/// be made again.
 #[must_use]
 pub fn inputs_fingerprint(project_root: &Path) -> u64 {
     let mut hasher = Sha256::new();
@@ -857,8 +865,9 @@ pub fn inputs_fingerprint(project_root: &Path) -> u64 {
     // The record hashes the tree under each probing path the repository sets,
     // and a running daemon hands that path to `alc`. A pull that changes a
     // file there changes no settings file, so the tree is stamped too.
+    let mut inspected = 0;
     for path in repository_probing_paths(project_root) {
-        stamp_probing_tree(&mut hasher, project_root, &path);
+        stamp_probing_tree(&mut hasher, project_root, &path, &mut inspected);
     }
 
     let digest = hasher.finalize();
@@ -901,9 +910,15 @@ fn repository_probing_paths(project_root: &Path) -> Vec<PathBuf> {
 /// Stamp into `hasher` where the probing path `path` resolves, and the path,
 /// length and modification time of each file the record hashes under it.
 ///
-/// The walk is the one [`Hashes::tree`] makes, with its entry cap, and it
-/// opens no file. A tree the record cannot hash is stamped with the reason.
-fn stamp_probing_tree(hasher: &mut Sha256, project_root: &Path, path: &Path) {
+/// The walk is the one [`Hashes::tree`] makes, with its entry caps, adding
+/// to `inspected` as a decision's walks do, and it opens no file. A tree the
+/// record cannot hash is stamped with the reason.
+fn stamp_probing_tree(
+    hasher: &mut Sha256,
+    project_root: &Path,
+    path: &Path,
+    inspected: &mut usize,
+) {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -930,7 +945,7 @@ fn stamp_probing_tree(hasher: &mut Sha256, project_root: &Path, path: &Path) {
         }
     };
     let mut files = Vec::new();
-    if let Err(reason) = collect_files(&directory, true, &mut files) {
+    if let Err(reason) = collect_files(&directory, true, &mut files, inspected) {
         hasher.update(reason.describe(project_root).as_bytes());
         return;
     }
@@ -1286,6 +1301,13 @@ fn file_and_neighbours_sha256(
                 unhashable,
             );
         }
+        FileHash::OverDecisionBudget => {
+            return not_hashed(
+                &Unhashable::TooManyBytesTogether(file.to_path_buf()),
+                root,
+                unhashable,
+            );
+        }
     };
     let Some(directory) = file.parent() else {
         return own;
@@ -1306,22 +1328,26 @@ fn file_and_neighbours_sha256(
 /// `sha256:<hex>` of a file's bytes, or `None` when it cannot be read or
 /// holds more than the byte budget.
 fn file_sha256(path: &Path) -> Option<String> {
-    match file_hash(path, hashed_bytes_budget()) {
+    match file_hash(path, hashed_bytes_budget(), &mut 0) {
         FileHash::Hashed { sha256, .. } => Some(sha256),
-        FileHash::Unreadable | FileHash::Larger(_) => None,
+        FileHash::Unreadable | FileHash::Larger(_) | FileHash::OverDecisionBudget => None,
     }
 }
 
 /// The most entries one tree is walked for, the same order of limit analyzer
-/// discovery applies. A tree over it cannot be recorded.
+/// discovery applies, and the most every walk of one decision inspects
+/// together. A tree over it cannot be recorded.
 const MAX_HASHED_ENTRIES: usize = 50_000;
 
-/// The most bytes one hash reads: one file, or every file of one tree
-/// together. A file or tree over it cannot be recorded.
+/// The most bytes one hash reads, one file or every file of one tree
+/// together, and the most every hash of one decision reads together. A file
+/// or tree over it cannot be recorded.
 ///
 /// A link the repository ships can lead the hash to a file of any size, such
 /// as `/proc/self/pagemap`, which the kernel serves at 256 GiB, and every
 /// trust decision reads the record's files before the project is trusted.
+/// A settings file can name a thousand directories, each under the limit, so
+/// the limit holds for all of them together too.
 const MAX_HASHED_BYTES: u64 = 256 * 1024 * 1024;
 
 #[cfg(test)]
@@ -1334,7 +1360,7 @@ thread_local! {
     pub(crate) static HASHED_BYTES_READ: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The byte budget of one hash.
+/// The byte budget of one hash, and of every hash of one decision together.
 fn hashed_bytes_budget() -> u64 {
     #[cfg(test)]
     let budget = HASHED_BYTES_BUDGET.with(std::cell::Cell::get);
@@ -1354,6 +1380,12 @@ enum Unhashable {
     /// A symbolic link. The loader follows it and the walk does not, so a
     /// commit could change what it names without changing anything hashed.
     Link(PathBuf),
+    /// Walking this directory would take the entries one decision inspects
+    /// past `MAX_HASHED_ENTRIES`.
+    TooManyEntriesTogether(PathBuf),
+    /// Reading this file or directory would take the bytes one decision
+    /// reads past `MAX_HASHED_BYTES`.
+    TooManyBytesTogether(PathBuf),
 }
 
 impl Unhashable {
@@ -1371,6 +1403,16 @@ impl Unhashable {
             Unhashable::Link(path) => {
                 format!("{} is a symbolic link", shown_within(path, root))
             }
+            Unhashable::TooManyEntriesTogether(directory) => format!(
+                "{} and the paths hashed before it hold more than {MAX_HASHED_ENTRIES} entries \
+                 together",
+                shown_within(directory, root)
+            ),
+            Unhashable::TooManyBytesTogether(path) => format!(
+                "{} and the paths hashed before it hold more than {} MiB together",
+                shown_within(path, root),
+                hashed_bytes_budget() / (1024 * 1024)
+            ),
         }
     }
 }
@@ -1394,38 +1436,66 @@ enum FileHash {
     Unreadable,
     /// The file holds more than this many bytes, the limit it was read under.
     Larger(u64),
+    /// The file holds more bytes than the decision has left to read, or the
+    /// decision has none left.
+    OverDecisionBudget,
 }
 
 /// The hashes one read of the repository took, so a file or a tree that
-/// several values name is read once.
+/// several values name is read once, and the bytes and entries they took
+/// together.
 ///
 /// An analyzer path is hashed with its directory for the settings value and
 /// again for the copy [`project_analyzer_copies`] records, and a probing path
 /// often names the same directory. Each of them used to read every byte
 /// again, so a large file beside the analyzer cost every decision several
-/// times over.
+/// times over. Paths that each fit the limits of one hash are held to the
+/// same limits together, so a settings file that names many of them costs
+/// one budget.
 #[derive(Default)]
-struct Hashes {
+pub(crate) struct Hashes {
     files: HashMap<PathBuf, FileHash>,
     trees: HashMap<(PathBuf, Tree), Result<String, Unhashable>>,
+    /// The bytes every hash so far read.
+    read: u64,
+    /// The entries every walk so far inspected.
+    inspected: usize,
 }
 
 impl Hashes {
-    /// The hash of the file at `path`, reading at most `limit` bytes of it.
+    /// The hash of the file at `path`, reading at most `limit` bytes of it,
+    /// and no more than the decision has left.
     fn file(&mut self, path: &Path, limit: u64) -> FileHash {
+        let budget = hashed_bytes_budget();
+        let allowed = limit.min(budget.saturating_sub(self.read));
+        let refused = || {
+            if allowed < limit {
+                FileHash::OverDecisionBudget
+            } else {
+                FileHash::Larger(limit)
+            }
+        };
         match self.files.get(path) {
             Some(FileHash::Hashed { bytes, .. }) if *bytes > limit => {
                 return FileHash::Larger(limit);
             }
             // Read under a smaller limit, so the file may fit this one.
-            Some(FileHash::Larger(read_under)) if *read_under < limit => {}
-            Some(FileHash::Larger(_)) => return FileHash::Larger(limit),
+            Some(FileHash::Larger(read_under)) if *read_under < allowed => {}
+            Some(FileHash::Larger(_)) => return refused(),
             Some(known) => return known.clone(),
             None => {}
         }
-        let hashed = file_hash(path, limit);
+        // Only a file that reported less than it held, as `/proc` files
+        // report none, reads past the budget. Nothing more is opened then.
+        if self.read > budget {
+            return FileHash::OverDecisionBudget;
+        }
+        let hashed = file_hash(path, allowed, &mut self.read);
         self.files.insert(path.to_path_buf(), hashed.clone());
-        hashed
+        match hashed {
+            FileHash::Larger(_) => refused(),
+            other => other,
+        }
     }
 
     /// `<count> files, sha256:<hex>` over the `shape` tree at `dir`, by
@@ -1442,10 +1512,11 @@ impl Hashes {
 
     fn hash_tree(&mut self, dir: &Path, shape: Tree) -> Result<String, Unhashable> {
         let mut files = Vec::new();
-        collect_files(dir, shape == Tree::Below, &mut files)?;
+        let inspected = &mut self.inspected;
+        collect_files(dir, shape == Tree::Below, &mut files, inspected)?;
         if shape == Tree::Runtime {
-            collect_files(&dir.join("host"), true, &mut files)?;
-            collect_files(&dir.join("shared"), true, &mut files)?;
+            collect_files(&dir.join("host"), true, &mut files, inspected)?;
+            collect_files(&dir.join("shared"), true, &mut files, inspected)?;
         }
         let budget = hashed_bytes_budget();
         let too_large = || Unhashable::TooManyBytes(dir.to_path_buf());
@@ -1456,6 +1527,13 @@ impl Hashes {
             .fold(0u64, |total, file| total.saturating_add(file.bytes));
         if listed > budget {
             return Err(too_large());
+        }
+        let unread = files
+            .iter()
+            .filter(|file| !matches!(self.files.get(&file.path), Some(FileHash::Hashed { .. })))
+            .fold(0u64, |total, file| total.saturating_add(file.bytes));
+        if unread > budget.saturating_sub(self.read) {
+            return Err(Unhashable::TooManyBytesTogether(dir.to_path_buf()));
         }
         files.sort();
         let mut read = 0u64;
@@ -1471,6 +1549,9 @@ impl Hashes {
                 }
                 FileHash::Unreadable => {}
                 FileHash::Larger(_) => return Err(too_large()),
+                FileHash::OverDecisionBudget => {
+                    return Err(Unhashable::TooManyBytesTogether(dir.to_path_buf()));
+                }
             }
             hasher.update([0u8]);
         }
@@ -1482,11 +1563,12 @@ impl Hashes {
     }
 }
 
-/// Read the file at `path` into a hash, at most `limit` bytes of it.
+/// Read the file at `path` into a hash, at most `limit` bytes of it, adding
+/// what it reads to `read`.
 ///
 /// A file whose length is over `limit` is refused before it is opened, and
 /// one that reports less, as `/proc` files report none, stops at `limit`.
-fn file_hash(path: &Path, limit: u64) -> FileHash {
+fn file_hash(path: &Path, limit: u64, read: &mut u64) -> FileHash {
     match std::fs::metadata(path) {
         Ok(metadata) if !metadata.is_file() => return FileHash::Unreadable,
         Ok(metadata) if metadata.len() > limit => return FileHash::Larger(limit),
@@ -1503,19 +1585,20 @@ fn file_hash(path: &Path, limit: u64) -> FileHash {
     // multiple of eight bytes, so a read cut to the byte past `limit` failed
     // where the file was over it.
     loop {
-        let read = match std::io::Read::read(&mut file, &mut buffer) {
+        let chunk = match std::io::Read::read(&mut file, &mut buffer) {
             Ok(0) => break,
-            Ok(read) => read,
+            Ok(chunk) => chunk,
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(_) => return FileHash::Unreadable,
         };
         #[cfg(test)]
-        HASHED_BYTES_READ.with(|total| total.set(total.get() + read as u64));
-        bytes += read as u64;
+        HASHED_BYTES_READ.with(|total| total.set(total.get() + chunk as u64));
+        *read = read.saturating_add(chunk as u64);
+        bytes += chunk as u64;
         if bytes > limit {
             return FileHash::Larger(limit);
         }
-        hasher.update(&buffer[..read]);
+        hasher.update(&buffer[..chunk]);
     }
     FileHash::Hashed {
         sha256: format!("sha256:{:x}", hasher.finalize()),
@@ -1577,13 +1660,21 @@ struct Listed {
 }
 
 /// Push every regular file in `dir` onto `files`, below `dir` too when
-/// `recursive`. A directory that cannot be read adds nothing.
+/// `recursive`. A directory that cannot be read adds nothing. Each entry the
+/// walk inspects adds one to `decision_inspected`, the count of every walk of
+/// one decision.
 ///
-/// `Err` for a symbolic link anywhere in the walk, and when the walk passes
-/// `MAX_HASHED_ENTRIES`. The walk used to skip a link and to return a fixed
-/// text past the cap, so a link beside an analyzer, or a file in a tree of
-/// 50,001 entries, could change under a record that still matched.
-fn collect_files(dir: &Path, recursive: bool, files: &mut Vec<Listed>) -> Result<(), Unhashable> {
+/// `Err` for a symbolic link anywhere in the walk, when the walk passes
+/// `MAX_HASHED_ENTRIES`, and when the decision's count does. The walk used to
+/// skip a link and to return a fixed text past the cap, so a link beside an
+/// analyzer, or a file in a tree of 50,001 entries, could change under a
+/// record that still matched.
+fn collect_files(
+    dir: &Path,
+    recursive: bool,
+    files: &mut Vec<Listed>,
+    decision_inspected: &mut usize,
+) -> Result<(), Unhashable> {
     let mut stack = vec![dir.to_path_buf()];
     let mut inspected = 0usize;
     while let Some(directory) = stack.pop() {
@@ -1592,8 +1683,12 @@ fn collect_files(dir: &Path, recursive: bool, files: &mut Vec<Listed>) -> Result
         };
         for entry in entries.flatten() {
             inspected += 1;
+            *decision_inspected += 1;
             if inspected > MAX_HASHED_ENTRIES {
                 return Err(Unhashable::TooManyEntries(dir.to_path_buf()));
+            }
+            if *decision_inspected > MAX_HASHED_ENTRIES {
+                return Err(Unhashable::TooManyEntriesTogether(dir.to_path_buf()));
             }
             let Ok(file_type) = entry.file_type() else {
                 continue;

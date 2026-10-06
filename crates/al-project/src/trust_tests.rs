@@ -1572,6 +1572,93 @@ fn one_decision_reads_each_file_it_hashes_once() {
     assert_eq!(HASHED_BYTES_READ.with(std::cell::Cell::get), 1024);
 }
 
+/// The byte budget bounded one hash, so a settings file that named sixteen
+/// directories, each just under the budget, had fifteen budgets read by one
+/// decision with nothing refused.
+#[test]
+fn one_decision_reads_at_most_one_budget_across_every_path_it_hashes() {
+    let _config = ScratchConfig::new();
+    let _budget = HashedBytesBudget::set(MIB);
+    let entries: Vec<String> = (0..16).map(|index| format!("\"./t{index}\"")).collect();
+    let project = project_with_settings(&format!(
+        r#"{{"al.assemblyProbingPaths": [{}]}}"#,
+        entries.join(", ")
+    ));
+    let root = project.path();
+    for index in 0..16u8 {
+        write_file(
+            root,
+            &format!("t{index}/Cop.dll"),
+            &vec![index; (MIB - 4096) as usize],
+        );
+    }
+
+    HASHED_BYTES_READ.with(|read| read.set(0));
+    let decision = decide(root).unwrap();
+
+    let read = HASHED_BYTES_READ.with(std::cell::Cell::get);
+    assert!(read <= MIB, "one decision read {read} bytes");
+    assert_eq!(decision.state, TrustState::Untrusted);
+    let refusal = decision
+        .grant_refusal()
+        .expect("paths over the byte budget together cannot be recorded");
+    assert!(refusal.contains("./t1"), "{refusal}");
+    assert!(refusal.contains("1 MiB"), "{refusal}");
+    assert!(matches!(grant(root), Err(GrantError::Refused(_))));
+}
+
+/// A search checked the copy each analyzer entry found by hashing it and its
+/// directory with nothing kept between entries, so three analyzers in one
+/// directory had that directory read three times per search.
+#[test]
+fn one_analyzer_search_reads_each_file_it_checks_once() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings(
+        r#"{"al.codeAnalyzers": ["./tools/A.dll", "./tools/B.dll", "./tools/C.dll"]}"#,
+    );
+    let root = project.path();
+    for name in ["A", "B", "C"] {
+        write_file(root, &format!("tools/{name}.dll"), &[1u8; 1000]);
+    }
+    grant(root).unwrap();
+
+    HASHED_BYTES_READ.with(|read| read.set(0));
+    let search = crate::analyzers::CustomAnalyzerSearch::new(root, &[]);
+    for name in ["A", "B", "C"] {
+        let entry = format!("./tools/{name}.dll");
+        assert!(search.resolve(&entry).unwrap().is_some(), "{entry}");
+    }
+
+    // The decision reads the three files, and the checks of the copies read
+    // them once more between them.
+    assert_eq!(HASHED_BYTES_READ.with(std::cell::Cell::get), 6000);
+}
+
+/// The entry cap bounded one walk, so directories that each held fewer
+/// entries than the cap were walked in full however many a settings file
+/// named.
+#[test]
+fn one_decision_walks_at_most_the_entry_cap_across_every_path_it_hashes() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings(r#"{"al.assemblyProbingPaths": ["./a", "./b"]}"#);
+    let root = project.path();
+    pad(root, "a", MAX_HASHED_ENTRIES / 2 + 1);
+    pad(root, "b", MAX_HASHED_ENTRIES / 2 + 1);
+
+    let decision = decide(root).unwrap();
+
+    assert_eq!(decision.state, TrustState::Untrusted);
+    let refusal = decision
+        .grant_refusal()
+        .expect("paths over the entry cap together cannot be recorded");
+    assert!(refusal.contains("./b"), "{refusal}");
+    assert!(
+        refusal.contains(&MAX_HASHED_ENTRIES.to_string()),
+        "{refusal}"
+    );
+    assert!(matches!(grant(root), Err(GrantError::Refused(_))));
+}
+
 /// A file swapped for a FIFO between the walk and the open blocked the open
 /// until something wrote to the FIFO, which another user can arrange in a
 /// loop. `open_regular_file` is the open that follows the check, so it is

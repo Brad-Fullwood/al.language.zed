@@ -154,7 +154,8 @@ used to decide once at startup and keep that configuration until they exited, wh
 
 The fingerprint also stamps the tree under each probing path the repository sets: it reads
 the settings files for the paths and takes the length and modification time of each file
-there, with the walk and the 50,000 entry cap the record's hash uses. The daemon hands those
+there, with the walk the record's hash uses and its 50,000 entry cap for all the probing paths
+together. The daemon hands those
 paths to `alc`, and a `git pull` that replaced or added a file there changed no settings
 file, so the daemon kept passing the probing path to every build while `trust --show` said
 `stale`. Now the next request decides again and drops the path.
@@ -233,20 +234,26 @@ or `al.packageCachePath`, which record what they name. Switches that name no inp
 A tree the record cannot hash is not recorded. The walk does not follow a symbolic link inside
 the tree, because the loader does and a commit could change the target without changing any
 file the walk reads. It also stops after 50,000 entries, and one hash reads at most 256 MiB, of
-one file or of every file in one tree together. A file whose length is over that is refused
-before it is opened, and a file that reports a smaller length, as `/proc` files report none,
-stops once the count of bytes read passes it. A path whose tree holds a link, more entries or
-more bytes than that is recorded as `path the record cannot hash`, with the path and the
-reason, such as `/tmp/bc-tools holds more than 256 MiB`, so an existing record goes stale, and
-`al-explorer trust` refuses to record the project until the link is replaced by the file it
-names or the file moves to a directory of its own. Before, every byte was read, so a link to
-`/proc/self` or to a large sparse file kept each trust decision reading for minutes, before the
-project was trusted.
+one file or of every file in one tree together. The same caps hold for every path one decision
+hashes together: at most 50,000 entries walked and 256 MiB read in all. A file whose length is
+over what is left is refused before it is opened, and a file that reports a smaller length, as
+`/proc` files report none, stops once the count of bytes read passes it. A path whose tree
+holds a link, more entries or more bytes than that is recorded as `path the record cannot
+hash`, with the path and the reason, such as `/tmp/bc-tools holds more than 256 MiB` or `t7
+and the paths hashed before it hold more than 256 MiB together`, so an existing record goes
+stale, and `al-explorer trust` refuses to record the project until the link is replaced by the
+file it names, the file moves to a directory of its own, or the settings name fewer paths.
+Before, every byte was read, so a link to `/proc/self` or to a large sparse file kept each
+trust decision reading for minutes, before the project was trusted. Later, each path had a
+budget of its own, so a settings file that named a thousand directories, each just under it,
+had a thousand budgets read by every decision.
 
 The hash opens each file without waiting (`O_NONBLOCK` on Unix) and reads it only when it is a
 regular file once open, so a file swapped for a FIFO or a device after the walk is recorded as
 unreadable. Before, the open of a FIFO blocked until something wrote to it. One decision hashes
-each file and each tree once, however many values name it.
+each file and each tree once, however many values name it. An analyzer search checks the copy
+each entry found against the record by hashing it again, and it reads a file several entries
+share once, within the same budget.
 
 ## Settings you wrote yourself
 

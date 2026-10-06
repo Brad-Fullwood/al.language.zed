@@ -168,6 +168,8 @@ pub struct CustomAnalyzerSearch<'a> {
     /// The trust decision, trusted or not, or `None` when the project's
     /// settings could not be read.
     decision: std::cell::OnceCell<Option<crate::trust::TrustDecision>>,
+    /// What the checks of the copies the entries found read.
+    hashes: std::cell::RefCell<crate::trust::Hashes>,
 }
 
 /// The analyzer entries and probing paths the project's settings files write,
@@ -202,6 +204,7 @@ impl<'a> CustomAnalyzerSearch<'a> {
             project_root,
             assembly_probing_paths,
             decision: std::cell::OnceCell::new(),
+            hashes: std::cell::RefCell::default(),
         }
     }
 
@@ -254,7 +257,15 @@ impl<'a> CustomAnalyzerSearch<'a> {
             shown(&self.project_root.display().to_string()),
         );
         match trusted {
-            Some(decision) if crate::trust::lists_project_copy(decision, &found) => Ok(Some(found)),
+            Some(decision)
+                if crate::trust::lists_project_copy(
+                    decision,
+                    &found,
+                    &mut self.hashes.borrow_mut(),
+                ) =>
+            {
+                Ok(Some(found))
+            }
             Some(_) => Err(AnalyzerDiscoveryError::UnrecordedProjectAnalyzer {
                 entry,
                 found: found_text,
