@@ -179,6 +179,7 @@ mod dispatch_tests {
                     std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
                     std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                     shutdown,
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 )
                 .await;
             })
@@ -230,6 +231,120 @@ mod dispatch_tests {
         .expect("read");
         let frame: serde_json::Value = serde_json::from_str(line.trim()).expect("json");
         assert_eq!(frame["id"], 1);
+
+        drop(writer);
+        drop(reader);
+        let _ = server.await;
+    }
+
+    /// The daemon binds its endpoint before it loads the project, and a client
+    /// connects as soon as the endpoint exists. The lifecycle methods answer
+    /// during the load, and everything else is told to try again, which
+    /// `DaemonClient` does on its own. A client whose handshake waited on the
+    /// load took the silence for a daemon from other code and stopped it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_lifecycle_methods_answer_while_the_project_loads() {
+        use super::handle_connection;
+        use interprocess::local_socket::tokio::prelude::*;
+        use interprocess::local_socket::{GenericFilePath, ListenerOptions, ToFsName};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+        let dir = tempfile::tempdir().unwrap();
+        let endpoint = dir.path().join("daemon.sock");
+        let name = endpoint
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("socket name");
+        let listener = ListenerOptions::new()
+            .name(name)
+            .create_tokio()
+            .expect("listener");
+
+        let workspace = std::sync::Arc::new(al_workspace::Workspace::new());
+        let loading = std::sync::Arc::new(AtomicBool::new(true));
+        let server = {
+            let workspace = std::sync::Arc::clone(&workspace);
+            let loading = std::sync::Arc::clone(&loading);
+            tokio::spawn(async move {
+                let stream = listener.accept().await.expect("accept");
+                let _ = handle_connection(
+                    stream,
+                    workspace,
+                    std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+                    std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                    std::sync::Arc::new(Notify::new()),
+                    loading,
+                )
+                .await;
+            })
+        };
+
+        let name = endpoint
+            .as_path()
+            .to_fs_name::<GenericFilePath>()
+            .expect("socket name");
+        let client = interprocess::local_socket::tokio::Stream::connect(name)
+            .await
+            .expect("connect");
+        let (reader, mut writer) = client.split();
+        let mut reader = tokio::io::BufReader::new(reader);
+
+        async fn ask<W, R>(
+            writer: &mut W,
+            reader: &mut R,
+            id: u64,
+            method: &str,
+        ) -> serde_json::Value
+        where
+            W: tokio::io::AsyncWrite + Unpin,
+            R: tokio::io::AsyncBufRead + Unpin,
+        {
+            let line = format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"{method}\"}}\n");
+            writer.write_all(line.as_bytes()).await.expect("write");
+            writer.flush().await.expect("flush");
+            let mut answer = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                reader.read_line(&mut answer),
+            )
+            .await
+            .unwrap_or_else(|_| panic!("{method} must be answered while the project loads"))
+            .expect("read");
+            serde_json::from_str::<serde_json::Value>(answer.trim()).expect("json")
+        }
+
+        let handshake = ask(&mut writer, &mut reader, 1, "handshake").await;
+        assert_eq!(
+            handshake["result"]["pid"],
+            u64::from(std::process::id()),
+            "handshake must answer during the load: {handshake}"
+        );
+        let status = ask(&mut writer, &mut reader, 2, "status").await;
+        assert!(
+            status["result"].get("sourceIndex").is_some(),
+            "status must answer during the load: {status}"
+        );
+        assert_eq!(
+            ask(&mut writer, &mut reader, 3, "ping").await["result"],
+            "pong"
+        );
+        let refused = ask(&mut writer, &mut reader, 4, "packages").await;
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("initializing")),
+            "a query during the load must be told to try again: {refused}"
+        );
+
+        loading.store(false, Ordering::Release);
+        let served = ask(&mut writer, &mut reader, 5, "packages").await;
+        assert!(
+            !served["error"]["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("initializing")),
+            "once loaded, the query must dispatch: {served}"
+        );
 
         drop(writer);
         drop(reader);

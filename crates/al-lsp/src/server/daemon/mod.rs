@@ -296,44 +296,28 @@ pub async fn run_daemon(
 
     let workspace = Arc::new(Workspace::new());
 
-    // CLI/TUI daemon clients do not send LSP initializationOptions. Merge the
-    // persisted config with project-local VS Code/Zed settings so compiler
-    // backend and symbol-package paths match the editor.
-    // Recorded before the read, so a store or settings file written while this
-    // evaluation runs is seen as a change by the next request rather than
-    // missed.
-    TRUST_INPUTS.store(
-        al_project::trust::inputs_fingerprint(&project_root),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    let evaluated = al_project::trust::evaluate(&project_root)?;
-    *workspace.config.write().await = evaluated.config;
-    if let Some(advisory) = evaluated.decision.advisory() {
-        tracing::warn!("daemon: {advisory}");
-    }
-    if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
-        tracing::warn!("daemon: {advisory}");
-    }
-    let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
-
-    let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
-        tracing::warn!("daemon: {msg}");
-    }));
-
-    initialize_daemon_workspace(&workspace, &project_root).await?;
-    let _ = SCAN_ROOT.set(project_root.clone());
-    persist_dependency_source_summaries(&workspace, &project_root);
-
-    // Warm the dependency AL source index and the graphs built on it now,
-    // rather than inside whichever query needs them first. The build takes
-    // about a minute on Base Application; paid here it overlaps with the
-    // agent's first few symbol queries, and `status` can report its progress
-    // from the start instead of only once something is already blocked on it.
-    let warm_workspace = Arc::clone(&workspace);
-    tokio::task::spawn_blocking(move || match warm_workspace.get_or_build_call_graph() {
-        Ok(_) => tracing::info!("daemon: dependency source index and call graph warm"),
-        Err(error) => tracing::warn!(%error, "daemon: background index warm-up failed"),
-    });
+    // The endpoint exists from the bind above, and a client connects as soon
+    // as it does. The load runs behind the accept loop so `handshake`, `ping`
+    // and `status` answer during it: a client whose handshake waited on the
+    // load took the silence for a daemon from other code and stopped it.
+    let loading = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut load = {
+        let workspace = Arc::clone(&workspace);
+        let project_root = project_root.clone();
+        let loading = Arc::clone(&loading);
+        tokio::spawn(async move {
+            let result = load_project(&workspace, &project_root).await;
+            // A failed load stops the daemon, and until the accept loop sees
+            // that, requests are still told to try again rather than served
+            // from a half loaded workspace.
+            if result.is_ok() {
+                loading.store(false, Ordering::Release);
+            }
+            result
+        })
+    };
+    let mut load_done = false;
+    let mut load_failure = None;
 
     // stored as millis-since-`DAEMON_EPOCH` in an AtomicU64 so
     // the hot per-connection-accept + per-dispatch update is lock-free.
@@ -348,6 +332,7 @@ pub async fn run_daemon(
     let in_flight_reaper = Arc::clone(&in_flight);
     let ws_clone = Arc::clone(&workspace);
     let shutdown_idle = Arc::clone(&shutdown_signal);
+    let loading_reaper = Arc::clone(&loading);
     let watched_root = project_root.clone();
     let idle_timeout = resolve_idle_timeout(idle_timeout);
     match idle_timeout {
@@ -385,6 +370,11 @@ pub async fn run_daemon(
             let Some(idle_timeout) = idle_timeout else {
                 continue;
             };
+            // A load longer than the idle window is still the daemon's own
+            // work, and the client that started it is waiting on it.
+            if loading_reaper.load(Ordering::Acquire) {
+                continue;
+            }
             let elapsed = Duration::from_millis(
                 now_activity_ms().saturating_sub(activity_clone.load(Ordering::Relaxed)),
             );
@@ -496,9 +486,10 @@ pub async fn run_daemon(
                         let activity = Arc::clone(&last_activity);
                         let in_flight_conn = Arc::clone(&in_flight);
                         let shutdown_conn = Arc::clone(&shutdown_signal);
+                        let loading_conn = Arc::clone(&loading);
                         tokio::spawn(async move {
                             let _permit = permit;
-                            if let Err(e) = handle_connection(stream, ws, activity, in_flight_conn, shutdown_conn).await {
+                            if let Err(e) = handle_connection(stream, ws, activity, in_flight_conn, shutdown_conn, loading_conn).await {
                                 tracing::warn!(error = %e, "daemon: connection error");
                             }
                         });
@@ -507,6 +498,20 @@ pub async fn run_daemon(
                         tracing::error!(error = %e, "daemon: accept error");
                         tokio::time::sleep(accept_backoff).await;
                         accept_backoff = (accept_backoff * 2).min(ACCEPT_BACKOFF_CAP);
+                    }
+                }
+            }
+            loaded = &mut load, if !load_done => {
+                load_done = true;
+                match loaded {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        load_failure = Some(error);
+                        break;
+                    }
+                    Err(error) => {
+                        load_failure = Some(format!("the project load task failed: {error}"));
+                        break;
                     }
                 }
             }
@@ -526,6 +531,9 @@ pub async fn run_daemon(
     }
 
     idle_timeout_handle.abort();
+    if let Some(error) = load_failure {
+        return Err(error.into());
+    }
 
     // graceful drain. The accept loop has broken; new connections
     // are no longer accepted. In-flight connection tasks still hold a
@@ -552,6 +560,53 @@ pub async fn run_daemon(
         }
     }
 
+    Ok(())
+}
+
+/// Evaluate trust, load the project and start the index warm-up. Runs behind
+/// the accept loop, see [`run_daemon`]. Errors are strings so the task result
+/// can cross threads.
+async fn load_project(workspace: &Arc<Workspace>, project_root: &Path) -> Result<(), String> {
+    // CLI/TUI daemon clients do not send LSP initializationOptions. Merge the
+    // persisted config with project-local VS Code/Zed settings so compiler
+    // backend and symbol-package paths match the editor.
+    // Recorded before the read, so a store or settings file written while this
+    // evaluation runs is seen as a change by the next request rather than
+    // missed.
+    TRUST_INPUTS.store(
+        al_project::trust::inputs_fingerprint(project_root),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let evaluated = al_project::trust::evaluate(project_root).map_err(|error| error.to_string())?;
+    *workspace.config.write().await = evaluated.config;
+    if let Some(advisory) = evaluated.decision.advisory() {
+        tracing::warn!("daemon: {advisory}");
+    }
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root) {
+        tracing::warn!("daemon: {advisory}");
+    }
+    let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
+
+    let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
+        tracing::warn!("daemon: {msg}");
+    }));
+
+    initialize_daemon_workspace(workspace, project_root)
+        .await
+        .map_err(|error| error.to_string())?;
+    let _ = SCAN_ROOT.set(project_root.to_path_buf());
+    persist_dependency_source_summaries(workspace, project_root);
+
+    // Warm the dependency AL source index and the graphs built on it now,
+    // rather than inside whichever query needs them first. The build takes
+    // about a minute on Base Application; paid here it overlaps with the
+    // agent's first few symbol queries, and `status` can report its progress
+    // from the start instead of only once something is already blocked on it.
+    let warm_workspace = Arc::clone(workspace);
+    tokio::task::spawn_blocking(move || match warm_workspace.get_or_build_call_graph() {
+        Ok(_) => tracing::info!("daemon: dependency source index and call graph warm"),
+        Err(error) => tracing::warn!(%error, "daemon: background index warm-up failed"),
+    });
     Ok(())
 }
 
@@ -654,6 +709,7 @@ async fn handle_connection(
     last_activity: Arc<AtomicU64>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     shutdown: Arc<Notify>,
+    loading: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (reader, writer) = stream.split();
     let mut reader = BufReader::new(reader);
@@ -758,6 +814,7 @@ async fn handle_connection(
         let last_activity = Arc::clone(&last_activity);
         let client_gone = Arc::clone(&client_gone);
         let in_flight = Arc::clone(&in_flight);
+        let loading = Arc::clone(&loading);
         in_flight_tasks.spawn(async move {
             let _permit = permit;
             let is_notification = req.is_notification();
@@ -768,7 +825,11 @@ async fn handle_connection(
                 // Held for the whole dispatch so the idle reaper cannot fire
                 // mid-request, however long the operation takes.
                 let _in_flight = InFlightGuard::new(&in_flight);
-                dispatch_request(&workspace, req, &shutdown).await
+                if loading.load(Ordering::Acquire) {
+                    dispatch_while_loading(&workspace, req, &shutdown).await
+                } else {
+                    dispatch_request(&workspace, req, &shutdown).await
+                }
             };
             let elapsed = start.elapsed();
             tracing::debug!(method = %method, id = ?request_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
@@ -993,6 +1054,30 @@ fn sync_disk_documents(workspace: &Workspace, delta: &al_source::file_index::Sca
         if let Ok(uri) = url::Url::from_file_path(path) {
             workspace.documents.close(&uri);
         }
+    }
+}
+
+/// Answer a request that arrives before the project is loaded.
+///
+/// The lifecycle methods read nothing the load writes, so they answer as they
+/// will later. Everything else is told to try again, which `DaemonClient`
+/// does on its own for up to a minute. The per request refreshes in
+/// [`dispatch_request`] are skipped: they would evaluate trust and scan the
+/// project beside the load that is doing the same.
+async fn dispatch_while_loading(
+    workspace: &std::sync::Arc<Workspace>,
+    req: Request,
+    shutdown: &Notify,
+) -> Response {
+    match req.method.as_str() {
+        "handshake" | "ping" | "status" | "shutdown" => {
+            dispatch_method(workspace, req, shutdown).await
+        }
+        _ => rpc_error(
+            req.dispatch_id(),
+            error_codes::INTERNAL_ERROR,
+            build_dispatch::ERR_INITIALIZING,
+        ),
     }
 }
 

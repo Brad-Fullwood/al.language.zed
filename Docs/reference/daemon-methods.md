@@ -143,7 +143,15 @@ the code the project can change.
   returns `proof`, an HMAC over the nonce and the identity keyed by a file only the current user can
   read, so a process that did not start from this user's key cannot answer it. A client compares
   `version` and `build` with its own before it uses a daemon it did not start, and replaces one that
-  does not match, because a daemon from other code answers with that code's response shapes.
+  does not match, because a daemon from other code answers with that code's response shapes. A
+  daemon that answers nothing within the handshake deadline is left running, since silence says
+  nothing about its build: the client reports it and the next command tries again.
+- The daemon binds its endpoint before it evaluates trust and loads the project. The four
+  lifecycle methods answer during that load. Any other method answers `Workspace is initializing,
+  try again` until the load is done, and `DaemonClient` retries that on its own for up to a
+  minute. A daemon started by the client's own command gets the request deadline
+  (`AL_REQUEST_TIMEOUT_MS`, 30 s by default) to answer its first `handshake`, a daemon that was
+  already running gets 10 s.
 - `status` reports `memory` and `diag/summary` reports `process`, both
   `{residentBytes, peakResidentBytes}`. `residentBytes` is null off Linux. These are what the
   operating system sees, unlike the per-structure byte totals in `diag`, which count only
