@@ -57,19 +57,124 @@ fn now_activity_ms() -> u64 {
     Instant::now().duration_since(*epoch).as_millis() as u64
 }
 
+/// The socket this daemon bound, and which filesystem entry it was at the
+/// time. The path alone does not say whose socket it names once another
+/// process has bound the same path.
 #[cfg(unix)]
-static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+struct BoundSocket {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl BoundSocket {
+    fn at(path: PathBuf) -> std::io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(&path)?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            path,
+        })
+    }
+
+    /// Whether the path still names the socket this daemon bound.
+    fn still_ours(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(&self.path)
+            .map(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(unix)]
+static BOUND_SOCKET: std::sync::OnceLock<BoundSocket> = std::sync::OnceLock::new();
 
 /// The directory this daemon was started for, which the per-request refresh
 /// scans when the workspace has no app.json project.
 static SCAN_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// Remove this daemon's socket, unless another socket has taken the path
+/// since, in which case the path belongs to that one and stays.
 #[cfg(unix)]
 pub(crate) fn cleanup_socket() {
-    if let Some(path) = SOCKET_PATH.get() {
-        let _ = std::fs::remove_file(path);
-        tracing::info!("daemon: socket cleaned up");
+    let Some(socket) = BOUND_SOCKET.get() else {
+        return;
+    };
+    if !socket.still_ours() {
+        tracing::info!(
+            endpoint = %socket.path.display(),
+            "daemon: the endpoint path names another socket now, leaving it"
+        );
+        return;
     }
+    let _ = std::fs::remove_file(&socket.path);
+    tracing::info!("daemon: socket cleaned up");
+}
+
+/// How long a daemon already on the endpoint gets to answer `handshake` when
+/// this one starts. It answers from the moment it listens, so this is slack
+/// for a loaded machine.
+#[cfg(unix)]
+const ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Make the endpoint path free to bind, or refuse to start.
+///
+/// A daemon that removed whatever was at the path and bound its own socket
+/// left the daemon already listening there running with no path, where no
+/// client and no `daemon-shutdown` could reach it. So the path is removed only
+/// when nothing accepts on it (`ECONNREFUSED`, a file left by a daemon that
+/// did not get to remove it), and a process that accepts is left as it is.
+#[cfg(unix)]
+fn clear_endpoint(endpoint: &Path, project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::ErrorKind;
+    match std::os::unix::net::UnixStream::connect(endpoint) {
+        Ok(stream) => {
+            let who = match handshake_pid(stream) {
+                Some(pid) => format!("pid {pid}"),
+                None => "it accepted the connection and did not answer the handshake".to_string(),
+            };
+            Err(format!(
+                "a daemon is already running for this project ({}, {who}); this one is not \
+                 needed. To replace it, stop it first with `al-explorer daemon-shutdown`",
+                project_root.display()
+            )
+            .into())
+        }
+        Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
+            std::fs::remove_file(endpoint)?;
+            tracing::info!(
+                endpoint = %endpoint.display(),
+                "daemon: removed the endpoint left by a daemon that is no longer listening"
+            );
+            Ok(())
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "cannot tell whether a daemon is listening on {}: {error}",
+            endpoint.display()
+        )
+        .into()),
+    }
+}
+
+/// The `pid` a daemon on `stream` reports for `handshake`, or `None` when it
+/// does not answer within [`ENDPOINT_PROBE_TIMEOUT`].
+#[cfg(unix)]
+fn handshake_pid(mut stream: std::os::unix::net::UnixStream) -> Option<u64> {
+    use std::io::{BufRead, Write};
+    stream.set_read_timeout(Some(ENDPOINT_PROBE_TIMEOUT)).ok()?;
+    stream
+        .set_write_timeout(Some(ENDPOINT_PROBE_TIMEOUT))
+        .ok()?;
+    let mut frame = serde_json::to_string(&Request::new(1, "handshake", None)).ok()?;
+    frame.push('\n');
+    stream.write_all(frame.as_bytes()).ok()?;
+    let mut line = String::new();
+    std::io::BufReader::new(stream).read_line(&mut line).ok()?;
+    let answer: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    answer.get("result")?.get("pid")?.as_u64()
 }
 
 #[cfg(unix)]
@@ -167,10 +272,16 @@ pub async fn run_daemon(
     }
 
     #[cfg(unix)]
-    let _ = tokio::fs::remove_file(&endpoint).await;
+    clear_endpoint(&endpoint, &project_root)?;
 
     let name = endpoint.as_path().to_fs_name::<GenericFilePath>()?;
-    let listener = ListenerOptions::new().name(name).create_tokio()?;
+    // The listener would unlink the path when dropped, whatever socket is
+    // there by then. `cleanup_socket` removes it only while it is still this
+    // daemon's.
+    let listener = ListenerOptions::new()
+        .name(name)
+        .reclaim_name(false)
+        .create_tokio()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -179,7 +290,7 @@ pub async fn run_daemon(
     tracing::info!(endpoint = %endpoint.display(), project = %project_root.display(), "daemon: listening");
 
     #[cfg(unix)]
-    let _ = SOCKET_PATH.set(endpoint.clone());
+    let _ = BOUND_SOCKET.set(BoundSocket::at(endpoint.clone())?);
     #[cfg(unix)]
     let _cleanup = SocketCleanup;
 

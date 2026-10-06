@@ -172,6 +172,11 @@ the code the project can change.
   also stops once its project directory no longer exists, whatever the idle window.
 - Local-only IPC: Unix-domain socket at `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` (with platform
   runtime-directory fallbacks) on Linux/macOS. Per-user named pipe on Windows.
+- One daemon per project. On Unix a daemon that starts while another already accepts on the
+  project's socket exits with `a daemon is already running for this project` and leaves that
+  socket alone. A socket path nothing accepts on is left over from a daemon that did not remove
+  it, and is removed before the new daemon binds. On exit a daemon removes its socket path only
+  while the path still names the socket it bound, so a path another socket has taken since stays.
 
 ## Paths and the project boundary
 
