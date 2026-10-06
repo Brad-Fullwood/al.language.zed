@@ -153,13 +153,18 @@ impl<T: Contents> Shared<T> {
 
     /// Count `bytes` fewer for these contents, at most what they count.
     pub(crate) fn release(&self, bytes: usize) {
-        let before = self
-            .0
-            .held
-            .fetch_update(AtomicOrdering::Relaxed, AtomicOrdering::Relaxed, |held| {
-                Some(held.saturating_sub(bytes))
-            })
-            .unwrap_or_else(|held| held);
+        // A compare-exchange loop instead of `fetch_update`, which Rust 1.99 deprecates in favour
+        // of `try_update`, a method older toolchains do not have.
+        let held = &self.0.held;
+        let mut before = held.load(AtomicOrdering::Relaxed);
+        while let Err(current) = held.compare_exchange_weak(
+            before,
+            before.saturating_sub(bytes),
+            AtomicOrdering::Relaxed,
+            AtomicOrdering::Relaxed,
+        ) {
+            before = current;
+        }
         release_held_bytes(before.min(bytes));
     }
 
