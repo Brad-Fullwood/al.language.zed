@@ -12,7 +12,7 @@ use tree_sitter::Node;
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::{self, owned_bytes, Value};
+use crate::interpreter::value::{owned_bytes, Value};
 use crate::interpreter::{error_info, eval_error};
 
 /// The variable name and `index_suffix` of `Name[index]`, looking through the
@@ -177,11 +177,11 @@ pub(crate) fn write_element_at(
         Eval::Normal(value) => value,
         other => return other,
     };
-    let Some(slot) = stack.lookup_mut(name) else {
+    let Some(mut slot) = stack.lookup_slot_mut(name) else {
         return Eval::Error(error_info(format!("unbound identifier: {name}")));
     };
-    let is_code = matches!(slot, Value::Code(_));
-    match slot {
+    let is_code = matches!(slot.value(), Value::Code(_));
+    match slot.value_mut() {
         Value::Array(items) => {
             let at = (index - 1) as usize;
             let value = match Value::coerce_into_slot(&items[at], value, None) {
@@ -189,13 +189,15 @@ pub(crate) fn write_element_at(
                 Err(message) => return eval_error(message),
             };
             // The element's text counts toward the test's total in place of
-            // the text it held.
-            if let Err(message) = value::hold_bytes("Array element assignment", owned_bytes(&value))
+            // the text it held, for as long as the array's frame lives.
+            let old = owned_bytes(&items[at]);
+            if let Err(message) = slot.recount("Array element assignment", old, owned_bytes(&value))
             {
                 return eval_error(message);
             }
-            value::release_held_bytes(owned_bytes(&items[at]));
-            items[at] = value;
+            if let Value::Array(items) = slot.value_mut() {
+                items[at] = value;
+            }
         }
         Value::Text(text) | Value::Code(text) => {
             let mut replacement = match value {
@@ -213,7 +215,7 @@ pub(crate) fn write_element_at(
             if is_code {
                 replacement = replacement.to_ascii_uppercase();
             }
-            *text = text
+            let replaced: String = text
                 .chars()
                 .enumerate()
                 .map(|(at, c)| {
@@ -224,6 +226,13 @@ pub(crate) fn write_element_at(
                     }
                 })
                 .collect();
+            let old = text.len();
+            if let Err(message) = slot.recount("Text character assignment", old, replaced.len()) {
+                return eval_error(message);
+            }
+            if let Value::Text(text) | Value::Code(text) = slot.value_mut() {
+                *text = replaced;
+            }
         }
         _ => unreachable!("read_element_at accepted only arrays and text"),
     }

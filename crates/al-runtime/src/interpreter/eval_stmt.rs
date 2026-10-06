@@ -347,8 +347,12 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
             break;
         }
 
-        if let Some(slot) = stack.lookup_mut(&var_name) {
-            *slot = make_counter(i);
+        if let Some(mut slot) = stack.lookup_slot_mut(&var_name) {
+            if let Err(message) =
+                slot.store(&format!("The for variable '{var_name}'"), make_counter(i))
+            {
+                return Eval::Error(error_info(message));
+            }
         } else if let Some(frame) = stack.top_mut() {
             frame.bind(&var_name, make_counter(i));
         }
@@ -430,10 +434,17 @@ fn eval_foreach(
         if ctx.deadline_exceeded() {
             return Eval::Error(error_info("interpreter deadline exceeded in foreach loop"));
         }
-        if let Some(slot) = stack.lookup_mut(&var_name) {
-            *slot = item.clone();
+        if let Some(mut slot) = stack.lookup_slot_mut(&var_name) {
+            if let Err(message) = slot.store(&format!("The foreach variable '{var_name}'"), item) {
+                return Eval::Error(error_info(message));
+            }
         } else if let Some(frame) = stack.top_mut() {
-            frame.bind(&var_name, item.clone());
+            frame.bind(&var_name, item);
+            if let Err(message) =
+                frame.check_held_bytes(&format!("The foreach variable '{var_name}'"))
+            {
+                return Eval::Error(error_info(message));
+            }
         }
 
         if let Some(body) = body_node {
@@ -1013,10 +1024,12 @@ fn write_var_argument(
     ctx: &mut DispatchCtx,
 ) -> Eval {
     let written = match simple_lvalue_name(node, source) {
-        Some(name) => match stack.lookup_mut(&name) {
-            Some(slot) => {
-                *slot = value;
-                return Eval::Normal(Value::Empty);
+        Some(name) => match stack.lookup_slot_mut(&name) {
+            Some(mut slot) => {
+                return match slot.store(&format!("The var argument '{name}'"), value) {
+                    Ok(()) => Eval::Normal(Value::Empty),
+                    Err(message) => eval_error(message),
+                };
             }
             None => records::implicit_field_set(&name, &value, stack, ctx),
         },

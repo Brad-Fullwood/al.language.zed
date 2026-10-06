@@ -177,12 +177,15 @@ pub(super) fn eval_expression_node(
         };
 
         let capacity = stack.declared_text_length(&lhs_name);
-        if let Some(slot) = stack.lookup_mut(&lhs_name) {
+        if let Some(mut slot) = stack.lookup_slot_mut(&lhs_name) {
             // Preserve the slot's declared type (Code caselessness / integer
-            // width) rather than adopting the RHS's — see `coerce_into_slot`.
-            match Value::coerce_into_slot(slot, new_val, capacity) {
-                Ok(value) => *slot = value,
-                Err(message) => return Eval::Error(error_info(&message)),
+            // width) rather than adopting the RHS's, see `coerce_into_slot`.
+            // The message names the variable as the source spells it.
+            let written = lhs_node.utf8_text(source).unwrap_or(&lhs_name);
+            let stored = Value::coerce_into_slot(slot.value(), new_val, capacity)
+                .and_then(|value| slot.store(&format!("Assignment to '{written}'"), value));
+            if let Err(message) = stored {
+                return Eval::Error(error_info(&message));
             }
         } else {
             // AL has no implicit declaration: a typo'd LHS must fail loudly

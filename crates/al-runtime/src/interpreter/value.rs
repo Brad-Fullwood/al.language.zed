@@ -674,19 +674,21 @@ pub const MAX_TEXT_BYTES: usize = 64 * 1024 * 1024;
 /// 56 bytes before any text it holds, so a full list of numbers takes 53 MiB.
 pub const MAX_COLLECTION_LEN: usize = 1_000_000;
 
-/// The most bytes the Lists, Dictionaries, arrays, TextBuilders and JSON
-/// values of one test hold together in the local test runtime.
+/// The most bytes the variables, Lists, Dictionaries, arrays, TextBuilders
+/// and JSON values of one test hold together in the local test runtime.
 ///
 /// [`MAX_TEXT_BYTES`] and [`MAX_COLLECTION_LEN`] bound one value, and a
-/// test that copied a large text into many elements took memory at a
-/// gigabyte a second. The runtime counts each List or Dictionary element as
-/// it is added, the size of a `Value` and the bytes of the text it holds,
-/// and takes it off when the element is removed or the last handle to its
-/// List or Dictionary drops. A TextBuilder counts its text. An array element
-/// counts the text assigned to it until another text replaces it, and the
-/// count stays after the array goes out of scope. A JSON node counts from
-/// when it is made until the test ends. An addition past this total is an
-/// AL error.
+/// test that copied a large text into many elements, variables or frames
+/// took memory at a gigabyte a second. The runtime counts each List or
+/// Dictionary element as it is added, the size of a `Value` and the bytes of
+/// the text it holds, and takes it off when the element is removed or the
+/// last handle to its List or Dictionary drops. A TextBuilder counts its
+/// text. A variable counts the text it holds, and an array variable the size
+/// of a `Value` for each element and the text each element holds, until the
+/// variable takes another value or its frame drops: when its procedure
+/// returns, or for a global when its codeunit instance goes. A JSON node
+/// counts from when it is made until the test ends. An addition past this
+/// total is an AL error.
 ///
 /// The total is kept per thread, and the test runner runs each test on a
 /// thread of its own.
@@ -736,15 +738,16 @@ pub(crate) fn release_held_bytes(bytes: usize) {
 
 fn over_held_budget(operation: &str, total: usize) -> String {
     format!(
-        "{operation} would make the Lists, Dictionaries, arrays, TextBuilders and JSON values \
-         of this test hold {total} bytes, over the local test runtime's limit of {} MiB for \
-         one test",
+        "{operation} would make the variables, Lists, Dictionaries, arrays, TextBuilders and \
+         JSON values of this test hold {total} bytes, over the local test runtime's limit of {} \
+         MiB for one test",
         MAX_HELD_BYTES / (1024 * 1024)
     )
 }
 
-/// The bytes of text or data `value` owns, as [`MAX_HELD_BYTES`] counts an
-/// array element. An array counts its elements and the text they hold.
+/// The bytes of text or data `value` owns, as [`MAX_HELD_BYTES`] counts a
+/// variable or an array element. An array counts its elements and the text
+/// they hold.
 pub(crate) fn owned_bytes(value: &Value) -> usize {
     fn text_bytes(value: &Value) -> usize {
         match value {

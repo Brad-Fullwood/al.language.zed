@@ -322,8 +322,8 @@ pub(super) fn run_declaration(
     };
 
     let mut frame = CallFrame::new(object_name, procedure);
-    for (i, param) in params.iter().enumerate() {
-        let mut val = args.get(i).cloned().unwrap_or(Value::Empty);
+    // The frame takes the arguments, so a text passed by value is held once.
+    for (param, mut val) in params.iter().zip(args) {
         // A by-value record parameter is the callee's own copy: BC gives
         // it the caller's buffer but its own filters/cursor. `RecordValue`
         // is `Clone` and carries the caller's view `handle`, so keeping it
@@ -374,6 +374,11 @@ pub(super) fn run_declaration(
         frame.bind("Rec", rec);
         frame.bind("xRec", x_rec);
         frame.implicit_record = true;
+    }
+    // The parameters and locals count toward the test's held bytes until
+    // the frame drops.
+    if let Err(message) = frame.check_held_bytes(&format!("The call to '{procedure}'")) {
+        return eval_error(message);
     }
 
     ctx.recursion_depth += 1;

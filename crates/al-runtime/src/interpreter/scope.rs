@@ -8,10 +8,16 @@
 
 use std::collections::HashMap;
 
-use crate::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::value::{
+    add_held_bytes, check_held_bytes, hold_bytes, owned_bytes, release_held_bytes, ErrorInfo, Value,
+};
 
 /// One activation record on the interpreter stack.
-#[derive(Debug, Clone)]
+///
+/// The text and array elements its variables hold count toward the test's
+/// [`MAX_HELD_BYTES`](crate::interpreter::value::MAX_HELD_BYTES) until the
+/// variable takes another value or the frame drops.
+#[derive(Debug)]
 pub struct CallFrame {
     /// Procedure name (for stack traces / DAP).
     pub procedure: String,
@@ -31,6 +37,33 @@ pub struct CallFrame {
     pub implicit_record: bool,
     /// For a codeunit's globals frame, the instance the globals belong to.
     pub instance: Option<u64>,
+    /// The bytes this frame's variables have added to the test's total.
+    held: usize,
+}
+
+/// A copy of a frame holds copies of its values, and counts them again.
+impl Clone for CallFrame {
+    fn clone(&self) -> Self {
+        add_held_bytes(self.held);
+        Self {
+            procedure: self.procedure.clone(),
+            object: self.object.clone(),
+            locals: self.locals.clone(),
+            declared_text_lengths: self.declared_text_lengths.clone(),
+            call_site: self.call_site.clone(),
+            implicit_record: self.implicit_record,
+            instance: self.instance,
+            held: self.held,
+        }
+    }
+}
+
+/// A frame that returns, or a codeunit instance's globals that go, give
+/// back the bytes their variables held.
+impl Drop for CallFrame {
+    fn drop(&mut self) {
+        release_held_bytes(self.held);
+    }
 }
 
 impl CallFrame {
@@ -43,12 +76,40 @@ impl CallFrame {
             call_site: None,
             implicit_record: false,
             instance: None,
+            held: 0,
         }
     }
 
     /// AL identifiers are case-insensitive, so the key is lower-cased.
+    ///
+    /// The value's bytes count toward the test's total in place of those of
+    /// the value the name held. The total is checked at the next operation
+    /// that adds to it, such as [`Self::check_held_bytes`] when the frame is
+    /// a call's.
     pub fn bind(&mut self, name: &str, value: Value) {
-        self.locals.insert(name.to_ascii_lowercase(), value);
+        let bytes = owned_bytes(&value);
+        add_held_bytes(bytes);
+        self.held = self.held.saturating_add(bytes);
+        if let Some(old) = self.locals.insert(name.to_ascii_lowercase(), value) {
+            release_frame_bytes(&mut self.held, owned_bytes(&old));
+        }
+    }
+
+    /// Remove the variable `name` and give back the bytes it held.
+    pub fn unbind(&mut self, name: &str) -> Option<Value> {
+        let old = self.locals.remove(&name.to_ascii_lowercase())?;
+        release_frame_bytes(&mut self.held, owned_bytes(&old));
+        Some(old)
+    }
+
+    /// Refuse when this frame's variables hold bytes and the test's total
+    /// is past [`MAX_HELD_BYTES`](crate::interpreter::value::MAX_HELD_BYTES).
+    /// `operation` names what bound them, for the message.
+    pub fn check_held_bytes(&self, operation: &str) -> Result<(), String> {
+        if self.held == 0 {
+            return Ok(());
+        }
+        check_held_bytes(operation)
     }
 
     pub fn get(&self, name: &str) -> Option<&Value> {
@@ -66,6 +127,55 @@ impl CallFrame {
     pub fn bind_declared_text_length(&mut self, name: &str, length: usize) {
         self.declared_text_lengths
             .insert(name.to_ascii_lowercase(), length);
+    }
+}
+
+/// Take `bytes` off a frame's count and the test's total, at most what the
+/// frame counts.
+fn release_frame_bytes(held: &mut usize, bytes: usize) {
+    let bytes = bytes.min(*held);
+    *held -= bytes;
+    release_held_bytes(bytes);
+}
+
+/// A variable and the count of the frame it lives in. A write that changes
+/// the text or array elements the variable holds goes through
+/// [`Slot::store`] or [`Slot::recount`], so the frame counts what the
+/// variable holds.
+pub struct Slot<'a> {
+    value: &'a mut Value,
+    held: &'a mut usize,
+}
+
+impl Slot<'_> {
+    /// The variable's value.
+    pub fn value(&self) -> &Value {
+        self.value
+    }
+
+    /// The variable's value, for a change the caller counts with
+    /// [`Self::recount`].
+    pub fn value_mut(&mut self) -> &mut Value {
+        self.value
+    }
+
+    /// Count `new` bytes for the variable in place of `old`, or refuse when
+    /// the test's total would pass
+    /// [`MAX_HELD_BYTES`](crate::interpreter::value::MAX_HELD_BYTES).
+    /// `operation` names the write, for the message.
+    pub fn recount(&mut self, operation: &str, old: usize, new: usize) -> Result<(), String> {
+        hold_bytes(operation, new)?;
+        *self.held = self.held.saturating_add(new);
+        release_frame_bytes(self.held, old);
+        Ok(())
+    }
+
+    /// Store `value` in the variable, counting its bytes in place of those
+    /// of the value it held. A refused store leaves the variable as it was.
+    pub fn store(&mut self, operation: &str, value: Value) -> Result<(), String> {
+        self.recount(operation, owned_bytes(self.value), owned_bytes(&value))?;
+        *self.value = value;
+        Ok(())
     }
 }
 
@@ -169,20 +279,34 @@ impl ScopeStack {
         })
     }
 
+    /// The variable `name`, for a change that leaves the text and array
+    /// elements it holds as they were, such as a method call on a handle.
+    /// Any other write goes through [`Self::lookup_slot_mut`].
     pub fn lookup_mut(&mut self, name: &str) -> Option<&mut Value> {
+        self.lookup_slot_mut(name).map(|slot| slot.value)
+    }
+
+    /// The variable `name` and the count of the frame it lives in: the
+    /// running procedure's frame, or its object's globals.
+    pub fn lookup_slot_mut(&mut self, name: &str) -> Option<Slot<'_>> {
         let key = name.to_ascii_lowercase();
         let top_index = self.frames.len().checked_sub(1)?;
-        if self.frames[top_index].locals.contains_key(&key) {
-            return self.frames[top_index].locals.get_mut(&key);
-        }
-        let object = self.frames[top_index].object.clone();
-        let global_index = (0..top_index).rev().find(|index| {
-            let frame = &self.frames[*index];
-            frame.is_object_globals()
-                && frame.object.eq_ignore_ascii_case(&object)
-                && frame.locals.contains_key(&key)
-        })?;
-        self.frames[global_index].locals.get_mut(&key)
+        let index = if self.frames[top_index].locals.contains_key(&key) {
+            top_index
+        } else {
+            let object = &self.frames[top_index].object;
+            (0..top_index).rev().find(|index| {
+                let frame = &self.frames[*index];
+                frame.is_object_globals()
+                    && frame.object.eq_ignore_ascii_case(object)
+                    && frame.locals.contains_key(&key)
+            })?
+        };
+        let frame = &mut self.frames[index];
+        Some(Slot {
+            value: frame.locals.get_mut(&key)?,
+            held: &mut frame.held,
+        })
     }
 
     pub fn declared_text_length(&self, name: &str) -> Option<usize> {

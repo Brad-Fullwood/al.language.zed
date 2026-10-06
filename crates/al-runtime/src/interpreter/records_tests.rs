@@ -7905,3 +7905,143 @@ fn a_json_value_written_after_it_was_added_to_itself_returns() {
         );
     }
 }
+
+const TEXTS_IN_VARIABLES: &str = r#"codeunit 50464 "Texts In Variables"
+{
+    var
+        Reached: Integer;
+
+    procedure InLocals(): Text
+    var
+        First: Integer;
+    begin
+        asserterror NineLocals();
+        First := Reached;
+        asserterror NineLocals();
+        exit(Format(First) + ' ' + Format(Reached) + ' ' + GetLastErrorText());
+    end;
+
+    local procedure NineLocals()
+    var
+        T: Text;
+        A: Text;
+        B: Text;
+        C: Text;
+        D: Text;
+        E: Text;
+        F: Text;
+        G: Text;
+        H: Text;
+    begin
+        Reached := 0;
+        T := PadStr('', 32000000, 'x');
+        Reached := 1;
+        A := T + 'a';
+        Reached := 2;
+        B := T + 'b';
+        Reached := 3;
+        C := T + 'c';
+        Reached := 4;
+        D := T + 'd';
+        Reached := 5;
+        E := T + 'e';
+        Reached := 6;
+        F := T + 'f';
+        Reached := 7;
+        G := T + 'g';
+        Reached := 8;
+        H := T + 'h';
+        Reached := 9;
+    end;
+
+    procedure InFrames(): Text
+    var
+        First: Integer;
+    begin
+        asserterror Deep(PadStr('', 32000000, 'x'), 1);
+        First := Reached;
+        asserterror Deep(PadStr('', 32000000, 'x'), 1);
+        exit(Format(First) + ' ' + Format(Reached) + ' ' + GetLastErrorText());
+    end;
+
+    local procedure Deep(T: Text; Depth: Integer)
+    var
+        L: Text;
+    begin
+        L := T + 'x';
+        Reached := Depth;
+        if Depth < 10 then
+            Deep(L, Depth + 1);
+    end;
+
+    procedure ArrayInEachCall(): Integer
+    var
+        T: Text;
+        I: Integer;
+        Calls: Integer;
+    begin
+        T := PadStr('', 32000000, 'x');
+        for I := 1 to 10 do begin
+            KeepInALocalArray(T);
+            Calls += 1;
+        end;
+        exit(Calls);
+    end;
+
+    local procedure KeepInALocalArray(T: Text)
+    var
+        Arr: array[1] of Text;
+    begin
+        Arr[1] := T;
+    end;
+}
+"#;
+
+/// A test held many texts under the one-value cap in plain variables and in
+/// the frames of a recursion, where the held byte budget did not count them.
+/// Each text a variable holds counts toward that budget until the
+/// variable takes another value or its frame returns. Nine locals of 32 MB
+/// stop at the ninth. A recursion whose frames hold a 32 MB parameter and a
+/// 32 MB local stops at the call that would make the fifth frame. Both run
+/// twice, and the second run stops at the same place because the first
+/// run's frames gave their bytes back. An array local counts until its
+/// procedure returns, so ten calls that each keep a 32 MB text in one run to
+/// the end.
+#[test]
+fn texts_in_variables_and_frames_count_toward_the_test_budget() {
+    let locals = ok(run_on_interpreter_stack(
+        TEXTS_IN_VARIABLES,
+        "Texts In Variables",
+        "InLocals",
+        vec![],
+    ));
+    let Value::Text(locals) = locals else {
+        panic!("InLocals returned {locals:?}");
+    };
+    assert!(locals.starts_with("8 8 "), "{locals}");
+    assert!(locals.contains("Assignment to 'H' would make"), "{locals}");
+    assert!(locals.contains("limit of 256 MiB for one test"), "{locals}");
+
+    let frames = ok(run_on_interpreter_stack(
+        TEXTS_IN_VARIABLES,
+        "Texts In Variables",
+        "InFrames",
+        vec![],
+    ));
+    let Value::Text(frames) = frames else {
+        panic!("InFrames returned {frames:?}");
+    };
+    assert!(frames.starts_with("4 4 "), "{frames}");
+    assert!(frames.contains("The call to 'Deep' would make"), "{frames}");
+    assert!(frames.contains("limit of 256 MiB for one test"), "{frames}");
+
+    assert_eq!(
+        ok(run_on_interpreter_stack(
+            TEXTS_IN_VARIABLES,
+            "Texts In Variables",
+            "ArrayInEachCall",
+            vec![],
+        )),
+        Value::Integer(10)
+    );
+}
