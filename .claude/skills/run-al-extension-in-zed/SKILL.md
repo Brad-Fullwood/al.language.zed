@@ -19,16 +19,18 @@ The harness lives in the repo as a first-class, CI-invokable part of the
 > `pkill` editor processes — Zed shares one process across windows, so that
 > takes down the developer's real windows. Always use the container harness.
 
-## Prerequisites (one-time, on the host)
+## Prerequisites (on the host)
 
 - `podman` (rootless is fine).
-- The extension's compiled artifacts at the repo root — `extension.wasm` and
-  `grammars/al.wasm` — which are **gitignored, Zed-built** files. Produce them
-  once: `make install`, then run the command-palette action **"zed: install dev
-  extension"** on this repo in Zed. The container reuses them.
+- For Zed and `--compare` runs: the `tree-sitter` CLI and `rustup`. On each of
+  these runs `drive.sh` rebuilds `extension.wasm` (target wasm32-wasip2) and
+  `grammars/al.wasm` from the working tree, so the screenshot shows the current
+  source. `--vscode` runs need neither.
 
-`drive.sh` builds `al-lsp` and the container image automatically on first run
-(the image downloads Zed + VS Code + the AL extension — several minutes once).
+`drive.sh` builds `al-lsp` only when `target/debug/al-lsp` is missing. After an
+`al-lsp` change, rebuild it with `cargo build -p al-lsp --bin al-lsp` first, or
+the container runs the old binary. The container image is built on first run
+(it downloads Zed, VS Code and the AL extension, which takes several minutes once).
 
 ## Run (agent path)
 
