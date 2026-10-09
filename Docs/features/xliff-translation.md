@@ -89,7 +89,9 @@ package has an *AL: XLIFF Generate Translation File* task, and this repository's
 through `al_call` (for example, `method: "xlf.refresh"`).
 
 Every `.xlf` path these methods take must resolve inside the project the daemon serves, and
-a file is read only when it is a regular file under the 64 MiB cap. `generate` writes to the
+a file is read only when it is a regular file under the 64 MiB cap. The language file `refresh`
+rewrites must end in `.xlf` and resolve under the project root, so a package folder outside the
+project is not written. `generate` writes to the
 project's own `Translations` directory, refuses one that resolves outside the project, and
 replaces a symbolic link at the generated file's name rather than writing through it.
 

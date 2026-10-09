@@ -1,6 +1,6 @@
 # Campaign state
 
-Updated: 2026-09-27 23:10 BST. Paused, see `CHECKPOINT-2026-09-27.md`. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
+Updated: 2026-09-29 00:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase
 
@@ -8,25 +8,121 @@ Round 2. Every round 1 finding is fixed, rejected with evidence, or queued. Two 
 
 ## In flight
 
-Nothing. Brad paused the campaign at 22:41 BST on 2026-09-27 (`CHECKPOINT-2026-09-27.md`).
-`.campaign/STOP` is in place. The six agents of the 17:50 session were dead; their work was
-recovered, merged or saved as patches (details in the checkpoint), gates on a075b62c green
-(96 suites, 5417 passed, 0 failed), pull request 32 merged into `dev`, every other campaign branch
-deleted locally and on origin. The grammar's campaign branch is merged into its `dev` (82e89f8),
-the superproject pointer stays at 142aba6. The blog rewrite is on the blog's `main` (5af7849),
-all nine articles still `draft: true`.
+Headless session started 23:42 BST on 2026-09-28 by the watchdog, the last one the timer starts
+(`END_EPOCH` is 23:59). The 18:42 session ended at 19:30 at a usage limit, and Fable and Opus were
+limited until 23:40. Its gates on a298861f failed in the test stage: the 19:15 merges put
+`fix-r13-trust` (two private fields on `TrustDecision`) and `fix-sec7-1` (a test that builds one
+with a struct literal) together, the workspace test build failed on that literal, and PR 33's CI
+failed on it on all three platforms. Fixed by d82b8d01 (`TrustDecision::from_parts`).
 
-To resume: `rm .campaign/STOP`, then the resume protocol in `README.md`. First units: the ten
-round 12 findings (`findings/r12-session-review.md`, coverage item 1a still unticked) and
-SEC6-6 to SEC6-8 (`findings/r6-security.md`) to fix agents, then the grammar pointer move to
-82e89f8 with the full gates. The campaign window ends 2026-09-28; after that
-`systemctl --user disable --now al-campaign-watchdog.timer`.
+Recovered at 23:47: the two review branches (`sec7-review`, review complete with SEC7-1 to SEC7-15,
+and `r13-review`, review complete with R13-TRUST-1 to R13-TEXT-1) and the three fix branches the
+18:55 agents left committed (`fix-r13-lsp` c1c2d9a4, `fix-sec7-daemon` 18d575b4, `fix-r13-runtime`
+407aa9e4, 5f0720d0, 421df58b, c7168021) merged in one pass (41ab5260). The reviewers' uncommitted
+scratch tests are saved as `.campaign/sec7-scratch-tests-4.patch` and
+`.campaign/r13-scratch-tests-4.patch`. Gates on 41ab5260 running (fmt, clippy, clippy semantic and
+rustdoc green at 23:50). Statuses marked 682b831f: sixteen findings fixed, twelve open.
 
-PR 30 was merged into `dev` on 2026-09-25 (afec75d1) and PR 32 on 2026-09-27. CI runs on pushes
-to `main` and `dev` and on pull requests, so the next campaign push needs a new draft pull request
-against `dev` for CI to run on it.
+Dispatched 23:52, each told to stop by 01:15 BST, each in a reused worktree directory. Merged
+locally by 00:10 on 2026-09-29, gates on a1a9f46c running:
+
+- `campaign/fix-r13-router` (dir `r13-review`): R13-ROUTER-1, merged 81c47204, gates green on
+  f612bb24, pushed b83bd8cd.
+- `campaign/fix-sec7-bc-writes` (dir `docs-recheck-4`): SEC7-6 (77925db7, `al-bc/src/output_file.rs`
+  opens the download destination `O_NOFOLLOW | O_NONBLOCK` and refuses anything but a regular
+  file) and SEC7-8 (c0e6f8b5, `resolve_snapshot_source` resolves `samples[i].file` and
+  `breakpoints[i].file` through the containment resolver before any filesystem call, the nested
+  keys are in the `PathUse::Named` doc and the registry test). Merged 85cf9dde.
+- `campaign/fix-sec7-identity` (dir `slop-splits-5`): SEC7-12 (13fe70b0, the key is written to a
+  temporary name and hard linked into place, both reads accept 32 bytes only with a short retry,
+  `handshake_secret` returns a whole key or none). Merged b79f43ef.
+- `campaign/fix-sec7-probing` (dir `fix-sec6-output`): SEC7-15 (04539060, `inputs_fingerprint`
+  stamps the path, size and mtime of every file under a repository probing path, capped at the
+  50,000 entry cap, and `project-trust.md` says so). Merged 9687e8d6.
+- `campaign/fix-sec7-plugin` (dir `fix-r12-router-text`): SEC7-9 (e1a221ea, only a debug build
+  keeps the `OUT_DIR` bridge fallback, `al-fetch-release.sh` refuses an archive that lacks a listed
+  file) and SEC7-10 (9444d8d5, `AL_PIN_CHECKSUMS_SHA256` beside the tag, `unset` until a release
+  publishes `binary-checksums.txt`, a listing whose digest differs is refused before the archive
+  is fetched). Merged a1a9f46c.
+
+- `campaign/fix-sec7-text` (dir `fix-r13-runtime-2`): SEC7-11 (cadc1bde, `client_error_text`
+  escapes a daemon error line by line before it reaches `content[0].text`, `structuredContent.error`
+  and the diagnostics), R13-TRUST-3 (4dc5be96, `display_line` uses `escape_controls` with no cap,
+  `one_line` stays for the refusals), R13-TEXT-1 (b04c6f4d, the three comments describe the
+  shapes). Merged c4d44d67, gates running.
+
+Still running:
+
+- `campaign/fix-sec7-daemon-life` (dir `fix-daemon`): SEC7-13 committed (d581db7d, a second daemon
+  for a project refuses to start and a taken socket path is left alone), SEC7-14 in its
+  verification chain at 00:10.
+
+Security round 8 complete (`campaign/sec8-review` merged a005a33d, `findings/r8-security.md`,
+four findings, all low, scratch tests saved as `.campaign/sec8-scratch-tests-1.patch`). Three
+fix agents dispatched 00:20 on 2026-09-29, each told to stop by 01:45 BST:
+
+- `campaign/fix-sec8-trust` (dir `slop-splits-5`): SEC8-1 (a per decision total over the hashes),
+  SEC8-2 (an outside `al.dotnetPath` recorded hashed or `not present`).
+- `campaign/fix-sec8-manifest` (dir `docs-recheck-4`): SEC8-3 (`app.json` read as the settings
+  reader reads, a regular file, bounded).
+- `campaign/fix-sec8-budget` (dir `fix-sec6-output`): SEC8-4 (text in scalar variables and frames
+  counts against the held byte budget).
+
+Two reviewers dispatched 23:58 over the tree at f4eb117a, each told to stop by 01:30 BST:
+
+- `campaign/r14-review` (dir `test-snapshot`): round 14, `git diff 73ed8751..f4eb117a` (22
+  merges), every `fixed` status in `r13-session-review.md` and `r7-security.md` read again with
+  its test, merge damage, text, and the class of gap the a298861f break showed (a test or a
+  cfg branch no gate compiles). Writes `findings/r14-session-review.md`.
+- `campaign/sec8-review` (dir `fix-sec7-daemon`): security round 8 over the SEC7 fixes, the
+  runtime caps and budget, the `app.json` reload, and the queued round 8 items (`al.dotnetPath`
+  and `binary.path` outside the project as text, a record going `Stale` once, the Windows pipe
+  owner check). Writes `findings/r8-security.md`.
+
+## Close-out (the window ends tonight)
+
+Whichever session runs last does these, in order, and records each in `LOG.md`:
+
+1. Merge every fix branch whose gates pass on the merge. Mark the findings statuses (SEC7-1 to
+   SEC7-3 in `r7-security.md` on `campaign/sec7-review`, the R13 items on `campaign/r13-review`),
+   then merge the two review branches.
+2. Run the gates on the final head, push, and write `Docs/campaign/CHECKPOINT-2026-09-28.md`: the
+   counts since `CHECKPOINT-2026-09-27-close.md`, every open item with its findings file, the
+   resume steps for a later session.
+3. Mark pull request 33 ready for review. When CI is green on the head, merge it into `dev` as PR 30
+   and PR 32 were.
+4. Remove the agent worktrees and delete the merged branches, local and remote.
+5. The watchdog stops itself after 23:59 (`END_EPOCH` in `scripts/campaign/watchdog.sh`). Brad
+   disables the timer: `systemctl --user disable --now al-campaign-watchdog.timer`.
+6. Blog: `campaign/article-9-reread` stays a branch. Merge to `main` is Brad's call.
+
+The campaign window ends 2026-09-28. After that: `systemctl --user disable --now
+al-campaign-watchdog.timer`. PR 30 was merged into `dev` on 2026-09-25 (afec75d1) and PR 32 on
+2026-09-27 (b749cfbe). CI runs on pushes to `main` and `dev` and on pull requests, so this session
+opens a draft pull request from `campaign/2026-09-21` against `dev` with its first push.
 
 Queued:
+- From the SEC7-11 agent: campaign labels in code comments added by the round 13 and SEC7 fix
+  branches (`crates/al-runtime/src/interpreter/json.rs` near line 1333 names R13-RT-2 and SEC7-5,
+  `records_tests.rs` near lines 7440, 7567, 7611, 7734, 7797 and 7848 names R13-RT-1 to R13-RT-4,
+  SEC7-3 and SEC7-5, `crates/al-test/src/backends/interp.rs` near line 1508 names R13-RT-4, some
+  with "now" phrasing), for round 14's text item. The MCP diagnostic
+  `AL_AGENT_INVALID_LAUNCH_CONFIGURATION` carries `launch_config_error`, the launch file parse
+  error, unescaped (unverified whether it can hold repository control characters).
+- From the 2026-09-29 fix agents: `classify_bare_member` returns silently for a Page, Report,
+  XmlPort, Query, JSON, Text, Dictionary, List or Enum receiver, so a bare member naming an
+  unsupported method may stay local where the call with parentheses goes live (round 14). The
+  SEC7-15 fingerprint walks a repository probing path on every daemon request and language server
+  command, up to the 50,000 entry cap, so an untrusted repository that names `/` costs a walk per
+  request (security round 8). An `al.compilationOptions` entry such as
+  `/assemblyprobingpaths:./probe` is recorded as text and its files are never hashed. On Windows
+  the handshake key's hard link is untested, a filesystem without hard links makes
+  `handshake_secret` return none and the client refuse every daemon, and a process killed between
+  write and link leaves a `handshake.key.*.tmp`. A `--release --features semantic` al-lsp built in
+  a checkout finds no bridge unless `AL_BRIDGE_DIR` names `target/release/build/al-semantic-*/out/bridge`.
+  The identity.rs `temp_file` test helper leaves `/tmp/al-identity-<pid>` directories behind.
+  On Windows the al-bc and containment writes rename a temporary file over the target, so a
+  link planted between the check and the rename is not covered there.
 
 - Audit triage open items (`findings/audit-backlog-triage.md`): the interpreter re-collects a
   workspace procedure's parameters and locals on every call (memoise per procedure), no
@@ -68,15 +164,15 @@ whichever ones pay off most. Record progress per workstream below so gaps are vi
 
 | # | Workstream | Progress | Next step |
 |---|------------|----------|-----------|
-| A | Correctness: review rounds, triage, fixes with a failing test first | Rounds 1 to 7 fixed or queued. Round 7: 15 of 15 fixed and merged (fac24900). Round 8: 14 of 14 fixed and merged (a1afe8e6, bd76f89f, 12b1778a, 8f70b75e). Round 9: 7 of 7 fixed and merged (7cd0a904, 52d07278). Round 10 complete 2026-09-27 (`findings/r10-session-review.md`, scope a0e85e0b..9e3f26a1): 11 findings, 1 high (variables declared on one line share one List, Dictionary or JSON value), 11 of 11 fixed and merged (9a364d46, 19a7cae9, 580151c1). Round 11 complete 2026-09-27 (`findings/r11-session-review.md`, scope 9e3f26a1..4c429ac5): 7 findings, 2 medium, 5 low, 7 of 7 fixed and merged (0d851d9d, dab2eb06, 6532618e). Round 12 review in flight over 4c429ac5..7b607e40 | Round 12 findings to fix agents |
+| A | Correctness: review rounds, triage, fixes with a failing test first | Rounds 1 to 7 fixed or queued. Round 7: 15 of 15 fixed and merged (fac24900). Round 8: 14 of 14 fixed and merged (a1afe8e6, bd76f89f, 12b1778a, 8f70b75e). Round 9: 7 of 7 fixed and merged (7cd0a904, 52d07278). Round 10 complete 2026-09-27 (`findings/r10-session-review.md`, scope a0e85e0b..9e3f26a1): 11 findings, 1 high (variables declared on one line share one List, Dictionary or JSON value), 11 of 11 fixed and merged (9a364d46, 19a7cae9, 580151c1). Round 11 complete 2026-09-27 (`findings/r11-session-review.md`, scope 9e3f26a1..4c429ac5): 7 findings, 2 medium, 5 low, 7 of 7 fixed and merged (0d851d9d, dab2eb06, 6532618e). Round 12 complete 2026-09-27 (`findings/r12-session-review.md`, scope 4c429ac5..7b607e40): 10 findings, 8 of 10 fixed and merged (77308d91, a624bdf4, 73ed8751), R12-DAEMON-1 fixed and merged 2026-09-28 (fc04be15), R12-MUT-1 fixed and merged (34e8f8de), so 10 of 10. Round 13 review in flight over 7b607e40..73ed8751 (items 1 and 2 done, six findings: two trust, four runtime), fix agents on all six | Round 13 items 3 to 16, then the fixes merge |
 | B | Old audit: mark each of the 227 `AUDIT-BACKLOG.md` findings fixed or open | Done 2026-09-26 (`findings/audit-backlog-triage.md`): 253 rows, 249 fixed with the commit or code named, 3 open (queued above), 1 unclear. Round 9 spot-checked ten `fixed` rows with no commit or file:line in their evidence: all ten hold | Nothing queued |
-| C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 11 merged 2026-09-26 (re-score: overall 80.2 unchanged, strict 79.9 to 79.6 as the scan surface grew, `findings/desloppify.md` section 5, `desloppify scan` is unreliable with sibling worktrees active). 2026-09-24: test modules split out of six large files, rustdoc warnings 46 to 0 (CI gated), bulk-fix errors typed | 2026-09-27: the trust and lsp_dispatch test modules split out (b5c05341). Largest files now `records_tests.rs` 5555, `records.rs` 3315, `client/mod.rs` 2804, `eval_expr.rs` 2643, `lsp/mod.rs` 2644 | The 63 deferred items (typed RPC boundary is the largest), `records.rs` and `eval_expr.rs` splits after the round 11 runtime fixes merge, a holistic desloppify review to re-score the subjective dimensions |
-| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Four review rounds (8, 19, 10, 14 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint, trust digest over analyzer and dotnet file hashes, credential authorisation on every DAP and test path. Round 7's eight security findings merged 2026-09-27 (fac24900): the launch file the strict parser rejects stales the record, the legacy proxy judges a named server as on-premises, no download into a linked `.alpackages`, built-in analyzer names resolve to the toolchain, the record hashes what an analyzer or dotnet loads from beside it, the digest mismatch refusal prints no digest, a revoke during a settings change holds, `--validate` judges trust on the real folder | Round 5 complete 2026-09-27 (`findings/r5-security.md`, 9 findings: symlinks and native libraries outside the hashed tree, the entry cap as a constant, the proxy forwarding on-premises and `applicationFamily` scenarios, `compilationOptions` paths as text, Zed-named analyzer copies, a `.alpackages` link, the dotnet fingerprint), 9 of 9 fixed and merged 2026-09-27 (68f0bbe8) Round 11 found three bypasses beside the round 5 fixes (a path in place of a name, a settings file that stops parsing, other spellings of `authentication`), 3 of 3 fixed and merged (0d851d9d). Round 6 review: items 1 to 4 done 2026-09-27 (`findings/r6-security.md`, 5 findings: a `.netpackages` link outside the project loads an unrecorded analyzer, a linked path recorded as text, cyclic list comparison aborts the daemon, `Contains` on a cycle hangs a thread, no memory limit in the test runtime), two fix agents on the five, review agent on items 5 to 7 | Merge the two round 6 fix branches, then items 5 to 7's findings |
-| E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal. `cargo mutants` 7 of 10 files merged (7e4c02f3, 58781aa7, `findings/mutants.md`), 9 of 10 files merged (7e4c02f3, 58781aa7, 7b607e40: cobertura.rs, composition.rs and tests for four formatting files), agent on the rest of the formatting module. Snapshot profiling flake closed 2026-09-27 (cause: a private mutex over `XDG_CONFIG_HOME` in the containment tests, fixed by 17bd4758) | Merge the formatting run, make `al-test/backends/snapshot.rs` testable |
-| F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review fixed 10 of 11 plus three items found while fixing. 2026-09-26: the seven shared query files are byte-identical in both places and the Makefile checks it. Corpus round 2 merged 2026-09-27: grammar cc31863 (12 commits, corpus tests for every construct the interpreter runs, GR2-1 scanner fix), pointer and `extension.toml` rev moved (4c1b0ae6). GR2-2, GR2-3, GR2-5 fixed in the interpreter (8f70b75e). GR2-4 fixed 2026-09-27: grammar a108400, pointer b3d5121b, interpreter test 217af726. Corpus round 3 merged 2026-09-27 (`findings/grammar-corpus-r3.md`, grammar 142aba6, pointer 4c429ac5): six corpus files (List and Dictionary, glued signs, keyword names, case labels, round 8 and 9 shapes, every node kind the interpreter matches), GR3-1 fixed in the grammar (`X:=-1` parses as `X := -1`), 119 corpus tests | GR3-2 and GR3-3 in the interpreter (agent on `campaign/fix-r10-b`), then a query drift check over the new node shapes |
+| C | Slop and simplification: desloppify plan, per-crate simplify pass | Batch 11 merged 2026-09-26 (re-score: overall 80.2 unchanged, strict 79.9 to 79.6 as the scan surface grew, `findings/desloppify.md` section 5, `desloppify scan` is unreliable with sibling worktrees active). 2026-09-24: test modules split out of six large files, rustdoc warnings 46 to 0 (CI gated), bulk-fix errors typed | 2026-09-27: the trust and lsp_dispatch test modules split out (b5c05341). Largest files now `records_tests.rs` 5555, `records.rs` 3315, `client/mod.rs` 2804, `eval_expr.rs` 2643, `lsp/mod.rs` 2644 | `records.rs` split merged 2026-09-28 (c0e143b7: store, table_meta, crud, field_access, validate, collection_methods, helpers), `eval_expr.rs` split merged 2026-09-28 (bd40b490: entry, literals, operators, member_access, assignment_chain, helpers, tests), then the 63 deferred items (typed RPC boundary is the largest) and a holistic desloppify review to re-score the subjective dimensions |
+| D | Security: credentials, archive parsing, MCP and daemon input, extension binary download, supply chain | Four review rounds (8, 19, 10, 14 findings), all fixed and merged. Project trust, dispatcher capability registry, peer-checked endpoint, trust digest over analyzer and dotnet file hashes, credential authorisation on every DAP and test path. Round 7's eight security findings merged 2026-09-27 (fac24900): the launch file the strict parser rejects stales the record, the legacy proxy judges a named server as on-premises, no download into a linked `.alpackages`, built-in analyzer names resolve to the toolchain, the record hashes what an analyzer or dotnet loads from beside it, the digest mismatch refusal prints no digest, a revoke during a settings change holds, `--validate` judges trust on the real folder | Round 5 complete 2026-09-27 (`findings/r5-security.md`, 9 findings: symlinks and native libraries outside the hashed tree, the entry cap as a constant, the proxy forwarding on-premises and `applicationFamily` scenarios, `compilationOptions` paths as text, Zed-named analyzer copies, a `.alpackages` link, the dotnet fingerprint), 9 of 9 fixed and merged 2026-09-27 (68f0bbe8) Round 11 found three bypasses beside the round 5 fixes (a path in place of a name, a settings file that stops parsing, other spellings of `authentication`), 3 of 3 fixed and merged (0d851d9d). Round 6 review: items 1 to 4 done 2026-09-27 (`findings/r6-security.md`, 5 findings: a `.netpackages` link outside the project loads an unrecorded analyzer, a linked path recorded as text, cyclic list comparison aborts the daemon, `Contains` on a cycle hangs a thread, no memory limit in the test runtime), items 5 to 7 done 2026-09-27 (204d44ee, three findings), 8 of 8 fixed and merged (283b8415, a5be8edb, 5f74977c, d9225520). Round 7 review in flight (`findings/r7-security.md`, three findings so far: the text renderers SEC6-8 did not reach, the linked tree hashed with no byte cap, the per-value caps that bound no total), fix agents on all three | Round 7 items 1 to 6, then the fixes merge |
+| E | Tests: coverage by crate, property tests, `cargo mutants` | First pass merged: 4 bugs found by property tests, coverage table, CI job proposal. `cargo mutants` 7 of 10 files merged (7e4c02f3, 58781aa7, `findings/mutants.md`), 9 of 10 files merged (7e4c02f3, 58781aa7, 7b607e40: cobertura.rs, composition.rs and tests for four formatting files), agent on the rest of the formatting module. Snapshot profiling flake closed 2026-09-27 (cause: a private mutex over `XDG_CONFIG_HOME` in the containment tests, fixed by 17bd4758) `snapshot.rs` testable merged 2026-09-28 (fc24b434: capture behind debugger and runner traits, 926 lines of unit tests, the mutants run in `findings/mutants.md`) | The formatting run |
+| F | Grammar: corpus tests, query drift between `languages/al` and `tree-sitter-al/queries` | R1 review fixed 10 of 11 plus three items found while fixing. 2026-09-26: the seven shared query files are byte-identical in both places and the Makefile checks it. Corpus round 2 merged 2026-09-27: grammar cc31863 (12 commits, corpus tests for every construct the interpreter runs, GR2-1 scanner fix), pointer and `extension.toml` rev moved (4c1b0ae6). GR2-2, GR2-3, GR2-5 fixed in the interpreter (8f70b75e). GR2-4 fixed 2026-09-27: grammar a108400, pointer b3d5121b, interpreter test 217af726. Corpus round 3 merged 2026-09-27 (`findings/grammar-corpus-r3.md`, grammar 142aba6, pointer 4c429ac5): six corpus files (List and Dictionary, glued signs, keyword names, case labels, round 8 and 9 shapes, every node kind the interpreter matches), GR3-1 fixed in the grammar (`X:=-1` parses as `X := -1`), 119 corpus tests GR3-2 and GR3-3 fixed in the interpreter (85426311). 2026-09-28: R12-GR-1 fixed in the grammar (07f80c9) and the `argument` field added on call arguments (fc80b85, AL-Tree-Sitter `dev`), pointer moved (73ed8751) Query drift check merged 2026-09-28 (83820e8d, grammar baf782b, `findings/grammar-query-drift.md`: ten query tests over every corpus entry, signs and signed case labels, List and Dictionary element types, names after keywords, trigger and property names on the leaf, punctuation, 125 corpus tests) | Callers move to the `argument` field, table field types need a grammar node |
 | G | AI tooling: make this project speed up and sharpen AI work on Business Central (see below) | Plugin, daemon projection, free-ids, compact answers merged. Persisted dependency source index merged 2026-09-26: second start 23.6 s to 1.25 s, peak memory 2.8 GB to 371 MB, and the follow-up (builder fixture hash in the key, shared store with a 1 GiB limit, sorted rows). Plugin leftovers merged 2026-09-26 (cf0f794c): `plugin/evals/` with 12 ground-truth cases and `make plugin-evals`, a SessionStart hook that downloads and checksum-verifies a release archive | Round 5 runs merged 2026-09-27: `bc-test-locally`, `bc-upgrade-impact`, `bc-cop-fixer` and a `.alpackages` symbol lookup all right, three defects fixed on the way. Round 6 runs in flight (the five skills against `.alpackages`, `package-diff` with two versions). Round 6 runs merged 2026-09-27 (b2c38e6a): all right on the first try. Agent on the stale `app.json` defect it found. Left: a release with `binary-checksums.txt` |
-| H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | Done 2026-09-26: every user doc checked against the code and given a plain-wording pass (`findings/docs-review.md`). Re-checked 2026-09-27 against the round 8 merges (6516172a): six claims corrected in `native-test-runtime.md` and `debugging-dap.md`, eleven docs read with nothing to change Re-check 3 merged 2026-09-27 (aaa3ca37): 13 claims corrected in six docs, twelve read with nothing to change | Re-check after the round 11 fixes and security round 6 merge |
-| I | Blog: replace the six articles with a new series on the current project, unsloppify each | Nine articles written, fact-passed, unsloppified and re-read after the security round on blog branch `campaign/2026-09-rewrite` (pushed), `pnpm validate` passes, all `draft: true`. Length pass 2026-09-27 (blog 5af7849): articles 3, 7, 8 and 9 trimmed to within 5 percent of their ranges, `readTime` recomputed for all nine with the site's own `getReadingTime` rule (all words at 200 a minute, so 11 to 16 minutes, the prose-only numbers are in `blog-progress.md`) | Article 9 final re-read at campaign end, quiet-machine timings, `readTime`, then merge to `main` (Brad) |
+| H | Docs: `Docs/`, `README.md`, `ROADMAP.md` match the code, then unsloppify | Done 2026-09-26: every user doc checked against the code and given a plain-wording pass (`findings/docs-review.md`). Re-checked 2026-09-27 against the round 8 merges (6516172a): six claims corrected in `native-test-runtime.md` and `debugging-dap.md`, eleven docs read with nothing to change Re-check 3 merged 2026-09-27 (aaa3ca37): 13 claims corrected in six docs, twelve read with nothing to change | Re-check 4 merged 2026-09-28 (8bb95bcc): eleven docs corrected against the merges since aaa3ca37 (runtime limits and overloads, the daemon's per-request reads, path refusals, escaped names, trust on analyzer links and `al.dotnetPath`, the evals runner), the agent died before writing a completion note so the docs it did not reach are unknown |
+| I | Blog: replace the six articles with a new series on the current project, unsloppify each | Nine articles written, fact-passed, unsloppified and re-read after the security round on blog branch `campaign/2026-09-rewrite` (pushed), `pnpm validate` passes, all `draft: true`. Length pass 2026-09-27 (blog 5af7849): articles 3, 7, 8 and 9 trimmed to within 5 percent of their ranges, `readTime` recomputed for all nine with the site's own `getReadingTime` rule (all words at 200 a minute, so 11 to 16 minutes, the prose-only numbers are in `blog-progress.md`) Article 9 final re-read in flight 2026-09-28 (blog `campaign/article-9-reread`) | Quiet-machine timings, then merge to `main` (Brad) |
 
 ### G: AI tooling detail
 

@@ -347,8 +347,12 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
             break;
         }
 
-        if let Some(slot) = stack.lookup_mut(&var_name) {
-            *slot = make_counter(i);
+        if let Some(mut slot) = stack.lookup_slot_mut(&var_name) {
+            if let Err(message) =
+                slot.store(&format!("The for variable '{var_name}'"), make_counter(i))
+            {
+                return Eval::Error(error_info(message));
+            }
         } else if let Some(frame) = stack.top_mut() {
             frame.bind(&var_name, make_counter(i));
         }
@@ -430,10 +434,17 @@ fn eval_foreach(
         if ctx.deadline_exceeded() {
             return Eval::Error(error_info("interpreter deadline exceeded in foreach loop"));
         }
-        if let Some(slot) = stack.lookup_mut(&var_name) {
-            *slot = item.clone();
+        if let Some(mut slot) = stack.lookup_slot_mut(&var_name) {
+            if let Err(message) = slot.store(&format!("The foreach variable '{var_name}'"), item) {
+                return Eval::Error(error_info(message));
+            }
         } else if let Some(frame) = stack.top_mut() {
-            frame.bind(&var_name, item.clone());
+            frame.bind(&var_name, item);
+            if let Err(message) =
+                frame.check_held_bytes(&format!("The foreach variable '{var_name}'"))
+            {
+                return Eval::Error(error_info(message));
+            }
         }
 
         if let Some(body) = body_node {
@@ -814,14 +825,17 @@ pub(crate) fn eval_call_parts(
                 );
             }
             Some(Value::List(_)) if records::supports_list_method(&proc_name) => {
-                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                let CallArgs {
+                    values: args,
+                    elements,
+                } = match eval_call_args(args_node, source, stack, ctx) {
                     Ok(v) => v,
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
                 let result =
                     records::dispatch_list_method(recv, &proc_name, args, statement, stack, ctx);
-                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                let written = apply_var_writebacks(args_node, &elements, source, stack, ctx);
                 return first_error(result, written);
             }
             Some(Value::Text(_) | Value::Code(_)) if records::supports_text_method(&proc_name) => {
@@ -835,7 +849,10 @@ pub(crate) fn eval_call_parts(
             }
             Some(Value::Dict(_)) if records::supports_dict_method(&proc_name) => {
                 let recv = recv.to_string();
-                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                let CallArgs {
+                    values: args,
+                    elements,
+                } = match eval_call_args(args_node, source, stack, ctx) {
                     Ok(v) => v,
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
@@ -847,7 +864,7 @@ pub(crate) fn eval_call_parts(
                         Ok(Some(value)) => {
                             ctx.var_writebacks.clear();
                             ctx.var_writebacks.push((1, value));
-                            apply_var_writebacks(args_node, source, stack, ctx)
+                            apply_var_writebacks(args_node, &elements, source, stack, ctx)
                                 .unwrap_or(Eval::Normal(Value::Boolean(true)))
                         }
                         Ok(None) => Eval::Normal(Value::Boolean(false)),
@@ -855,14 +872,17 @@ pub(crate) fn eval_call_parts(
                     };
                 }
                 let result = records::dispatch_dict_method(&recv, &proc_name, args, stack, ctx);
-                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                let written = apply_var_writebacks(args_node, &elements, source, stack, ctx);
                 return first_error(result, written);
             }
             Some(Value::Json(json))
                 if crate::interpreter::json::supports_json_method(json.kind, &proc_name) =>
             {
                 let recv = recv.to_string();
-                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                let CallArgs {
+                    values: args,
+                    elements,
+                } = match eval_call_args(args_node, source, stack, ctx) {
                     Ok(v) => v,
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
@@ -870,7 +890,7 @@ pub(crate) fn eval_call_parts(
                 let result = crate::interpreter::json::dispatch_json_method(
                     &recv, &proc_name, args, statement, stack, ctx,
                 );
-                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                let written = apply_var_writebacks(args_node, &elements, source, stack, ctx);
                 return first_error(result, written);
             }
             Some(Value::TextBuilder(_)) if records::supports_textbuilder_method(&proc_name) => {
@@ -913,21 +933,27 @@ pub(crate) fn eval_call_parts(
                         fresh
                     }
                 };
-                let args = match eval_args_opt(args_node, source, stack, ctx) {
+                let CallArgs {
+                    values: args,
+                    elements,
+                } = match eval_call_args(args_node, source, stack, ctx) {
                     Ok(v) => v,
                     Err(ArgsShort::Error(e)) => return Eval::Error(e),
                     Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
                 };
                 ctx.pending_instance = Some(instance);
                 let result = dispatch_call_scoped(Some(&object_name), &proc_name, args, stack, ctx);
-                let written = apply_var_writebacks(args_node, source, stack, ctx);
+                let written = apply_var_writebacks(args_node, &elements, source, stack, ctx);
                 return first_error(result, written);
             }
             _ => {}
         }
     }
 
-    let args = match eval_args_opt(args_node, source, stack, ctx) {
+    let CallArgs {
+        values: args,
+        elements,
+    } = match eval_call_args(args_node, source, stack, ctx) {
         Ok(v) => v,
         Err(ArgsShort::Error(e)) => return Eval::Error(e),
         Err(ArgsShort::Exit(v)) => return Eval::Exit(v),
@@ -935,7 +961,7 @@ pub(crate) fn eval_call_parts(
 
     ctx.stmt_position = statement;
     let result = dispatch_call_scoped(receiver.as_deref(), &proc_name, args, stack, ctx);
-    let written = apply_var_writebacks(args_node, source, stack, ctx);
+    let written = apply_var_writebacks(args_node, &elements, source, stack, ctx);
     first_error(result, written)
 }
 
@@ -951,12 +977,14 @@ fn first_error(result: Eval, written: Option<Eval>) -> Eval {
 /// After a workspace procedure returns, propagate the final values of its
 /// `var` (by-reference) parameters back into the caller's argument variables.
 /// `dispatch_workspace_procedure` populates `ctx.var_writebacks` with
-/// `(arg_index, final_value)`, and each value is written to its argument
-/// expression by [`write_var_argument`]. `Some` carries the error of a write
-/// that failed.
+/// `(arg_index, final_value)`. An argument that named an element (`A[i]`)
+/// is written through its entry in `elements`, whose index was evaluated
+/// with the arguments, and any other is written to its expression by
+/// [`write_var_argument`]. `Some` carries the error of a write that failed.
 #[must_use]
 fn apply_var_writebacks(
     args_node: Option<Node<'_>>,
+    elements: &[Option<ElementArg>],
     source: &[u8],
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
@@ -967,22 +995,27 @@ fn apply_var_writebacks(
     let writebacks = std::mem::take(&mut ctx.var_writebacks);
     let an = args_node?;
     let arg_nodes = arg_expr_nodes(an);
+    let replace = |_current: Value, value: Value| Eval::Normal(value);
     for (idx, val) in writebacks {
-        let Some(node) = arg_nodes.get(idx) else {
-            continue;
+        let written = match (elements.get(idx), arg_nodes.get(idx)) {
+            (Some(Some(element)), _) => {
+                indexing::write_element_at(&element.name, element.index, val, &replace, stack)
+            }
+            (_, Some(node)) => write_var_argument(*node, source, val, stack, ctx),
+            (_, None) => continue,
         };
-        if let error @ Eval::Error(_) = write_var_argument(*node, source, val, stack, ctx) {
+        if let error @ Eval::Error(_) = written {
             return Some(error);
         }
     }
     None
 }
 
-/// Write `value` to the argument `node` of a `var` parameter: a variable, an
-/// array element or a character of a Text (`A[i]`, as `A[i] := value` writes
-/// it), a record field (`Rec.Name`), or a bare field name in table code. AL
-/// accepts only these in a `var` position (alc AL0130), and any other
-/// argument is an error that names it.
+/// Write `value` to the argument `node` of a `var` parameter: a variable, a
+/// record field (`Rec.Name`), or a bare field name in table code. An array
+/// element or a character of a Text (`A[i]`) is written through its
+/// [`ElementArg`] instead. AL accepts only these in a `var` position (alc
+/// AL0130), and any other argument is an error that names it.
 fn write_var_argument(
     node: Node<'_>,
     source: &[u8],
@@ -990,15 +1023,13 @@ fn write_var_argument(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    if let Some((name, suffix)) = indexing::indexed_variable(node, source) {
-        let replace = |_current: Value, value: Value| Eval::Normal(value);
-        return indexing::write_element(&name, suffix, source, value, &replace, stack, ctx);
-    }
     let written = match simple_lvalue_name(node, source) {
-        Some(name) => match stack.lookup_mut(&name) {
-            Some(slot) => {
-                *slot = value;
-                return Eval::Normal(Value::Empty);
+        Some(name) => match stack.lookup_slot_mut(&name) {
+            Some(mut slot) => {
+                return match slot.store(&format!("The var argument '{name}'"), value) {
+                    Ok(()) => Eval::Normal(Value::Empty),
+                    Err(message) => eval_error(message),
+                };
             }
             None => records::implicit_field_set(&name, &value, stack, ctx),
         },
@@ -1062,14 +1093,26 @@ fn eval_args_opt(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Result<Vec<Value>, ArgsShort> {
+    eval_call_args(args_node, source, stack, ctx).map(|args| args.values)
+}
+
+/// Evaluate a call's arguments, keeping the element each `Name[index]`
+/// argument named for the `var` write back after the call.
+fn eval_call_args(
+    args_node: Option<Node<'_>>,
+    source: &[u8],
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Result<CallArgs, ArgsShort> {
     // Argument expressions are never in statement position, whatever the
     // enclosing call was — `Foo(Rec.Get(1));` evaluates the Get as an
     // expression.
     ctx.stmt_position = false;
-    match args_node {
-        Some(an) => eval_args(an, source, stack, ctx),
-        None => Ok(vec![]),
+    let mut args = CallArgs::default();
+    if let Some(an) = args_node {
+        eval_args_into(an, source, stack, ctx, &mut args)?;
     }
+    Ok(args)
 }
 
 /// Extract (receiver, procedure_name, args_node) from a call expression node.
@@ -1199,28 +1242,48 @@ enum ArgsShort {
     Exit(Value),
 }
 
-/// Evaluate an argument list node.
+impl ArgsShort {
+    /// The signal `raised` carries when an argument's evaluation gave no
+    /// value. An expression cannot legally produce break/continue (they are
+    /// statements), so those are an error rather than silently dropped.
+    fn from_raised(raised: Eval) -> Self {
+        match raised {
+            Eval::Error(error) => ArgsShort::Error(error),
+            Eval::Exit(value) => ArgsShort::Exit(value),
+            Eval::Normal(_) | Eval::Break | Eval::Continue => {
+                ArgsShort::Error(error_info("break/continue is not valid in an expression"))
+            }
+        }
+    }
+}
+
+/// An argument `Name[index]`, with the index evaluated once when the
+/// arguments were collected. A `var` write back goes to this element, as
+/// Business Central binds the reference before the call.
+struct ElementArg {
+    name: String,
+    index: i64,
+}
+
+/// A call's evaluated arguments: their values, and for each argument the
+/// element it named.
+#[derive(Default)]
+struct CallArgs {
+    values: Vec<Value>,
+    elements: Vec<Option<ElementArg>>,
+}
+
+/// Evaluate an argument list node into `out`.
 ///
 /// Handles both flat shapes (direct `expression` children) and the grammar shape
 /// where `argument_list` wraps a single `expression_list` containing the
 /// comma-separated `expression` items.
-fn eval_args(
-    args_node: Node<'_>,
-    source: &[u8],
-    stack: &mut ScopeStack,
-    ctx: &mut DispatchCtx,
-) -> Result<Vec<Value>, ArgsShort> {
-    let mut out = Vec::new();
-    eval_args_into(args_node, source, stack, ctx, &mut out)?;
-    Ok(out)
-}
-
 fn eval_args_into(
     node: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
-    out: &mut Vec<Value>,
+    out: &mut CallArgs,
 ) -> Result<(), ArgsShort> {
     let mut cursor = node.walk();
     for child in node.named_children(&mut cursor) {
@@ -1232,18 +1295,27 @@ fn eval_args_into(
             eval_args_into(child, source, stack, ctx, out)?;
             continue;
         }
-        match eval_expr(child, source, stack, ctx) {
-            Eval::Normal(v) => out.push(v),
-            Eval::Error(e) => return Err(ArgsShort::Error(e)),
-            Eval::Exit(v) => return Err(ArgsShort::Exit(v)),
-            // An expression cannot legally produce break/continue (they are
-            // statements); treat as an error rather than silently dropping.
-            Eval::Break | Eval::Continue => {
-                return Err(ArgsShort::Error(error_info(
-                    "break/continue is not valid in an expression",
-                )))
+        // `Name[index]` evaluates its index here, once, so the write back
+        // reaches the element the caller named even when the callee moves
+        // the index or the index expression has a side effect.
+        let (value, element) = match indexing::indexed_variable(child, source) {
+            Some((name, suffix)) => {
+                let read = indexing::eval_index(suffix, source, stack, ctx).and_then(|index| {
+                    let value = indexing::read_element_at(&name, index, stack)?;
+                    Ok((value, index))
+                });
+                match read {
+                    Ok((value, index)) => (value, Some(ElementArg { name, index })),
+                    Err(raised) => return Err(ArgsShort::from_raised(raised)),
+                }
             }
-        }
+            None => match eval_expr(child, source, stack, ctx) {
+                Eval::Normal(value) => (value, None),
+                raised => return Err(ArgsShort::from_raised(raised)),
+            },
+        };
+        out.values.push(value);
+        out.elements.push(element);
     }
     Ok(())
 }

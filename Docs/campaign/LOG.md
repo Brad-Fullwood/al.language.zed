@@ -700,3 +700,200 @@ Append-only. Newest entry last.
 - Runtime session close-out: `CHECKPOINT-2026-09-27-close.md` (its commits, the two CI fixes at
   the pause, open items it touches) and `HANDOFF-tree-sitter.md` (the grammar brief: R12-GR-1, an
   argument field on call arguments, the query drift check, and the steps to move the pointer).
+
+## 2026-09-28 03:55 BST: resume, five agent branches recovered and merged
+
+- The 02:25 interactive session dispatched five agents at 02:40 and reached its usage limit about
+  03:00. Its merge of `fix-r12-runtime` (77308d91: R12-LIST-1, R12-LIST-2, R12-RT-1, R12-RT-2) had
+  green gates in `.campaign/gate-*.log` (96 suites, 5428 passed, 0 failed, harness 29 suites, 353
+  passed) and was not pushed. Pushed.
+- The other four branches were complete or nearly so. `fix-sec6-output` merged d9225520 (SEC6-8:
+  control characters escaped in every text renderer, the dotnet advisory names the settings file
+  before the cap, SEC6-7: the quoting rule in every skill and both agents with a fixture codeunit
+  named `It's Here` and eval case 13). `fix-daemon` merged 5f74977c (SEC6-6: every method with a
+  path parameter declares `named` and refuses through `containment.rs` with one error code, the CLI
+  hint reworded). `fix-r12-router-text` merged a624bdf4 (R12-KW-1: a record member without
+  parentheses routes as the call it is, R12-MERGE-1: the runtime doc paragraphs restored, and the
+  agent's uncommitted R12-TEXT-1 rewording of 49 comment lines committed as 43d98f9e after a check
+  that every flagged line was covered). `grammar` merged 73ed8751 (pointer and `extension.toml` at
+  fc80b85, which is AL-Tree-Sitter `dev`: the `for` iterator is a `name_or_keyword` and each call
+  argument is the field `argument`, interpreter test for a quoted loop variable). R12-DAEMON-1 and
+  R12-MUT-1 were not started; re-dispatched.
+- Findings files updated: eight R12 statuses and SEC6-6 to SEC6-8 fixed. Gates on 73ed8751 running.
+- Seven agents dispatched (see `STATE.md`): R12-MUT-1, R12-DAEMON-1, security round 7, round 13
+  review, the al-runtime file splits, docs re-check 4, the grammar query drift check.
+
+## 2026-09-28 08:55 BST: resume, two branches merged, eight agents dispatched
+
+- The 03:41 session's seven agents were dead by 08:43 with no branch pushed. `docs-recheck-4`
+  (11 docs commits over `Docs/features`, `Docs/reference`, `plugin/`, no completion note) merged
+  8bb95bcc. `slop-splits-5` (41c4190b, `records.rs` 3632 lines into a module directory of seven
+  files, no logic moved, `records_tests.rs` unchanged) merged c0e143b7. Gates on c0e143b7 green:
+  fmt, clippy, clippy semantic, rustdoc, 5795 passed, 0 failed, 20 ignored, harness green
+  (`.campaign/gates-c0e143b7.log`).
+- `fix-r12-mut` held only `#[ignore]` on the seven R12-MUT-1 tests: discarded. `fix-daemon` (651
+  uncommitted lines for R12-DAEMON-1), `test-snapshot` (117 lines in `snapshot.rs`) and the grammar
+  worktree (`corpus_queries.rs`, 667 lines, not wired in) kept their work for the agents
+  re-dispatched onto them. `sec7-review` had SEC7-1 (the SEC6-8 escaping covers six renderers and
+  the rest print names raw) and no coverage item ticked. `r13-review` had the brief and a false
+  `## Review complete` line.
+- Eight agents dispatched at 08:52 (see `STATE.md`): R12-DAEMON-1, R12-MUT-1, security round 7,
+  round 13, the `eval_expr.rs` split, the grammar query drift check, `snapshot.rs` testable, and
+  the SEC7-1 fix on a new branch `campaign/fix-sec7-1`.
+
+## 2026-09-28 14:00 BST: resume, three branches merged, seven agents dispatched
+
+- The 08:43 session merged `fix-r12-daemon` (fc04be15, gates green, 5801 passed, 0 failed) and hit
+  the session limit about 09:56 without pushing. Every watchdog attempt until 13:39 was limited.
+  Pushed at 13:52.
+- Merged: `slop-splits-5` (bd40b490, `eval_expr.rs` 2644 lines into seven files, no logic moved),
+  `test-snapshot` (fc24b434, `al-test/backends/snapshot.rs` behind debugger and runner traits, 926
+  lines of unit tests, the mutants run recorded), `grammar-queries` (83820e8d, pointer and
+  `extension.toml` at baf782b, AL-Tree-Sitter `dev`: `corpus_queries.rs` runs the shipped queries
+  over every corpus entry with ten tests, highlight and locals fixes for signs, signed case labels,
+  collection element types, names after keywords, trigger and property names on the leaf,
+  punctuation and key sections, 125 corpus tests, the `folds.scm` doc line corrected instead of
+  adding an attribute fold). The seven shared query files match byte for byte after the merge.
+- The blog's article 9 re-read from the 03:41 session was found on blog branch
+  `campaign/article-9-reread` (11c5be3, 0a44564) with an uncommitted wording pass, committed
+  35e6756 and pushed.
+- Scratch tests from the dead reviewers saved: `.campaign/r13-scratch-tests-2.patch` (455 lines
+  over trust, records and workspace tests), `.campaign/sec7-scratch-tests.patch` (276 lines).
+- Worktrees: `grammar` removed, `fix-daemon` now holds `campaign/fix-r13-runtime`, `slop-splits-5`
+  holds `campaign/fix-r13-trust`, `test-snapshot` holds `campaign/docs-recheck-5`. Merged branches
+  deleted locally.
+- Seven agents dispatched at 13:57 (see `STATE.md`): SEC7-1, R12-MUT-1, round 13 from item 3,
+  security round 7 from item 1, the R13 trust fixes with SEC7-2, the R13 runtime fixes with
+  SEC7-3, article 9. Docs re-check 5 dispatched at 14:05.
+- Gates on 83820e8d green (`.campaign/gates-83820e8d.log`): fmt, clippy, clippy semantic, rustdoc,
+  125 suites, 5822 passed, 0 failed, 20 ignored, harness green. `findings/grammar-query-drift.md`
+  committed with the result.
+- 14:30: `fix-r12-mut` merged (34e8f8de, R12-MUT-1): four indent tests read valid AL, two keep a
+  mid-edit input and assert idempotence plus the level of the line below, one compares the `else`
+  after a nested `if` with the `else` after a single call. Each rewritten test was broken by hand
+  and failed. The agent found two layout bugs on the way (a case `else` indented at the branch
+  body's level, a nested `case` without `begin` one level too shallow): fix agent dispatched on
+  `campaign/fix-formatter-case`. Gates on 34e8f8de running.
+
+## 2026-09-28 18:55 BST: resume, one branch merged, eight agents dispatched
+
+- The 13:49 session's eight agents were dead by 18:42 with no branch pushed. Its gates on 34e8f8de
+  stopped in the test stage: fmt, clippy, clippy semantic and rustdoc green, 38 suites and 4031
+  tests passed, then the session hit its limit (reset 18:40, the watchdog's 18:31 tick found Fable
+  and Opus limited).
+- Merged: `docs-recheck-5` (7717215c, four docs corrected against the merges since 8bb95bcc:
+  `daemon-protocol.md` says requests on one connection run as their own tasks, up to eight at once,
+  and the package stamp covers trust per folder, `native-test-runtime.md` names the `eval_expr` and
+  `records` module directories, `language-assets.md` says what each query file captures at baf782b
+  and which are written by hand, `README.md` says where each language package file comes from). No
+  completion note, so the docs the agent did not reach are unknown. Gates on 7717215c running.
+- Kept in place for the re-dispatched agents: `fix-sec7-1` (eight commits over the insight,
+  language, quality, reports, tests, query and project renderers and the CLI warnings, `build.rs`
+  half converted and uncommitted), `fix-r13-runtime` (8495e4e1 fixes R13-RT-2, which is also
+  SEC7-5's shape, and the R13-RT-1 tests are written and failing), `fix-r13-trust` (33ec6447
+  R13-TRUST-1, 1f2e61cf R13-TRUST-2, SEC7-2 half done and uncommitted: a byte budget, a memo so
+  each tree is hashed once, `O_NONBLOCK` through `libc`), `sec7-review` (item 1 ticked, SEC7-1 to
+  SEC7-5 recorded, SEC7-4 is the outside path spelled as text and SEC7-5 the JSON self add),
+  `r13-review` (items 1 to 4 ticked, R13-LSP-1 new: the language server reads `app.json` at
+  initialization and `al.reindex` only). `fix-formatter-case` had no work and was moved to
+  7717215c. `test-snapshot` now holds `campaign/fix-r13-lsp`.
+- Scratch tests saved: `.campaign/sec7-scratch-tests-3.patch` (620 lines), `.campaign/r13-scratch-tests-3.patch` (669 lines).
+- Eight agents dispatched at 18:55 (see `STATE.md`): SEC7-1, the R13 runtime items with SEC7-3 and
+  SEC7-5, SEC7-2 and SEC7-4 with the trust comment, the two formatter `case` bugs, R13-LSP-1,
+  security round 7 items 2 to 6, round 13 items 5 to 16, article 9. Each stops by 21:30 so the
+  close-out can merge, run the gates and write the checkpoint before the window ends.
+- Gates on 7717215c green (`.campaign/gates-7717215c.log`): fmt, clippy, clippy semantic, rustdoc,
+  125 suites, 5822 passed, 0 failed, 20 ignored, harness green.
+
+## 2026-09-28 19:20 BST: four branches merged, two more agents dispatched
+
+- Two agents dispatched at 19:05 for the findings the reviewers wrote in their first ten minutes:
+  `campaign/fix-sec7-daemon` for SEC7-6 to SEC7-8 (the daemon's write arms and nested snapshot
+  paths) and `campaign/fix-r13-runtime-2` for R13-RT-5 and R13-RT-6, in tests of their own so
+  the two runtime branches merge without a conflict in `records_tests.rs`.
+- Merged: `fix-sec7-1` (dfd6df9b, SEC7-1: the renderers in `build.rs`, `debug.rs`, `env.rs`,
+  `refactor.rs` and `trust.rs` on top of the eight inherited commits, a source tree test that
+  names the print site when a raw value reaches a terminal, the crafted-name commands checked
+  with `cat -v`), `fix-r13-trust` (8554630d: R13-TRUST-1, R13-TRUST-2, SEC7-2 with a 256 MiB
+  byte cap per tree, whole 64 KiB reads so `/proc/self/pagemap` counts against it, one hash per
+  tree per decision, `O_NONBLOCK` opens, SEC7-4 with outside analyzer and probing paths the
+  repository writes hashed or recorded `not present`, the stat count comment), `fix-formatter-case`
+  (6cae13c5: a nested case's labels under it, a `begin` on a label line closed by its own `end`, a
+  case `else` at the label level, a `begin` after a bare case `else` at the `else`'s level, each
+  checked against Microsoft's formatter), `fix-r13-runtime-2` (a298861f: R13-RT-5, R13-RT-6).
+  Gates on a298861f running.
+- Blog: article 9's wording pass committed 124e0bb and pushed (nineteen usage limits, counted from
+  the LOG headings, the weekly gap and the watchdog log, `readTime` 17, `pnpm validate` green).
+- Found on the way, queued: two older `else` placements in the formatter (after a `case ... end`
+  with no `;`, and a dangling `else` inside nested openers), `al.dotnetPath` and `binary.path`
+  outside the project still recorded as text, two `{e:?}` prints outside `src/cli`.
+
+## 2026-09-28 23:55 BST: resume, the broken head fixed, five branches merged, seven agents dispatched
+
+- The 18:42 session ended at 19:30 at a usage limit. Its gates on a298861f failed in the test
+  stage: `fix-r13-trust` gave `TrustDecision` two private fields and `fix-sec7-1` added a test
+  in al-explorer that builds one with a struct literal, and the two met at the 19:15 merges.
+  PR 33's CI failed the same way on ubuntu, macOS and Windows. d82b8d01 adds
+  `TrustDecision::from_parts` and the test uses it.
+- Merged in one pass (41ab5260): `sec7-review` (SEC7-6 to SEC7-15 recorded, review complete),
+  `r13-review` (R13-DAEMON-1, R13-CLI-1, R13-ROUTER-1, R13-TRUST-3, R13-TEXT-1 recorded, review
+  complete), `fix-r13-lsp` (R13-LSP-1: `app.json` read again when it changes on disk),
+  `fix-sec7-daemon` (SEC7-7 and R13-DAEMON-1: `xlf.refresh`, `newProject`, snapshot and profiling
+  resolve the path they write under the project root, `named_write` in the registry),
+  `fix-r13-runtime` (R13-RT-1: nested lists compared and freed without a native frame per level,
+  R13-RT-3 with SEC7-3: one byte budget over a test's collections, R13-RT-4: a cancelled test
+  stops inside `List.Contains` and compare, SEC7-5: a depth cap on JSON `WriteTo` and copies).
+  The reviewers' scratch tests (958 and 1108 lines) saved as `.campaign/*-scratch-tests-4.patch`.
+- R13-CLI-1 was already covered by the SEC7-1 branch and R13-DAEMON-1 by the SEC7-7 commit,
+  so both are marked fixed (682b831f) with the other fourteen.
+- Seven agents dispatched at 23:52 for the twelve findings still open (see `STATE.md`).
+
+## 2026-09-29 00:05 BST: gates green, pushed, checkpoint written, the router fix merged
+
+- Gates on 41ab5260 green (`.campaign/gates-41ab5260.log`, 23:47 to 23:54): fmt, clippy, clippy
+  semantic, rustdoc, 95 suites, 5537 passed, 0 failed, harness 354 passed. Pushed 219fccbb, CI
+  on PR 33 started.
+- `CHECKPOINT-2026-09-28.md` written (f612bb24): the counts since the 2026-09-27 close, the state
+  at the close, what the day delivered, every open item with its file, the resume steps.
+- Two reviewers dispatched at 23:58 (round 14 over 73ed8751..f4eb117a, security round 8 over the
+  SEC7 fixes and the queued round 8 items), see `STATE.md`.
+- Merged: `fix-r13-router` (81c47204, R13-ROUTER-1: `classify_bare_member` sends a Codeunit or
+  Interface receiver's member through the rule the call with parentheses takes, one test over
+  five receiver shapes with and without parentheses, `native-test-runtime.md` states the rule).
+  The agent read that a bare member on a Page, Report, XmlPort, Query, JSON, Text, Dictionary,
+  List or Enum receiver still returns silently, queued for round 14. Gates on f612bb24 running.
+
+## 2026-09-29 00:12 BST: four fix branches merged, gates running
+
+- Gates on f612bb24 green (the router merge), pushed b83bd8cd.
+- Merged: `fix-sec7-bc-writes` (85cf9dde, SEC7-6 and SEC7-8), `fix-sec7-identity` (b79f43ef,
+  SEC7-12), `fix-sec7-probing` (9687e8d6, SEC7-15), `fix-sec7-plugin` (a1a9f46c, SEC7-9 and
+  SEC7-10). What each does is in `STATE.md`. Every test failed before its fix. Gates on a1a9f46c
+  running with the plugin fetch test and `check-plugin.sh` added as a stage.
+- Statuses marked in `r7-security.md`. Open: SEC7-11, SEC7-13, SEC7-14, R13-TRUST-3, R13-TEXT-1,
+  with the two agents still running.
+- Queued from the agents' notes (see `STATE.md`): the per request probing walk, unhashed
+  `compilationOptions` paths, the bare member receivers the router still passes, the Windows
+  hard link and rename gaps, a release build from a checkout without its bridge.
+
+## 2026-09-29 00:15 BST: the text fix branch merged
+
+- Gates on a1a9f46c green with the plugin fetch test and `check-plugin.sh` (124 suites, 0 failed),
+  pushed d785528f.
+- Merged: `fix-sec7-text` (c4d44d67, SEC7-11, R13-TRUST-3, R13-TEXT-1, what each does in
+  `STATE.md`). Gates on c4d44d67 running. Statuses marked. Open: SEC7-13 (committed on its branch)
+  and SEC7-14 (in flight).
+- Queued from the agent's notes: campaign labels left in code comments by the round 13 and SEC7
+  fix branches, and the unescaped `launch_config_error` in one MCP diagnostic.
+
+## 2026-09-29 00:20 BST: security round 8 merged, three fix agents dispatched
+
+- Gates on c4d44d67 green, pushed ac87043a.
+- Security round 8 complete (`findings/r8-security.md`, merged a005a33d, pushed): four low
+  findings. SEC8-1: the byte budget and entry cap bound one hash and nothing bounds the hashes one
+  decision runs. SEC8-2: an outside `al.dotnetPath` is recorded as text with no mark of whether
+  the file exists. SEC8-3: a link at `app.json` to a device or FIFO stalls or exhausts every reader
+  before trust. SEC8-4: text in scalar variables and recursion frames is outside the held byte
+  budget. The SEC7-2, SEC7-3 and SEC7-4 fixes fail their tests when reverted by hand. The seven
+  `sec8_scratch_` tests saved as `.campaign/sec8-scratch-tests-1.patch`.
+- Three fix agents dispatched at 00:20 (see `STATE.md`).

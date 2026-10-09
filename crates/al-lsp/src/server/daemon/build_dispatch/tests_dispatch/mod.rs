@@ -1,6 +1,9 @@
 //! Test-runner and coverage dispatchers.
 
-use super::super::containment::resolve_output_path_within_project;
+use super::super::containment::{
+    resolve_output_param_within_project, resolve_param_within_project,
+};
+use super::super::PathRejection;
 use super::super::{optional_bool_param, optional_bounded_usize_param, rpc_error};
 use super::ERR_NO_PROJECT;
 use al_protocol::jsonrpc::{error_codes, Response};
@@ -50,6 +53,22 @@ fn optional_array<'a>(
     }
 }
 
+/// Refuse a resolved path parameter that names no regular file, saying whether
+/// it is missing or is something else.
+fn require_regular_file(key: &str, path: &std::path::Path) -> Result<(), PathRejection> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
+        Ok(_) => Err(PathRejection::invalid(format!(
+            "{key} '{}' is not a regular file",
+            path.display()
+        ))),
+        Err(error) => Err(PathRejection::invalid(format!(
+            "{key} '{}' cannot be read: {error}",
+            path.display()
+        ))),
+    }
+}
+
 /// Resolve a mutation-file allowlist against the loaded project and translate
 /// every entry to the exact path spelling held by `FileIndex`.
 ///
@@ -60,45 +79,23 @@ fn optional_array<'a>(
 /// non-indexed files before the mutation engine starts an expensive run.
 fn resolve_mutation_file_allowlist(
     workspace: &Workspace,
-    project_root: &std::path::Path,
     files: Vec<String>,
-) -> Result<Vec<String>, String> {
-    let canonical_root = project_root
-        .canonicalize()
-        .map_err(|error| format!("resolve loaded project root failed: {error}"))?;
+) -> Result<Vec<String>, PathRejection> {
     let mut resolved = Vec::with_capacity(files.len());
     let mut seen = std::collections::HashSet::with_capacity(files.len());
 
     for (index, file) in files.into_iter().enumerate() {
-        let requested = std::path::Path::new(&file);
-        let candidate = if requested.is_absolute() {
-            requested.to_path_buf()
-        } else {
-            canonical_root.join(requested)
-        };
-        let canonical = candidate.canonicalize().map_err(|error| {
-            format!(
-                "files[{index}] '{}' cannot be resolved: {error}",
-                candidate.display()
-            )
-        })?;
-        if !canonical.is_file() {
-            return Err(format!(
-                "files[{index}] '{}' is not a regular file",
-                canonical.display()
-            ));
-        }
-        if !canonical.starts_with(&canonical_root) {
-            return Err(format!(
-                "files[{index}] '{}' is outside the loaded project",
-                canonical.display()
-            ));
-        }
+        let canonical = resolve_param_within_project(
+            workspace,
+            &format!("files[{index}]"),
+            std::path::Path::new(&file),
+        )?;
+        require_regular_file(&format!("files[{index}]"), &canonical)?;
         if !seen.insert(canonical.clone()) {
-            return Err(format!(
+            return Err(PathRejection::invalid(format!(
                 "files[{index}] resolves to the same file as an earlier entry: '{}'",
                 canonical.display()
-            ));
+            )));
         }
 
         let indexed_path = workspace.file_index.files.iter().find_map(|entry| {
@@ -115,10 +112,10 @@ fn resolve_mutation_file_allowlist(
             }
         });
         let Some(indexed_path) = indexed_path else {
-            return Err(format!(
+            return Err(PathRejection::invalid(format!(
                 "files[{index}] '{}' is not an indexed AL workspace file",
                 canonical.display()
-            ));
+            )));
         };
         resolved.push(indexed_path);
     }
@@ -628,33 +625,25 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         // could otherwise ask the daemon to overwrite arbitrary files
         // (cron tabs, ssh keys) as the daemon's user.
         junit_out: match junit_out {
-            Some(s) => {
-                match resolve_output_path_within_project(std::path::Path::new(s), &project_root) {
-                    Some(p) => Some(p),
-                    None => {
-                        return rpc_error(
-                            id,
-                            error_codes::INVALID_PARAMS,
-                            "'junitOut' path escapes the project root",
-                        );
-                    }
-                }
-            }
+            Some(s) => match resolve_output_param_within_project(
+                "junitOut",
+                std::path::Path::new(s),
+                &project_root,
+            ) {
+                Ok(p) => Some(p),
+                Err(rejection) => return rejection.into_response(id),
+            },
             None => None,
         },
         cobertura_out: match cobertura_out {
-            Some(s) => {
-                match resolve_output_path_within_project(std::path::Path::new(s), &project_root) {
-                    Some(p) => Some(p),
-                    None => {
-                        return rpc_error(
-                            id,
-                            error_codes::INVALID_PARAMS,
-                            "'coberturaOut' path escapes the project root",
-                        );
-                    }
-                }
-            }
+            Some(s) => match resolve_output_param_within_project(
+                "coberturaOut",
+                std::path::Path::new(s),
+                &project_root,
+            ) {
+                Ok(p) => Some(p),
+                Err(rejection) => return rejection.into_response(id),
+            },
             None => None,
         },
         filter,
@@ -1607,17 +1596,13 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
         }
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
-    let project_root = {
-        let project = workspace.project.read().await;
-        let Some(project) = project.as_ref() else {
-            return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
-        };
-        project.root.clone()
-    };
+    if workspace.project.read().await.is_none() {
+        return rpc_error(id, error_codes::INTERNAL_ERROR, ERR_NO_PROJECT);
+    }
     let files = match requested_files {
-        Some(files) => match resolve_mutation_file_allowlist(workspace, &project_root, files) {
+        Some(files) => match resolve_mutation_file_allowlist(workspace, files) {
             Ok(files) => Some(files),
-            Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+            Err(rejection) => return rejection.into_response(id),
         },
         None => None,
     };

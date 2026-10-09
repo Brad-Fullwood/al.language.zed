@@ -1,9 +1,13 @@
 //! `al-explorer` insight subcommands: event traces, call graphs, entry points,
 //! dead code and impact reports, printed as tables or raw JSON.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
-use super::{connect, list_rows, print_json, report_error, request_checked, run_command};
+use super::{
+    connect, list_rows, print_json, report_error, request_checked, run_command, terminal_lines,
+    terminal_text, text_field,
+};
 
 pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode {
     if tree {
@@ -20,27 +24,7 @@ pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode 
             if json {
                 print_json(&result);
             } else if let Some(steps) = list_rows(&result).as_array() {
-                if steps.is_empty() {
-                    // be explicit when the input isn't an event rather
-                    // than silently printing nothing.
-                    println!("No event chain found for '{event}'.");
-                    println!(
-                        "'{event}' may not be an event — trace follows \
-                         IntegrationEvent/BusinessEvent publishers. For consumers of a \
-                         procedure or object, use `al-explorer impact {event}`."
-                    );
-                } else {
-                    for step in steps {
-                        let depth = step.get("depth").and_then(|v| v.as_u64()).unwrap_or(0);
-                        let indent = "  ".repeat(depth as usize);
-                        let edge = step.get("edgeType").and_then(|v| v.as_str()).unwrap_or("?");
-                        let node_type =
-                            step.get("nodeType").and_then(|v| v.as_str()).unwrap_or("?");
-                        let name = step.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let object = step.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("{indent}[{edge}] {node_type}: {object}::{name}");
-                    }
-                }
+                print!("{}", trace_text(event, steps));
             }
             ExitCode::SUCCESS
         }
@@ -48,17 +32,52 @@ pub fn cmd_trace(event: &str, depth: usize, tree: bool, json: bool) -> ExitCode 
     }
 }
 
+/// The text `trace` prints: one line per step, or why there is none.
+fn trace_text(event: &str, steps: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    let event = terminal_text(event);
+    if steps.is_empty() {
+        // be explicit when the input isn't an event rather
+        // than silently printing nothing.
+        let _ = writeln!(out, "No event chain found for '{event}'.");
+        let _ = writeln!(
+            out,
+            "'{event}' may not be an event — trace follows \
+             IntegrationEvent/BusinessEvent publishers. For consumers of a \
+             procedure or object, use `al-explorer impact {event}`."
+        );
+    }
+    for step in steps {
+        let depth = step.get("depth").and_then(|v| v.as_u64()).unwrap_or(0);
+        let indent = "  ".repeat(depth as usize);
+        let edge = text_field(step, "edgeType", "?");
+        let node_type = text_field(step, "nodeType", "?");
+        let name = text_field(step, "name", "?");
+        let object = text_field(step, "object", "?");
+        let _ = writeln!(out, "{indent}[{edge}] {node_type}: {object}::{name}");
+    }
+    out
+}
+
 pub fn cmd_entrypoints(json: bool) -> ExitCode {
     run_command("entrypoints", None, json, None, |result| {
-        if let Some(entries) = list_rows(result).as_array() {
-            println!("Entry points ({} found):", entries.len());
-            for e in entries {
-                let obj = e.get("object_name").and_then(|v| v.as_str()).unwrap_or("?");
-                let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("  {obj}::{name}");
-            }
-        }
+        print!("{}", entrypoints_text(result));
     })
+}
+
+/// The text `entrypoints` prints: a count and one `object::procedure` line
+/// per entry point.
+fn entrypoints_text(result: &serde_json::Value) -> String {
+    let mut out = String::new();
+    if let Some(entries) = list_rows(result).as_array() {
+        let _ = writeln!(out, "Entry points ({} found):", entries.len());
+        for e in entries {
+            let obj = text_field(e, "object_name", "?");
+            let name = text_field(e, "name", "?");
+            let _ = writeln!(out, "  {obj}::{name}");
+        }
+    }
+    out
 }
 
 pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
@@ -72,7 +91,7 @@ pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
         Ok(result) => {
             if format == "dot" {
                 if let Some(content) = result.get("content").and_then(|v| v.as_str()) {
-                    println!("{content}");
+                    println!("{}", terminal_lines(content));
                 }
             } else if json {
                 print_json(&result);
@@ -146,42 +165,7 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
                             .map(|c| c.eq_ignore_ascii_case("high"))
                             .unwrap_or(true)
                     });
-
-                    let print_table = |items: &[&serde_json::Value]| {
-                        println!("{:<12} {:<32} {:<32} LOCATION", "KIND", "NAME", "OBJECT");
-                        println!("{}", "-".repeat(100));
-                        for item in items {
-                            let kind = item.get("k").and_then(|v| v.as_str()).unwrap_or("?");
-                            let name = item.get("n").and_then(|v| v.as_str()).unwrap_or("?");
-                            let obj = item.get("obj").and_then(|v| v.as_str()).unwrap_or("?");
-                            let file = item.get("f").and_then(|v| v.as_str()).unwrap_or("");
-                            let line = item.get("l").and_then(|v| v.as_u64()).unwrap_or(0);
-                            println!("{:<12} {:<32} {:<32} {}:{}", kind, name, obj, file, line);
-                        }
-                    };
-
-                    if !high.is_empty() {
-                        println!(
-                            "DEAD CODE — high confidence ({} findings, safe to act on):\n",
-                            high.len()
-                        );
-                        print_table(&high);
-                    }
-                    if !medium.is_empty() {
-                        if !high.is_empty() {
-                            println!();
-                        }
-                        println!(
-                            "POSSIBLY UNUSED — medium confidence ({} findings):",
-                            medium.len()
-                        );
-                        println!(
-                            "These have no name references in workspace AL source, but may \
-                             be used via\nFieldRef/RecordRef by number, report layouts, other \
-                             extensions, or the platform.\nVerify before removing.\n"
-                        );
-                        print_table(&medium);
-                    }
+                    print!("{}", dead_code_text(&high, &medium));
                     eprintln!(
                         "\n{} findings ({} high, {} possibly-unused)",
                         unused.len(),
@@ -193,6 +177,58 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
             exit
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+/// The tables `dead-code` prints, high confidence findings first.
+fn dead_code_text(high: &[&serde_json::Value], medium: &[&serde_json::Value]) -> String {
+    let mut out = String::new();
+    if !high.is_empty() {
+        let _ = writeln!(
+            out,
+            "DEAD CODE — high confidence ({} findings, safe to act on):\n",
+            high.len()
+        );
+        dead_code_table(&mut out, high);
+    }
+    if !medium.is_empty() {
+        if !high.is_empty() {
+            let _ = writeln!(out);
+        }
+        let _ = writeln!(
+            out,
+            "POSSIBLY UNUSED — medium confidence ({} findings):",
+            medium.len()
+        );
+        let _ = writeln!(
+            out,
+            "These have no name references in workspace AL source, but may \
+             be used via\nFieldRef/RecordRef by number, report layouts, other \
+             extensions, or the platform.\nVerify before removing.\n"
+        );
+        dead_code_table(&mut out, medium);
+    }
+    out
+}
+
+fn dead_code_table(out: &mut String, items: &[&serde_json::Value]) {
+    let _ = writeln!(
+        out,
+        "{:<12} {:<32} {:<32} LOCATION",
+        "KIND", "NAME", "OBJECT"
+    );
+    let _ = writeln!(out, "{}", "-".repeat(100));
+    for item in items {
+        let kind = text_field(item, "k", "?");
+        let name = text_field(item, "n", "?");
+        let obj = text_field(item, "obj", "?");
+        let file = text_field(item, "f", "");
+        let line = item.get("l").and_then(|v| v.as_u64()).unwrap_or(0);
+        let _ = writeln!(
+            out,
+            "{:<12} {:<32} {:<32} {}:{}",
+            kind, name, obj, file, line
+        );
     }
 }
 
@@ -214,32 +250,13 @@ pub fn cmd_impact(symbol: &str, table: bool, json: bool) -> ExitCode {
             if json {
                 print_json(&result);
             } else {
-                let sym = result
-                    .get("symbol")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(symbol);
                 let impacted = result
                     .get("impacted")
                     .and_then(|v| v.as_array())
                     .map(|v| &v[..])
                     .unwrap_or(&[]);
-                if impacted.is_empty() {
-                    println!("No consumers found for '{sym}'.");
-                } else {
-                    println!("Impact analysis for '{sym}':\n");
-                    println!("{:<15} {:<30} {:<15} DETAIL", "KIND", "NAME", "TYPE");
-                    println!("{}", "-".repeat(75));
-                    for entry in impacted {
-                        let kind = entry.get("k").and_then(|v| v.as_str()).unwrap_or("?");
-                        let name = entry.get("n").and_then(|v| v.as_str()).unwrap_or("?");
-                        let impact_type = entry.get("type").and_then(|v| v.as_str()).unwrap_or("?");
-                        let detail = entry
-                            .get("proc")
-                            .and_then(|v| v.as_str())
-                            .or_else(|| entry.get("field").and_then(|v| v.as_str()))
-                            .unwrap_or("");
-                        println!("{:<15} {:<30} {:<15} {}", kind, name, impact_type, detail);
-                    }
+                print!("{}", impact_text(symbol, &result, impacted));
+                if !impacted.is_empty() {
                     eprintln!("\n{} consumers", impacted.len());
                 }
                 // Be explicit about coverage. Call-site consumers (who calls /
@@ -259,6 +276,42 @@ pub fn cmd_impact(symbol: &str, table: bool, json: bool) -> ExitCode {
     }
 }
 
+/// The table `impact` prints for `symbol`, one row per consumer.
+fn impact_text(symbol: &str, result: &serde_json::Value, impacted: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    let sym = terminal_text(
+        result
+            .get("symbol")
+            .and_then(|v| v.as_str())
+            .unwrap_or(symbol),
+    );
+    if impacted.is_empty() {
+        let _ = writeln!(out, "No consumers found for '{sym}'.");
+        return out;
+    }
+    let _ = writeln!(out, "Impact analysis for '{sym}':\n");
+    let _ = writeln!(out, "{:<15} {:<30} {:<15} DETAIL", "KIND", "NAME", "TYPE");
+    let _ = writeln!(out, "{}", "-".repeat(75));
+    for entry in impacted {
+        let kind = text_field(entry, "k", "?");
+        let name = text_field(entry, "n", "?");
+        let impact_type = text_field(entry, "type", "?");
+        let detail = terminal_text(
+            entry
+                .get("proc")
+                .and_then(|v| v.as_str())
+                .or_else(|| entry.get("field").and_then(|v| v.as_str()))
+                .unwrap_or(""),
+        );
+        let _ = writeln!(
+            out,
+            "{:<15} {:<30} {:<15} {}",
+            kind, name, impact_type, detail
+        );
+    }
+    out
+}
+
 fn cmd_table_impact(table: &str, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -273,54 +326,55 @@ fn cmd_table_impact(table: &str, json: bool) -> ExitCode {
             if json {
                 print_json(&result);
             } else {
-                let name = result
-                    .get("tableName")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(table);
-                let objects = result
-                    .get("objects")
-                    .and_then(|v| v.as_array())
-                    .map(|v| &v[..])
-                    .unwrap_or(&[]);
-                let total = result
-                    .get("totalImpacts")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0);
-                if objects.is_empty() {
-                    println!("No objects reference table '{name}'.");
-                } else {
-                    println!(
-                        "Table impact for '{name}' ({total} site(s) across {} object(s)):\n",
-                        objects.len()
-                    );
-                    for obj in objects {
-                        let kind = obj
-                            .get("objectKind")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        let oname = obj
-                            .get("objectName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        println!("  {kind} {oname}");
-                        if let Some(impacts) = obj.get("impacts").and_then(|v| v.as_array()) {
-                            for imp in impacts {
-                                let operation =
-                                    imp.get("operation").and_then(|v| v.as_str()).unwrap_or("?");
-                                let hint = imp
-                                    .get("locationHint")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                println!("      [{operation}] {hint}");
-                            }
-                        }
-                    }
-                }
+                print!("{}", table_impact_text(table, &result));
             }
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// The text `impact --table` prints: each object that touches the table and
+/// how.
+fn table_impact_text(table: &str, result: &serde_json::Value) -> String {
+    let mut out = String::new();
+    let name = terminal_text(
+        result
+            .get("tableName")
+            .and_then(|v| v.as_str())
+            .unwrap_or(table),
+    );
+    let objects = result
+        .get("objects")
+        .and_then(|v| v.as_array())
+        .map(|v| &v[..])
+        .unwrap_or(&[]);
+    let total = result
+        .get("totalImpacts")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    if objects.is_empty() {
+        let _ = writeln!(out, "No objects reference table '{name}'.");
+        return out;
+    }
+    let _ = writeln!(
+        out,
+        "Table impact for '{name}' ({total} site(s) across {} object(s)):\n",
+        objects.len()
+    );
+    for obj in objects {
+        let kind = text_field(obj, "objectKind", "?");
+        let oname = text_field(obj, "objectName", "?");
+        let _ = writeln!(out, "  {kind} {oname}");
+        if let Some(impacts) = obj.get("impacts").and_then(|v| v.as_array()) {
+            for imp in impacts {
+                let operation = text_field(imp, "operation", "?");
+                let hint = text_field(imp, "locationHint", "");
+                let _ = writeln!(out, "      [{operation}] {hint}");
+            }
+        }
+    }
+    out
 }
 
 fn cmd_trace_chain(event: &str, depth: usize, json: bool) -> ExitCode {
@@ -339,21 +393,8 @@ fn cmd_trace_chain(event: &str, depth: usize, json: bool) -> ExitCode {
                     .and_then(|v| v.as_array())
                     .map(|v| &v[..])
                     .unwrap_or(&[]);
-                if chains.is_empty() {
-                    println!("No event chain found for '{event}'.");
-                    println!(
-                        "'{event}' may not be an event — trace follows \
-                         IntegrationEvent/BusinessEvent publishers."
-                    );
-                } else {
-                    let pubobj = result
-                        .get("publisherObject")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    println!("Event propagation tree for '{event}' (publisher: {pubobj}):\n");
-                    for root in chains {
-                        print_chain_node(root, 0);
-                    }
+                print!("{}", trace_chain_text(event, &result, chains));
+                if !chains.is_empty() {
                     let visited = result
                         .get("nodesVisited")
                         .and_then(|v| v.as_u64())
@@ -367,18 +408,46 @@ fn cmd_trace_chain(event: &str, depth: usize, json: bool) -> ExitCode {
     }
 }
 
-fn print_chain_node(node: &serde_json::Value, indent: usize) {
+/// The tree `trace --tree` prints, or why there is none.
+fn trace_chain_text(
+    event: &str,
+    result: &serde_json::Value,
+    chains: &[serde_json::Value],
+) -> String {
+    let mut out = String::new();
+    let event = terminal_text(event);
+    if chains.is_empty() {
+        let _ = writeln!(out, "No event chain found for '{event}'.");
+        let _ = writeln!(
+            out,
+            "'{event}' may not be an event — trace follows \
+             IntegrationEvent/BusinessEvent publishers."
+        );
+        return out;
+    }
+    let pubobj = text_field(result, "publisherObject", "");
+    let _ = writeln!(
+        out,
+        "Event propagation tree for '{event}' (publisher: {pubobj}):\n"
+    );
+    for root in chains {
+        chain_node_text(&mut out, root, 0);
+    }
+    out
+}
+
+fn chain_node_text(out: &mut String, node: &serde_json::Value, indent: usize) {
     let pad = "  ".repeat(indent);
-    let edge = node.get("edgeKind").and_then(|v| v.as_str()).unwrap_or("?");
-    let ntype = node.get("nodeType").and_then(|v| v.as_str()).unwrap_or("?");
-    let name = node.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-    let object = node.get("object").and_then(|v| v.as_str()).unwrap_or("?");
+    let edge = text_field(node, "edgeKind", "?");
+    let ntype = text_field(node, "nodeType", "?");
+    let name = text_field(node, "name", "?");
+    let object = text_field(node, "object", "?");
     let cycle = node.get("cycle").and_then(|v| v.as_bool()).unwrap_or(false);
     let marker = if cycle { " (cycle)" } else { "" };
-    println!("{pad}[{edge}] {ntype}: {object}::{name}{marker}");
+    let _ = writeln!(out, "{pad}[{edge}] {ntype}: {object}::{name}{marker}");
     if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
         for child in children {
-            print_chain_node(child, indent + 1);
+            chain_node_text(out, child, indent + 1);
         }
     }
 }
@@ -393,83 +462,73 @@ pub fn cmd_intercept(json: bool) -> ExitCode {
             if json {
                 print_json(&result);
             } else {
-                let events = result
-                    .get("events")
-                    .and_then(|v| v.as_array())
-                    .map(|v| &v[..])
-                    .unwrap_or(&[]);
-                let orphans = result
-                    .get("orphanSubscribers")
-                    .and_then(|v| v.as_array())
-                    .map(|v| &v[..])
-                    .unwrap_or(&[]);
-                if events.is_empty() && orphans.is_empty() {
-                    println!("No events or subscribers found in the workspace.");
-                } else {
-                    let total = result
-                        .get("totalEvents")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    println!("Event interception map ({total} event(s)):\n");
-                    for ev in events {
-                        let ename = ev.get("eventName").and_then(|v| v.as_str()).unwrap_or("?");
-                        let pubobj = ev
-                            .get("publisher")
-                            .and_then(|p| p.get("objectName"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        let count = ev
-                            .get("subscriberCount")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        println!("  {pubobj}::{ename}  ({count} subscriber(s))");
-                        if let Some(subs) = ev.get("subscribers").and_then(|v| v.as_array()) {
-                            for subscriber in subs {
-                                let sub_object = subscriber
-                                    .get("objectName")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("?");
-                                let sub_method = subscriber
-                                    .get("methodName")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("?");
-                                println!("      <- {sub_object}.{sub_method}");
-                            }
-                        }
-                    }
-                    if !orphans.is_empty() {
-                        println!(
-                            "\nOrphan subscribers ({}) — target an event with no workspace publisher:",
-                            orphans.len()
-                        );
-                        for orphan in orphans {
-                            let orphan_object = orphan
-                                .get("objectName")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?");
-                            let orphan_method = orphan
-                                .get("methodName")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?");
-                            let target_object = orphan
-                                .get("targetObject")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?");
-                            let target_event = orphan
-                                .get("targetEvent")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?");
-                            println!(
-                                "  {orphan_object}.{orphan_method} -> {target_object}::{target_event} (missing)"
-                            );
-                        }
-                    }
-                }
+                print!("{}", event_map_text(&result));
             }
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// The text `intercept` prints: each event with its subscribers, then the
+/// subscribers whose event has no workspace publisher.
+fn event_map_text(result: &serde_json::Value) -> String {
+    let mut out = String::new();
+    let events = result
+        .get("events")
+        .and_then(|v| v.as_array())
+        .map(|v| &v[..])
+        .unwrap_or(&[]);
+    let orphans = result
+        .get("orphanSubscribers")
+        .and_then(|v| v.as_array())
+        .map(|v| &v[..])
+        .unwrap_or(&[]);
+    if events.is_empty() && orphans.is_empty() {
+        let _ = writeln!(out, "No events or subscribers found in the workspace.");
+        return out;
+    }
+    let total = result
+        .get("totalEvents")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let _ = writeln!(out, "Event interception map ({total} event(s)):\n");
+    for ev in events {
+        let ename = text_field(ev, "eventName", "?");
+        let pubobj = ev
+            .get("publisher")
+            .map_or_else(|| "?".to_string(), |p| text_field(p, "objectName", "?"));
+        let count = ev
+            .get("subscriberCount")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let _ = writeln!(out, "  {pubobj}::{ename}  ({count} subscriber(s))");
+        if let Some(subs) = ev.get("subscribers").and_then(|v| v.as_array()) {
+            for subscriber in subs {
+                let sub_object = text_field(subscriber, "objectName", "?");
+                let sub_method = text_field(subscriber, "methodName", "?");
+                let _ = writeln!(out, "      <- {sub_object}.{sub_method}");
+            }
+        }
+    }
+    if !orphans.is_empty() {
+        let _ = writeln!(
+            out,
+            "\nOrphan subscribers ({}) — target an event with no workspace publisher:",
+            orphans.len()
+        );
+        for orphan in orphans {
+            let orphan_object = text_field(orphan, "objectName", "?");
+            let orphan_method = text_field(orphan, "methodName", "?");
+            let target_object = text_field(orphan, "targetObject", "?");
+            let target_event = text_field(orphan, "targetEvent", "?");
+            let _ = writeln!(
+                out,
+                "  {orphan_object}.{orphan_method} -> {target_object}::{target_event} (missing)"
+            );
+        }
+    }
+    out
 }
 
 /// Why a suggest-event answer leaves something out.
@@ -489,13 +548,14 @@ fn print_suggest_event_gaps(result: &serde_json::Value) {
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     if count > 0 {
-        let names: Vec<&str> = result
+        let names: Vec<String> = result
             .get("withoutSource")
             .and_then(|v| v.as_array())
             .into_iter()
             .flatten()
             .filter_map(|v| v.as_str())
             .take(5)
+            .map(terminal_text)
             .collect();
         let more = if count as usize > names.len() {
             format!(" and {} more", count as usize - names.len())
@@ -508,6 +568,43 @@ fn print_suggest_event_gaps(result: &serde_json::Value) {
             names.join(", ")
         );
     }
+}
+
+/// The integration points `suggest-event` prints, each with its `var`
+/// parameters and a subscriber attribute to copy.
+fn integration_points_text(points: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    if points.is_empty() {
+        let _ = writeln!(out, "No integration points found.");
+        return out;
+    }
+    let _ = writeln!(out, "Integration points ({} found):\n", points.len());
+    for (i, ip) in points.iter().enumerate() {
+        let evt = text_field(ip, "event", "?");
+        let obj = text_field(ip, "object", "?");
+        let etype = text_field(ip, "eventType", "?");
+        let example = text_field(ip, "example", "");
+
+        let _ = writeln!(out, "{}. {} ({}) — {}", i + 1, evt, etype, obj);
+
+        if let Some(params) = ip.get("params").and_then(|v| v.as_array()) {
+            let param_strs: Vec<String> = params
+                .iter()
+                .filter(|p| p.get("isVar").and_then(|v| v.as_bool()).unwrap_or(false))
+                .map(|p| {
+                    let name = text_field(p, "name", "?");
+                    let typ = text_field(p, "typeName", "?");
+                    format!("var {name}: {typ}")
+                })
+                .collect();
+            if !param_strs.is_empty() {
+                let _ = writeln!(out, "   Var params: {}", param_strs.join(", "));
+            }
+        }
+
+        let _ = writeln!(out, "   {example}\n");
+    }
+    out
 }
 
 pub fn cmd_suggest_event(
@@ -582,45 +679,7 @@ pub fn cmd_suggest_event(
                     .and_then(|v| v.as_array())
                     .map(|v| &v[..])
                     .unwrap_or(&[]);
-                if points.is_empty() {
-                    println!("No integration points found.");
-                } else {
-                    println!("Integration points ({} found):\n", points.len());
-                    for (i, ip) in points.iter().enumerate() {
-                        let evt = ip.get("event").and_then(|v| v.as_str()).unwrap_or("?");
-                        let obj = ip.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                        let etype = ip.get("eventType").and_then(|v| v.as_str()).unwrap_or("?");
-                        let example = ip.get("example").and_then(|v| v.as_str()).unwrap_or("");
-
-                        println!("{}. {} ({}) — {}", i + 1, evt, etype, obj);
-
-                        if let Some(params) = ip.get("params").and_then(|v| v.as_array()) {
-                            let var_params: Vec<_> = params
-                                .iter()
-                                .filter(|p| {
-                                    p.get("isVar").and_then(|v| v.as_bool()).unwrap_or(false)
-                                })
-                                .collect();
-                            if !var_params.is_empty() {
-                                let param_strs: Vec<String> = var_params
-                                    .iter()
-                                    .map(|p| {
-                                        let name =
-                                            p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                        let typ = p
-                                            .get("typeName")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("?");
-                                        format!("var {name}: {typ}")
-                                    })
-                                    .collect();
-                                println!("   Var params: {}", param_strs.join(", "));
-                            }
-                        }
-
-                        println!("   {example}\n");
-                    }
-                }
+                print!("{}", integration_points_text(points));
                 if partial {
                     print_suggest_event_gaps(&result);
                 }
@@ -630,5 +689,59 @@ pub fn cmd_suggest_event(
             ExitCode::SUCCESS
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{dead_code_text, entrypoints_text, impact_text, trace_chain_text};
+
+    const COLOURED: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
+    const TITLE: &str = "Sec7 Caller\u{1b}]0;pwned\u{7}";
+    const CLEAR: &str = "Sec7 Tests\u{1b}[2J";
+
+    fn assert_escaped(text: &str) {
+        assert!(!text.contains('\u{1b}'), "a raw escape byte: {text:?}");
+        assert!(!text.contains('\u{7}'), "a raw bell byte: {text:?}");
+        assert!(text.contains(r"Bad\u{1b}[31m Name\u{1b}[0m"), "got: {text}");
+        assert!(
+            text.contains(r"Sec7 Caller\u{1b}]0;pwned\u{7}"),
+            "got: {text}"
+        );
+        assert!(text.contains(r"Sec7 Tests\u{1b}[2J"), "got: {text}");
+    }
+
+    #[test]
+    fn entry_points_dead_code_trace_and_impact_print_crafted_names_escaped() {
+        let entrypoints = serde_json::json!([
+            {"object_name": CLEAR, "name": "Adds"},
+            {"object_name": TITLE, "name": "CallIt"},
+            {"object_name": COLOURED, "name": "Run"}
+        ]);
+        let text = entrypoints_text(&entrypoints);
+        assert_escaped(&text);
+        assert!(text.contains(r"  Sec7 Tests\u{1b}[2J::Adds"), "got: {text}");
+
+        let finding = |name: &str, obj: &str| serde_json::json!({"k": "procedure", "n": name, "obj": obj, "f": "src/A.al", "l": 3});
+        let high = finding("CallIt", TITLE);
+        let medium = finding(COLOURED, CLEAR);
+        let text = dead_code_text(&[&high], &[&medium]);
+        assert_escaped(&text);
+        assert!(text.contains("src/A.al:3"), "got: {text}");
+
+        let chain = serde_json::json!({
+            "edgeKind": "raises",
+            "nodeType": "event",
+            "name": "OnRun",
+            "object": COLOURED,
+            "children": [{"edgeKind": "subscribes", "nodeType": "subscriber", "name": CLEAR, "object": TITLE}]
+        });
+        let text = trace_chain_text(COLOURED, &serde_json::json!({}), &[chain]);
+        assert_escaped(&text);
+
+        let impacted =
+            [serde_json::json!({"k": "Codeunit", "n": TITLE, "type": "call", "proc": CLEAR})];
+        let text = impact_text(COLOURED, &serde_json::json!({}), &impacted);
+        assert_escaped(&text);
     }
 }

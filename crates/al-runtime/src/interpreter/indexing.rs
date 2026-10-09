@@ -12,7 +12,7 @@ use tree_sitter::Node;
 use crate::interpreter::dispatch::DispatchCtx;
 use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::Value;
+use crate::interpreter::value::{owned_bytes, Value};
 use crate::interpreter::{error_info, eval_error};
 
 /// The variable name and `index_suffix` of `Name[index]`, looking through the
@@ -47,7 +47,7 @@ pub(crate) fn indexed_variable<'tree>(
 }
 
 /// The 1-based position an `index_suffix` names.
-fn eval_index(
+pub(crate) fn eval_index(
     suffix: Node<'_>,
     source: &[u8],
     stack: &mut ScopeStack,
@@ -154,10 +154,21 @@ pub(crate) fn write_element(
     stack: &mut ScopeStack,
     ctx: &mut DispatchCtx,
 ) -> Eval {
-    let index = match eval_index(suffix, source, stack, ctx) {
-        Ok(index) => index,
-        Err(error) => return error,
-    };
+    match eval_index(suffix, source, stack, ctx) {
+        Ok(index) => write_element_at(name, index, value, combine, stack),
+        Err(error) => error,
+    }
+}
+
+/// `Name[index] := value` for an `index` already evaluated: the element of
+/// an array, or the character of a Text.
+pub(crate) fn write_element_at(
+    name: &str,
+    index: i64,
+    value: Value,
+    combine: &dyn Fn(Value, Value) -> Eval,
+    stack: &mut ScopeStack,
+) -> Eval {
     let current = match read_element_at(name, index, stack) {
         Ok(current) => current,
         Err(error) => return error,
@@ -166,16 +177,26 @@ pub(crate) fn write_element(
         Eval::Normal(value) => value,
         other => return other,
     };
-    let Some(slot) = stack.lookup_mut(name) else {
+    let Some(mut slot) = stack.lookup_slot_mut(name) else {
         return Eval::Error(error_info(format!("unbound identifier: {name}")));
     };
-    let is_code = matches!(slot, Value::Code(_));
-    match slot {
+    let is_code = matches!(slot.value(), Value::Code(_));
+    match slot.value_mut() {
         Value::Array(items) => {
             let at = (index - 1) as usize;
-            match Value::coerce_into_slot(&items[at], value, None) {
-                Ok(value) => items[at] = value,
+            let value = match Value::coerce_into_slot(&items[at], value, None) {
+                Ok(value) => value,
                 Err(message) => return eval_error(message),
+            };
+            // The element's text counts toward the test's total in place of
+            // the text it held, for as long as the array's frame lives.
+            let old = owned_bytes(&items[at]);
+            if let Err(message) = slot.recount("Array element assignment", old, owned_bytes(&value))
+            {
+                return eval_error(message);
+            }
+            if let Value::Array(items) = slot.value_mut() {
+                items[at] = value;
             }
         }
         Value::Text(text) | Value::Code(text) => {
@@ -194,7 +215,7 @@ pub(crate) fn write_element(
             if is_code {
                 replacement = replacement.to_ascii_uppercase();
             }
-            *text = text
+            let replaced: String = text
                 .chars()
                 .enumerate()
                 .map(|(at, c)| {
@@ -205,13 +226,22 @@ pub(crate) fn write_element(
                     }
                 })
                 .collect();
+            let old = text.len();
+            if let Err(message) = slot.recount("Text character assignment", old, replaced.len()) {
+                return eval_error(message);
+            }
+            if let Value::Text(text) | Value::Code(text) = slot.value_mut() {
+                *text = replaced;
+            }
         }
         _ => unreachable!("read_element_at accepted only arrays and text"),
     }
     Eval::Normal(Value::Empty)
 }
 
-fn read_element_at(name: &str, index: i64, stack: &ScopeStack) -> Result<Value, Eval> {
+/// The element of the array `name`, or the character of the Text, at the
+/// 1-based `index`.
+pub(crate) fn read_element_at(name: &str, index: i64, stack: &ScopeStack) -> Result<Value, Eval> {
     match stack.lookup(name) {
         Some(Value::Array(items)) => position(index, items.len(), name).map(|at| items[at].clone()),
         Some(Value::Text(text) | Value::Code(text)) => {

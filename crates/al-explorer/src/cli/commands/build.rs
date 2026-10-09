@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use serde_json::Value;
@@ -6,7 +7,7 @@ use super::super::XlfCommands;
 
 use super::{
     connect, print_json, project_root, report_error, request_checked, run_command,
-    run_command_with_exit,
+    run_command_with_exit, terminal_lines, terminal_text, text_field,
 };
 
 /// Print a build/package result in human-readable form and return the exit code.
@@ -31,37 +32,24 @@ fn print_build_result(result: &Value, json: bool) -> ExitCode {
                 _ => "Compilation succeeded",
             };
             if let Some(path) = result.get("appPath").and_then(|v| v.as_str()) {
-                println!("{label}: {path}");
+                println!("{label}: {}", terminal_text(path));
             } else {
                 println!("{label}");
             }
         } else {
             eprintln!("Compilation failed");
         }
-        let diag_count = result
+        let diags = result
             .get("diagnostics")
             .and_then(|v| v.as_array())
-            .map(|a| a.len())
-            .unwrap_or(0);
-        if let Some(diags) = result.get("diagnostics").and_then(|v| v.as_array()) {
-            for d in diags {
-                let severity = d
-                    .get("severity")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("error");
-                let file = d.get("file").and_then(|v| v.as_str()).unwrap_or("?");
-                let line = d.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-                let col = d.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
-                let code = d.get("code").and_then(|v| v.as_str()).unwrap_or("?");
-                let msg = d.get("message").and_then(|v| v.as_str()).unwrap_or("?");
-                eprintln!("{file}:{line}:{col}: {severity} {code}: {msg}");
-            }
-        }
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        eprint!("{}", build_diagnostics_text(diags));
         // when no structured diagnostics, show raw output
-        if !success && diag_count == 0 {
+        if !success && diags.is_empty() {
             if let Some(output) = result.get("output").and_then(|v| v.as_str()) {
                 if !output.trim().is_empty() {
-                    eprintln!("{output}");
+                    eprintln!("{}", terminal_lines(output));
                 }
             }
         }
@@ -71,6 +59,39 @@ fn print_build_result(result: &Value, json: bool) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
+}
+
+/// The lines `compile` and `package` print for the daemon's diagnostics.
+fn build_diagnostics_text(diags: &[Value]) -> String {
+    let mut out = String::new();
+    for d in diags {
+        let severity = text_field(d, "severity", "error");
+        let file = text_field(d, "file", "?");
+        let line = d.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+        let col = d.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
+        let code = text_field(d, "code", "?");
+        let msg = text_field(d, "message", "?");
+        let _ = writeln!(out, "{file}:{line}:{col}: {severity} {code}: {msg}");
+    }
+    out
+}
+
+/// One compiler diagnostic as `file:line:column: severity code: message`.
+fn diagnostic_line(
+    file: &str,
+    line: u32,
+    column: u32,
+    severity: &str,
+    code: &str,
+    message: &str,
+) -> String {
+    format!(
+        "{}:{line}:{column}: {} {}: {}",
+        terminal_text(file),
+        terminal_text(severity),
+        terminal_text(code),
+        terminal_text(message)
+    )
 }
 
 /// Real-project compiles can exceed the default 30s request deadline,
@@ -117,45 +138,8 @@ pub fn cmd_publish(config: Option<&str>, incremental: bool, json: bool) -> ExitC
             if json {
                 print_json(&result);
             } else {
-                let server = result.get("server").and_then(|v| v.as_str()).unwrap_or("?");
-                let method = result.get("method").and_then(|v| v.as_str()).unwrap_or("?");
-                println!("Publish to {server} ({method}):");
-                for step in result
-                    .get("steps")
-                    .and_then(|value| value.as_array())
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[])
-                {
-                    let phase = step.get("phase").and_then(|v| v.as_str()).unwrap_or("?");
-                    let ok = step
-                        .get("success")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
-                    let message = step.get("message").and_then(|v| v.as_str()).unwrap_or("");
-                    let mark = if ok { "[OK]" } else { "[!!]" };
-                    println!("  {mark} {phase}: {message}");
-                }
-                for diagnostic in result
-                    .get("diagnostics")
-                    .and_then(|value| value.as_array())
-                    .map(Vec::as_slice)
-                    .unwrap_or(&[])
-                {
-                    let file = diagnostic
-                        .get("file")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let line = diagnostic.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let code = diagnostic
-                        .get("code")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let message = diagnostic
-                        .get("message")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    eprintln!("{file}:{line}: {code}: {message}");
-                }
+                print!("{}", publish_steps_text(&result));
+                eprint!("{}", publish_diagnostics_text(&result));
             }
             if success {
                 ExitCode::SUCCESS
@@ -165,6 +149,48 @@ pub fn cmd_publish(config: Option<&str>, incremental: bool, json: bool) -> ExitC
         }
         Err(error) => report_error(&error, json),
     }
+}
+
+/// The text `publish` prints: the server, the method and each phase.
+fn publish_steps_text(result: &Value) -> String {
+    let mut out = String::new();
+    let server = text_field(result, "server", "?");
+    let method = text_field(result, "method", "?");
+    let _ = writeln!(out, "Publish to {server} ({method}):");
+    for step in result
+        .get("steps")
+        .and_then(|value| value.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        let phase = text_field(step, "phase", "?");
+        let ok = step
+            .get("success")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let message = text_field(step, "message", "");
+        let mark = if ok { "[OK]" } else { "[!!]" };
+        let _ = writeln!(out, "  {mark} {phase}: {message}");
+    }
+    out
+}
+
+/// The lines `publish` prints for the compiler's diagnostics.
+fn publish_diagnostics_text(result: &Value) -> String {
+    let mut out = String::new();
+    for diagnostic in result
+        .get("diagnostics")
+        .and_then(|value| value.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        let file = text_field(diagnostic, "file", "?");
+        let line = diagnostic.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+        let code = text_field(diagnostic, "code", "?");
+        let message = text_field(diagnostic, "message", "?");
+        let _ = writeln!(out, "{file}:{line}: {code}: {message}");
+    }
+    out
 }
 
 pub fn cmd_package(json: bool) -> ExitCode {
@@ -214,7 +240,7 @@ pub fn cmd_pack_native(
         }
     };
     if let Some(advisory) = settings.decision.advisory() {
-        eprintln!("{advisory}");
+        eprintln!("{}", terminal_lines(&advisory));
     }
     let config = &settings.config;
     // Discover dependency packages independently of app.json parsing. The
@@ -261,13 +287,15 @@ pub fn cmd_pack_native(
             eprintln!("Native verification failed");
             for diagnostic in &verified.diagnostics {
                 eprintln!(
-                    "{}:{}:{}: {:?} {}: {}",
-                    diagnostic.file,
-                    diagnostic.line,
-                    diagnostic.column,
-                    diagnostic.severity,
-                    diagnostic.code,
-                    diagnostic.message
+                    "{}",
+                    diagnostic_line(
+                        &diagnostic.file,
+                        diagnostic.line,
+                        diagnostic.column,
+                        &format!("{:?}", diagnostic.severity),
+                        diagnostic.code,
+                        &diagnostic.message,
+                    )
                 );
             }
         }
@@ -325,7 +353,7 @@ pub fn cmd_pack_native(
         };
         println!(
             "Verified native package{compatibility} written: {} ({} bytes)",
-            out_path.display(),
+            terminal_text(&out_path.display().to_string()),
             built.bytes.len()
         );
     }
@@ -526,15 +554,18 @@ fn validate_with_alc(
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| d.file.clone());
             eprintln!(
-                "{file}:{}:{}: {sev} {}: {}",
-                d.line, d.column, d.code, d.message
+                "{}",
+                diagnostic_line(&file, d.line, d.column, &sev, &d.code, &d.message)
             );
         }
     }
 
     if result.success && errors == 0 {
         if !json {
-            eprintln!("Validation passed (alc {}): no errors.", toolchain.version);
+            eprintln!(
+                "Validation passed (alc {}): no errors.",
+                terminal_text(&toolchain.version)
+            );
         }
         None
     } else {
@@ -596,7 +627,9 @@ pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
                     let path = xlf_generated_path(result);
                     let units = result.get("units").and_then(|v| v.as_u64()).unwrap_or(0);
                     match path {
-                        Some(path) => println!("Generated: {path}  ({units} units)"),
+                        Some(path) => {
+                            println!("Generated: {}  ({units} units)", terminal_text(path));
+                        }
                         None => eprintln!(
                             "No translatable texts found (check features.TranslationFile in app.json)"
                         ),
@@ -646,41 +679,59 @@ pub fn cmd_xlf(subcmd: &XlfCommands, json: bool) -> ExitCode {
             let abs_xlf = canonicalize_xlf_path(xlf);
             let params = serde_json::json!({ "xlf": abs_xlf });
             run_command("xlf.untranslated", Some(params), json, None, |result| {
-                let count = result.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                println!("{count} untranslated text(s):");
-                if let Some(items) = result.get("untranslated").and_then(|v| v.as_array()) {
-                    for item in items {
-                        let id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        let src = item.get("source").and_then(|v| v.as_str()).unwrap_or("");
-                        println!("  [{id}] {src}");
-                    }
-                }
+                print!("{}", untranslated_text(result));
             })
         }
         XlfCommands::Suggest { xlf } => {
             let abs_xlf = canonicalize_xlf_path(xlf);
             let params = serde_json::json!({ "xlf": abs_xlf });
             run_command("xlf.suggest", Some(params), json, None, |result| {
-                let count = result.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
-                println!("{count} suggestion(s):");
-                if let Some(suggestions) = result.get("suggestions").and_then(|v| v.as_array()) {
-                    for s in suggestions {
-                        let unit_id = s.get("unit_id").and_then(|v| v.as_str()).unwrap_or("");
-                        let src = s.get("source").and_then(|v| v.as_str()).unwrap_or("");
-                        let translation = s
-                            .get("suggested_translation")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        let confidence =
-                            s.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        println!(
-                            "  [{unit_id}] {src} → {translation}  (confidence: {confidence:.2})"
-                        );
-                    }
-                }
+                print!("{}", suggestions_text(result));
             })
         }
     }
+}
+
+/// The text `xlf untranslated` prints: the count and each unit's id and
+/// source text.
+fn untranslated_text(result: &Value) -> String {
+    let mut out = String::new();
+    let count = result.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+    let _ = writeln!(out, "{count} untranslated text(s):");
+    for item in result
+        .get("untranslated")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        let id = text_field(item, "id", "");
+        let src = text_field(item, "source", "");
+        let _ = writeln!(out, "  [{id}] {src}");
+    }
+    out
+}
+
+/// The text `xlf suggest` prints: the count and each suggested translation.
+fn suggestions_text(result: &Value) -> String {
+    let mut out = String::new();
+    let count = result.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+    let _ = writeln!(out, "{count} suggestion(s):");
+    for s in result
+        .get("suggestions")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        let unit_id = text_field(s, "unit_id", "");
+        let src = text_field(s, "source", "");
+        let translation = text_field(s, "suggested_translation", "");
+        let confidence = s.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let _ = writeln!(
+            out,
+            "  [{unit_id}] {src} → {translation}  (confidence: {confidence:.2})"
+        );
+    }
+    out
 }
 
 fn canonicalize_xlf_path(path: &str) -> String {
@@ -879,5 +930,77 @@ mod validation_trust_tests {
             error.contains(&format!("--show {}", project.path().display())),
             "{error}"
         );
+    }
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{
+        build_diagnostics_text, diagnostic_line, publish_diagnostics_text, publish_steps_text,
+        suggestions_text, untranslated_text,
+    };
+
+    const COLOURED: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
+    const TITLE: &str = "Sec7 Caller\u{1b}]0;pwned\u{7}";
+    const CLEAR: &str = "Sec7 Tests\u{1b}[2J";
+
+    fn assert_escaped(text: &str) {
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "{text:?}"
+        );
+        assert!(text.contains(r"Sec7 Tests\u{1b}[2J"), "got: {text}");
+    }
+
+    #[test]
+    fn compile_diagnostics_print_file_names_and_messages_escaped() {
+        let diags = [serde_json::json!({
+            "severity": "error", "file": format!("src/{CLEAR}.Codeunit.al"),
+            "line": 3, "column": 5, "code": "AL0118", "message": TITLE
+        })];
+        let text = build_diagnostics_text(&diags);
+        assert_escaped(&text);
+        assert_eq!(
+            text,
+            "src/Sec7 Tests\\u{1b}[2J.Codeunit.al:3:5: error AL0118: \
+             Sec7 Caller\\u{1b}]0;pwned\\u{7}\n"
+        );
+
+        let line = diagnostic_line(CLEAR, 3, 5, "Error", "AL0118", COLOURED);
+        assert_escaped(&line);
+        assert_eq!(
+            line,
+            "Sec7 Tests\\u{1b}[2J:3:5: Error AL0118: Bad\\u{1b}[31m Name\\u{1b}[0m"
+        );
+    }
+
+    #[test]
+    fn publish_phases_and_diagnostics_print_escaped() {
+        let result = serde_json::json!({
+            "server": CLEAR, "method": "dev",
+            "steps": [{"phase": COLOURED, "success": false, "message": TITLE}],
+            "diagnostics": [{"file": CLEAR, "line": 7, "code": "AL0001", "message": TITLE}]
+        });
+        let text = publish_steps_text(&result);
+        assert_escaped(&text);
+        assert!(
+            text.contains(r"  [!!] Bad\u{1b}[31m Name\u{1b}[0m: Sec7 Caller\u{1b}]0;pwned\u{7}"),
+            "got: {text}"
+        );
+        assert_escaped(&publish_diagnostics_text(&result));
+    }
+
+    #[test]
+    fn xlf_units_print_escaped() {
+        let result = serde_json::json!({
+            "count": 1,
+            "untranslated": [{"id": COLOURED, "source": CLEAR}],
+            "suggestions": [{
+                "unit_id": COLOURED, "source": CLEAR,
+                "suggested_translation": TITLE, "confidence": 0.5
+            }]
+        });
+        assert_escaped(&untranslated_text(&result));
+        assert_escaped(&suggestions_text(&result));
     }
 }

@@ -143,7 +143,15 @@ the code the project can change.
   returns `proof`, an HMAC over the nonce and the identity keyed by a file only the current user can
   read, so a process that did not start from this user's key cannot answer it. A client compares
   `version` and `build` with its own before it uses a daemon it did not start, and replaces one that
-  does not match, because a daemon from other code answers with that code's response shapes.
+  does not match, because a daemon from other code answers with that code's response shapes. A
+  daemon that answers nothing within the handshake deadline is left running, since silence says
+  nothing about its build: the client reports it and the next command tries again.
+- The daemon binds its endpoint before it evaluates trust and loads the project. The four
+  lifecycle methods answer during that load. Any other method answers `Workspace is initializing,
+  try again` until the load is done, and `DaemonClient` retries that on its own for up to a
+  minute. A daemon started by the client's own command gets the request deadline
+  (`AL_REQUEST_TIMEOUT_MS`, 30 s by default) to answer its first `handshake`, a daemon that was
+  already running gets 10 s.
 - `status` reports `memory` and `diag/summary` reports `process`, both
   `{residentBytes, peakResidentBytes}`. `residentBytes` is null off Linux. These are what the
   operating system sees, unlike the per-structure byte totals in `diag`, which count only
@@ -172,13 +180,25 @@ the code the project can change.
   also stops once its project directory no longer exists, whatever the idle window.
 - Local-only IPC: Unix-domain socket at `$XDG_RUNTIME_DIR/al-lsp/{hash}.sock` (with platform
   runtime-directory fallbacks) on Linux/macOS. Per-user named pipe on Windows.
+- One daemon per project. On Unix a daemon that starts while another already accepts on the
+  project's socket exits with `a daemon is already running for this project` and leaves that
+  socket alone. A socket path nothing accepts on is left over from a daemon that did not remove
+  it, and is removed before the new daemon binds. On exit a daemon removes its socket path only
+  while the path still names the socket it bound, so a path another socket has taken since stays.
 
 ## Paths and the project boundary
 
-A `uri` or `file` parameter is resolved inside the loaded project: its root, the package cache, and
-the directory each resolved `.app` came from. Anything else is refused with `-32002`, whose message
-names the path and the project root. The same dispatchers answer MCP's `al_call`, where the caller
-may be an agent and the path may be anything it asks for, so the boundary holds for every caller.
+Every path parameter is resolved inside the loaded project: its root, the package cache, and the
+directory each resolved `.app` came from. That covers `uri` and `file`, and the paths methods take
+under other names, which are `xlf`, `generated`, `project`, `from`, `to`, `dir`, `path`,
+`outputDir`, `snapshotPath`, `pathA`, `pathB`, `outputPath`, `junitOut`, `coberturaOut` and
+`files`. A path a method creates or rewrites must resolve under the project root itself: `project`
+of `xlf.generate`, `xlf` of `xlf.refresh`, `dir` of `newProject`, `outputDir` of `snapshot` and
+`profiling`, and `junitOut`, `coberturaOut` and `outputPath`. A trusted project whose package folder
+resolves outside the project can read that folder through these methods and write nothing there.
+Anything else is refused with `-32002`, whose message names the path and the project root.
+`xlf.refresh` also refuses an `xlf` whose name does not end in `.xlf`. The same dispatchers answer MCP's `al_call`, where the caller may
+be an agent and the path may be anything it asks for, so the boundary holds for every caller.
 
 A read-only single-file method (`parse`, `lint`, `metrics`, `hover`, `definition`, `references`,
 `implementations`, `completions`, `signatureHelp`, `rename`, `documentSymbols`, `foldingRanges`,
@@ -191,14 +211,15 @@ names (`format`, `fix`, `sortMembers`): supplied content is analysed, never writ
 
 `al-explorer` uses that: on `-32002` from a read-only method it reads the file itself and asks
 again with `text`, so `al-explorer parse ../elsewhere/Foo.al` works while the daemon still opens
-nothing outside the project. A write command reports the refusal instead.
+nothing outside the project. Every other command reports the refusal, with a hint to run it from
+the project that holds the path.
 
 Common parameter shapes: position queries accept `uri` plus `{line, character}`. `breaking` and
 `upgrade` accept `baselineSymbols`. `tests.snapshot_validate` accepts `snapshotPath`.
 `tests.snapshot_replay` accepts `snapshotPath`, `bcVersion`, and optional `config`/`timeoutMs`, and
-`tests.snapshot_diff` accepts `pathA` and `pathB`. Snapshot paths must resolve inside the current
-project. `source` requires `name` and accepts the disambiguators `kind`, `package`, `proc`, or
-`trigger` (`proc` and `trigger` are mutually exclusive).
+`tests.snapshot_diff` accepts `pathA` and `pathB`. `source` requires `name` and accepts the
+disambiguators `kind`, `package`, `proc`, or `trigger` (`proc` and `trigger` are mutually
+exclusive).
 It returns `source_availability` as `workspace_source`, `embedded_source`, `generated_outline`, or
 `metadata_only`. `source` also accepts `listProcedures` (boolean), which returns
 `{k, id, n, pkg, source_availability, members, total}` where each member carries `name`, `kind`,

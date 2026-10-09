@@ -25,14 +25,21 @@ pub fn set_compact_json(compact: bool) {
 }
 
 pub fn print_json<T: Serialize>(value: &T) {
-    let rendered = if COMPACT_JSON.load(std::sync::atomic::Ordering::Relaxed) {
+    match json_text(value) {
+        Ok(json) => println!("{json}"),
+        Err(e) => eprintln!(
+            "{{\"error\":\"serialization failed: {}\"}}",
+            terminal_text(&e.to_string())
+        ),
+    }
+}
+
+/// The JSON `print_json` writes for `value`, on one line under `--compact`.
+fn json_text<T: Serialize>(value: &T) -> serde_json::Result<String> {
+    if COMPACT_JSON.load(std::sync::atomic::Ordering::Relaxed) {
         serde_json::to_string(value)
     } else {
         serde_json::to_string_pretty(value)
-    };
-    match rendered {
-        Ok(json) => println!("{json}"),
-        Err(e) => eprintln!("{{\"error\":\"serialization failed: {e}\"}}"),
     }
 }
 
@@ -241,9 +248,66 @@ pub fn report_error(msg: &str, json: bool) -> ExitCode {
     if json {
         print_json(&serde_json::json!({ "error": msg }));
     } else {
-        eprintln!("Error: {msg}");
+        eprintln!("{}", error_text(msg));
     }
     ExitCode::FAILURE
+}
+
+/// The text `report_error` writes for `msg` when `--json` is off.
+///
+/// A daemon error can quote an object or manifest name, so each line is put
+/// through [`terminal_text`]. The line breaks stay, because the CLI and the
+/// daemon put each hint on a line of its own.
+fn error_text(msg: &str) -> String {
+    let lines: Vec<String> = msg.split('\n').map(terminal_text).collect();
+    format!("Error: {}", lines.join("\n"))
+}
+
+/// Text from a daemon result or error, made safe to write to a terminal.
+///
+/// Object, package and manifest names come from the project's files and from
+/// every `.app` under `.alpackages`, so a name may hold an escape sequence
+/// that clears the screen or renames the window. Each control character is
+/// written as its escape (`\u{1b}`), so the terminal prints it. `--json`
+/// output needs none of this, because serde writes the same characters as
+/// `\u001b`.
+pub(crate) fn terminal_text(text: &str) -> String {
+    al_project::trust::escape_controls(text)
+}
+
+/// The string at `key` in a result row as [`terminal_text`], or `default`
+/// when the row has none.
+pub(crate) fn text_field(row: &serde_json::Value, key: &str, default: &str) -> String {
+    terminal_text(
+        row.get(key)
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(default),
+    )
+}
+
+/// A file system path as [`terminal_text`] writes it. A directory name can
+/// hold an escape sequence as well as an object name can.
+pub(crate) fn path_text(path: &std::path::Path) -> String {
+    terminal_text(&path.display().to_string())
+}
+
+/// Text of several lines, such as source code or a DOT graph, as
+/// [`terminal_text`] writes it, with its line breaks and tabs kept.
+pub(crate) fn terminal_lines(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.split_inclusive('\n') {
+        let (body, ending) = if let Some(body) = line.strip_suffix("\r\n") {
+            (body, "\r\n")
+        } else if let Some(body) = line.strip_suffix('\n') {
+            (body, "\n")
+        } else {
+            (line, "")
+        };
+        let cells: Vec<String> = body.split('\t').map(terminal_text).collect();
+        out.push_str(&cells.join("\t"));
+        out.push_str(ending);
+    }
+    out
 }
 
 pub fn collect_al_files(dir: &std::path::Path) -> Result<Vec<PathBuf>, String> {
@@ -323,54 +387,62 @@ fn collect_al_files_for_extension(
 }
 
 pub fn print_symbol_entries(result: &serde_json::Value) {
+    print!("{}", symbol_entries_text(result));
+}
+
+/// The text `print_symbol_entries` writes for an `object` or `byId` result.
+fn symbol_entries_text(result: &serde_json::Value) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
     let entries = match list_rows(result).as_array() {
         Some(arr) => arr.clone(),
         None => vec![result.clone()],
     };
     for e in &entries {
-        let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
+        let kind = text_field(e, "kind", "?");
         let id = e.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-        let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-        let pkg = e.get("package").and_then(|v| v.as_str()).unwrap_or("?");
-        if id > 0 && kind_has_numeric_id(kind) {
-            println!("{kind} {id} \"{name}\" (package: {pkg})");
+        let name = text_field(e, "name", "?");
+        let pkg = text_field(e, "package", "?");
+        if id > 0 && kind_has_numeric_id(&kind) {
+            let _ = writeln!(out, "{kind} {id} \"{name}\" (package: {pkg})");
         } else {
-            println!("{kind} \"{name}\" (package: {pkg})");
+            let _ = writeln!(out, "{kind} \"{name}\" (package: {pkg})");
         }
 
         if let Some(availability) = e
             .get("source_availability")
             .and_then(|value| value.as_str())
         {
-            println!("  source: {}", availability.replace('_', " "));
+            let _ = writeln!(
+                out,
+                "  source: {}",
+                terminal_text(&availability.replace('_', " "))
+            );
         }
         if let Some(reason) = e.get("partial_reason").and_then(|value| value.as_str()) {
-            println!("  partial: {reason}");
+            let _ = writeln!(out, "  partial: {}", terminal_text(reason));
         }
 
         if let Some(extends) = e.get("extends").and_then(|v| v.as_str()) {
-            println!("  extends: {extends}");
+            let _ = writeln!(out, "  extends: {}", terminal_text(extends));
         }
         if let Some(fields) = e.get("fields").and_then(|v| v.as_array()) {
             if !fields.is_empty() {
-                println!("  fields:");
+                let _ = writeln!(out, "  fields:");
                 for f in fields {
-                    let fname = f.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let ftype = f.get("type_name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let fname = text_field(f, "name", "?");
+                    let ftype = text_field(f, "type_name", "?");
                     let fid = f.get("id").and_then(|v| v.as_i64()).unwrap_or(0);
-                    println!("    {fname}: {ftype} (id {fid})");
+                    let _ = writeln!(out, "    {fname}: {ftype} (id {fid})");
                 }
             }
         }
         if let Some(methods) = e.get("methods").and_then(|v| v.as_array()) {
             if !methods.is_empty() {
-                println!("  methods:");
+                let _ = writeln!(out, "  methods:");
                 for m in methods {
-                    let mname = m.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let ret = m
-                        .get("return_type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("void");
+                    let mname = text_field(m, "name", "?");
+                    let ret = text_field(m, "return_type", "void");
                     let is_local = m.get("is_local").and_then(|v| v.as_bool()).unwrap_or(false);
                     let scope = if is_local { " [local]" } else { "" };
                     let params = m
@@ -379,10 +451,8 @@ pub fn print_symbol_entries(result: &serde_json::Value) {
                         .map(|ps| {
                             ps.iter()
                                 .map(|p| {
-                                    let pname =
-                                        p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let ptype =
-                                        p.get("type_name").and_then(|v| v.as_str()).unwrap_or("?");
+                                    let pname = text_field(p, "name", "?");
+                                    let ptype = text_field(p, "type_name", "?");
                                     let is_var =
                                         p.get("is_var").and_then(|v| v.as_bool()).unwrap_or(false);
                                     if is_var {
@@ -395,22 +465,23 @@ pub fn print_symbol_entries(result: &serde_json::Value) {
                                 .join("; ")
                         })
                         .unwrap_or_default();
-                    println!("    {mname}({params}): {ret}{scope}");
+                    let _ = writeln!(out, "    {mname}({params}): {ret}{scope}");
                 }
             }
         }
         if let Some(values) = e.get("enum_values").and_then(|v| v.as_array()) {
             if !values.is_empty() {
-                println!("  values:");
+                let _ = writeln!(out, "  values:");
                 for v in values {
                     let ordinal = v.get("ordinal").and_then(|v| v.as_i64()).unwrap_or(0);
-                    let vname = v.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("    {ordinal} = {vname}");
+                    let vname = text_field(v, "name", "?");
+                    let _ = writeln!(out, "    {ordinal} = {vname}");
                 }
             }
         }
-        println!();
+        let _ = writeln!(out);
     }
+    out
 }
 
 /// Execute a daemon JSON-RPC request with the common connect/request/format lifecycle.
@@ -635,7 +706,8 @@ fn warn_if_not_projected(
     });
     if asked && result.is_array() && !WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         eprintln!(
-            "warning: --limit, --offset and --fields do not apply to `{method}`; the whole result is shown"
+            "warning: --limit, --offset and --fields do not apply to `{}`; the whole result is shown",
+            terminal_text(method)
         );
     }
 }
@@ -671,7 +743,11 @@ pub fn request_checked(
                 }
                 warn_if_not_projected(method, sent.as_ref(), &result);
                 if let Some(absent) = result.get("absentFields").and_then(|v| v.as_array()) {
-                    let names: Vec<&str> = absent.iter().filter_map(|v| v.as_str()).collect();
+                    let names: Vec<String> = absent
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .map(terminal_text)
+                        .collect();
                     eprintln!(
                         "note: no row has {}; those fields are left out",
                         names.join(", ")
@@ -689,11 +765,15 @@ pub fn request_checked(
 }
 
 /// Say why a path was refused when the CLI cannot work around it.
+///
+/// The refusal reaches here from a method that rewrites its file and from one
+/// that reads a path it takes in another parameter, so the hint holds for
+/// both. The daemon's own message says when the method rewrites the file.
 fn explain_path_refusal(error: &str) -> String {
     if is_path_not_authorized(error) {
         format!(
-            "{error}\n\nHint: this command rewrites the file it is given, and the daemon changes \
-             only files inside the project named above. Run it from that file's own project."
+            "{error}\n\nHint: the daemon reads and writes only paths inside the project named \
+             above. Run the command from the project that holds the path."
         )
     } else {
         error.to_string()
@@ -701,13 +781,18 @@ fn explain_path_refusal(error: &str) -> String {
 }
 
 pub fn print_lint_diag(file: Option<&str>, d: &serde_json::Value) {
-    let code = d.get("code").and_then(|v| v.as_str()).unwrap_or("?");
-    let msg = d.get("message").and_then(|v| v.as_str()).unwrap_or("?");
-    let sev = d.get("severity").and_then(|v| v.as_str()).unwrap_or("?");
+    eprintln!("{}", lint_diag_line(file, d));
+}
+
+/// The line `print_lint_diag` writes for one diagnostic.
+fn lint_diag_line(file: Option<&str>, d: &serde_json::Value) -> String {
+    let code = text_field(d, "code", "?");
+    let msg = text_field(d, "message", "?");
+    let sev = text_field(d, "severity", "?");
     let line = d.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
     let col = d.get("column").and_then(|v| v.as_u64()).unwrap_or(0);
-    let prefix = file.unwrap_or("?");
-    eprintln!("{prefix}:{line}:{col}: {sev} [{code}] {msg}");
+    let prefix = terminal_text(file.unwrap_or("?"));
+    format!("{prefix}:{line}:{col}: {sev} [{code}] {msg}")
 }
 
 #[cfg(test)]
@@ -833,6 +918,30 @@ mod lint_target_tests {
 
         let targets = resolve_lint_targets(&parts);
         assert_eq!(targets, vec![path.to_string_lossy().into_owned()]);
+    }
+}
+
+#[cfg(test)]
+mod path_refusal_tests {
+    use super::explain_path_refusal;
+
+    /// `eventSource`, `packageDiff`, the snapshot readers and the XLIFF
+    /// readers answer a path outside the project with the same code as the
+    /// methods that rewrite their file, so the hint has to hold for a reader.
+    #[test]
+    fn the_path_refusal_hint_holds_for_a_method_that_only_reads_the_path() {
+        let error = format!(
+            "eventSource: 'file' path '/elsewhere/Foo.al' is outside the project at '/project' \
+             (code {})",
+            al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED
+        );
+        let explained = explain_path_refusal(&error);
+        assert!(explained.starts_with(&error), "{explained}");
+        assert!(explained.contains("Hint:"), "{explained}");
+        assert!(
+            !explained.contains("rewrites"),
+            "a reader was told it rewrites the file: {explained}"
+        );
     }
 }
 
@@ -1177,5 +1286,94 @@ mod subcommand_exit_code_tests {
                 "{command} must not exit 0 when the gate fails"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{error_text, json_text, lint_diag_line, symbol_entries_text, terminal_lines};
+
+    const CRAFTED_NAME: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
+    const ESCAPED_NAME: &str = r"Bad\u{1b}[31m Name\u{1b}[0m";
+
+    fn assert_no_raw_control(text: &str) {
+        assert!(
+            !text
+                .chars()
+                .any(|ch| ch.is_control() && ch != '\n' && ch != '\t'),
+            "a control character reached the terminal text: {text:?}"
+        );
+    }
+
+    #[test]
+    fn an_object_name_with_an_escape_sequence_prints_escaped_in_text_and_as_json_escapes_in_json() {
+        let result = serde_json::json!({
+            "kind": "Codeunit",
+            "id": 50150,
+            "name": CRAFTED_NAME,
+            "package": "Pub\u{1b}]0;pwned\u{7}lisher",
+            "extends": CRAFTED_NAME,
+            "fields": [{"name": CRAFTED_NAME, "type_name": "Code[20]", "id": 1}],
+            "methods": [{
+                "name": CRAFTED_NAME,
+                "return_type": "Text",
+                "parameters": [{"name": CRAFTED_NAME, "type_name": "Integer"}]
+            }],
+            "enum_values": [{"ordinal": 0, "name": CRAFTED_NAME}]
+        });
+
+        let text = symbol_entries_text(&result);
+        assert_no_raw_control(&text);
+        assert!(
+            text.contains(&format!("Codeunit 50150 \"{ESCAPED_NAME}\"")),
+            "got: {text}"
+        );
+        assert!(
+            text.contains(r"Pub\u{1b}]0;pwned\u{7}lisher"),
+            "got: {text}"
+        );
+
+        let json = json_text(&result).unwrap();
+        assert!(json.contains(r"Bad\u001b[31m Name\u001b[0m"), "got: {json}");
+    }
+
+    #[test]
+    fn a_daemon_error_quoting_a_name_prints_it_escaped_and_keeps_its_hint_on_its_own_line() {
+        let message = format!(
+            "impact: no object named 'Bad Nam' is loaded. Closest names in the index: \
+             {CRAFTED_NAME}.\r\n\nHint: run it from the project directory."
+        );
+        let text = error_text(&message);
+        assert_no_raw_control(&text);
+        assert!(text.contains(ESCAPED_NAME), "got: {text}");
+        assert!(text.contains(r".\r"), "got: {text}");
+        assert!(
+            text.ends_with("\n\nHint: run it from the project directory."),
+            "got: {text}"
+        );
+    }
+
+    #[test]
+    fn a_lint_message_quoting_a_name_prints_it_escaped() {
+        let diagnostic = serde_json::json!({
+            "code": "AL0001",
+            "message": format!("Object name '{CRAFTED_NAME}' is too long"),
+            "severity": "warning",
+            "line": 3,
+            "column": 1
+        });
+        let line = lint_diag_line(Some("src/Bad\u{1b}[2J.al"), &diagnostic);
+        assert_no_raw_control(&line);
+        assert!(line.contains(ESCAPED_NAME), "got: {line}");
+        assert!(line.starts_with(r"src/Bad\u{1b}[2J.al:3:1"), "got: {line}");
+    }
+
+    #[test]
+    fn multi_line_text_keeps_its_line_breaks_and_tabs_and_escapes_other_controls() {
+        let text = terminal_lines("digraph {\r\n\t\"Bad\u{1b}]0;pwned\u{7}\";\n\u{1b}[2J}");
+        assert_eq!(
+            text,
+            "digraph {\r\n\t\"Bad\\u{1b}]0;pwned\\u{7}\";\n\\u{1b}[2J}"
+        );
     }
 }

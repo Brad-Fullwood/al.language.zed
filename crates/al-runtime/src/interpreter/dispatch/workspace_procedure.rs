@@ -13,7 +13,7 @@ use al_syntax::IdentifierText;
 use super::frames::{
     bind_local_vars, bind_object_globals, bind_structured_locals, check_param_type,
     coerce_int_width, collect_params, collect_return, declared_text_length,
-    default_for_declared_type, ParamDecl, ReturnDecl,
+    default_for_declared_type, subtype_matches, ParamDecl, ReturnDecl,
 };
 use super::{DispatchCtx, MAX_RECURSION_DEPTH};
 
@@ -190,11 +190,13 @@ pub(super) fn dispatch_workspace_procedure(
 }
 
 /// The declaration among the same-named `candidates`, in source order, that a
-/// call with `args` runs: its parameter count matches and `check_param_type`
-/// accepts every argument. When several do, the one with the most arguments
-/// of exactly the declared type wins, then the first declared, so `Amount(1)`
-/// runs `Amount(A: Integer)` over `Amount(A: Decimal)`. A lone candidate is
-/// returned as it is, and `run_declaration` reports its mismatch.
+/// call with `args` runs: its parameter count matches, `check_param_type`
+/// accepts every argument, and a `Record`, `Codeunit` or `Enum` parameter
+/// names the argument's table, object or enum. When several do, the one with
+/// the most arguments of exactly the declared type wins, then the first
+/// declared, so `Amount(1)` runs `Amount(A: Integer)` over
+/// `Amount(A: Decimal)`. A lone candidate is returned as it is, and
+/// `run_declaration` reports its mismatch.
 pub(super) fn choose_overload<'t>(
     candidates: &[tree_sitter::Node<'t>],
     source: &[u8],
@@ -208,10 +210,10 @@ pub(super) fn choose_overload<'t>(
     for &candidate in candidates {
         let params = collect_params(candidate, source);
         let takes = params.len() == args.len()
-            && params
-                .iter()
-                .zip(args)
-                .all(|(param, arg)| check_param_type(arg, &param.type_name).is_none());
+            && params.iter().zip(args).all(|(param, arg)| {
+                check_param_type(arg, &param.type_name).is_none()
+                    && subtype_matches(arg, &param.type_name)
+            });
         if !takes {
             continue;
         }
@@ -320,8 +322,8 @@ pub(super) fn run_declaration(
     };
 
     let mut frame = CallFrame::new(object_name, procedure);
-    for (i, param) in params.iter().enumerate() {
-        let mut val = args.get(i).cloned().unwrap_or(Value::Empty);
+    // The frame takes the arguments, so a text passed by value is held once.
+    for (param, mut val) in params.iter().zip(args) {
         // A by-value record parameter is the callee's own copy: BC gives
         // it the caller's buffer but its own filters/cursor. `RecordValue`
         // is `Clone` and carries the caller's view `handle`, so keeping it
@@ -372,6 +374,11 @@ pub(super) fn run_declaration(
         frame.bind("Rec", rec);
         frame.bind("xRec", x_rec);
         frame.implicit_record = true;
+    }
+    // The parameters and locals count toward the test's held bytes until
+    // the frame drops.
+    if let Err(message) = frame.check_held_bytes(&format!("The call to '{procedure}'")) {
+        return eval_error(message);
     }
 
     ctx.recursion_depth += 1;

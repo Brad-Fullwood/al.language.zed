@@ -1,5 +1,6 @@
 //! Refactoring & diagnostics: profiler hints, member sorting, file organization, workspace diag, and test snapshot/mutation.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use crate::cli::commands::*;
@@ -37,13 +38,7 @@ pub fn cmd_profiler_hints(hotspots: &[String], json: bool) -> ExitCode {
                 if hints.is_empty() {
                     println!("No profiler hints found.");
                 } else {
-                    for h in &hints {
-                        let procedure = h.get("procedure").and_then(|v| v.as_str()).unwrap_or("?");
-                        let object = h.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                        let self_ms = h.get("selfTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let hits = h.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
-                        println!("{object}::{procedure}: {self_ms:.1}ms ({hits} samples)");
-                    }
+                    print!("{}", profiler_hints_text(&hints));
                 }
             }
             ExitCode::SUCCESS
@@ -86,13 +81,13 @@ pub fn cmd_sort_members(file: Option<&str>, all: bool, dry_run: bool, json: bool
                     ) {
                         (Some(sorted), _) => {
                             println!("Would reorder members (dry run, nothing written):\n");
-                            print!("{sorted}");
+                            print!("{}", terminal_lines(sorted));
                         }
                         (None, Some(files)) => {
                             println!("Would reorder members in (dry run, nothing written):");
                             for file in files.as_array().into_iter().flatten() {
                                 if file["changed"].as_bool() == Some(true) {
-                                    println!("  {}", file["file"].as_str().unwrap_or("?"));
+                                    println!("  {}", text_field(file, "file", "?"));
                                 }
                             }
                         }
@@ -130,15 +125,7 @@ pub fn cmd_organize_files(dry_run: bool, json: bool) -> ExitCode {
                 if files.is_empty() {
                     println!("All files already correctly named.");
                 } else {
-                    for f in &files {
-                        let from = f.get("from").and_then(|v| v.as_str()).unwrap_or("?");
-                        let to = f.get("to").and_then(|v| v.as_str()).unwrap_or("?");
-                        // The daemon reports `renamed: !dryRun` and turns a
-                        // failed rename into an RPC error, so a listed file in
-                        // a non-dry run was renamed.
-                        let status = if dry_run { "[dry-run]" } else { "[renamed]" };
-                        println!("{status} {from} -> {to}");
-                    }
+                    print!("{}", organized_files_text(&files, dry_run));
                 }
             }
             ExitCode::SUCCESS
@@ -156,7 +143,10 @@ pub fn cmd_diag(json: bool) -> ExitCode {
         |result| {
             println!("Workspace Diagnostics:");
             for (key, value) in result.as_object().into_iter().flat_map(|o| o.iter()) {
-                println!("  {}: {}", key, value);
+                // A JSON value prints as JSON, which writes a control
+                // character as `\u001b`.
+                let value = serde_json::to_string(value).unwrap_or_default();
+                println!("  {}: {value}", terminal_text(key));
             }
         },
     )
@@ -175,26 +165,9 @@ fn report_snapshot_comparison(
     if json {
         print_json(result);
     } else if divergences.is_empty() {
-        println!("{match_message}");
+        println!("{}", terminal_text(match_message));
     } else {
-        println!("{} divergence(s):", divergences.len());
-        for divergence in divergences {
-            let breakpoint = divergence
-                .get("breakpoint_id")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let iteration = divergence
-                .get("iteration")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0);
-            let field = divergence
-                .get("field_path")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("?");
-            let old = divergence.get("old_value").cloned().unwrap_or_default();
-            let new = divergence.get("new_value").cloned().unwrap_or_default();
-            println!("  [bp {breakpoint} iter {iteration}] {field}: {old} -> {new}");
-        }
+        print!("{}", divergences_text(divergences));
     }
     if divergences.is_empty() {
         ExitCode::SUCCESS
@@ -299,10 +272,7 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                             .get("sampleCount")
                             .and_then(|value| value.as_u64())
                             .unwrap_or(0);
-                        let path = result
-                            .get("snapshotPath")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("?");
+                        let path = text_field(&result, "snapshotPath", "?");
                         if failed > 0 {
                             println!(
                                 "[FAIL] Captured {samples} sample(s) to {path} from a test with \
@@ -341,25 +311,7 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                     if json {
                         print_json(&result);
                     } else {
-                        println!(
-                            "[PASS] Valid snapshot: {} sample(s), codeunit {}, method {}, BC {}",
-                            result
-                                .get("sampleCount")
-                                .and_then(|value| value.as_u64())
-                                .unwrap_or(0),
-                            result
-                                .get("codeunitId")
-                                .map(serde_json::Value::to_string)
-                                .unwrap_or_else(|| "?".to_string()),
-                            result
-                                .get("methodName")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("?"),
-                            result
-                                .get("bcVersion")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or("?")
-                        );
+                        println!("{}", valid_snapshot_line(&result));
                     }
                     ExitCode::SUCCESS
                 }
@@ -495,39 +447,7 @@ pub fn cmd_test_mutate(
                     .filter(|v| v.get("error").and_then(|e| e.as_str()).is_none())
                     .collect();
                 if !survivors.is_empty() {
-                    println!("\nSurvived mutations (test gaps):");
-                    println!("{:<8} {:<30} {:>5}  Change", "ID", "File", "Line");
-                    println!("{}", "-".repeat(70));
-                    for v in &survivors {
-                        // The mutation details (id/file/line/description) live in
-                        // the nested `variant` object; the top-level keys are
-                        // `killed`/`killingTest`/`error`. Reading them at the top
-                        // level printed "?  ?  0  ?" for every survivor row.
-                        let variant = v.get("variant").unwrap_or(v);
-                        let id = variant.get("id").and_then(|x| x.as_str()).unwrap_or("?");
-                        let file = variant.get("file").and_then(|x| x.as_str()).unwrap_or("?");
-                        let file_short = std::path::Path::new(file)
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or(file);
-                        let line = variant.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
-                        let desc = variant
-                            .get("description")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("?");
-                        let reason = v
-                            .get("survivalReason")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("unknown");
-                        // The variant id embeds the source file name verbatim,
-                        // so a byte slice splits a multi-byte character in
-                        // `Kundæ.al` and panics.
-                        let id_short: String = id.chars().take(8).collect();
-                        println!(
-                            "{:<8} {:<30} {:>5}  {} [{}]",
-                            id_short, file_short, line, desc, reason
-                        );
-                    }
+                    print!("{}", survivors_text(&survivors));
                 }
             }
 
@@ -535,6 +455,115 @@ pub fn cmd_test_mutate(
         }
         Err(e) => report_error(&e, json),
     }
+}
+
+/// One line per profiler hint: the object, the procedure, the time and the
+/// sample count.
+fn profiler_hints_text(hints: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for h in hints {
+        let procedure = text_field(h, "procedure", "?");
+        let object = text_field(h, "object", "?");
+        let self_ms = h.get("selfTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let hits = h.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        let _ = writeln!(
+            out,
+            "{object}::{procedure}: {self_ms:.1}ms ({hits} samples)"
+        );
+    }
+    out
+}
+
+/// One line per file `organize-files` renamed or would rename.
+fn organized_files_text(files: &[serde_json::Value], dry_run: bool) -> String {
+    let mut out = String::new();
+    for f in files {
+        let from = text_field(f, "from", "?");
+        let to = text_field(f, "to", "?");
+        // The daemon reports `renamed: !dryRun` and turns a failed rename
+        // into an RPC error, so a listed file in a non-dry run was renamed.
+        let status = if dry_run { "[dry-run]" } else { "[renamed]" };
+        let _ = writeln!(out, "{status} {from} -> {to}");
+    }
+    out
+}
+
+/// The count and one line per divergence between two snapshots.
+fn divergences_text(divergences: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{} divergence(s):", divergences.len());
+    for divergence in divergences {
+        let breakpoint = divergence
+            .get("breakpoint_id")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let iteration = divergence
+            .get("iteration")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        let field = text_field(divergence, "field_path", "?");
+        // The recorded values print as JSON, which writes a control
+        // character as `\u001b`.
+        let old = serde_json::to_string(&divergence["old_value"]).unwrap_or_default();
+        let new = serde_json::to_string(&divergence["new_value"]).unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "  [bp {breakpoint} iter {iteration}] {field}: {old} -> {new}"
+        );
+    }
+    out
+}
+
+/// The line `test-snapshot validate` prints for a valid snapshot.
+fn valid_snapshot_line(result: &serde_json::Value) -> String {
+    let samples = result
+        .get("sampleCount")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let codeunit = match result.get("codeunitId") {
+        Some(id) => serde_json::to_string(id).unwrap_or_default(),
+        None => "?".to_string(),
+    };
+    let method = text_field(result, "methodName", "?");
+    let bc_version = text_field(result, "bcVersion", "?");
+    format!(
+        "[PASS] Valid snapshot: {samples} sample(s), codeunit {codeunit}, method {method}, \
+         BC {bc_version}"
+    )
+}
+
+/// The table of mutations no test killed.
+fn survivors_text(survivors: &[&serde_json::Value]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "\nSurvived mutations (test gaps):");
+    let _ = writeln!(out, "{:<8} {:<30} {:>5}  Change", "ID", "File", "Line");
+    let _ = writeln!(out, "{}", "-".repeat(70));
+    for v in survivors {
+        // The mutation details (id/file/line/description) live in the nested
+        // `variant` object. The top-level keys are `killed`, `killingTest` and
+        // `error`. Reading them at the top level printed "?  ?  0  ?" for
+        // every survivor row.
+        let variant = v.get("variant").unwrap_or(v);
+        let id = variant.get("id").and_then(|x| x.as_str()).unwrap_or("?");
+        let file = variant.get("file").and_then(|x| x.as_str()).unwrap_or("?");
+        let file_short = terminal_text(
+            std::path::Path::new(file)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or(file),
+        );
+        let line = variant.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
+        let desc = text_field(variant, "description", "?");
+        let reason = text_field(v, "survivalReason", "unknown");
+        // The variant id embeds the source file name verbatim, so a byte
+        // slice splits a multi-byte character in `Kundæ.al` and panics.
+        let id_short = terminal_text(&id.chars().take(8).collect::<String>());
+        let _ = writeln!(
+            out,
+            "{id_short:<8} {file_short:<30} {line:>5}  {desc} [{reason}]"
+        );
+    }
+    out
 }
 
 fn mutation_exit_code(result: &serde_json::Value) -> Result<ExitCode, String> {
@@ -608,5 +637,64 @@ mod mutation_exit_tests {
         for value in [result(1, 0, 0), result(0, 1, 0), result(0, 0, 1)] {
             assert_eq!(mutation_exit_code(&value).unwrap(), ExitCode::FAILURE);
         }
+    }
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{
+        divergences_text, organized_files_text, profiler_hints_text, survivors_text,
+        valid_snapshot_line,
+    };
+
+    const COLOURED: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
+    const TITLE: &str = "Sec7 Caller\u{1b}]0;pwned\u{7}";
+    const CLEAR: &str = "Sec7 Tests\u{1b}[2J";
+
+    fn assert_escaped(text: &str) {
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "{text:?}"
+        );
+        assert!(text.contains(r"Sec7 Tests\u{1b}[2J"), "got: {text}");
+    }
+
+    #[test]
+    fn profiler_hints_and_renamed_files_print_crafted_names_escaped() {
+        let hints = [serde_json::json!({
+            "object": CLEAR, "procedure": COLOURED, "selfTimeMs": 1.5, "hitCount": 2
+        })];
+        assert_eq!(
+            profiler_hints_text(&hints),
+            "Sec7 Tests\\u{1b}[2J::Bad\\u{1b}[31m Name\\u{1b}[0m: 1.5ms (2 samples)\n"
+        );
+
+        let files = [serde_json::json!({"from": CLEAR, "to": TITLE})];
+        assert_escaped(&organized_files_text(&files, true));
+    }
+
+    #[test]
+    fn snapshot_and_mutation_output_prints_crafted_names_escaped() {
+        let divergences = [serde_json::json!({
+            "breakpoint_id": 1, "iteration": 0, "field_path": CLEAR,
+            "old_value": COLOURED, "new_value": TITLE
+        })];
+        assert_escaped(&divergences_text(&divergences));
+
+        let snapshot = serde_json::json!({
+            "sampleCount": 3, "codeunitId": 50172, "methodName": CLEAR, "bcVersion": TITLE
+        });
+        assert_escaped(&valid_snapshot_line(&snapshot));
+
+        let survivor = serde_json::json!({
+            "killed": false, "survivalReason": TITLE,
+            "variant": {
+                "id": "\u{1b}[2Jabcdef", "file": format!("src/{CLEAR}.al"),
+                "line": 4, "description": COLOURED
+            }
+        });
+        let text = survivors_text(&[&survivor]);
+        assert_escaped(&text);
+        assert!(text.contains(r"\u{1b}[2Jabcd Sec7"), "got: {text}");
     }
 }
