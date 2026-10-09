@@ -942,8 +942,8 @@ pub fn event_source(
         .find(|(name, _)| name.eq_ignore_ascii_case("EventSubscriber"))
         .ok_or_else(|| {
             format!(
-                "The procedure at {}:{} has no [EventSubscriber] attribute — \
-                 'Show Event Source' only applies to event subscribers",
+                "The procedure at {}:{} has no [EventSubscriber] attribute, so it \
+                 handles no event",
                 file.display(),
                 line_1based
             )

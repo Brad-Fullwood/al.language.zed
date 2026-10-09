@@ -336,7 +336,7 @@ CodeLens emits lenses with three more execute commands, which the same dispatche
 
 ### Commands that need no `PATH` install
 
-The installed language package ships 55 static tasks in `languages/al/tasks.json` plus the inline
+The installed language package ships 42 static tasks in `languages/al/tasks.json` plus the inline
 runnables in `languages/al/runnables.scm`. Every one of them runs `command = "al-explorer"`, so they
 work once `al-explorer` is on `PATH`. Stable Zed task definitions cannot address a binary the
 extension downloaded into its own work directory. See

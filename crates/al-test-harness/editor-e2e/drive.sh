@@ -12,6 +12,7 @@
 #   drive.sh --out /tmp/shot.png          # screenshot destination
 #   drive.sh --build-image                # force-rebuild the container image first
 #   drive.sh --keys 'wtype -M ctrl -k p'  # extra wtype interaction (Zed mode)
+#   drive.sh --zed-settings my.json       # Zed settings.json to use (theme, LSP settings)
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
@@ -22,6 +23,7 @@ OUT=""
 BUILD_IMAGE=0
 KEYS=""
 PROJ=""   # repo-relative project subdir to open (default: the bundled fixture in run-zed.sh)
+ZED_SETTINGS=""  # a settings.json for the Zed under test (theme, LSP settings)
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,6 +34,7 @@ while [[ $# -gt 0 ]]; do
     --build-image) BUILD_IMAGE=1; shift ;;
     --keys)        KEYS="$2"; shift 2 ;;
     --proj)        PROJ="$2"; shift 2 ;;
+    --zed-settings) ZED_SETTINGS="$2"; shift 2 ;;
     *) echo "unknown arg: $1"; exit 2 ;;
   esac
 done
@@ -89,6 +92,10 @@ if [[ "$MODE" != "vscode" ]]; then
   ( cd "$ROOT" && cargo run -q -p al-test-harness --bin gen-zed-index -- "$ROOT" ) > "$OUTDIR/zed-index.json" \
     || { echo "gen-zed-index failed"; exit 1; }
   INDEX_ENV=(-e ZED_INDEX_JSON=/out/zed-index.json)
+  if [[ -n "${ZED_SETTINGS:-}" ]]; then
+    cp "$ZED_SETTINGS" "$OUTDIR/zed-settings.json" || { echo "cannot read $ZED_SETTINGS"; exit 2; }
+    INDEX_ENV+=(-e ZED_SETTINGS_JSON=/out/zed-settings.json)
+  fi
 fi
 
 # 3. Run the editor(s) headless in the container.

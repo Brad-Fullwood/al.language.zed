@@ -80,10 +80,24 @@ fn git_build_hash(manifest_dir: &Path) -> Option<String> {
 
     let commit = git(&["rev-parse", "--short=12", "HEAD"]).filter(|sha| !sha.is_empty())?;
 
-    // Rebuild the constant when the checked-out commit changes. A worktree's
-    // git directory is not `<repo>/.git`, so ask git where HEAD actually lives.
-    if let Some(git_dir) = git(&["rev-parse", "--absolute-git-dir"]) {
-        println!("cargo:rerun-if-changed={git_dir}/HEAD");
+    // Rebuild the constant when the commit or the dirty state changes. HEAD
+    // names the branch, and a commit moves only the branch's ref, so the ref,
+    // `packed-refs` and the index are watched too. `--git-path` finds each one
+    // in a worktree as well. A watched file that does not exist would rerun
+    // this script on every build, so only existing files are watched.
+    let branch = git(&["symbolic-ref", "-q", "HEAD"]);
+    for name in ["HEAD", "index", "packed-refs"]
+        .into_iter()
+        .map(str::to_string)
+        .chain(branch)
+    {
+        let Some(path) = git(&["rev-parse", "--git-path", &name]) else {
+            continue;
+        };
+        let path = manifest_dir.join(path);
+        if path.is_file() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
     }
 
     let dirty = git(&["status", "--porcelain", "--untracked-files=no"])

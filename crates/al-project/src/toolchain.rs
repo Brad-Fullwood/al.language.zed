@@ -384,6 +384,18 @@ fn toolchain_version_rank(dir: &Path) -> (bool, Vec<u64>) {
     }
 }
 
+/// Target framework of the semantic bridge (`crates/al-semantic/bridge`). A
+/// toolchain built for a newer framework needs a runtime the bridge's host
+/// does not load.
+const BRIDGE_TARGET_FRAMEWORK: &str = "net8.0";
+
+/// Whether a toolchain directory is the build for [`BRIDGE_TARGET_FRAMEWORK`],
+/// as in `tools/net8.0/any`.
+fn targets_bridge_framework(dir: &Path) -> bool {
+    dir.components()
+        .any(|component| component.as_os_str() == BRIDGE_TARGET_FRAMEWORK)
+}
+
 fn search_dir_recursive(root: &Path) -> Result<Option<AlToolchain>, DiscoveryError> {
     // Collect every directory below `root` that holds an `alc.dll`, then pick
     // the newest by path-embedded version. Returning the first hit of an
@@ -455,11 +467,13 @@ fn search_dir_recursive(root: &Path) -> Result<Option<AlToolchain>, DiscoveryErr
         }
     }
 
-    // Newest version first; version-less candidates last; path order as the
-    // deterministic tiebreak.
+    // Newest version first; version-less candidates last. Within a version,
+    // the build for the framework the semantic bridge runs on, then path order
+    // as the deterministic tiebreak.
     candidates.sort_by(|a, b| {
         toolchain_version_rank(b)
             .cmp(&toolchain_version_rank(a))
+            .then_with(|| targets_bridge_framework(b).cmp(&targets_bridge_framework(a)))
             .then_with(|| a.cmp(b))
     });
 
@@ -899,6 +913,30 @@ mod tests {
             "17.x must win over 9.x/16.x"
         );
         assert_eq!(tc.version, "17.0.34.45391");
+    }
+
+    /// The AL 18 tool ships `tools/net8.0/any` and `tools/net10.0/any`. Path
+    /// order put `net10.0` first, whose CodeAnalysis needs .NET 10, while the
+    /// semantic bridge runs on .NET 8 and could not load it.
+    #[test]
+    fn search_dir_recursive_prefers_the_bridge_framework_within_a_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        for framework in ["net10.0", "net8.0"] {
+            write_minimal_toolchain(
+                &tmp.path()
+                    .join(format!("pkg/18.0.43.1464/tools/{framework}/any")),
+            );
+        }
+
+        let tc = search_dir_recursive(tmp.path())
+            .expect("recursive search failed")
+            .expect("expected a toolchain");
+        assert_eq!(
+            tc.alc,
+            tmp.path()
+                .join("pkg/18.0.43.1464/tools/net8.0/any")
+                .join(ALC_DLL)
+        );
     }
 
     /// A dotnet tool store routinely holds a dangling symlink after a version

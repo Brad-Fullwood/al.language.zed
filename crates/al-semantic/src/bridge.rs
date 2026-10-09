@@ -38,6 +38,66 @@ pub struct AnalyzeRequest {
     pub source: String,
     pub analyzers: Vec<String>,
     pub package_cache: PathBuf,
+    /// Folder holding the file's `app.json`. With it, the file is compiled
+    /// together with every `.al` file of the project and the `app.json`
+    /// dependencies, as `alc` would. Without it, the file is compiled alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<PathBuf>,
+    /// Editor buffers of other project files. Their text replaces the file on
+    /// disk for this analysis.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open_documents: Vec<OpenDocument>,
+}
+
+/// A request for the diagnostics of every file in a project.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalyzeProjectRequest {
+    /// Folder holding the project's `app.json`.
+    pub project_root: PathBuf,
+    pub package_cache: PathBuf,
+    pub analyzers: Vec<String>,
+    /// Editor buffers whose text replaces the files on disk.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub open_documents: Vec<OpenDocument>,
+}
+
+/// The project a hover or completion request belongs to. With it the bridge
+/// answers from the project compilation, which sees the project's other files
+/// and its dependencies.
+#[derive(Debug, Clone)]
+pub struct ProjectContext {
+    /// Folder holding the project's `app.json`.
+    pub root: PathBuf,
+    /// Editor buffers of the project's other files.
+    pub open_documents: Vec<OpenDocument>,
+}
+
+/// Add a [`ProjectContext`] to a request's parameters.
+fn add_project(
+    params: &mut serde_json::Value,
+    project: Option<&ProjectContext>,
+) -> Result<(), SemanticError> {
+    let Some(project) = project else {
+        return Ok(());
+    };
+    for document in &project.open_documents {
+        check_text_size(Some(&document.source))?;
+    }
+    params["projectRoot"] = serde_json::Value::String(path_as_utf8(&project.root)?.to_string());
+    if !project.open_documents.is_empty() {
+        params["openDocuments"] = serde_json::to_value(&project.open_documents)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
+    }
+    Ok(())
+}
+
+/// An editor buffer sent along with an [`AnalyzeRequest`].
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenDocument {
+    pub file: PathBuf,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -147,6 +207,11 @@ pub enum SemanticError {
     #[error("Bridge in cooldown after recent timeout/hang ({0})")]
     Cooldown(&'static str),
 
+    /// Another call held the bridge for longer than a caller waits. Nothing
+    /// is wrong with the bridge, so this does not restart it.
+    #[error("Bridge busy with another call for over {0:?}")]
+    Busy(Duration),
+
     /// The caller-supplied document buffer exceeds `MAX_TEXT_BYTES`. Rejected
     /// at the bridge boundary before JSON serialization so a pathologically
     /// large open document can't balloon the bridge's memory footprint.
@@ -250,6 +315,13 @@ pub struct SemanticBridge {
 }
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Limit on a whole-project analysis, which compiles and analyzes every file.
+const PROJECT_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// How long a call waits for the bridge while another call runs. Longer than
+/// [`PROJECT_TIMEOUT`], so a file's pass waits out a project pass.
+const QUEUE_WAIT_LIMIT: Duration = Duration::from_secs(660);
 
 /// Cooldown after a timeout: bridge calls are short-circuited to `Poisoned`
 /// for this duration, then we let them through again. A still-hung Mutex
@@ -442,6 +514,20 @@ impl SemanticBridge {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, SemanticError> {
+        self.call_with_timeout(method, params, DEFAULT_TIMEOUT)
+            .await
+    }
+
+    /// [`Self::call`] with its own limit on the call itself. Waiting for the
+    /// bridge, which runs one call at a time, is bounded separately by
+    /// `QUEUE_WAIT_LIMIT` and ends in [`SemanticError::Busy`]: a file's pass
+    /// queued behind a whole-project pass is not a hung bridge.
+    async fn call_with_timeout(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, SemanticError> {
         let now = monotonic_secs();
         match cooldown_gate(
             &self.last_timeout_secs,
@@ -459,10 +545,13 @@ impl SemanticBridge {
         let call_gate = Arc::clone(&self.call_gate);
         let method = method.to_string();
 
-        let operation = async move {
-            let permit = call_gate.acquire_owned().await.map_err(|_| {
+        let permit = match tokio::time::timeout(QUEUE_WAIT_LIMIT, call_gate.acquire_owned()).await {
+            Ok(permit) => permit.map_err(|_| {
                 SemanticError::HostInit("semantic bridge call gate was closed".to_string())
-            })?;
+            })?,
+            Err(_) => return Err(SemanticError::Busy(QUEUE_WAIT_LIMIT)),
+        };
+        let operation = async move {
             tokio::task::spawn_blocking(move || {
                 // Keep the async permit alive in the blocking task. If the
                 // outer timeout drops its JoinHandle, the in-flight call still
@@ -478,7 +567,7 @@ impl SemanticBridge {
             })?
         };
 
-        let result = tokio::time::timeout(DEFAULT_TIMEOUT, operation).await;
+        let result = tokio::time::timeout(timeout, operation).await;
 
         match result {
             Ok(inner) => inner,
@@ -486,9 +575,27 @@ impl SemanticBridge {
                 let now = monotonic_secs();
                 self.last_timeout_secs
                     .store(now, std::sync::atomic::Ordering::Relaxed);
-                Err(SemanticError::Timeout(DEFAULT_TIMEOUT))
+                Err(SemanticError::Timeout(timeout))
             }
         }
+    }
+
+    /// Compiler and analyzer diagnostics of every file in a project, as a
+    /// build reports them. Runs under [`PROJECT_TIMEOUT`], since a large
+    /// project with several analyzers takes far longer than one file.
+    pub async fn analyze_project(
+        &self,
+        req: AnalyzeProjectRequest,
+    ) -> Result<Vec<DiagnosticEntry>, SemanticError> {
+        for document in &req.open_documents {
+            check_text_size(Some(&document.source))?;
+        }
+        let params = serde_json::to_value(&req)
+            .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
+        let result = self
+            .call_with_timeout("analyzeProject", params, PROJECT_TIMEOUT)
+            .await?;
+        Self::parse_response(result)
     }
 
     pub async fn analyze(
@@ -521,7 +628,8 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
     ) -> Result<Option<TypeInfo>, SemanticError> {
-        self.type_at_with_package_cache(file, pos, text, None).await
+        self.type_at_with_package_cache(file, pos, text, None, None)
+            .await
     }
 
     /// Resolve a type using the current editor buffer and project package
@@ -533,6 +641,7 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
         package_cache: Option<&Path>,
+        project: Option<&ProjectContext>,
     ) -> Result<Option<TypeInfo>, SemanticError> {
         let file = path_as_utf8(file)?;
         let mut params = serde_json::json!({
@@ -547,6 +656,7 @@ impl SemanticBridge {
         if let Some(cache) = package_cache {
             params["packageCache"] = serde_json::Value::String(path_as_utf8(cache)?.to_string());
         }
+        add_project(&mut params, project)?;
         let result = self.call("typeAt", params).await?;
         if result.is_null() {
             return Ok(None);
@@ -569,7 +679,7 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
     ) -> Result<Vec<CompletionItem>, SemanticError> {
-        self.completions_at_with_package_cache(file, pos, text, None)
+        self.completions_at_with_package_cache(file, pos, text, None, None)
             .await
     }
 
@@ -581,6 +691,7 @@ impl SemanticBridge {
         pos: (u32, u32),
         text: Option<&str>,
         package_cache: Option<&Path>,
+        project: Option<&ProjectContext>,
     ) -> Result<Vec<CompletionItem>, SemanticError> {
         let file = path_as_utf8(file)?;
         let mut params = serde_json::json!({
@@ -595,6 +706,7 @@ impl SemanticBridge {
         if let Some(cache) = package_cache {
             params["packageCache"] = serde_json::Value::String(path_as_utf8(cache)?.to_string());
         }
+        add_project(&mut params, project)?;
         let result = self.call("completions", params).await?;
         Self::parse_response(result)
     }
@@ -676,11 +788,36 @@ mod tests {
             source: "table 50100 MyTable { }".to_string(),
             analyzers: vec!["CodeCop".to_string(), "UICop".to_string()],
             package_cache: PathBuf::from("/packages"),
+            project_root: None,
+            open_documents: Vec::new(),
         };
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["file"], "/src/MyTable.al");
         assert_eq!(json["analyzers"].as_array().unwrap().len(), 2);
         assert!(json.get("packageCache").is_some());
+        // A request with no project omits the project fields, so the bridge
+        // compiles the file alone.
+        assert!(json.get("projectRoot").is_none());
+        assert!(json.get("openDocuments").is_none());
+    }
+
+    #[test]
+    fn test_analyze_request_serializes_the_project() {
+        let req = AnalyzeRequest {
+            file: PathBuf::from("/app/src/A.al"),
+            source: "codeunit 50000 A { }".to_string(),
+            analyzers: Vec::new(),
+            package_cache: PathBuf::from("/app/.alpackages"),
+            project_root: Some(PathBuf::from("/app")),
+            open_documents: vec![OpenDocument {
+                file: PathBuf::from("/app/src/B.al"),
+                source: "codeunit 50001 B { }".to_string(),
+            }],
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["projectRoot"], "/app");
+        assert_eq!(json["openDocuments"][0]["file"], "/app/src/B.al");
+        assert_eq!(json["openDocuments"][0]["source"], "codeunit 50001 B { }");
     }
 
     #[test]
@@ -854,6 +991,8 @@ mod tests {
             source: String::new(),
             analyzers: vec![],
             package_cache: PathBuf::from(".alpackages"),
+            project_root: None,
+            open_documents: Vec::new(),
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json["analyzers"].as_array().unwrap().is_empty());
@@ -901,6 +1040,8 @@ mod tests {
             source: "a".repeat(MAX_TEXT_BYTES + 1),
             analyzers: Vec::new(),
             package_cache: std::path::PathBuf::from("/tmp/.alpackages"),
+            project_root: None,
+            open_documents: Vec::new(),
         };
         match check_text_size(Some(&req.source)) {
             Err(SemanticError::InputTooLarge { size, max }) => {

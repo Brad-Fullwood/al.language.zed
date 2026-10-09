@@ -42,6 +42,15 @@ pub fn print_json<T: Serialize>(value: &T) {
 /// declared without one — for some of these the symbol packages store an
 /// internal compiler hash in the `Id` slot, which must not be displayed
 /// as if it were a real object ID.
+/// "1 subscriber", "2 subscribers": a count with its noun in the right number.
+pub fn count_of(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("{count} {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
 pub fn kind_has_numeric_id(kind: &str) -> bool {
     !matches!(
         kind,
@@ -788,6 +797,18 @@ mod bc_server_params_tests {
         .unwrap();
         assert!(params.get("username").is_none());
         assert!(params.get("password").is_none());
+    }
+}
+
+#[cfg(test)]
+mod count_of_tests {
+    use super::count_of;
+
+    #[test]
+    fn one_is_singular_and_every_other_count_is_plural() {
+        assert_eq!(count_of(1, "subscriber"), "1 subscriber");
+        assert_eq!(count_of(0, "subscriber"), "0 subscribers");
+        assert_eq!(count_of(2, "subscriber"), "2 subscribers");
     }
 }
 

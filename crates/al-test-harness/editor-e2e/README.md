@@ -41,6 +41,7 @@ crates/al-test-harness/editor-e2e/drive.sh --compare       # Zed | VS Code side-
 crates/al-test-harness/editor-e2e/drive.sh --file src/Table50100.al
 crates/al-test-harness/editor-e2e/drive.sh --out /tmp/shot.png
 crates/al-test-harness/editor-e2e/drive.sh --build-image   # force-rebuild the image
+crates/al-test-harness/editor-e2e/drive.sh --zed-settings my.json  # theme and LSP settings for Zed
 ```
 
 Screenshots default to `target/` (`zed-extension-screenshot.png`,

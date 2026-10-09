@@ -236,7 +236,7 @@ fn cli_commands_use_the_real_project_daemon() {
         "lint must use a failing exit status when it finds a warning:\n{lint_output}"
     );
     assert!(
-        lint_output.contains("AL-NL010") && lint_output.contains("1 diagnostics"),
+        lint_output.contains("AL-NL010") && lint_output.contains("1 diagnostic"),
         "lint must report the fixture's unused local with its stable code:\n{lint_output}"
     );
 

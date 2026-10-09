@@ -821,8 +821,8 @@ fn apply_recommended_settings_parses_existing_jsonc_with_comments() {
 
 /// Build an `AlServer` (with a real tower-lsp `Client`) for in-process tests.
 /// `LspService::new` wires a live client without spawning the LSP transport.
-fn test_server() -> tower_lsp::LspService<AlServer> {
-    let (service, _socket) = tower_lsp::LspService::new(AlServer::new);
+fn test_server() -> tower_lsp::LspService<crate::server::AlLsp> {
+    let (service, _socket) = tower_lsp::LspService::new(crate::server::AlLsp::new);
     service
 }
 

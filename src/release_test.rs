@@ -4,7 +4,10 @@
 //! run, split out as pure functions so it can be tested without a filesystem,
 //! a network or a Zed host.
 
-use crate::{check_bridge_files, choose_release, expected_sha256, CachedRelease, ReleaseChoice};
+use crate::{
+    check_bridge_files, choose_release, expected_sha256, known_binary, recorded_path_binary,
+    CachedRelease, ReleaseChoice,
+};
 use std::time::{Duration, SystemTime};
 
 fn cached(version: &str, age_secs: u64) -> CachedRelease {
@@ -264,4 +267,40 @@ fn a_listing_without_bridge_entries_skips_the_bridge_check() {
         check_bridge_files(&listing, "al-linux-x86_64.tar.gz", &files),
         Ok(false)
     );
+}
+
+/// The bug this replaces: the AL Tools context server resolves the binary with
+/// no worktree, so it skips the PATH lookup and caches the downloaded release.
+/// When the language server started after it, the cache answered before PATH
+/// was asked, and a developer's `al-lsp` on PATH was ignored for the session.
+#[test]
+fn al_lsp_on_path_wins_over_a_cached_release() {
+    let chosen = known_binary(
+        Some("/home/dev/.local/bin/al-lsp".to_string()),
+        Some("al-lsp-v0.2.2/al-lsp".to_string()),
+    );
+    assert_eq!(chosen.as_deref(), Some("/home/dev/.local/bin/al-lsp"));
+}
+
+#[test]
+fn the_cache_answers_when_nothing_is_on_path() {
+    let chosen = known_binary(None, Some("al-lsp-v0.2.2/al-lsp".to_string()));
+    assert_eq!(chosen.as_deref(), Some("al-lsp-v0.2.2/al-lsp"));
+}
+
+#[test]
+fn nothing_known_means_the_release_lookup_runs() {
+    assert_eq!(known_binary(None, None), None);
+}
+
+/// The context server runs the `al-lsp` the language server found on PATH,
+/// so both run the same build.
+#[test]
+fn the_context_server_runs_the_recorded_path_binary() {
+    assert_eq!(
+        recorded_path_binary(Some("/home/dev/.local/bin/al-lsp\n".to_string())).as_deref(),
+        Some("/home/dev/.local/bin/al-lsp")
+    );
+    assert_eq!(recorded_path_binary(Some("  ".to_string())), None);
+    assert_eq!(recorded_path_binary(None), None);
 }

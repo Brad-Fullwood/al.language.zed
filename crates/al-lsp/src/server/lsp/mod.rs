@@ -39,6 +39,11 @@ fn content_modified_error() -> tower_lsp::jsonrpc::Error {
 /// prevents bridge calls (up to 5s) from blocking hover/completion.
 const DIAGNOSTICS_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(400);
 
+/// Quiet time before the whole-project compiler and analyzer pass runs after a
+/// save, a file change on disk or a settings change. Several saves in a row
+/// (save all, a formatter) cost one pass.
+const PROJECT_SEMANTIC_DEBOUNCE: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Debounce delay for the whole-workspace republish used by
 /// `diagnosticsScope: "project"`.
 ///
@@ -74,6 +79,9 @@ pub(crate) const SUPPORTED_COMMANDS: &[&str] = &[
     "al.findReferences",
     "al.showProfiler",
     "al.runTest",
+    "al.showSubscribers",
+    "al.showEventSource",
+    "al.showReport",
 ];
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -134,6 +142,101 @@ impl LspSessionState {
     }
 }
 
+/// The language server as tower-lsp holds it.
+///
+/// The state lives behind an `Arc` so that work which outlives a handler, such
+/// as the debounced diagnostics of an edit, can hold the whole server and run
+/// the same compiler pass as an open or a save.
+pub struct AlLsp(Arc<AlServer>);
+
+impl AlLsp {
+    pub fn new(client: Client) -> Self {
+        Self(Arc::new(AlServer::new(client)))
+    }
+
+    async fn runnables(&self, params: RunnablesParams) -> Result<Vec<Runnable>> {
+        self.0.runnables(params).await
+    }
+}
+
+impl AlLsp {
+    /// Schedule the diagnostics of an edit: after `DIAGNOSTICS_DEBOUNCE` of
+    /// quiet, the same two-phase publish as an open or a save, so the
+    /// compiler and analyzer findings follow the text as it is typed.
+    ///
+    /// A newer keystroke aborts the pending run for the same document, so only
+    /// the last one in a burst does the work. Other documents keep theirs. The
+    /// lock on `diag_tasks` spans abort, spawn and store, so two interleaved
+    /// edits cannot both spawn a run.
+    pub(crate) async fn schedule_diagnostics(&self, uri: Url) {
+        if crate::server::diagnostics::is_cache_path(&uri) {
+            tracing::debug!(uri = %uri, "schedule_diagnostics: skipping cache file");
+            return;
+        }
+
+        let mut guard = self.diag_tasks.lock().await;
+        guard.retain(|_, handle| !handle.is_finished());
+        if let Some(old) = guard.remove(&uri) {
+            old.abort();
+        }
+
+        let server = Arc::clone(&self.0);
+        let uri_key = uri.clone();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(DIAGNOSTICS_DEBOUNCE).await;
+            if server.session.is_cancelled() {
+                return;
+            }
+            // The document may have closed during the debounce. Its close
+            // already cleared it, so publishing now would leave ghosts.
+            let Some((text, version)) =
+                server.workspace.documents.get_text_and_client_version(&uri)
+            else {
+                tracing::debug!(uri = %uri, "debounced diagnostics: document no longer open, skipping publish");
+                return;
+            };
+            diagnostics::publish_diagnostics(&server, &uri, text, version).await;
+        });
+
+        guard.insert(uri_key, handle);
+    }
+}
+
+impl AlLsp {
+    /// Run the whole-project compiler and analyzer pass after `delay` of
+    /// quiet. A newer request replaces one that is still waiting. One that
+    /// has started runs to the end, since the bridge would finish the call
+    /// anyway, and the new one runs after it.
+    pub(crate) async fn schedule_project_semantic(&self, delay: std::time::Duration) {
+        let mut slot = self.project_semantic_task.lock().await;
+        if let Some((previous, started)) = slot.take() {
+            if !started.load(Ordering::Acquire) {
+                previous.abort();
+            }
+        }
+        let server = Arc::clone(&self.0);
+        let started = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&started);
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            if server.session.is_cancelled() {
+                return;
+            }
+            flag.store(true, Ordering::Release);
+            diagnostics::run_project_semantic_analysis(&server).await;
+        });
+        *slot = Some((handle, started));
+    }
+}
+
+impl std::ops::Deref for AlLsp {
+    type Target = AlServer;
+
+    fn deref(&self) -> &AlServer {
+        &self.0
+    }
+}
+
 pub struct AlServer {
     pub(crate) client: Client,
     pub(crate) workspace: Arc<Workspace>,
@@ -154,6 +257,8 @@ pub struct AlServer {
     /// — but on a much longer debounce than the per-file pass, so a typing
     /// burst no longer recomputes every indexed file per keystroke.
     pub(crate) workspace_diag_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The pending or running whole-project compiler and analyzer pass.
+    pub(crate) project_semantic_task: Mutex<Option<(tokio::task::JoinHandle<()>, Arc<AtomicBool>)>>,
     /// Handle to the background workspace initialisation task.
     /// workspace init runs async so initialized() returns promptly.
     pub(crate) init_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -187,6 +292,9 @@ pub struct AlServer {
     /// otherwise the server must return a flat `SymbolInformation[]`. Captured
     /// from the `initialize` capabilities.
     pub(crate) document_symbol_hierarchical: AtomicBool,
+    /// Whether the client shows `$/progress` work-done progress
+    /// (`window.workDoneProgress`).
+    pub(crate) work_done_progress: AtomicBool,
     /// URIs that received non-empty project-scope diagnostics in the previous
     /// complete publication. The next generation clears only entries that
     /// became clean instead of sending empty arrays for every indexed file.
@@ -236,6 +344,7 @@ impl AlServer {
             root_uri: RwLock::new(None),
             diag_tasks: Mutex::new(std::collections::HashMap::new()),
             workspace_diag_task: Mutex::new(None),
+            project_semantic_task: Mutex::new(None),
             init_task: Mutex::new(None),
             reindex_task: Mutex::new(None),
             init_done: AtomicBool::new(false),
@@ -244,6 +353,7 @@ impl AlServer {
             definition_link_support: AtomicBool::new(false),
             watched_files_registration: AtomicBool::new(false),
             document_symbol_hierarchical: AtomicBool::new(false),
+            work_done_progress: AtomicBool::new(false),
             workspace_diagnostic_uris: Arc::new(Mutex::new(std::collections::HashSet::new())),
             semantic_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
@@ -584,149 +694,6 @@ impl AlServer {
         }
     }
 
-    /// Schedule debounced diagnostics for `uri` with the given document text.
-    ///
-    /// Cancels the previous pending task (if any) so that only
-    /// the most recent keystroke triggers a diagnostics run. The actual diagnostics
-    /// publish runs after `DIAGNOSTICS_DEBOUNCE` of silence. This prevents bridge
-    /// calls (up to bridge timeout = 5s) from blocking hover/completion.
-    async fn schedule_diagnostics(&self, uri: Url) {
-        // skip diagnostics for virtual symbol cache files — they are not
-        // workspace files and Zed logs a warning for every publishDiagnostics on them.
-        if crate::server::diagnostics::is_cache_path(&uri) {
-            tracing::debug!(uri = %uri, "schedule_diagnostics: skipping cache file");
-            return;
-        }
-
-        // Hold the `diag_tasks` lock across abort → spawn → store as one
-        // critical section. Releasing it between the abort and the store let two
-        // interleaved did_change handlers both observe "no pending task", spawn
-        // two debounce tasks, and race two publishes for the same URI — the
-        // second store overwrote the first handle without aborting it. Holding
-        // the guard serializes scheduling so only the most recent keystroke's
-        // task survives — *for this URI*; other documents keep their pending
-        // runs.
-        let mut guard = self.diag_tasks.lock().await;
-        guard.retain(|_, handle| !handle.is_finished());
-        if let Some(old) = guard.remove(&uri) {
-            old.abort();
-        }
-
-        let workspace = Arc::clone(&self.workspace);
-        let client = self.client.clone();
-        let workspace_diagnostic_uris = Arc::clone(&self.workspace_diagnostic_uris);
-        let session = self.session.clone();
-        let uri_key = uri.clone();
-        let handle = tokio::spawn(async move {
-            tokio::time::sleep(DIAGNOSTICS_DEBOUNCE).await;
-            if session.is_cancelled() {
-                return;
-            }
-            // Emit syntax-only diagnostics from the debounced task.
-            // Bridge diagnostics (semantic) are emitted on did_open and lintFile command.
-            //
-            // syntax_diagnostics is CPU-bound (tree-sitter parse + lint walk).
-            // Off-load to the blocking pool so concurrent async LSP requests
-            // are not stalled for the duration of the parse on large files.
-            //
-            // Stale-document guard: between the keystroke that scheduled this task
-            // and the 400 ms debounce expiry, the user may have closed the document
-            // (did_close already cleared diagnostics with an empty publish). If we
-            // computed and published now we'd resurrect ghost squiggles on a
-            // closed document.
-            let Some((document_text, document_version)) =
-                workspace.documents.get_text_and_client_version(&uri)
-            else {
-                tracing::debug!(uri = %uri, "debounced diagnostics: document no longer open, skipping publish");
-                return;
-            };
-            // Read config here (not at schedule time) so only the task that
-            // survives the debounce pays the clone — keystrokes that abort the
-            // previous task before its sleep elapses never clone AlConfig. The
-            // clone is needed so per-rule lint filtering works in spawn_blocking.
-            let config = workspace.config.read().await.clone();
-            // Project scope recomputes only the file that changed here; the
-            // whole-workspace generation is republished on its own (much
-            // longer) debounce and on save.
-            let project_scope =
-                config.diagnostics_scope == al_project::config::DiagnosticsScope::Project;
-            let project_root = workspace
-                .project
-                .read()
-                .await
-                .as_ref()
-                .map(|project| project.root.clone());
-            let diag_uri = uri.clone();
-            let worker_workspace = Arc::clone(&workspace);
-            let lsp_diags: Vec<Diagnostic> = match tokio::task::spawn_blocking(move || {
-                al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-                    &worker_workspace,
-                    &diag_uri,
-                    &config,
-                    project_root.as_deref(),
-                )
-                .iter()
-                .map(crate::server::diagnostics::syntax_diag_to_lsp)
-                .collect()
-            })
-            .await
-            {
-                Ok(diags) => diags,
-                Err(e) => {
-                    if session.is_cancelled() {
-                        return;
-                    }
-                    tracing::error!("debounced diagnostics worker failed: {e}");
-                    client
-                        .show_message(
-                            MessageType::ERROR,
-                            format!("AL diagnostics worker failed: {e}"),
-                        )
-                        .await;
-                    return;
-                }
-            };
-            if session.is_cancelled() {
-                return;
-            }
-            // Hold the generation read lock from the currency check through the
-            // publish so a didClose on another worker cannot clear the document
-            // in between; see `diagnostics::publish_if_current`.
-            let generation = workspace.generation_lock.read().await;
-            let still_current = crate::server::diagnostics::snapshot_is_current(
-                &workspace,
-                &uri,
-                &document_text,
-                document_version,
-            );
-            if !still_current {
-                tracing::debug!(
-                    uri = %uri,
-                    document_version,
-                    "debounced diagnostics: document changed during analysis, skipping stale publish"
-                );
-                return;
-            }
-            if project_scope {
-                // Keep the project-scope bookkeeping consistent: the next
-                // whole-workspace pass clears only URIs it previously
-                // published, so record (or drop) this one accordingly.
-                let mut published = workspace_diagnostic_uris.lock().await;
-                if lsp_diags.is_empty() {
-                    published.remove(&uri);
-                } else {
-                    published.insert(uri.clone());
-                }
-            }
-            client
-                .publish_diagnostics(uri, lsp_diags, Some(document_version))
-                .await;
-            drop(generation);
-        });
-
-        guard.insert(uri_key, handle);
-    }
-
     /// Schedule the debounced whole-workspace diagnostics republish used by
     /// `diagnosticsScope: "project"`.
     ///
@@ -980,7 +947,7 @@ fn gate_repository_settings(
 }
 
 #[tower_lsp::async_trait]
-impl LanguageServer for AlServer {
+impl LanguageServer for AlLsp {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         let root_uri = params
             .root_uri
@@ -1032,6 +999,14 @@ impl LanguageServer for AlServer {
             .unwrap_or(false);
         self.document_symbol_hierarchical
             .store(hierarchical_symbols, Ordering::Relaxed);
+        let work_done_progress = params
+            .capabilities
+            .window
+            .as_ref()
+            .and_then(|window| window.work_done_progress)
+            .unwrap_or(false);
+        self.work_done_progress
+            .store(work_done_progress, Ordering::Relaxed);
 
         if let Some(init_opts) = params.initialization_options {
             let al_settings = extract_al_settings(init_opts);
@@ -1126,18 +1101,13 @@ impl LanguageServer for AlServer {
                 }),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
-                // Pull diagnostics: Zed fetches fresh diagnostics on demand (tab switch, save).
-                // When workspace_diagnostics is true, the `workspace_diagnostic` handler
-                // reports parse/syntax errors across every indexed workspace file, plus
-                // bridge/semantic diagnostics for open documents.
-                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
-                    DiagnosticOptions {
-                        identifier: Some("al-lsp".to_string()),
-                        inter_file_dependencies: true,
-                        workspace_diagnostics: true,
-                        work_done_progress_options: WorkDoneProgressOptions::default(),
-                    },
-                )),
+                // Push only. Every publish for a file carries its complete set
+                // (native plus the latest compiler and analyzer findings). Zed
+                // also pulls when a server offers it, on every edit, and each
+                // pulled answer replaced the pushed set with a different subset,
+                // so findings appeared and vanished. The pull handlers remain for
+                // clients that call them regardless.
+                diagnostic_provider: None,
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: SUPPORTED_COMMANDS.iter().map(|s| s.to_string()).collect(),
                     ..Default::default()
@@ -1177,10 +1147,11 @@ impl LanguageServer for AlServer {
         let client = self.client.clone();
         let init_state = self.workspace_init_state.clone();
         let diagnostic_state = self.diagnostic_publication_state();
+        let server = Arc::clone(&self.0);
         let handle = tokio::spawn(async move {
             // Publish Ready as soon as a complete pre-download generation
             // exists. A fatal pre-ready error is retained for every request.
-            if let Err(error) = workspace::initialize_workspace(
+            match workspace::initialize_workspace(
                 ws,
                 client,
                 root_uri,
@@ -1189,8 +1160,13 @@ impl LanguageServer for AlServer {
             )
             .await
             {
-                tracing::error!(%error, "workspace initialization failed");
-                init_state.send_replace(WorkspaceInitState::Failed(error.to_string()));
+                // The project's compiler and analyzer findings, for every
+                // file, once the workspace is up.
+                Ok(()) => diagnostics::run_project_semantic_analysis(&server).await,
+                Err(error) => {
+                    tracing::error!(%error, "workspace initialization failed");
+                    init_state.send_replace(WorkspaceInitState::Failed(error.to_string()));
+                }
             }
         });
         *self.init_task.lock().await = Some(handle);
@@ -1303,6 +1279,8 @@ impl LanguageServer for AlServer {
         drop(generation);
         if scope == al_project::config::DiagnosticsScope::Project {
             self.schedule_workspace_diagnostics().await;
+            self.schedule_project_semantic(PROJECT_SEMANTIC_DEBOUNCE)
+                .await;
         }
     }
 
@@ -1324,7 +1302,17 @@ impl LanguageServer for AlServer {
             guard.drain().map(|(_, task)| task).collect()
         };
         let workspace_diagnostics = self.workspace_diag_task.lock().await.take();
-        for task in pending_diagnostics.into_iter().chain(workspace_diagnostics) {
+        let project_semantic = self
+            .project_semantic_task
+            .lock()
+            .await
+            .take()
+            .map(|(task, _)| task);
+        for task in pending_diagnostics
+            .into_iter()
+            .chain(workspace_diagnostics)
+            .chain(project_semantic)
+        {
             task.abort();
             if let Err(error) = task.await {
                 if !error.is_cancelled() {
@@ -1365,7 +1353,7 @@ impl LanguageServer for AlServer {
         let uri = params.text_document.uri.clone();
         let text = params.text_document.text.clone();
         let client_version = params.text_document.version;
-        tracing::info!(uri = %uri, len = text.len(), "did_open");
+        tracing::debug!(uri = %uri, len = text.len(), "did_open");
 
         if let Err(error) = self.workspace.documents.open_with_client_version(
             uri.clone(),
@@ -1385,7 +1373,8 @@ impl LanguageServer for AlServer {
                 .await;
             return;
         }
-        self.semantic_diagnostic_cache.lock().await.remove(&uri);
+        // The file's last Microsoft diagnostics stay until the pass this open
+        // starts replaces them, so they do not blink out on open.
         al_workspace::on_document_change(&self.workspace, &uri, &text);
         let snapshot = self.workspace.documents.get_text_and_client_version(&uri);
         drop(generation);
@@ -1439,7 +1428,9 @@ impl LanguageServer for AlServer {
             &changes,
         ) {
             Ok((text_arc, _version)) => {
-                self.semantic_diagnostic_cache.lock().await.remove(&uri);
+                // The file's last Microsoft diagnostics stay until the
+                // debounced pass replaces them, so they do not blink out on
+                // every keystroke.
                 // `on_document_change` reparses the document, clones its text
                 // and rebuilds this file's index entries. On a 10k-line AL file
                 // that is milliseconds of CPU per keystroke, and running it
@@ -1521,7 +1512,7 @@ impl LanguageServer for AlServer {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
-        tracing::info!(uri = %uri, "did_close");
+        tracing::debug!(uri = %uri, "did_close");
         let generation = self.workspace.generation_lock.write().await;
         if !self.workspace.documents.close(&uri) {
             drop(generation);
@@ -1536,7 +1527,13 @@ impl LanguageServer for AlServer {
                 .await;
             return;
         }
-        self.semantic_diagnostic_cache.lock().await.remove(&uri);
+        // In project scope a closed file keeps its Microsoft diagnostics, as
+        // in the Problems list of VS Code. In document scope it shows none.
+        if self.workspace.config.read().await.diagnostics_scope
+            != al_project::config::DiagnosticsScope::Project
+        {
+            self.semantic_diagnostic_cache.lock().await.remove(&uri);
+        }
 
         // Cancel this document's pending debounced diagnostics task. Without
         // this, a task armed by the last keystroke can wake after the close and
@@ -1618,6 +1615,10 @@ impl LanguageServer for AlServer {
             }
             if scope == al_project::config::DiagnosticsScope::Project {
                 diagnostics::publish_workspace_diagnostics(self).await;
+                // A close drops unsaved text, so the file's findings come from
+                // disk again.
+                self.schedule_project_semantic(PROJECT_SEMANTIC_DEBOUNCE)
+                    .await;
             }
         } else {
             drop(generation);
@@ -1648,6 +1649,9 @@ impl LanguageServer for AlServer {
             self.cancel_workspace_diagnostics().await;
             diagnostics::publish_workspace_diagnostics(self).await;
         }
+        // A save can change what other files compile against.
+        self.schedule_project_semantic(PROJECT_SEMANTIC_DEBOUNCE)
+            .await;
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
@@ -1739,6 +1743,8 @@ impl LanguageServer for AlServer {
                 drop(publication);
                 tracing::info!("Configuration updated");
                 self.refresh_diagnostics_after_configuration().await;
+                self.schedule_project_semantic(PROJECT_SEMANTIC_DEBOUNCE)
+                    .await;
                 return;
             }
         }
@@ -1776,6 +1782,8 @@ impl LanguageServer for AlServer {
                     .set_max_doc_bytes(staged_config.max_document_size_bytes);
                 tracing::info!("Configuration updated (no active AL project)");
                 self.refresh_diagnostics_after_configuration().await;
+                self.schedule_project_semantic(PROJECT_SEMANTIC_DEBOUNCE)
+                    .await;
                 return;
             };
 
@@ -1872,6 +1880,8 @@ impl LanguageServer for AlServer {
                 "Configuration and symbol generation updated"
             );
             self.refresh_diagnostics_after_configuration().await;
+            self.schedule_project_semantic(PROJECT_SEMANTIC_DEBOUNCE)
+                .await;
             return;
         }
     }
@@ -2097,35 +2107,37 @@ impl LanguageServer for AlServer {
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = params.text_document.uri.clone();
         let start = std::time::Instant::now();
-        // spawn_blocking — semantic_tokens_full traverses the entire
-        // tree-sitter tree on big AL files; cancellation-friendliness matters.
+        // The tokens come from the open document's own parse, so they are
+        // served while the workspace is still loading: the first file opened
+        // gets its colors at once instead of after initialization. The work
+        // traverses the whole tree, so it runs on the blocking pool.
         let workspace = Arc::clone(&self.workspace);
         let uri_for_log = uri.clone();
-        let result = self
-            .offload_after_ready("semantic-tokens", move || {
-                // A document the server has not loaded and a document with no
-                // tokens are both "no result" to the editor.
-                let tokens =
-                    al_analysis::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri)?;
-                if tokens.is_empty() {
-                    return None;
-                }
-                let lsp_tokens: Vec<SemanticToken> = tokens
-                    .into_iter()
-                    .map(|t| SemanticToken {
-                        delta_line: t.delta_line,
-                        delta_start: t.delta_start,
-                        length: t.length,
-                        token_type: t.token_type,
-                        token_modifiers_bitset: t.token_modifiers,
-                    })
-                    .collect();
-                Some(SemanticTokensResult::Tokens(SemanticTokens {
-                    result_id: None,
-                    data: lsp_tokens,
-                }))
-            })
-            .await?;
+        let result = tokio::task::spawn_blocking(move || {
+            // A document the server has not loaded and a document with no
+            // tokens are both "no result" to the editor.
+            let tokens =
+                al_analysis::queries::semantic_tokens::semantic_tokens_full(&workspace, &uri)?;
+            if tokens.is_empty() {
+                return None;
+            }
+            let lsp_tokens: Vec<SemanticToken> = tokens
+                .into_iter()
+                .map(|t| SemanticToken {
+                    delta_line: t.delta_line,
+                    delta_start: t.delta_start,
+                    length: t.length,
+                    token_type: t.token_type,
+                    token_modifiers_bitset: t.token_modifiers,
+                })
+                .collect();
+            Some(SemanticTokensResult::Tokens(SemanticTokens {
+                result_id: None,
+                data: lsp_tokens,
+            }))
+        })
+        .await
+        .map_err(|error| internal_error(format!("semantic-tokens worker failed: {error}")))?;
         let count = result
             .as_ref()
             .map(|r| match r {
@@ -2354,12 +2366,21 @@ impl LanguageServer for AlServer {
                     CodeLensKind::Test(status) => {
                         serde_json::json!({ "kind": "test", "status": status })
                     }
+                    CodeLensKind::Subscribers(count) => {
+                        serde_json::json!({ "kind": "subscribers", "count": count })
+                    }
+                    CodeLensKind::EventSource(label) => {
+                        serde_json::json!({ "kind": "eventSource", "label": label })
+                    }
                 };
                 let lsp_range: Range = e.range.into();
                 let arguments = match &e.kind {
                     // Position the handler at the lens's symbol so it can run
                     // the reference search / resolve the profiled procedure.
-                    CodeLensKind::Reference(_) | CodeLensKind::Profiler(_) => Some(vec![
+                    CodeLensKind::Reference(_)
+                    | CodeLensKind::Profiler(_)
+                    | CodeLensKind::Subscribers(_)
+                    | CodeLensKind::EventSource(_) => Some(vec![
                         serde_json::json!({ "uri": uri, "position": lsp_range.start }),
                     ]),
                     // `al.runTest` needs the codeunit/method, not a position.
@@ -2462,6 +2483,21 @@ impl LanguageServer for AlServer {
                     .await
                     .map_err(internal_error)?,
             )),
+            "al.showSubscribers" => Ok(Some(
+                commands::show_subscribers(self, &params.arguments)
+                    .await
+                    .map_err(internal_error)?,
+            )),
+            "al.showEventSource" => Ok(Some(
+                commands::show_event_source(self, &params.arguments)
+                    .await
+                    .map_err(internal_error)?,
+            )),
+            "al.showReport" => Ok(Some(
+                commands::show_report(self, &params.arguments)
+                    .await
+                    .map_err(internal_error)?,
+            )),
             "al.showProfiler" => Ok(Some(
                 commands::show_profiler(self, &params.arguments).map_err(internal_error)?,
             )),
@@ -2481,13 +2517,13 @@ pub async fn run_lsp() {
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
 
-    let (service, socket) = LspService::build(AlServer::new)
-        .custom_method("experimental/runnables", AlServer::runnables)
+    let (service, socket) = LspService::build(AlLsp::new)
+        .custom_method("experimental/runnables", AlLsp::runnables)
         .finish();
     Server::new(stdin, stdout, socket).serve(service).await;
 }
 
-fn resolve_explorer_binary() -> std::result::Result<std::path::PathBuf, String> {
+pub(crate) fn resolve_explorer_binary() -> std::result::Result<std::path::PathBuf, String> {
     if let Some(explicit) = std::env::var_os("AL_EXPLORER_PATH") {
         let path = std::path::PathBuf::from(explicit);
         if path.as_os_str().is_empty() {

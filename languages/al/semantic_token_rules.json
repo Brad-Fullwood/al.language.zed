@@ -1,5 +1,17 @@
 [
   {
+    "token_type": "parameter",
+    "style": ["variable.parameter", "variable"]
+  },
+  {
+    "token_type": "enumMember",
+    "style": ["constant.enum.al", "constant"]
+  },
+  {
+    "token_type": "namespace",
+    "style": ["namespace", "type"]
+  },
+  {
     "token_type": "directive",
     "style": ["keyword.directive", "keyword"]
   },
@@ -9,7 +21,7 @@
   },
   {
     "token_type": "builtinType",
-    "style": ["type.builtin", "type"]
+    "style": ["type.builtin.al", "type.builtin", "type"]
   },
   {
     "token_type": "selfKeyword",
@@ -17,7 +29,7 @@
   },
   {
     "token_type": "builtinFunction",
-    "style": ["function.builtin", "function"]
+    "style": ["function.builtin.al", "function.builtin", "function"]
   },
   {
     "token_type": "globalVariable",
@@ -29,15 +41,15 @@
   },
   {
     "token_type": "tableField",
-    "style": ["property", "variable.other.member"]
+    "style": ["variable.other.member", "variable"]
   },
   {
     "token_type": "pageControl",
-    "style": ["tag", "property"]
+    "style": ["type"]
   },
   {
     "token_type": "pageAction",
-    "style": ["tag.attribute", "tag"]
+    "style": ["type"]
   },
   {
     "token_type": "triggerName",
@@ -53,15 +65,15 @@
   },
   {
     "token_type": "tableKey",
-    "style": ["type.parameter", "variable.other"]
+    "style": ["type"]
   },
   {
     "token_type": "tableFieldGroup",
-    "style": ["tag.attribute", "tag"]
+    "style": ["type"]
   },
   {
     "token_type": "reportLabel",
-    "style": ["string.special", "string"]
+    "style": ["type"]
   },
   {
     "token_type": "eventCreation",
@@ -77,39 +89,39 @@
   },
   {
     "token_type": "pageView",
-    "style": ["tag", "property"]
+    "style": ["type"]
   },
   {
     "token_type": "reportLayout",
-    "style": ["type.parameter", "type"]
+    "style": ["type"]
   },
   {
     "token_type": "queryDataItem",
-    "style": ["variable.other.member", "variable"]
+    "style": ["type"]
   },
   {
     "token_type": "queryColumn",
-    "style": ["property", "variable.other.member"]
+    "style": ["type"]
   },
   {
     "token_type": "queryFilter",
-    "style": ["variable.parameter", "variable"]
+    "style": ["type"]
   },
   {
     "token_type": "xmlportTableElement",
-    "style": ["variable.other.member", "variable"]
+    "style": ["type"]
   },
   {
     "token_type": "xmlportTextElement",
-    "style": ["tag", "property"]
+    "style": ["type"]
   },
   {
     "token_type": "xmlportFieldElement",
-    "style": ["property", "variable.other.member"]
+    "style": ["type"]
   },
   {
     "token_type": "xmlportFieldAttribute",
-    "style": ["tag.attribute", "tag"]
+    "style": ["type"]
   },
   {
     "token_type": "datetime",
@@ -121,6 +133,22 @@
   },
   {
     "token_type": "attribute",
-    "style": ["attribute", "function"]
+    "style": ["attribute.al", "attribute", "function"]
+  },
+  {
+    "token_type": "docCommentDelimiter",
+    "style": ["comment.doc.delimiter.al", "comment.doc", "comment"]
+  },
+  {
+    "token_type": "docCommentName",
+    "style": ["comment.doc.name.al", "comment.doc", "comment"]
+  },
+  {
+    "token_type": "docCommentAttribute",
+    "style": ["comment.doc.attribute.al", "comment.doc", "comment"]
+  },
+  {
+    "token_type": "docCommentText",
+    "style": ["comment.doc.text.al", "comment.doc", "comment"]
   }
 ]
