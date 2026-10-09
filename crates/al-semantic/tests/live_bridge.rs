@@ -77,6 +77,15 @@ async fn live_bridge_satisfies_its_public_contracts() {
         semantic_errors.iter().any(|d| d.severity == "error"),
         "a parseable unresolved symbol must produce a compiler error: {semantic_errors:#?}"
     );
+    // Positions are 1-based: `MissingSymbol` starts on line 7, column 18.
+    // The bridge once sent Roslyn's 0-based positions, which put every
+    // finding one line above its code.
+    assert!(
+        semantic_errors
+            .iter()
+            .any(|d| d.severity == "error" && d.line == 7 && d.column == 18),
+        "the unresolved symbol is reported at line 7, column 18: {semantic_errors:#?}"
+    );
 
     let type_info = bridge
         .type_at_with_package_cache(
@@ -374,6 +383,59 @@ async fn live_bridge_analyzes_every_file_of_a_project() {
     assert!(
         diagnostics.iter().all(|d| d.file.starts_with(&root)),
         "every finding names a project file: {diagnostics:#?}"
+    );
+}
+
+/// Analyzers read app.json through the compilation's file system, as alc and
+/// the AL extension provide it. Without one, every rule on the manifest
+/// reported nothing. PerTenantExtensionCop's PTE0009 flags `helpBaseUrl` and
+/// reports it on app.json itself, so the finding also checks that a finding in
+/// a file the compiler does not parse as AL is kept.
+#[tokio::test]
+#[ignore = "requires AL_TOOL_PATH, AL_PACKAGE_CACHE_PATH and the Microsoft AL toolchain; run with --ignored"]
+async fn live_bridge_analyzers_read_the_app_manifest() {
+    let dll = code_analysis_dll().expect(
+        "AL_TOOL_PATH must point to a directory containing Microsoft.Dynamics.Nav.CodeAnalysis.dll",
+    );
+    let package_cache = PathBuf::from(
+        std::env::var_os("AL_PACKAGE_CACHE_PATH")
+            .expect("AL_PACKAGE_CACHE_PATH must point to a BC 26+ Microsoft symbol set"),
+    );
+    let bridge = SemanticBridge::new(&dll, "live-manifest")
+        .expect("the real CodeAnalysis bridge should initialize");
+
+    let project = tempfile::tempdir().expect("temp project");
+    let root = project.path().to_path_buf();
+    let manifest = root.join("app.json");
+    std::fs::write(
+        &manifest,
+        PROBE_APP_JSON.replace(
+            "\"runtime\": \"13.0\"",
+            "\"runtime\": \"13.0\",\n  \"helpBaseUrl\": \"https://help.example\"",
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("Probe.Codeunit.al"),
+        probe_codeunit("Customer.Init();"),
+    )
+    .unwrap();
+
+    let diagnostics = bridge
+        .analyze_project(AnalyzeProjectRequest {
+            project_root: root.clone(),
+            package_cache,
+            analyzers: vec!["PerTenantExtensionCop".to_string()],
+            open_documents: Vec::new(),
+        })
+        .await
+        .expect("the project pass should succeed");
+
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.file == manifest && d.code == "PTE0009" && d.line > 0),
+        "helpBaseUrl in app.json is reported on app.json: {diagnostics:#?}"
     );
 }
 

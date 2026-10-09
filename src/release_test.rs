@@ -5,8 +5,8 @@
 //! a network or a Zed host.
 
 use crate::{
-    check_bridge_files, choose_release, expected_sha256, known_binary, recorded_path_binary,
-    CachedRelease, ReleaseChoice,
+    check_bridge_files, choose_release, context_server_launch, expected_sha256, known_binary,
+    recorded_path_binary, CachedRelease, ReleaseChoice,
 };
 use std::time::{Duration, SystemTime};
 
@@ -303,4 +303,43 @@ fn the_context_server_runs_the_recorded_path_binary() {
     );
     assert_eq!(recorded_path_binary(Some("  ".to_string())), None);
     assert_eq!(recorded_path_binary(None), None);
+}
+
+/// With nothing recorded, the context server asks PATH through `/bin/sh` and
+/// keeps the release as the fallback the script runs as `$0`.
+#[test]
+fn the_context_server_asks_path_through_the_shell() {
+    let (command, args) = context_server_launch(
+        None,
+        Some("/work/al/al-lsp-v0.2.2/al-lsp".to_string()),
+        true,
+    )
+    .unwrap();
+    assert_eq!(command, "/bin/sh");
+    assert_eq!(args[0], "-c");
+    assert!(args[1].starts_with("command -v al-lsp"), "{}", args[1]);
+    assert_eq!(args[2], "/work/al/al-lsp-v0.2.2/al-lsp");
+}
+
+#[test]
+fn a_recorded_path_binary_runs_directly() {
+    assert_eq!(
+        context_server_launch(Some("/home/dev/.local/bin/al-lsp".to_string()), None, true),
+        Some((
+            "/home/dev/.local/bin/al-lsp".to_string(),
+            vec!["mcp".to_string()]
+        ))
+    );
+}
+
+#[test]
+fn windows_runs_the_release() {
+    assert_eq!(
+        context_server_launch(None, Some("al-lsp-v0.2.2/al-lsp.exe".to_string()), false),
+        Some((
+            "al-lsp-v0.2.2/al-lsp.exe".to_string(),
+            vec!["mcp".to_string()]
+        ))
+    );
+    assert_eq!(context_server_launch(None, None, false), None);
 }

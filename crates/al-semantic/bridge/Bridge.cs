@@ -369,7 +369,7 @@ internal class CodeAnalysisBridge
     /// <summary>
     /// Compiler and analyzer diagnostics of every file in the project at
     /// <c>projectRoot</c>, as alc reports them for a build. Diagnostics that
-    /// belong to no source file are left out. A folder without a usable
+    /// belong to no file are left out. A folder without a usable
     /// app.json returns no diagnostics.
     /// </summary>
     public object? HandleAnalyzeProject(JsonElement prms)
@@ -598,6 +598,21 @@ internal class CodeAnalysisBridge
                 : (p.HasDefaultValue ? p.DefaultValue : null)).ToArray();
         var comp = create.Invoke(null, createArgs)
             ?? throw new InvalidOperationException("Compilation.Create returned no compilation.");
+
+        // Analyzers read app.json through the compilation's file system
+        // (Microsoft's ManifestHelper), as alc and the AL extension provide
+        // it. Without one, rules on the manifest report nothing: LinterCop's
+        // runtime check LC0033, PerTenantExtensionCop's object ID range.
+        try
+        {
+            var fileSystemType = F("Microsoft.Dynamics.Nav.CodeAnalysis.RelativeFileSystem");
+            if (fileSystemType != null && Activator.CreateInstance(fileSystemType, root) is { } fileSystem)
+                comp = InvokeSingle(comp, "WithFileSystem", fileSystem);
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"project file system not attached: {e.Message}");
+        }
 
         // Same rule as alc: references need a package cache to load from.
         var caches = (Prop(arguments, "PackageCacheDirectories") as IEnumerable<string>)?.ToArray() ?? Array.Empty<string>();
@@ -1101,7 +1116,7 @@ internal class CodeAnalysisBridge
         if (diagObj is not System.Collections.IEnumerable en) return results;
         foreach (var d in en)
         {
-            if (d == null || !IsInTree(d, onlyTree) || (anyTree && !HasTree(d))) continue;
+            if (d == null || !IsInTree(d, onlyTree) || (anyTree && !HasSourceFile(d))) continue;
             try { results.Add(ConvertDiag(d, defaultFile)); }
             catch { /* skip */ }
         }
@@ -1110,6 +1125,25 @@ internal class CodeAnalysisBridge
 
     private static bool HasTree(object diagnostic) =>
         Prop(Prop(diagnostic, "Location"), "SourceTree") != null;
+
+    /// <summary>Whether a finding is located in a file: a syntax tree, or a
+    /// file the compiler read without parsing it as AL, such as app.json, where
+    /// LinterCop reports LC0033.</summary>
+    private static bool HasSourceFile(object diagnostic)
+    {
+        if (HasTree(diagnostic)) return true;
+        var location = Prop(diagnostic, "Location");
+        if (location == null) return false;
+        try
+        {
+            var span = location.GetType()
+                .GetMethod("GetLineSpan", BindingFlags.Instance | BindingFlags.Public, null, Type.EmptyTypes, null)
+                ?.Invoke(location, null);
+            var path = span?.GetType().GetProperty("Path")?.GetValue(span)?.ToString();
+            return !string.IsNullOrEmpty(path);
+        }
+        catch { return false; }
+    }
 
     private static bool IsInTree(object diagnostic, object? tree) =>
         tree == null || ReferenceEquals(Prop(Prop(diagnostic, "Location"), "SourceTree"), tree);
@@ -1154,9 +1188,11 @@ internal class CodeAnalysisBridge
                     var sp = st.GetProperty("Path")?.GetValue(span)?.ToString();
                     if (!string.IsNullOrEmpty(sp)) file = sp;
                     var start = st.GetProperty("StartLinePosition")?.GetValue(span);
-                    if (start != null) { var pt = start.GetType(); line = (uint)Prop<int>(start, pt, "Line"); col = (uint)Prop<int>(start, pt, "Character"); }
+                    // LinePosition is 0-based. Entries are 1-based, so 0 can
+                    // mean a finding with no location.
+                    if (start != null) { var pt = start.GetType(); line = (uint)Prop<int>(start, pt, "Line") + 1; col = (uint)Prop<int>(start, pt, "Character") + 1; }
                     var end = st.GetProperty("EndLinePosition")?.GetValue(span);
-                    if (end != null) { var pt = end.GetType(); eLine = (uint)Prop<int>(end, pt, "Line"); eCol = (uint)Prop<int>(end, pt, "Character"); }
+                    if (end != null) { var pt = end.GetType(); eLine = (uint)Prop<int>(end, pt, "Line") + 1; eCol = (uint)Prop<int>(end, pt, "Character") + 1; }
                 }
             }
             catch { /* skip location */ }
@@ -1276,7 +1312,7 @@ internal class CodeAnalysisBridge
                 var cwa = ctor.Invoke(args)
                     ?? throw new InvalidOperationException("CompilationWithAnalyzers could not be constructed.");
                 foreach (var d in WholeCompilationDiagnostics(cwaType, cwa))
-                    if (d != null && (!anyTree || HasTree(d))) results.Add(ConvertDiag(d, ""));
+                    if (d != null && (!anyTree || HasSourceFile(d))) results.Add(ConvertDiag(d, ""));
                 return results;
             }
             catch (Exception ex) { lastError = ex; }
