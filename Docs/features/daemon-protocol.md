@@ -94,19 +94,27 @@ path uses LSP handlers directly and does not go through the daemon. See
   unreadable, or without a file URI) is skipped with a warning, and daemon and MCP startup
   continue.
 - **Changes on disk:** before each request the daemon reads what changed in the project since
-  the last one. A metadata walk re-reads each `.al` file whose size or mtime moved and drops
-  deleted ones. `app.json`, `.zed/debug.json` and `.vscode/launch.json` are hashed by content and
-  read into the project again when the hash changed, so an edit to `application` or a dependency
-  reaches the next `deps` or `download-symbols`. A manifest that no longer parses leaves the one
-  read before in use, with a warning in the log. The trust inputs are fingerprinted the same way
-  (see [project trust](project-trust.md)). The symbol package folders are listed at startup and
-  after a `download-symbols` that fetched a package, so a changed `al.packageCachePath` or
-  `al.appLocalFolderPaths` takes effect after `al-explorer daemon-shutdown`.
-- **Per-connection ordering:** requests on one connection are served one at a time, in order, which
-  matches the shipped synchronous client (`DaemonClient` sends one request and waits for its
-  response). A client that wants concurrent work, or cheap queries while a build runs, opens a
-  second connection. Up to 64 are served at once. There is no per-request cancellation, so a
-  request already dispatched runs to completion even if its client gives up waiting.
+  the last one. A metadata walk reads each `.al` file that is new or whose size or mtime moved,
+  and drops deleted ones. `app.json`, `.zed/debug.json` and `.vscode/launch.json` are hashed by
+  content and read into the project again when the hash changed, so an edit to `application` or a
+  dependency reaches the next `deps` or `download-symbols`. A manifest that no longer parses
+  leaves the one read before in use, with a warning in the log. The settings files and the other
+  trust inputs are stamped by size and mtime, and when a stamp moves the daemon reads the settings
+  into its configuration again and decides trust again (see [project trust](project-trust.md)).
+  The symbol package folders (`al.packageCachePath`, default `.alpackages`, and each
+  `al.appLocalFolderPaths` entry) are stamped by the name, size and mtime of each `.app` file in
+  them and by whether trust lets the daemon read each folder. When the stamp moves, because a
+  package was copied in, removed or rewritten, because a changed setting names other folders, or
+  because trust now allows or refuses a folder that a link carries outside the project, the daemon
+  lists the folders again and loads their packages into a new symbol index before it answers.
+- **Requests on one connection:** the daemon runs each request on a connection as its own task, up
+  to 8 at once, and writes each response when its request finishes, so a `ping` sent behind a long
+  `tests.run` on the same connection is answered first. A client matches responses to requests by
+  `id`. While 8 requests are running, the daemon reads nothing more from that connection until one
+  finishes. The shipped client (`DaemonClient`) sends one request and waits for its response, so a
+  caller that wants two requests running at once through it opens a second connection. Up to 64
+  connections are served at once. There is no per-request cancellation, so a request already
+  dispatched runs to completion even if its client gives up waiting.
 
 ## Dispatch
 
@@ -124,7 +132,9 @@ focused submodules:
 - `mod.rs` itself answers `diag`, `ping`, `status`, `handshake` and `shutdown`. The
   `dispatch_table!` list there declares, for every method, whether it reads or rewrites a path the
   caller names and whether it can spend a Business Central credential, and generates the dispatch
-  match from that list.
+  match from that list. A path in a parameter of the method's own is `named` when the method only
+  reads it and `named_write` when it creates or rewrites it, and a `named_write` path resolves under
+  the project root only.
 - `debug_dispatch.rs`: stateful `debug` session control (start, breakpoint, stack/variables/globals,
   expand/eval, continue/step, history, stop), used by both CLI and MCP `al_debug`.
 

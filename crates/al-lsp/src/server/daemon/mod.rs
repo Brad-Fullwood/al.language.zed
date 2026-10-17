@@ -57,19 +57,124 @@ fn now_activity_ms() -> u64 {
     Instant::now().duration_since(*epoch).as_millis() as u64
 }
 
+/// The socket this daemon bound, and which filesystem entry it was at the
+/// time. The path alone does not say whose socket it names once another
+/// process has bound the same path.
 #[cfg(unix)]
-static SOCKET_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+struct BoundSocket {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl BoundSocket {
+    fn at(path: PathBuf) -> std::io::Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(&path)?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            path,
+        })
+    }
+
+    /// Whether the path still names the socket this daemon bound.
+    fn still_ours(&self) -> bool {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::symlink_metadata(&self.path)
+            .map(|metadata| metadata.dev() == self.device && metadata.ino() == self.inode)
+            .unwrap_or(false)
+    }
+}
+
+#[cfg(unix)]
+static BOUND_SOCKET: std::sync::OnceLock<BoundSocket> = std::sync::OnceLock::new();
 
 /// The directory this daemon was started for, which the per-request refresh
 /// scans when the workspace has no app.json project.
 static SCAN_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+/// Remove this daemon's socket, unless another socket has taken the path
+/// since, in which case the path belongs to that one and stays.
 #[cfg(unix)]
 pub(crate) fn cleanup_socket() {
-    if let Some(path) = SOCKET_PATH.get() {
-        let _ = std::fs::remove_file(path);
-        tracing::info!("daemon: socket cleaned up");
+    let Some(socket) = BOUND_SOCKET.get() else {
+        return;
+    };
+    if !socket.still_ours() {
+        tracing::info!(
+            endpoint = %socket.path.display(),
+            "daemon: the endpoint path names another socket now, leaving it"
+        );
+        return;
     }
+    let _ = std::fs::remove_file(&socket.path);
+    tracing::info!("daemon: socket cleaned up");
+}
+
+/// How long a daemon already on the endpoint gets to answer `handshake` when
+/// this one starts. It answers from the moment it listens, so this is slack
+/// for a loaded machine.
+#[cfg(unix)]
+const ENDPOINT_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Make the endpoint path free to bind, or refuse to start.
+///
+/// A daemon that removed whatever was at the path and bound its own socket
+/// left the daemon already listening there running with no path, where no
+/// client and no `daemon-shutdown` could reach it. So the path is removed only
+/// when nothing accepts on it (`ECONNREFUSED`, a file left by a daemon that
+/// did not get to remove it), and a process that accepts is left as it is.
+#[cfg(unix)]
+fn clear_endpoint(endpoint: &Path, project_root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::ErrorKind;
+    match std::os::unix::net::UnixStream::connect(endpoint) {
+        Ok(stream) => {
+            let who = match handshake_pid(stream) {
+                Some(pid) => format!("pid {pid}"),
+                None => "it accepted the connection and did not answer the handshake".to_string(),
+            };
+            Err(format!(
+                "a daemon is already running for this project ({}, {who}); this one is not \
+                 needed. To replace it, stop it first with `al-explorer daemon-shutdown`",
+                project_root.display()
+            )
+            .into())
+        }
+        Err(error) if error.kind() == ErrorKind::ConnectionRefused => {
+            std::fs::remove_file(endpoint)?;
+            tracing::info!(
+                endpoint = %endpoint.display(),
+                "daemon: removed the endpoint left by a daemon that is no longer listening"
+            );
+            Ok(())
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "cannot tell whether a daemon is listening on {}: {error}",
+            endpoint.display()
+        )
+        .into()),
+    }
+}
+
+/// The `pid` a daemon on `stream` reports for `handshake`, or `None` when it
+/// does not answer within [`ENDPOINT_PROBE_TIMEOUT`].
+#[cfg(unix)]
+fn handshake_pid(mut stream: std::os::unix::net::UnixStream) -> Option<u64> {
+    use std::io::{BufRead, Write};
+    stream.set_read_timeout(Some(ENDPOINT_PROBE_TIMEOUT)).ok()?;
+    stream
+        .set_write_timeout(Some(ENDPOINT_PROBE_TIMEOUT))
+        .ok()?;
+    let mut frame = serde_json::to_string(&Request::new(1, "handshake", None)).ok()?;
+    frame.push('\n');
+    stream.write_all(frame.as_bytes()).ok()?;
+    let mut line = String::new();
+    std::io::BufReader::new(stream).read_line(&mut line).ok()?;
+    let answer: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    answer.get("result")?.get("pid")?.as_u64()
 }
 
 #[cfg(unix)]
@@ -167,10 +272,16 @@ pub async fn run_daemon(
     }
 
     #[cfg(unix)]
-    let _ = tokio::fs::remove_file(&endpoint).await;
+    clear_endpoint(&endpoint, &project_root)?;
 
     let name = endpoint.as_path().to_fs_name::<GenericFilePath>()?;
-    let listener = ListenerOptions::new().name(name).create_tokio()?;
+    // The listener would unlink the path when dropped, whatever socket is
+    // there by then. `cleanup_socket` removes it only while it is still this
+    // daemon's.
+    let listener = ListenerOptions::new()
+        .name(name)
+        .reclaim_name(false)
+        .create_tokio()?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -179,50 +290,34 @@ pub async fn run_daemon(
     tracing::info!(endpoint = %endpoint.display(), project = %project_root.display(), "daemon: listening");
 
     #[cfg(unix)]
-    let _ = SOCKET_PATH.set(endpoint.clone());
+    let _ = BOUND_SOCKET.set(BoundSocket::at(endpoint.clone())?);
     #[cfg(unix)]
     let _cleanup = SocketCleanup;
 
     let workspace = Arc::new(Workspace::new());
 
-    // CLI/TUI daemon clients do not send LSP initializationOptions. Merge the
-    // persisted config with project-local VS Code/Zed settings so compiler
-    // backend and symbol-package paths match the editor.
-    // Recorded before the read, so a store or settings file written while this
-    // evaluation runs is seen as a change by the next request rather than
-    // missed.
-    TRUST_INPUTS.store(
-        al_project::trust::inputs_fingerprint(&project_root),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    let evaluated = al_project::trust::evaluate(&project_root)?;
-    *workspace.config.write().await = evaluated.config;
-    if let Some(advisory) = evaluated.decision.advisory() {
-        tracing::warn!("daemon: {advisory}");
-    }
-    if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
-        tracing::warn!("daemon: {advisory}");
-    }
-    let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
-
-    let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
-        tracing::warn!("daemon: {msg}");
-    }));
-
-    initialize_daemon_workspace(&workspace, &project_root).await?;
-    let _ = SCAN_ROOT.set(project_root.clone());
-    persist_dependency_source_summaries(&workspace, &project_root);
-
-    // Warm the dependency AL source index and the graphs built on it now,
-    // rather than inside whichever query needs them first. The build takes
-    // about a minute on Base Application; paid here it overlaps with the
-    // agent's first few symbol queries, and `status` can report its progress
-    // from the start instead of only once something is already blocked on it.
-    let warm_workspace = Arc::clone(&workspace);
-    tokio::task::spawn_blocking(move || match warm_workspace.get_or_build_call_graph() {
-        Ok(_) => tracing::info!("daemon: dependency source index and call graph warm"),
-        Err(error) => tracing::warn!(%error, "daemon: background index warm-up failed"),
-    });
+    // The endpoint exists from the bind above, and a client connects as soon
+    // as it does. The load runs behind the accept loop so `handshake`, `ping`
+    // and `status` answer during it: a client whose handshake waited on the
+    // load took the silence for a daemon from other code and stopped it.
+    let loading = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let mut load = {
+        let workspace = Arc::clone(&workspace);
+        let project_root = project_root.clone();
+        let loading = Arc::clone(&loading);
+        tokio::spawn(async move {
+            let result = load_project(&workspace, &project_root).await;
+            // A failed load stops the daemon, and until the accept loop sees
+            // that, requests are still told to try again rather than served
+            // from a half loaded workspace.
+            if result.is_ok() {
+                loading.store(false, Ordering::Release);
+            }
+            result
+        })
+    };
+    let mut load_done = false;
+    let mut load_failure = None;
 
     // stored as millis-since-`DAEMON_EPOCH` in an AtomicU64 so
     // the hot per-connection-accept + per-dispatch update is lock-free.
@@ -237,6 +332,7 @@ pub async fn run_daemon(
     let in_flight_reaper = Arc::clone(&in_flight);
     let ws_clone = Arc::clone(&workspace);
     let shutdown_idle = Arc::clone(&shutdown_signal);
+    let loading_reaper = Arc::clone(&loading);
     let watched_root = project_root.clone();
     let idle_timeout = resolve_idle_timeout(idle_timeout);
     match idle_timeout {
@@ -274,6 +370,11 @@ pub async fn run_daemon(
             let Some(idle_timeout) = idle_timeout else {
                 continue;
             };
+            // A load longer than the idle window is still the daemon's own
+            // work, and the client that started it is waiting on it.
+            if loading_reaper.load(Ordering::Acquire) {
+                continue;
+            }
             let elapsed = Duration::from_millis(
                 now_activity_ms().saturating_sub(activity_clone.load(Ordering::Relaxed)),
             );
@@ -385,9 +486,10 @@ pub async fn run_daemon(
                         let activity = Arc::clone(&last_activity);
                         let in_flight_conn = Arc::clone(&in_flight);
                         let shutdown_conn = Arc::clone(&shutdown_signal);
+                        let loading_conn = Arc::clone(&loading);
                         tokio::spawn(async move {
                             let _permit = permit;
-                            if let Err(e) = handle_connection(stream, ws, activity, in_flight_conn, shutdown_conn).await {
+                            if let Err(e) = handle_connection(stream, ws, activity, in_flight_conn, shutdown_conn, loading_conn).await {
                                 tracing::warn!(error = %e, "daemon: connection error");
                             }
                         });
@@ -396,6 +498,20 @@ pub async fn run_daemon(
                         tracing::error!(error = %e, "daemon: accept error");
                         tokio::time::sleep(accept_backoff).await;
                         accept_backoff = (accept_backoff * 2).min(ACCEPT_BACKOFF_CAP);
+                    }
+                }
+            }
+            loaded = &mut load, if !load_done => {
+                load_done = true;
+                match loaded {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => {
+                        load_failure = Some(error);
+                        break;
+                    }
+                    Err(error) => {
+                        load_failure = Some(format!("the project load task failed: {error}"));
+                        break;
                     }
                 }
             }
@@ -415,6 +531,9 @@ pub async fn run_daemon(
     }
 
     idle_timeout_handle.abort();
+    if let Some(error) = load_failure {
+        return Err(error.into());
+    }
 
     // graceful drain. The accept loop has broken; new connections
     // are no longer accepted. In-flight connection tasks still hold a
@@ -441,6 +560,53 @@ pub async fn run_daemon(
         }
     }
 
+    Ok(())
+}
+
+/// Evaluate trust, load the project and start the index warm-up. Runs behind
+/// the accept loop, see [`run_daemon`]. Errors are strings so the task result
+/// can cross threads.
+async fn load_project(workspace: &Arc<Workspace>, project_root: &Path) -> Result<(), String> {
+    // CLI/TUI daemon clients do not send LSP initializationOptions. Merge the
+    // persisted config with project-local VS Code/Zed settings so compiler
+    // backend and symbol-package paths match the editor.
+    // Recorded before the read, so a store or settings file written while this
+    // evaluation runs is seen as a change by the next request rather than
+    // missed.
+    TRUST_INPUTS.store(
+        al_project::trust::inputs_fingerprint(project_root),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    let evaluated = al_project::trust::evaluate(project_root).map_err(|error| error.to_string())?;
+    *workspace.config.write().await = evaluated.config;
+    if let Some(advisory) = evaluated.decision.advisory() {
+        tracing::warn!("daemon: {advisory}");
+    }
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root) {
+        tracing::warn!("daemon: {advisory}");
+    }
+    let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
+
+    let _ = workspace.notify_sink.set(std::sync::Arc::new(|msg: &str| {
+        tracing::warn!("daemon: {msg}");
+    }));
+
+    initialize_daemon_workspace(workspace, project_root)
+        .await
+        .map_err(|error| error.to_string())?;
+    let _ = SCAN_ROOT.set(project_root.to_path_buf());
+    persist_dependency_source_summaries(workspace, project_root);
+
+    // Warm the dependency AL source index and the graphs built on it now,
+    // rather than inside whichever query needs them first. The build takes
+    // about a minute on Base Application; paid here it overlaps with the
+    // agent's first few symbol queries, and `status` can report its progress
+    // from the start instead of only once something is already blocked on it.
+    let warm_workspace = Arc::clone(workspace);
+    tokio::task::spawn_blocking(move || match warm_workspace.get_or_build_call_graph() {
+        Ok(_) => tracing::info!("daemon: dependency source index and call graph warm"),
+        Err(error) => tracing::warn!(%error, "daemon: background index warm-up failed"),
+    });
     Ok(())
 }
 
@@ -543,6 +709,7 @@ async fn handle_connection(
     last_activity: Arc<AtomicU64>,
     in_flight: Arc<std::sync::atomic::AtomicUsize>,
     shutdown: Arc<Notify>,
+    loading: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (reader, writer) = stream.split();
     let mut reader = BufReader::new(reader);
@@ -647,6 +814,7 @@ async fn handle_connection(
         let last_activity = Arc::clone(&last_activity);
         let client_gone = Arc::clone(&client_gone);
         let in_flight = Arc::clone(&in_flight);
+        let loading = Arc::clone(&loading);
         in_flight_tasks.spawn(async move {
             let _permit = permit;
             let is_notification = req.is_notification();
@@ -657,7 +825,11 @@ async fn handle_connection(
                 // Held for the whole dispatch so the idle reaper cannot fire
                 // mid-request, however long the operation takes.
                 let _in_flight = InFlightGuard::new(&in_flight);
-                dispatch_request(&workspace, req, &shutdown).await
+                if loading.load(Ordering::Acquire) {
+                    dispatch_while_loading(&workspace, req, &shutdown).await
+                } else {
+                    dispatch_request(&workspace, req, &shutdown).await
+                }
             };
             let elapsed = start.elapsed();
             tracing::debug!(method = %method, id = ?request_id, elapsed_us = elapsed.as_micros() as u64, "daemon: request");
@@ -770,8 +942,10 @@ static TRUST_INPUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// never while an editor keeps it busy. So `al-explorer trust --revoke` left
 /// the privileged settings in effect in the process that was applying them.
 ///
-/// Four `stat` calls per request decide whether to read the files again, so
-/// the common case costs nothing and a revoke takes effect on the next
+/// [`al_project::trust::inputs_fingerprint`] decides whether to read the files
+/// again: a `stat` per trust input and per file under each probing path the
+/// repository sets. So the common case costs little, and a revoke, or a pull
+/// that changes the files under a probing path, takes effect on the next
 /// request.
 async fn refresh_trust(workspace: &Workspace) {
     use std::sync::atomic::Ordering;
@@ -883,11 +1057,37 @@ fn sync_disk_documents(workspace: &Workspace, delta: &al_source::file_index::Sca
     }
 }
 
+/// Answer a request that arrives before the project is loaded.
+///
+/// The lifecycle methods read nothing the load writes, so they answer as they
+/// will later. Everything else is told to try again, which `DaemonClient`
+/// does on its own for up to a minute. The per request refreshes in
+/// [`dispatch_request`] are skipped: they would evaluate trust and scan the
+/// project beside the load that is doing the same.
+async fn dispatch_while_loading(
+    workspace: &std::sync::Arc<Workspace>,
+    req: Request,
+    shutdown: &Notify,
+) -> Response {
+    match req.method.as_str() {
+        "handshake" | "ping" | "status" | "shutdown" => {
+            dispatch_method(workspace, req, shutdown).await
+        }
+        _ => rpc_error(
+            req.dispatch_id(),
+            error_codes::INTERNAL_ERROR,
+            build_dispatch::ERR_INITIALIZING,
+        ),
+    }
+}
+
 pub(crate) async fn dispatch_request(
     workspace: &std::sync::Arc<Workspace>,
     req: Request,
     shutdown: &Notify,
 ) -> Response {
+    // Trust first: it swaps in the configuration whose package folders the
+    // project refresh lists.
     refresh_trust(workspace).await;
     al_workspace::refresh_project_files(workspace).await;
     refresh_workspace_files(workspace).await;
@@ -930,7 +1130,7 @@ fn path_refusal_advice(declared: Option<&Dispatcher>, mut response: Response) ->
                     "; this method rewrites the file it names, so it takes a path inside the \
                      project and nothing else",
                 ),
-                PathUse::Named | PathUse::None => {}
+                PathUse::Named | PathUse::NamedWrite | PathUse::None => {}
             }
         }
     }
@@ -958,12 +1158,34 @@ pub(crate) enum PathUse {
     /// Rewrites the file its `uri`/`file` names, through
     /// [`file_uri_from_params`], which takes no `text`.
     Write,
-    /// Reads or writes a path named by another parameter (`xlf`, `generated`,
-    /// `from`, `to`, `dir`), each resolved through
-    /// `containment::resolve_within_project`. The XLIFF methods took any
-    /// absolute path for a release because the registry had no way to say
-    /// they took one at all.
+    /// Reads or compares a path named by a parameter the method reads itself
+    /// (`xlf`, `generated`, `from`, `to`, `file`, `path`, `snapshotPath`,
+    /// `pathA`, `pathB`, `files`), each resolved through
+    /// `containment::resolve_param_within_project`. That boundary is the
+    /// project root, the package cache and the folder of every resolved `.app`,
+    /// and a trusted project keeps those folders where they resolve, outside
+    /// the project included. A path one level down goes through the same
+    /// resolver under a key that names its place: `files[i]` of `tests.mutate`,
+    /// `samples[i].file` in the snapshot file `tests.snapshot_validate`,
+    /// `tests.snapshot_replay` and `tests.snapshot_diff` read, and
+    /// `breakpoints[i].file`, which `tests.snapshot_capture` reads beside the
+    /// snapshot it writes. A sample or breakpoint source must also lie under
+    /// the project root. The XLIFF methods took any absolute path for a
+    /// release because the registry had no way to say they took one at all,
+    /// and the snapshot keys were canonicalised before any check, so a UNC
+    /// spelling reached the filesystem.
     Named,
+    /// Creates or rewrites a path named by a parameter the method reads itself
+    /// (`project`, `xlf` of `xlf.refresh`, `dir`, `outputDir`, `outputPath`,
+    /// `junitOut`, `coberturaOut`), each resolved under the project root only,
+    /// through `containment::resolve_write_param_within_project` or
+    /// `containment::resolve_output_param_within_project`. A method that also
+    /// reads a named path, as `profiling analyze` reads `path`, is declared by
+    /// its write. Both resolvers refuse with `PATH_NOT_AUTHORIZED` in the words
+    /// the read one uses. `xlf.refresh`, `newProject`, `snapshot` and
+    /// `profiling` took the read resolver for a release and wrote into a
+    /// trusted project's package folders outside it.
+    NamedWrite,
 }
 
 impl PathUse {
@@ -1015,6 +1237,9 @@ macro_rules! declared_path {
     (named) => {
         PathUse::Named
     };
+    (named_write) => {
+        PathUse::NamedWrite
+    };
     (authorized) => {
         PathUse::None
     };
@@ -1030,6 +1255,9 @@ macro_rules! declared_credential {
     (named) => {
         CredentialUse::Caller
     };
+    (named_write) => {
+        CredentialUse::Caller
+    };
     (authorized) => {
         CredentialUse::Authorized
     };
@@ -1038,8 +1266,10 @@ macro_rules! declared_credential {
 /// Build [`DISPATCHERS`] and the method match from one list of arms.
 ///
 /// The capabilities in brackets are the ones [`PathUse`] and [`CredentialUse`]
-/// define: `read`, `write`, `named`, `authorized`. An arm that declares none reaches
-/// neither a caller-named path nor a credential.
+/// define: `read`, `write`, `named`, `named_write`, `authorized`. An arm that
+/// declares none reaches neither a caller-named path nor a credential. A path
+/// use and `authorized` combine, as `[named_write, authorized]` on a method
+/// that writes a caller-named file and can also spend a credential.
 macro_rules! dispatch_table {
     (
         ($workspace:ident, $method:ident, $id:ident, $params:ident, $shutdown:ident)
@@ -1138,7 +1368,7 @@ dispatch_table! {
         "sortMembers" [write] => build_dispatch::dispatch_sort_members(workspace, id, &params),
         "organizeFiles" [] => build_dispatch::dispatch_organize_files(workspace, id, &params),
         "source" [] => build_dispatch::dispatch_source(workspace, id, &params),
-        "eventSource" [] => build_dispatch::dispatch_event_source(workspace, id, &params),
+        "eventSource" [named] => build_dispatch::dispatch_event_source(workspace, id, &params),
         "location" [] => build_dispatch::dispatch_location(workspace, id, &params),
         "trace" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());
@@ -1216,7 +1446,7 @@ dispatch_table! {
         "compile" [] => build_dispatch::dispatch_compile(workspace, id).await,
         "package" [] => build_dispatch::dispatch_package(workspace, id).await,
         "publish" [authorized] => build_dispatch::dispatch_publish(workspace, id, &params).await,
-        "newProject" [named] => build_dispatch::dispatch_new_project(workspace, id, &params),
+        "newProject" [named_write] => build_dispatch::dispatch_new_project(workspace, id, &params),
         "errorCodes" [] => build_dispatch::dispatch_error_codes(workspace, id).await,
         "builtinTypes" [] => build_dispatch::dispatch_builtin_types(workspace, id).await,
         "setup" [] => build_dispatch::dispatch_setup(workspace, id),
@@ -1226,35 +1456,35 @@ dispatch_table! {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
         },
         "debug" [authorized] => debug_dispatch::dispatch_debug(workspace, id, &params).await,
-        "snapshot" [authorized] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
-        "profiling" [authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
-        "xlf.generate" [] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
-        "xlf.refresh" [named] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
+        "snapshot" [named_write, authorized] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
+        "profiling" [named_write, authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
+        "xlf.generate" [named_write] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
+        "xlf.refresh" [named_write] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,
         "xlf.untranslated" [named] => build_dispatch::dispatch_xlf_untranslated(workspace, id, &params),
         "xlf.suggest" [named] => build_dispatch::dispatch_xlf_suggest(workspace, id, &params).await,
         "tests.discover" [] => build_dispatch::dispatch_tests_discover(workspace, id),
         "tests.run" [authorized] => build_dispatch::dispatch_tests_run(workspace, id, &params).await,
         "tests.coverage" [] => build_dispatch::dispatch_tests_coverage(workspace, id),
-        "tests.run_batch" [authorized] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
-        "tests.run_auto" [authorized] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
+        "tests.run_batch" [named_write, authorized] => build_dispatch::dispatch_tests_run_batch(workspace, id, &params).await,
+        "tests.run_auto" [named_write, authorized] => build_dispatch::dispatch_tests_run_auto(workspace, id, &params).await,
         "tests.last_results" [] => {
             build_dispatch::dispatch_tests_last_results(workspace, id, &params).await
         },
         "tests.affected" [] => build_dispatch::dispatch_tests_affected(workspace, id, &params),
         "tests.classify" [] => build_dispatch::dispatch_tests_classify(workspace, id),
-        "tests.snapshot_validate" [] => {
+        "tests.snapshot_validate" [named] => {
             build_dispatch::dispatch_tests_snapshot_validate(workspace, id, &params).await
         },
-        "tests.snapshot_capture" [authorized] => {
+        "tests.snapshot_capture" [named_write, authorized] => {
             build_dispatch::dispatch_tests_snapshot_capture(workspace, id, &params).await
         },
-        "tests.snapshot_replay" [authorized] => {
+        "tests.snapshot_replay" [named, authorized] => {
             build_dispatch::dispatch_tests_snapshot_replay(workspace, id, &params).await
         },
-        "tests.snapshot_diff" [] => {
+        "tests.snapshot_diff" [named] => {
             build_dispatch::dispatch_tests_snapshot_diff(workspace, id, &params).await
         },
-        "tests.mutate" [] => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
+        "tests.mutate" [named] => build_dispatch::dispatch_tests_mutate(workspace, id, &params).await,
         "generate" [] => build_dispatch::dispatch_generate(workspace, id, &params),
         "obsolete" [] => build_dispatch::dispatch_obsolete(workspace, id),
         "obsoleteUsages" [] => build_dispatch::dispatch_obsolete_usages(workspace, id),

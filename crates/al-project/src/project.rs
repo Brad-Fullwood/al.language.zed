@@ -181,20 +181,7 @@ pub fn configured_symbol_packages(
     project_root: &Path,
     config: &crate::config::AlConfig,
 ) -> Result<SymbolPackageSelection, DiscoveryError> {
-    let packages_dir = config
-        .package_cache_path
-        .as_deref()
-        .map(|path| resolve_project_path(project_root, path))
-        .unwrap_or_else(|| project_root.join(".alpackages"));
-
-    let mut folders = Vec::with_capacity(1 + config.app_local_folder_paths.len());
-    folders.push(packages_dir.clone());
-    folders.extend(
-        config
-            .app_local_folder_paths
-            .iter()
-            .map(|path| resolve_project_path(project_root, path)),
-    );
+    let (packages_dir, mut folders) = symbol_package_folders(project_root, config);
     // A folder written inside the project that a repository link carries
     // outside it is read only once the project is trusted.
     folders.retain(|folder| {
@@ -213,6 +200,101 @@ pub fn configured_symbol_packages(
         packages_dir,
         packages,
     })
+}
+
+/// The package cache folder, and every folder `config` names for the
+/// project at `project_root` in the order they are searched, the package
+/// cache first.
+fn symbol_package_folders(
+    project_root: &Path,
+    config: &crate::config::AlConfig,
+) -> (PathBuf, Vec<PathBuf>) {
+    let packages_dir = config
+        .package_cache_path
+        .as_deref()
+        .map(|path| resolve_project_path(project_root, path))
+        .unwrap_or_else(|| project_root.join(".alpackages"));
+    let mut folders = Vec::with_capacity(1 + config.app_local_folder_paths.len());
+    folders.push(packages_dir.clone());
+    folders.extend(
+        config
+            .app_local_folder_paths
+            .iter()
+            .map(|path| resolve_project_path(project_root, path)),
+    );
+    (packages_dir, folders)
+}
+
+/// A stamp of the symbol package folders `config` names for the project at
+/// `project_root`: each folder's path, whether it is read, and the name,
+/// size and mtime of each `.app` file in it. A process that keeps packages
+/// loaded compares it to know when to read the folders again.
+///
+/// One directory listing per folder and one `stat` per `.app` file, so it
+/// can run before every request. The listing shows every file added, removed
+/// or renamed, so the folder's own mtime is left out: it also moves for the
+/// temporary files a download writes beside a package. A package rewritten
+/// in place keeps its name and changes its mtime.
+pub fn package_folders_fingerprint(project_root: &Path, config: &crate::config::AlConfig) -> u64 {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    let (_, folders) = symbol_package_folders(project_root, config);
+    for folder in &folders {
+        let path = folder.as_os_str().as_encoded_bytes();
+        hasher.update((path.len() as u64).to_le_bytes());
+        hasher.update(path);
+        // Trust decides whether a linked folder is read, so a grant or a
+        // revoke changes the packages as a new file does.
+        hasher.update([u8::from(crate::trust::escapes_untrusted_project(
+            project_root,
+            folder,
+        ))]);
+        let Ok(entries) = std::fs::read_dir(folder) else {
+            hasher.update([0u8]);
+            continue;
+        };
+        let mut packages: Vec<(std::ffi::OsString, Option<(u64, u128)>)> = entries
+            .flatten()
+            .filter(|entry| {
+                Path::new(&entry.file_name())
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+            })
+            .map(|entry| {
+                // Follows a link, as the scan does, so a link pointed at
+                // another package moves the stamp.
+                let stamp = std::fs::metadata(entry.path()).ok().map(|metadata| {
+                    let modified = metadata
+                        .modified()
+                        .ok()
+                        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|since| since.as_nanos())
+                        .unwrap_or_default();
+                    (metadata.len(), modified)
+                });
+                (entry.file_name(), stamp)
+            })
+            .collect();
+        packages.sort();
+        hasher.update([1u8]);
+        hasher.update((packages.len() as u64).to_le_bytes());
+        for (name, stamp) in &packages {
+            let name = name.as_encoded_bytes();
+            hasher.update((name.len() as u64).to_le_bytes());
+            hasher.update(name);
+            match stamp {
+                Some((length, modified)) => {
+                    hasher.update([1u8]);
+                    hasher.update(length.to_le_bytes());
+                    hasher.update(modified.to_le_bytes());
+                }
+                None => hasher.update([0u8]),
+            }
+        }
+    }
+    let digest = hasher.finalize();
+    u64::from_le_bytes(digest[..8].try_into().expect("sha256 is 32 bytes"))
 }
 
 pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
@@ -319,40 +401,53 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
 /// Maximum bytes accepted for an `app.json`. The largest legitimate manifest
 /// we've observed across hundreds of AL projects is ~20 KB (heavy
 /// `dependencies` + `idRanges` arrays). 1 MiB is two orders of magnitude past
-/// that — more than enough headroom for any real project while still refusing
+/// that, more than enough headroom for any real project while still refusing
 /// pathological inputs that would OOM the daemon on `read_to_string`.
 const MAX_APP_JSON_BYTES: u64 = 1_048_576;
 
+/// The text `reader` holds, or `None` when it holds more than `cap` bytes.
+/// Reads at most `cap + 1` bytes, so a source that never ends stops there.
+fn read_text_up_to(reader: impl std::io::Read, cap: u64) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+
+    let mut text = String::new();
+    reader.take(cap + 1).read_to_string(&mut text)?;
+    Ok((text.len() as u64 <= cap).then_some(text))
+}
+
 /// Load the exact `app.json` in `project_root` with the same size and schema
 /// validation used by workspace discovery.
+///
+/// A path that is not a regular file is refused, so a link the repository
+/// ships to a device or a FIFO neither stalls the load nor feeds it an endless
+/// stream. A link to a regular file loads.
 pub fn load_app_manifest(project_root: &Path) -> Result<AppManifest, DiscoveryError> {
     let app_json_path = project_root.join("app.json");
-    let size = std::fs::metadata(&app_json_path)
-        .map_err(|error| DiscoveryError::InvalidAppJson {
-            path: app_json_path.clone(),
-            error: format!("cannot inspect file: {error}"),
-        })?
-        .len();
-    if size > MAX_APP_JSON_BYTES {
-        return Err(DiscoveryError::InvalidAppJson {
-            path: app_json_path.clone(),
-            error: format!(
-                "app.json is {} bytes — refusing to parse (cap = {} bytes)",
-                size, MAX_APP_JSON_BYTES
-            ),
-        });
+    let invalid = |error: String| DiscoveryError::InvalidAppJson {
+        path: app_json_path.clone(),
+        error,
+    };
+    let too_large = |what: String| {
+        invalid(format!(
+            "app.json {what}, refusing to parse (cap = {MAX_APP_JSON_BYTES} bytes)"
+        ))
+    };
+
+    let metadata = std::fs::metadata(&app_json_path)
+        .map_err(|error| invalid(format!("cannot inspect file: {error}")))?;
+    if !metadata.is_file() {
+        return Err(invalid("path is not a regular file".to_string()));
+    }
+    if metadata.len() > MAX_APP_JSON_BYTES {
+        return Err(too_large(format!("is {} bytes", metadata.len())));
     }
 
-    let content = std::fs::read_to_string(&app_json_path).map_err(|error| {
-        DiscoveryError::InvalidAppJson {
-            path: app_json_path.clone(),
-            error: format!("cannot read file: {error}"),
-        }
-    })?;
-    serde_json::from_str(&content).map_err(|error| DiscoveryError::InvalidAppJson {
-        path: app_json_path,
-        error: error.to_string(),
-    })
+    let file = crate::trust::open_regular_file(&app_json_path)
+        .ok_or_else(|| invalid("cannot open file as a regular file".to_string()))?;
+    let content = read_text_up_to(file, MAX_APP_JSON_BYTES)
+        .map_err(|error| invalid(format!("cannot read file: {error}")))?
+        .ok_or_else(|| too_large("holds more bytes than the cap".to_string()))?;
+    serde_json::from_str(&content).map_err(|error| invalid(error.to_string()))
 }
 
 /// Read the debug configuration of the project at `project_root` into the
@@ -378,7 +473,8 @@ pub fn load_launch_configs(
 ///
 /// Hashed by content, up to the 1 MiB both loaders accept. An edit such as
 /// `25.0.0.0` to `26.0.0.0` keeps the file's length, and inside one tick of the
-/// filesystem clock it keeps the mtime too.
+/// filesystem clock it keeps the mtime too. A path that is not a regular file,
+/// such as a link to a FIFO, is hashed as an absent file and never waited on.
 pub fn project_files_fingerprint(project_root: &Path) -> u64 {
     use sha2::{Digest, Sha256};
     use std::io::Read;
@@ -388,15 +484,15 @@ pub fn project_files_fingerprint(project_root: &Path) -> u64 {
     let [zed_debug, vscode_launch] = al_bc::launch::launch_file_paths(project_root);
     for path in [project_root.join("app.json"), zed_debug, vscode_launch] {
         let mut content = Vec::new();
-        let read = std::fs::File::open(&path)
-            .and_then(|file| file.take(MAX_APP_JSON_BYTES + 1).read_to_end(&mut content));
+        let read = crate::trust::open_regular_file(&path)
+            .map(|file| file.take(MAX_APP_JSON_BYTES + 1).read_to_end(&mut content));
         match read {
-            Ok(length) => {
+            Some(Ok(length)) => {
                 hasher.update([1u8]);
                 hasher.update((length as u64).to_le_bytes());
                 hasher.update(&content);
             }
-            Err(_) => hasher.update([0u8]),
+            _ => hasher.update([0u8]),
         }
     }
     let digest = hasher.finalize();
@@ -908,6 +1004,95 @@ mod tests {
     }
 
     #[test]
+    fn app_json_of_exactly_the_cap_loads_and_one_byte_more_is_refused() {
+        let manifest = r#"{"id":"00000000-0000-0000-0000-000000000000","name":"Test","publisher":"Test","version":"1.0.0.0"}"#;
+        let padded = |length: u64| {
+            let spaces = " ".repeat(length as usize - manifest.len());
+            format!("{manifest}{spaces}")
+        };
+        let project = tempdir();
+
+        std::fs::write(project.join("app.json"), padded(MAX_APP_JSON_BYTES)).unwrap();
+        assert!(load_app_manifest(&project).is_ok(), "a manifest at the cap");
+
+        std::fs::write(project.join("app.json"), padded(MAX_APP_JSON_BYTES + 1)).unwrap();
+        let error = load_app_manifest(&project).unwrap_err().to_string();
+        assert!(error.contains("refusing to parse"), "{error}");
+    }
+
+    /// A source that never ends is read up to one byte past the cap and no
+    /// further, and text of exactly the cap is kept.
+    #[test]
+    fn read_text_up_to_stops_one_byte_past_the_cap() {
+        use std::io::Read;
+
+        let mut endless = std::io::repeat(b'a').take(1 << 20);
+        assert_eq!(read_text_up_to(&mut endless, 1024).unwrap(), None);
+        assert_eq!(endless.limit(), (1 << 20) - 1025, "bytes taken from it");
+
+        let at_the_cap = read_text_up_to(std::io::repeat(b'a').take(1024), 1024).unwrap();
+        assert_eq!(at_the_cap.map(|text| text.len()), Some(1024));
+    }
+
+    /// A FIFO at `path`.
+    #[cfg(unix)]
+    fn make_fifo(path: &Path) {
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // Safety: `name` is a NUL terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    }
+
+    /// What `work` returns, or `None` when it has not returned after three
+    /// seconds. A read that waits on a FIFO leaves its thread behind and fails
+    /// the test where the test would otherwise hang.
+    #[cfg(unix)]
+    fn answer_within_three_seconds<T: Send + 'static>(
+        work: impl FnOnce() -> T + Send + 'static,
+    ) -> Option<T> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(work());
+        });
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .ok()
+    }
+
+    /// A clone can ship `app.json` as a link to a FIFO. The length seen through
+    /// the link is 0 and a plain read waits for a writer, so every process that
+    /// loads the manifest before the project is trusted would stall.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_app_json_to_a_fifo_is_refused_instead_of_read() {
+        let project = tempdir();
+        make_fifo(&project.join("pipe"));
+        std::os::unix::fs::symlink("pipe", project.join("app.json")).unwrap();
+
+        let root = project.clone();
+        let answer = answer_within_three_seconds(move || {
+            load_app_manifest(&root)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        });
+
+        let error = answer
+            .expect("the load returned instead of waiting on the FIFO")
+            .expect_err("a FIFO is not a manifest");
+        assert!(error.contains("not a regular file"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_app_json_to_a_regular_file_inside_the_project_still_loads() {
+        let project = tempdir();
+        write_valid_manifest(&project.join("manifests"), "Linked");
+        std::os::unix::fs::symlink("manifests/app.json", project.join("app.json")).unwrap();
+
+        let manifest = load_app_manifest(&project).expect("a link to a regular file loads");
+        assert_eq!(manifest.name, "Linked");
+    }
+
+    #[test]
     fn test_nuget_feeds_returns_three() {
         assert_eq!(nuget_feeds().len(), 3);
     }
@@ -1161,6 +1346,94 @@ mod tests {
             project_files_fingerprint(&root),
             launch_added,
             "a debug.json written"
+        );
+    }
+
+    /// The fingerprint opens `app.json` and the two debug files. A link the
+    /// repository ships at one of them to a FIFO must not make a daemon wait
+    /// before each request. Such a file counts as absent.
+    #[cfg(unix)]
+    #[test]
+    fn project_files_fingerprint_does_not_wait_on_a_fifo_at_a_file_it_reads() {
+        for (relative, target) in [
+            ("app.json", "pipe"),
+            (".zed/debug.json", "../pipe"),
+            (".vscode/launch.json", "../pipe"),
+        ] {
+            let project = tempdir();
+            make_fifo(&project.join("pipe"));
+            let link = project.join(relative);
+            std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(target, &link).unwrap();
+
+            let root = project.clone();
+            let with_link = answer_within_three_seconds(move || project_files_fingerprint(&root))
+                .unwrap_or_else(|| panic!("the fingerprint waited on a FIFO at {relative}"));
+
+            std::fs::remove_file(&link).unwrap();
+            assert_eq!(
+                with_link,
+                project_files_fingerprint(&project),
+                "a FIFO at {relative} counts as an absent file"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_files_fingerprint_reads_through_a_link_to_a_regular_file() {
+        let project = tempdir();
+        let target = project.join("manifest.json");
+        std::fs::write(&target, r#"{"application":"25.0.0.0"}"#).unwrap();
+        std::os::unix::fs::symlink("manifest.json", project.join("app.json")).unwrap();
+        let first = project_files_fingerprint(&project);
+
+        std::fs::write(&target, r#"{"application":"26.0.0.0"}"#).unwrap();
+        assert_ne!(project_files_fingerprint(&project), first);
+    }
+
+    #[test]
+    fn package_folders_fingerprint_moves_with_the_packages_and_the_folders() {
+        let root = tempdir();
+        let config = AlConfig::default();
+        let stamp = || package_folders_fingerprint(&root, &config);
+        let missing = stamp();
+        assert_eq!(stamp(), missing, "nothing changed");
+
+        let packages = root.join(".alpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        let empty = stamp();
+        assert_ne!(empty, missing, "the folder created");
+
+        std::fs::write(packages.join("download.tmp"), "partial").unwrap();
+        assert_eq!(stamp(), empty, "a file that is not a package");
+
+        let first = packages.join("Tests_First_1.0.0.0.app");
+        std::fs::write(&first, "first").unwrap();
+        let copied = stamp();
+        assert_ne!(copied, empty, "a package copied in");
+
+        std::fs::write(&first, "first, rewritten").unwrap();
+        let rewritten = stamp();
+        assert_ne!(rewritten, copied, "a package rewritten in place");
+
+        std::fs::rename(&first, packages.join("Tests_First_1.0.0.1.app")).unwrap();
+        let renamed = stamp();
+        assert_ne!(renamed, rewritten, "a package renamed");
+
+        let local = root.join("vendor-symbols");
+        std::fs::create_dir_all(&local).unwrap();
+        let with_local = AlConfig {
+            app_local_folder_paths: vec![PathBuf::from("vendor-symbols")],
+            ..AlConfig::default()
+        };
+        let local_listed = package_folders_fingerprint(&root, &with_local);
+        assert_ne!(local_listed, renamed, "a folder added to the settings");
+        std::fs::write(local.join("Vendor.app"), "vendor").unwrap();
+        assert_ne!(
+            package_folders_fingerprint(&root, &with_local),
+            local_listed,
+            "a package in a folder from the settings"
         );
     }
 

@@ -16,9 +16,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_validate(
         Ok(root) => root,
         Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
     };
-    let path = match resolve_existing_snapshot_path(path, &project_root) {
+    let path = match resolve_existing_snapshot_path(workspace, "snapshotPath", path) {
         Ok(path) => path,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     let bytes = match tokio::fs::read(&path).await {
         Ok(bytes) => bytes,
@@ -40,8 +40,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_validate(
             );
         }
     };
-    if let Err(message) = normalize_snapshot_sample_paths(&mut snapshot, &project_root) {
-        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
+    if let Err(rejection) = normalize_snapshot_sample_paths(workspace, &mut snapshot, &project_root)
+    {
+        return rejection.into_response(id);
     }
 
     Response {
@@ -71,59 +72,59 @@ async fn snapshot_project_root(workspace: &Workspace) -> Result<PathBuf, String>
 }
 
 fn resolve_existing_snapshot_path(
+    workspace: &Workspace,
+    key: &str,
     requested: &str,
-    project_root: &std::path::Path,
-) -> Result<PathBuf, String> {
-    let path = std::path::Path::new(requested);
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        project_root.join(path)
-    };
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("resolve snapshot path failed: {error}"))?;
-    if !canonical.starts_with(project_root) {
-        return Err("snapshot path escapes the project root".to_string());
-    }
-    if !canonical.is_file() {
-        return Err("snapshot path is not a regular file".to_string());
-    }
-    Ok(canonical)
+) -> Result<PathBuf, PathRejection> {
+    let path = resolve_param_within_project(workspace, key, std::path::Path::new(requested))?;
+    require_regular_file(key, &path)?;
+    Ok(path)
 }
 
+/// Resolve each sample's `file` inside the project and rewrite it relative to
+/// the project root.
+///
+/// A snapshot file is repository content, so each sample's `file` is a caller
+/// path one level down. It is resolved under the key `samples[i].file` through
+/// [`resolve_snapshot_source`] before anything else touches it.
 fn normalize_snapshot_sample_paths(
+    workspace: &Workspace,
     snapshot: &mut al_snapshot::Snapshot,
     project_root: &std::path::Path,
-) -> Result<(), String> {
-    for sample in &mut snapshot.samples {
-        let path = std::path::Path::new(&sample.file);
-        let path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            project_root.join(path)
-        };
-        let canonical = path.canonicalize().map_err(|error| {
-            format!(
-                "snapshot breakpoint source '{}' cannot be resolved: {error}",
-                sample.file
-            )
-        })?;
-        let relative = canonical.strip_prefix(project_root).map_err(|_| {
-            format!(
-                "snapshot breakpoint source '{}' escapes the project root",
-                sample.file
-            )
-        })?;
-        if !canonical.is_file() {
-            return Err(format!(
-                "snapshot breakpoint source '{}' is not a regular file",
-                sample.file
-            ));
+) -> Result<(), PathRejection> {
+    for (index, sample) in snapshot.samples.iter_mut().enumerate() {
+        let key = format!("samples[{index}].file");
+        let path = resolve_snapshot_source(workspace, &key, &sample.file, project_root)?;
+        if let Ok(relative) = path.strip_prefix(project_root) {
+            sample.file = relative.to_string_lossy().replace('\\', "/");
         }
-        sample.file = relative.to_string_lossy().replace('\\', "/");
     }
-    al_snapshot::validate_snapshot(snapshot).map_err(|error| error.to_string())
+    al_snapshot::validate_snapshot(snapshot)
+        .map_err(|error| PathRejection::invalid(error.to_string()))
+}
+
+/// Resolve the AL source a nested snapshot key names (`samples[i].file` or
+/// `breakpoints[i].file`) and require a regular file under `project_root`.
+///
+/// `resolve_param_within_project` refuses a UNC spelling before any
+/// filesystem call, where `canonicalize` on one makes Windows open an SMB
+/// connection to the host it names, and refuses a link out of the project. Its
+/// boundary also holds the package folders, and a breakpoint source is a
+/// project file, so the resolved path must lie under the project root too.
+fn resolve_snapshot_source(
+    workspace: &Workspace,
+    key: &str,
+    requested: &str,
+    project_root: &std::path::Path,
+) -> Result<PathBuf, PathRejection> {
+    let path = resolve_param_within_project(workspace, key, std::path::Path::new(requested))?;
+    if !path.starts_with(project_root) {
+        return Err(PathRejection::unauthorized(format!(
+            "'{key}' path '{requested}' is outside the project root"
+        )));
+    }
+    require_regular_file(key, &path)?;
+    Ok(path)
 }
 
 pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
@@ -244,19 +245,37 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
             );
         }
     };
-    let output = match resolve_output_path_within_project(
+    let output = match resolve_output_param_within_project(
+        "outputPath",
         std::path::Path::new(output_path),
         &project_root,
     ) {
-        Some(path) => path,
-        None => {
+        Ok(path) => path,
+        Err(rejection) => return rejection.into_response(id),
+    };
+    let mut breakpoint_files = Vec::with_capacity(raw_breakpoints.len());
+    for (index, raw) in raw_breakpoints.iter().enumerate() {
+        let Some(file) = raw
+            .get("file")
+            .and_then(|value| value.as_str())
+            .filter(|file| !file.trim().is_empty())
+        else {
             return rpc_error(
                 id,
                 error_codes::INVALID_PARAMS,
-                "'outputPath' path escapes the project root",
+                "Each breakpoint requires 'file'",
             );
+        };
+        match resolve_snapshot_source(
+            workspace,
+            &format!("breakpoints[{index}].file"),
+            file,
+            &project_root,
+        ) {
+            Ok(path) => breakpoint_files.push(path),
+            Err(rejection) => return rejection.into_response(id),
         }
-    };
+    }
 
     let discovered = match al_analysis::queries::tests::discover_tests(workspace) {
         Ok(discovered) => discovered,
@@ -317,21 +336,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
     let mut breakpoints = Vec::with_capacity(raw_breakpoints.len());
     let mut source_files = Vec::new();
     let mut seen_breakpoints = std::collections::HashSet::new();
-    for raw in raw_breakpoints {
-        let file = match raw
-            .get("file")
-            .and_then(|value| value.as_str())
-            .filter(|file| !file.trim().is_empty())
-        {
-            Some(file) => file,
-            None => {
-                return rpc_error(
-                    id,
-                    error_codes::INVALID_PARAMS,
-                    "Each breakpoint requires 'file'",
-                );
-            }
-        };
+    for (raw, file_path) in raw_breakpoints.iter().zip(breakpoint_files) {
         let line = match raw
             .get("line")
             .and_then(|value| value.as_u64())
@@ -344,21 +349,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_capture(
                     id,
                     error_codes::INVALID_PARAMS,
                     "Each breakpoint requires a positive 1-based 'line'",
-                );
-            }
-        };
-        let file_path = if std::path::Path::new(file).is_absolute() {
-            PathBuf::from(file)
-        } else {
-            project_root.join(file)
-        };
-        let file_path = match file_path.canonicalize() {
-            Ok(path) if path.starts_with(&project_root) => path,
-            _ => {
-                return rpc_error(
-                    id,
-                    error_codes::INVALID_PARAMS,
-                    "Breakpoint file must exist inside the project root",
                 );
             }
         };
@@ -605,10 +595,11 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
         Ok(root) => root,
         Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
     };
-    let snapshot_path = match resolve_existing_snapshot_path(snapshot_path, &project_root) {
-        Ok(path) => path,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
-    };
+    let snapshot_path =
+        match resolve_existing_snapshot_path(workspace, "snapshotPath", snapshot_path) {
+            Ok(path) => path,
+            Err(rejection) => return rejection.into_response(id),
+        };
     let bytes = match tokio::fs::read(&snapshot_path).await {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -636,8 +627,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
             "baseline snapshot has no samples to replay",
         );
     }
-    if let Err(message) = normalize_snapshot_sample_paths(&mut baseline, &project_root) {
-        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
+    if let Err(rejection) = normalize_snapshot_sample_paths(workspace, &mut baseline, &project_root)
+    {
+        return rejection.into_response(id);
     }
 
     let discovered = match al_analysis::queries::tests::discover_tests(workspace) {
@@ -791,8 +783,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_replay(
             );
         }
     };
-    if let Err(message) = normalize_snapshot_sample_paths(&mut observed, &project_root) {
-        return rpc_error(id, error_codes::INTERNAL_ERROR, &message);
+    if let Err(rejection) = normalize_snapshot_sample_paths(workspace, &mut observed, &project_root)
+    {
+        return rpc_error(id, error_codes::INTERNAL_ERROR, &rejection.message);
     }
     let divergences = al_snapshot::diff_snapshots(&baseline, &observed);
 
@@ -839,21 +832,29 @@ pub(in crate::server::daemon) async fn dispatch_tests_snapshot_diff(
         Ok(root) => root,
         Err(message) => return rpc_error(id, error_codes::INTERNAL_ERROR, &message),
     };
-    let read = async |p: &str| -> Result<al_snapshot::format::Snapshot, String> {
-        let path = resolve_existing_snapshot_path(p, &project_root)?;
-        let bytes = tokio::fs::read(path).await.map_err(|e| e.to_string())?;
-        let mut snapshot =
-            al_snapshot::format::deserialize_snapshot(&bytes).map_err(|e| e.to_string())?;
-        normalize_snapshot_sample_paths(&mut snapshot, &project_root)?;
+    let read = async |key: &str, p: &str| -> Result<al_snapshot::format::Snapshot, PathRejection> {
+        let path = resolve_existing_snapshot_path(workspace, key, p)?;
+        let invalid = |e: String| PathRejection::invalid(format!("{key}: {e}"));
+        let bytes = tokio::fs::read(path)
+            .await
+            .map_err(|e| invalid(e.to_string()))?;
+        let mut snapshot = al_snapshot::format::deserialize_snapshot(&bytes)
+            .map_err(|e| invalid(e.to_string()))?;
+        normalize_snapshot_sample_paths(workspace, &mut snapshot, &project_root).map_err(
+            |rejection| PathRejection {
+                code: rejection.code,
+                message: format!("{key}: {}", rejection.message),
+            },
+        )?;
         Ok(snapshot)
     };
-    let a = match read(path_a).await {
+    let a = match read("pathA", path_a).await {
         Ok(s) => s,
-        Err(e) => return rpc_error(id, error_codes::INVALID_PARAMS, &format!("pathA: {e}")),
+        Err(rejection) => return rejection.into_response(id),
     };
-    let b = match read(path_b).await {
+    let b = match read("pathB", path_b).await {
         Ok(s) => s,
-        Err(e) => return rpc_error(id, error_codes::INVALID_PARAMS, &format!("pathB: {e}")),
+        Err(rejection) => return rejection.into_response(id),
     };
     let divergences = al_snapshot::diff::diff_snapshots(&a, &b);
     Response {

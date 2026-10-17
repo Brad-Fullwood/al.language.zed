@@ -1,5 +1,6 @@
 //! Workspace analysis & generation: object generate, obsolete/audit/permission reports, dependency graph, breaking-change/arch lint, and duplicate detection.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use crate::cli::commands::*;
@@ -36,10 +37,10 @@ pub fn cmd_generate(
                 print_json(&result);
             } else {
                 let code = result.get("code").and_then(|v| v.as_str()).unwrap_or("");
-                print!("{code}");
+                print!("{}", terminal_lines(code));
                 for warning in result["warnings"].as_array().into_iter().flatten() {
                     if let Some(warning) = warning.as_str() {
-                        eprintln!("warning: {warning}");
+                        eprintln!("warning: {}", terminal_text(warning));
                     }
                 }
             }
@@ -60,18 +61,25 @@ pub fn cmd_obsolete(json: bool) -> ExitCode {
             if entries.is_empty() {
                 println!("No obsolete symbols found.");
             } else {
-                for e in &entries {
-                    let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                    let object = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                    let symbol = e.get("symbol").and_then(|v| v.as_str()).unwrap_or("?");
-                    let reason = e.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-                    let state = e.get("state").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("{kind} {object}::{symbol} [{state}]: {reason}");
-                }
+                print!("{}", obsolete_text(&entries));
                 eprintln!("\n{} obsolete symbol(s)", entries.len());
             }
         },
     )
+}
+
+/// The lines `obsolete` prints, one per obsolete symbol.
+fn obsolete_text(entries: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for e in entries {
+        let kind = text_field(e, "kind", "?");
+        let object = text_field(e, "object", "?");
+        let symbol = text_field(e, "symbol", "?");
+        let reason = text_field(e, "reason", "");
+        let state = text_field(e, "state", "");
+        let _ = writeln!(out, "{kind} {object}::{symbol} [{state}]: {reason}");
+    }
+    out
 }
 
 pub fn cmd_obsolete_usages(json: bool) -> ExitCode {
@@ -87,17 +95,14 @@ pub fn cmd_obsolete_usages(json: bool) -> ExitCode {
                 return;
             }
             for finding in &findings {
-                let file = finding.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                let file = text_field(finding, "file", "?");
                 let line = finding["range"]["start"]["line"]
                     .as_u64()
                     .map_or(0, |l| l + 1);
                 let column = finding["range"]["start"]["character"]
                     .as_u64()
                     .map_or(0, |c| c + 1);
-                let message = finding
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let message = text_field(finding, "message", "");
                 println!("{file}:{line}:{column}: {message}");
             }
             eprintln!("\n{} call(s) to obsolete procedures", findings.len());
@@ -112,66 +117,79 @@ pub fn cmd_package_diff(from: &str, to: &str, all: bool, json: bool) -> ExitCode
         json,
         None,
         |result| {
-            let label = |side: &str| {
-                let package = &result[side];
-                format!(
-                    "{} {}",
-                    package["name"].as_str().unwrap_or("?"),
-                    package["version"].as_str().unwrap_or("?")
-                )
-            };
-            println!(
-                "{} -> {}: {} change(s), {} breaking, {} used by this workspace, {} possibly",
-                label("from"),
-                label("to"),
-                result["totalChanges"].as_u64().unwrap_or(0),
-                result["breakingChanges"].as_u64().unwrap_or(0),
-                result["affectingWorkspace"].as_u64().unwrap_or(0),
-                result["possiblyAffecting"].as_u64().unwrap_or(0),
-            );
+            println!("{}", package_diff_summary_line(result));
             if let Some(warning) = result["warning"].as_str() {
-                eprintln!("warning: {warning}");
+                eprintln!("warning: {}", terminal_text(warning));
             }
-            for change in list_rows(&result["changes"])
-                .as_array()
-                .into_iter()
-                .flatten()
-            {
-                let object = change["object"].as_str().unwrap_or("?");
-                let target = match change["member"].as_str() {
-                    Some(member) => format!("{object}.{member}"),
-                    None => object.to_string(),
-                };
-                // Table and page "Payment Terms" share a name.
-                let target = match change["objectKind"].as_str() {
-                    Some(kind) => format!("{kind} {target}"),
-                    None => target,
-                };
-                let severity = if change["isBreaking"].as_bool().unwrap_or(false) {
-                    "breaking"
-                } else {
-                    "warning"
-                };
-                println!(
-                    "\n[{severity}] {target}: {}",
-                    change["description"].as_str().unwrap_or("")
-                );
-                for (key, prefix) in [("uses", ""), ("possibleUses", "possibly: ")] {
-                    for used in change[key].as_array().into_iter().flatten() {
-                        let kind = used["k"].as_str().unwrap_or("?");
-                        let name = used["n"].as_str().unwrap_or("?");
-                        let how = used["type"].as_str().unwrap_or("?");
-                        match used["proc"].as_str() {
-                            Some(procedure) => {
-                                println!("    {prefix}{kind} {name}, {procedure} ({how})")
-                            }
-                            None => println!("    {prefix}{kind} {name} ({how})"),
-                        }
-                    }
-                }
-            }
+            print!("{}", package_diff_changes_text(result));
         },
     )
+}
+
+/// The first line `package-diff` prints: the two packages and the counts.
+fn package_diff_summary_line(result: &serde_json::Value) -> String {
+    let side_text = |side: &str| {
+        let package = &result[side];
+        format!(
+            "{} {}",
+            text_field(package, "name", "?"),
+            text_field(package, "version", "?")
+        )
+    };
+    format!(
+        "{} -> {}: {} change(s), {} breaking, {} used by this workspace, {} possibly",
+        side_text("from"),
+        side_text("to"),
+        result["totalChanges"].as_u64().unwrap_or(0),
+        result["breakingChanges"].as_u64().unwrap_or(0),
+        result["affectingWorkspace"].as_u64().unwrap_or(0),
+        result["possiblyAffecting"].as_u64().unwrap_or(0),
+    )
+}
+
+/// Each change `package-diff` prints, with the workspace code that uses it.
+fn package_diff_changes_text(result: &serde_json::Value) -> String {
+    let mut out = String::new();
+    for change in list_rows(&result["changes"])
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let object = text_field(change, "object", "?");
+        let target = match change["member"].as_str() {
+            Some(member) => format!("{object}.{}", terminal_text(member)),
+            None => object,
+        };
+        // Table and page "Payment Terms" share a name.
+        let target = match change["objectKind"].as_str() {
+            Some(kind) => format!("{} {target}", terminal_text(kind)),
+            None => target,
+        };
+        let severity = if change["isBreaking"].as_bool().unwrap_or(false) {
+            "breaking"
+        } else {
+            "warning"
+        };
+        let _ = writeln!(
+            out,
+            "\n[{severity}] {target}: {}",
+            text_field(change, "description", "")
+        );
+        for (key, prefix) in [("uses", ""), ("possibleUses", "possibly: ")] {
+            for used in change[key].as_array().into_iter().flatten() {
+                let kind = text_field(used, "k", "?");
+                let name = text_field(used, "n", "?");
+                let how = text_field(used, "type", "?");
+                let procedure = text_field(used, "proc", "");
+                if used["proc"].is_string() {
+                    let _ = writeln!(out, "    {prefix}{kind} {name}, {procedure} ({how})");
+                } else {
+                    let _ = writeln!(out, "    {prefix}{kind} {name} ({how})");
+                }
+            }
+        }
+    }
+    out
 }
 
 pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
@@ -187,13 +205,10 @@ pub fn cmd_audit_data_classification(json: bool) -> ExitCode {
             } else {
                 let mut unclassified = 0usize;
                 for e in &entries {
-                    let table = e.get("table").and_then(|v| v.as_str()).unwrap_or("?");
-                    let field = e.get("field").and_then(|v| v.as_str()).unwrap_or("?");
-                    let classification = e
-                        .get("classification")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let risk = e.get("risk").and_then(|v| v.as_str()).unwrap_or("?");
+                    let table = text_field(e, "table", "?");
+                    let field = text_field(e, "field", "?");
+                    let classification = text_field(e, "classification", "?");
+                    let risk = text_field(e, "risk", "?");
                     if risk == "unclassified" {
                         unclassified += 1;
                     }
@@ -247,8 +262,8 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
                 println!("All objects covered by permission sets.");
             } else {
                 for e in &coverage {
-                    let kind = e.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                    let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let kind = text_field(e, "kind", "?");
+                    let name = text_field(e, "name", "?");
                     let covered = e.get("covered").and_then(|v| v.as_bool()).unwrap_or(false);
                     let status = if covered { "covered" } else { "MISSING" };
                     println!("{kind} \"{name}\": {status}");
@@ -261,13 +276,10 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
             } else {
                 println!("\nOver-broad / unused grants (object-level; RIMDX rights not verified):");
                 for e in &over_broad {
-                    let set = e
-                        .get("permissionSet")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let ot = e.get("objectType").and_then(|v| v.as_str()).unwrap_or("?");
-                    let obj = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                    let rights = e.get("rights").and_then(|v| v.as_str()).unwrap_or("");
+                    let set = text_field(e, "permissionSet", "?");
+                    let ot = text_field(e, "objectType", "?");
+                    let obj = text_field(e, "object", "?");
+                    let rights = text_field(e, "rights", "");
                     println!(
                         "  {set}: {ot} \"{obj}\" = {rights} — unused (object not referenced in workspace)"
                     );
@@ -284,20 +296,11 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
                      found — over-approximation, R never flagged):"
                 );
                 for e in &over_granted {
-                    let set = e
-                        .get("permissionSet")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let obj = e.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                    let granted = e
-                        .get("grantedRights")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
-                    let over = e.get("overGranted").and_then(|v| v.as_str()).unwrap_or("");
-                    let observed = e
-                        .get("observedRights")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let set = text_field(e, "permissionSet", "?");
+                    let obj = text_field(e, "object", "?");
+                    let granted = text_field(e, "grantedRights", "");
+                    let over = text_field(e, "overGranted", "");
+                    let observed = text_field(e, "observedRights", "");
                     println!(
                         "  {set}: TableData \"{obj}\" = {granted} — only {observed} observed; \
                          drop {over}"
@@ -316,14 +319,11 @@ pub fn cmd_permission_audit(json: bool) -> ExitCode {
             if !parse_issues.is_empty() {
                 println!("\nGrant clauses the audit could not read (excluded from every check):");
                 for issue in parse_issues {
-                    let set = issue
-                        .get("permissionSet")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("?");
-                    let file = issue.get("file").and_then(|v| v.as_str()).unwrap_or("?");
+                    let set = text_field(issue, "permissionSet", "?");
+                    let file = text_field(issue, "file", "?");
                     let clause = issue.get("clause").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let text = issue.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    let reason = issue.get("reason").and_then(|v| v.as_str()).unwrap_or("?");
+                    let text = text_field(issue, "text", "");
+                    let reason = text_field(issue, "reason", "?");
                     println!("  {set} ({file}), clause {clause}: {text} — {reason}");
                 }
                 eprintln!("\n{} unreadable grant clause(s)", parse_issues.len());
@@ -375,7 +375,7 @@ pub fn cmd_deps_graph(format: &str, json: bool) -> ExitCode {
                     .and_then(|v| v.as_str())
                     .or_else(|| result.get("dot").and_then(|v| v.as_str()))
                     .unwrap_or("");
-                print!("{dot}");
+                print!("{}", terminal_lines(dot));
             }
             ExitCode::SUCCESS
         }
@@ -393,7 +393,7 @@ fn baseline_params_from_app(baseline_app: &str) -> Result<serde_json::Value, Str
     if let Ok(manifest) = al_project::project::load_app_manifest(&cwd)
         && let Some(warning) = different_app_warning(&pkg.app_id, &pkg.name, &manifest)
     {
-        eprintln!("warning: {warning}");
+        eprintln!("warning: {}", terminal_text(&warning));
     }
     let baseline_symbols = serde_json::to_value(&pkg.objects)
         .map_err(|e| format!("serializing baseline symbols: {e}"))?;
@@ -450,12 +450,15 @@ pub fn cmd_breaking_changes(baseline_app: Option<&str>, json: bool) -> ExitCode 
         |result| {
             let changes = list_rows(result).as_array().cloned().unwrap_or_default();
             if changes.is_empty() {
-                println!("No breaking changes detected (against {baseline_app}).");
+                println!(
+                    "No breaking changes detected (against {}).",
+                    terminal_text(baseline_app)
+                );
             } else {
                 for c in &changes {
-                    let kind = c.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                    let object = c.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                    let description = c.get("description").and_then(|v| v.as_str()).unwrap_or("?");
+                    let kind = text_field(c, "kind", "?");
+                    let object = text_field(c, "object", "?");
+                    let description = text_field(c, "description", "?");
                     println!("[{kind}] \"{object}\": {description}");
                 }
                 eprintln!("\n{} breaking change(s)", changes.len());
@@ -477,9 +480,9 @@ pub fn cmd_arch_lint(json: bool) -> ExitCode {
                 println!("No architecture violations found.");
             } else {
                 for v in &violations {
-                    let rule = v.get("ruleId").and_then(|v| v.as_str()).unwrap_or("?");
-                    let object = v.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                    let message = v.get("message").and_then(|v| v.as_str()).unwrap_or("?");
+                    let rule = text_field(v, "ruleId", "?");
+                    let object = text_field(v, "object", "?");
+                    let message = text_field(v, "message", "?");
                     println!("[{rule}] {object}: {message}");
                 }
                 eprintln!("\n{} architecture violation(s)", violations.len());
@@ -500,18 +503,7 @@ pub fn cmd_native_check(json: bool) -> ExitCode {
             if findings.is_empty() {
                 println!("No native semantic issues found.");
             } else {
-                for f in &findings {
-                    let code = f.get("code").and_then(|v| v.as_str()).unwrap_or("?");
-                    let sev = f.get("severity").and_then(|v| v.as_str()).unwrap_or("?");
-                    let otype = f.get("objectType").and_then(|v| v.as_str()).unwrap_or("?");
-                    let name = f.get("objectName").and_then(|v| v.as_str()).unwrap_or("?");
-                    let msg = f.get("message").and_then(|v| v.as_str()).unwrap_or("?");
-                    let file = f.get("file").and_then(|v| v.as_str()).unwrap_or("");
-                    println!("[{code}] {sev} {otype} \"{name}\": {msg}");
-                    if !file.is_empty() {
-                        println!("    {file}");
-                    }
-                }
+                print!("{}", native_check_text(&findings));
                 eprintln!("\n{} native semantic finding(s)", findings.len());
             }
         },
@@ -532,12 +524,31 @@ pub fn cmd_native_check(json: bool) -> ExitCode {
     )
 }
 
-fn format_block_location(loc: Option<&serde_json::Value>) -> String {
+/// The lines `native-check` prints: each finding, and its file on the next
+/// line.
+fn native_check_text(findings: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for f in findings {
+        let code = text_field(f, "code", "?");
+        let sev = text_field(f, "severity", "?");
+        let otype = text_field(f, "objectType", "?");
+        let name = text_field(f, "objectName", "?");
+        let msg = text_field(f, "message", "?");
+        let file = text_field(f, "file", "");
+        let _ = writeln!(out, "[{code}] {sev} {otype} \"{name}\": {msg}");
+        if !file.is_empty() {
+            let _ = writeln!(out, "    {file}");
+        }
+    }
+    out
+}
+
+fn block_location_text(loc: Option<&serde_json::Value>) -> String {
     let Some(loc) = loc else {
         return "?".to_string();
     };
-    let file = loc.get("file").and_then(|v| v.as_str()).unwrap_or("?");
-    let proc = loc.get("procedure").and_then(|v| v.as_str()).unwrap_or("?");
+    let file = text_field(loc, "file", "?");
+    let proc = text_field(loc, "procedure", "?");
     let line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
     format!("{file}:{line} ({proc})")
 }
@@ -568,8 +579,8 @@ pub fn cmd_duplicates(min_tokens: usize, min_similarity: f32, json: bool) -> Exi
                 } else {
                     for d in &dups {
                         let sim = d.get("similarity").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        let loc1 = format_block_location(d.get("first"));
-                        let loc2 = format_block_location(d.get("second"));
+                        let loc1 = block_location_text(d.get("first"));
+                        let loc2 = block_location_text(d.get("second"));
                         println!("{:.0}% similarity: {} ~ {}", sim * 100.0, loc1, loc2);
                     }
                     eprintln!("\n{} duplicate block(s)", dups.len());
@@ -612,16 +623,16 @@ pub fn cmd_upgrade_report(baseline_app: Option<&str>, json: bool) -> ExitCode {
         |result| {
             let issues = list_rows(result).as_array().cloned().unwrap_or_default();
             if issues.is_empty() {
-                println!("No upgrade issues found (against {baseline_app}).");
+                println!(
+                    "No upgrade issues found (against {}).",
+                    terminal_text(baseline_app)
+                );
             } else {
                 for i in &issues {
-                    let kind = i.get("kind").and_then(|v| v.as_str()).unwrap_or("?");
-                    let object = i.get("object").and_then(|v| v.as_str()).unwrap_or("?");
-                    let description = i.get("description").and_then(|v| v.as_str()).unwrap_or("?");
-                    let hint = i
-                        .get("migrationHint")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let kind = text_field(i, "kind", "?");
+                    let object = text_field(i, "object", "?");
+                    let description = text_field(i, "description", "?");
+                    let hint = text_field(i, "migrationHint", "");
                     println!("[{kind}] \"{object}\": {description}");
                     if !hint.is_empty() {
                         println!("  Migration: {hint}");
@@ -699,5 +710,62 @@ mod baseline_tests {
         .expect("a different app id warns");
         assert!(warning.contains("Base Application"), "{warning}");
         assert!(warning.contains("package-diff"), "{warning}");
+    }
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{block_location_text, native_check_text, obsolete_text, package_diff_changes_text};
+
+    const COLOURED: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
+    const TITLE: &str = "Sec7 Caller\u{1b}]0;pwned\u{7}";
+    const CLEAR: &str = "Sec7 Tests\u{1b}[2J";
+
+    fn assert_escaped(text: &str) {
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "{text:?}"
+        );
+        assert!(text.contains(r"Bad\u{1b}[31m Name\u{1b}[0m"), "got: {text}");
+        assert!(
+            text.contains(r"Sec7 Caller\u{1b}]0;pwned\u{7}"),
+            "got: {text}"
+        );
+        assert!(text.contains(r"Sec7 Tests\u{1b}[2J"), "got: {text}");
+    }
+
+    #[test]
+    fn obsolete_native_check_package_diff_and_duplicates_print_crafted_names_escaped() {
+        let obsolete = [serde_json::json!({
+            "kind": "procedure", "object": COLOURED, "symbol": TITLE,
+            "state": "Pending", "reason": CLEAR
+        })];
+        assert_escaped(&obsolete_text(&obsolete));
+
+        let findings = [serde_json::json!({
+            "code": "AL0118", "severity": "error", "objectType": "Codeunit",
+            "objectName": COLOURED, "message": TITLE, "file": CLEAR
+        })];
+        let text = native_check_text(&findings);
+        assert_escaped(&text);
+        assert!(
+            text.contains(r#"[AL0118] error Codeunit "Bad\u{1b}[31m Name\u{1b}[0m""#),
+            "got: {text}"
+        );
+
+        let diff = serde_json::json!({"changes": [{
+            "object": COLOURED, "member": "Run", "objectKind": "Codeunit",
+            "isBreaking": true, "description": "removed",
+            "uses": [{"k": "Codeunit", "n": TITLE, "type": "call", "proc": CLEAR}]
+        }]});
+        assert_escaped(&package_diff_changes_text(&diff));
+
+        let location = serde_json::json!({"file": CLEAR, "procedure": TITLE, "line": 4});
+        let text = format!(
+            "{} {}",
+            block_location_text(Some(&location)),
+            block_location_text(Some(&serde_json::json!({"file": COLOURED})))
+        );
+        assert_escaped(&text);
     }
 }

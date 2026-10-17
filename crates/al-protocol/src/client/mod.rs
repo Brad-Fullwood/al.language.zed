@@ -29,9 +29,13 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Ceiling on progress-aware waiting. A request that waits past this gives up
 /// even while the dependency source index or the call graph is still building.
 const MAX_INDEX_WAIT: Duration = Duration::from_secs(600);
-/// Deadline for the `handshake` call that checks which build a daemon is.
-/// It reads two constants, so anything slower than this is a wedged daemon,
-/// and treating that as a mismatch replaces it.
+/// Deadline for the `handshake` call that checks which build a daemon that
+/// was already running is. The daemon answers it from the moment it listens,
+/// so a daemon that passes this is not answering at all. It is left as it is:
+/// silence says nothing about which build it is, and stopping it would stop a
+/// daemon that may be loading its project. A daemon started during the
+/// connect gets the request deadline instead, see
+/// [`DaemonClient::startup_handshake_timeout`].
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// Deadline for the `shutdown` that precedes a replacement.
 const SHUTDOWN_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -506,7 +510,7 @@ impl DaemonClient {
         let mut client = Self::from_stream(stream)?.with_project_root(project_root);
         // Lifecycle tooling sends `shutdown` next, so a failed proof stops
         // here. Which build answered does not matter to it.
-        let _identity = client.authenticate(project_root)?;
+        let _identity = client.authenticate(project_root, HANDSHAKE_TIMEOUT)?;
         Ok(client)
     }
 
@@ -551,18 +555,53 @@ impl DaemonClient {
         expected: Option<&BuildIdentity>,
         spawn: &mut dyn FnMut(&Path, &Path) -> Result<Stream, String>,
     ) -> Result<Self, String> {
-        let mut client = Self::connect_or_spawn(project_root, endpoint, lock_path, spawn)?;
+        Self::connect_checked_within(
+            project_root,
+            endpoint,
+            lock_path,
+            expected,
+            spawn,
+            HANDSHAKE_TIMEOUT,
+        )
+    }
+
+    /// [`Self::connect_checked`] with the handshake deadline as a parameter,
+    /// so a test can shorten it.
+    fn connect_checked_within(
+        project_root: &Path,
+        endpoint: &Path,
+        lock_path: &Path,
+        expected: Option<&BuildIdentity>,
+        spawn: &mut dyn FnMut(&Path, &Path) -> Result<Stream, String>,
+        handshake_timeout: Duration,
+    ) -> Result<Self, String> {
+        let (mut client, starting) =
+            Self::connect_or_spawn(project_root, endpoint, lock_path, spawn)?;
 
         // Who is answering is settled before which build it is, and a failure
         // there is not a build difference: `AL_ALLOW_MISMATCHED_DAEMON` does
         // not reach it, and no `shutdown` is sent to an endpoint that failed
         // the proof.
-        let actual = client.authenticate(project_root)?;
+        let timeout = if starting {
+            client.startup_handshake_timeout(handshake_timeout)
+        } else {
+            handshake_timeout
+        };
+        let actual = client.authenticate(project_root, timeout)?;
         let Some(expected) = expected.cloned() else {
             return Ok(client);
         };
         if actual.as_ref().is_ok_and(|actual| *actual == expected) {
             return Ok(client);
+        }
+        // A daemon that answered nothing is not known to be from other code,
+        // and the shutdown below would stop a daemon that is still loading its
+        // project. The one this client started was stopped that way, and its
+        // replacement refused for the same silence.
+        if let Err(HandshakeError::Unproven(reason)) = &actual {
+            if is_timeout_message(reason) {
+                return Err(silent_daemon(project_root, reason, starting));
+            }
         }
         let reported = match &actual {
             Ok(actual) => actual.to_string(),
@@ -602,15 +641,27 @@ impl DaemonClient {
         // endpoint, and restarting again would not change that. A replacement
         // started from this binary always carries the proof, so an answer
         // without one, or with a wrong one, is refused rather than used.
-        match client.daemon_identity() {
+        let timeout = client.startup_handshake_timeout(handshake_timeout);
+        match client.daemon_identity_within(timeout) {
             Ok(actual) if actual == expected => {}
             Ok(actual) => notify(&format!(
                 "the replacement daemon still reports a different build ({actual}, this client \
                  expects {expected}); continuing with it"
             )),
+            Err(HandshakeError::Unproven(reason)) if is_timeout_message(&reason) => {
+                return Err(silent_daemon(project_root, &reason, true));
+            }
             Err(error) => return Err(unauthenticated_daemon(project_root, &error)),
         }
         Ok(client)
+    }
+
+    /// How long a daemon started during this connect gets to answer its first
+    /// `handshake`: the request deadline, and at least `handshake_timeout`.
+    /// The daemon answers `handshake` from the moment it listens, and the
+    /// deadline covers a machine too loaded to get it there in time.
+    fn startup_handshake_timeout(&self, handshake_timeout: Duration) -> Duration {
+        self.request_timeout.max(handshake_timeout)
     }
 
     /// Check that the process on the endpoint holds this user's handshake
@@ -625,8 +676,9 @@ impl DaemonClient {
     fn authenticate(
         &mut self,
         project_root: &Path,
+        timeout: Duration,
     ) -> Result<Result<BuildIdentity, HandshakeError>, String> {
-        match self.daemon_identity() {
+        match self.daemon_identity_within(timeout) {
             Err(error @ HandshakeError::Unauthenticated(_)) => {
                 Err(unauthenticated_daemon(project_root, &error))
             }
@@ -639,14 +691,19 @@ impl DaemonClient {
 
     /// Connect to a running daemon, or serialise with other callers and start
     /// one. No identity check: [`Self::connect_checked`] adds that.
+    ///
+    /// The flag is `true` when the daemon was started during this call, by
+    /// this process or by the caller that held the spawn lock, so it may
+    /// still be loading its project.
     fn connect_or_spawn(
         project_root: &Path,
         endpoint: &Path,
         lock_path: &Path,
         spawn: &mut dyn FnMut(&Path, &Path) -> Result<Stream, String>,
-    ) -> Result<Self, String> {
+    ) -> Result<(Self, bool), String> {
         if let Ok(stream) = connect_stream(endpoint) {
-            return Self::from_stream(stream).map(|client| client.with_project_root(project_root));
+            return Self::from_stream(stream)
+                .map(|client| (client.with_project_root(project_root), false));
         }
 
         let result = match try_acquire_spawn_lock(lock_path)
@@ -668,19 +725,23 @@ impl DaemonClient {
                 Self::from_stream(stream)
             }
         };
-        result.map(|client| client.with_project_root(project_root))
+        result.map(|client| (client.with_project_root(project_root), true))
     }
 
-    /// Ask the daemon which build it came from.
+    /// Ask the daemon which build it came from, waiting up to `timeout` for
+    /// the answer.
     ///
     /// A daemon too old to know `handshake` answers "Unknown method", which is
     /// itself the answer the caller needs: it predates this check.
-    fn daemon_identity(&mut self) -> Result<BuildIdentity, HandshakeError> {
+    fn daemon_identity_within(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<BuildIdentity, HandshakeError> {
         let challenge = identity::nonce();
         let params =
             (!challenge.is_empty()).then(|| serde_json::json!({ "nonce": challenge.clone() }));
         let value = self
-            .request_with_timeout("handshake", params, HANDSHAKE_TIMEOUT)
+            .request_with_timeout("handshake", params, timeout)
             .map_err(HandshakeError::Unproven)?;
         let identity: BuildIdentity = serde_json::from_value(value.clone()).map_err(|error| {
             HandshakeError::Unproven(format!("handshake did not carry a build identity: {error}"))
@@ -1262,11 +1323,13 @@ fn binary_version(binary: &Path) -> Option<String> {
 
 /// The per-user handshake secret, created on first use.
 ///
-/// `None` when there is no runtime directory to keep it in, or the directory
-/// is one this user does not own. Both are reasons not to make a challenge
-/// rather than reasons to refuse the daemon: the peer check already decided
-/// who may answer.
-pub fn handshake_secret() -> Option<Vec<u8>> {
+/// `None` when there is no runtime directory to keep it in, the directory is
+/// one this user does not own, or the key file there does not hold
+/// [`identity::SECRET_BYTES`] bytes. Then no challenge can be made: a daemon
+/// answers the handshake with no proof, and a client goes on without one on
+/// Unix, where the peer check already decided who may answer, and refuses the
+/// daemon on Windows.
+pub fn handshake_secret() -> Option<[u8; identity::SECRET_BYTES]> {
     let dir = crate::socket::runtime_al_lsp_dir()?;
     #[cfg(unix)]
     crate::endpoint::ensure_private_dir(&dir).ok()?;
@@ -1293,6 +1356,24 @@ impl std::fmt::Display for HandshakeError {
             Self::Unauthenticated(reason) | Self::Unproven(reason) => formatter.write_str(reason),
         }
     }
+}
+
+/// The error for a daemon that answered nothing within its handshake
+/// deadline. Nothing but the handshake was sent to it, and it was left
+/// running: from here a daemon loading its project and a wedged one look the
+/// same, and the next command finds out which.
+fn silent_daemon(project_root: &Path, reason: &str, starting: bool) -> String {
+    let advice = if starting {
+        "It was started for this command and may still be loading the project: run the command \
+         again, or raise AL_REQUEST_TIMEOUT_MS to wait longer."
+    } else {
+        "Run the command again once it has started, or stop it with `al-explorer \
+         daemon-shutdown` if it stays silent."
+    };
+    format!(
+        "The daemon for {} did not answer the handshake ({reason}). {advice}",
+        project_root.display()
+    )
 }
 
 /// The refusal for an endpoint that did not prove it is this user's daemon.
@@ -1981,16 +2062,27 @@ mod startup_error_tests {
         /// `None` models a daemon built before `handshake` existed: it answers
         /// the method it does not know with `METHOD_NOT_FOUND`.
         fn start_with(sock: &Path, identity: Option<BuildIdentity>) -> Self {
-            Self::start_inner(sock, identity, false)
+            Self::start_inner(sock, identity, false, Duration::ZERO)
         }
 
         /// A process that says the expected identity but cannot read this
         /// user's handshake key, so its proof is keyed by something else.
         fn start_forging(sock: &Path, identity: BuildIdentity) -> Self {
-            Self::start_inner(sock, Some(identity), true)
+            Self::start_inner(sock, Some(identity), true, Duration::ZERO)
         }
 
-        fn start_inner(sock: &Path, identity: Option<BuildIdentity>, forge: bool) -> Self {
+        /// A daemon that answers `handshake` only after `delay`, the way a
+        /// real one that is still loading its project used to.
+        fn start_answering_after(sock: &Path, identity: BuildIdentity, delay: Duration) -> Self {
+            Self::start_inner(sock, Some(identity), false, delay)
+        }
+
+        fn start_inner(
+            sock: &Path,
+            identity: Option<BuildIdentity>,
+            forge: bool,
+            handshake_delay: Duration,
+        ) -> Self {
             let listener = UnixListener::bind(sock).expect("bind fake daemon");
             listener
                 .set_nonblocking(true)
@@ -2021,6 +2113,7 @@ mod startup_error_tests {
                         };
                         let response = match (request.method.as_str(), &identity) {
                             ("handshake", Some(identity)) => {
+                                std::thread::sleep(handshake_delay);
                                 // The real daemon answers the nonce with an
                                 // HMAC keyed by the per-user secret. A fake
                                 // that cannot read that file is exactly the
@@ -2038,7 +2131,7 @@ mod startup_error_tests {
                                     let secret = if forge {
                                         Some(b"not this user's key".to_vec())
                                     } else {
-                                        handshake_secret()
+                                        handshake_secret().map(|secret| secret.to_vec())
                                     };
                                     if let Some(secret) = secret {
                                         answer["proof"] = serde_json::json!(
@@ -2378,6 +2471,60 @@ mod startup_error_tests {
             .err()
             .expect("the forging replacement must be refused");
         assert!(error.contains("did not match"), "{error}");
+    }
+
+    /// A daemon this client started answers `handshake` once it is ready.
+    /// That silence was read as a build mismatch: the client stopped the
+    /// daemon it had just started, and then refused the replacement for the
+    /// same silence.
+    #[test]
+    fn a_daemon_started_here_is_waited_for_while_it_starts() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let sock = unique_sock();
+        let lock = sock.with_extension("lock");
+
+        let started: std::sync::Mutex<Option<FakeDaemon>> = std::sync::Mutex::new(None);
+        let mut spawn = |_root: &Path, endpoint: &Path| {
+            // Past one `READ_POLL_INTERVAL`, so the handshake deadline below
+            // is reached before the answer arrives.
+            *started.lock().expect("test") = Some(FakeDaemon::start_answering_after(
+                endpoint,
+                expected_for_test(),
+                READ_POLL_INTERVAL + Duration::from_millis(500),
+            ));
+            let stream = UnixStream::connect(endpoint).map_err(|e| e.to_string())?;
+            Ok(test_stream(stream))
+        };
+
+        let project = std::env::temp_dir();
+        let result = DaemonClient::connect_checked_within(
+            &project,
+            &sock,
+            &lock,
+            Some(&expected_for_test()),
+            &mut spawn,
+            Duration::from_millis(300),
+        );
+        let daemon = started
+            .lock()
+            .expect("test")
+            .take()
+            .expect("the daemon was started");
+        assert!(
+            !daemon.was_asked_to_shut_down(),
+            "a daemon that is still starting must not be stopped"
+        );
+        let mut client = result.expect("the client waits for the daemon it started");
+        assert_eq!(
+            client
+                .request("ping", None)
+                .expect("the daemon answers once it has started"),
+            serde_json::json!("pong")
+        );
+
+        drop(client);
+        drop(daemon);
+        let _ = std::fs::remove_file(&sock);
     }
 
     /// A daemon built before this check existed answers "Unknown method", and

@@ -1,4 +1,5 @@
 use super::*;
+use crate::server::daemon::containment::resolve_output_path_within_project;
 use al_protocol::jsonrpc::error_codes;
 use al_workspace::Workspace;
 
@@ -1455,7 +1456,7 @@ async fn snapshot_validate_unreadable_path_is_invalid_params() {
     .await;
     let err = resp.error.expect("err");
     assert_eq!(err.code, error_codes::INVALID_PARAMS);
-    assert!(err.message.contains("resolve snapshot path"));
+    assert!(err.message.contains("cannot be read"), "{}", err.message);
 }
 
 #[tokio::test]
@@ -1537,23 +1538,17 @@ fn mutation_allowlist_resolves_relative_and_absolute_paths_to_index_keys() {
     std::fs::write(&file, "codeunit 50100 Mutation { }").unwrap();
 
     let ws = empty_ws();
+    crate::server::daemon::set_test_project_root(&ws, project.path());
     ws.file_index
         .add_file(file.clone(), "codeunit 50100 Mutation { }".to_string());
 
-    let relative = resolve_mutation_file_allowlist(
-        &ws,
-        project.path(),
-        vec!["src/Mutation.Codeunit.al".to_string()],
-    )
-    .expect("relative workspace path");
+    let relative =
+        resolve_mutation_file_allowlist(&ws, vec!["src/Mutation.Codeunit.al".to_string()])
+            .expect("relative workspace path");
     assert_eq!(relative, vec![file.to_string_lossy().into_owned()]);
 
-    let absolute = resolve_mutation_file_allowlist(
-        &ws,
-        project.path(),
-        vec![file.to_string_lossy().into_owned()],
-    )
-    .expect("absolute workspace path");
+    let absolute = resolve_mutation_file_allowlist(&ws, vec![file.to_string_lossy().into_owned()])
+        .expect("absolute workspace path");
     assert_eq!(absolute, vec![file.to_string_lossy().into_owned()]);
 }
 
@@ -1571,35 +1566,33 @@ fn mutation_allowlist_rejects_alias_duplicates_outside_and_unindexed_files() {
     std::fs::write(&outside_file, "codeunit 50102 Outside { }").unwrap();
 
     let ws = empty_ws();
+    crate::server::daemon::set_test_project_root(&ws, project.path());
     ws.file_index
         .add_file(indexed, "codeunit 50100 Mutation { }".to_string());
 
     let duplicate = resolve_mutation_file_allowlist(
         &ws,
-        project.path(),
         vec![
             "src/Mutation.Codeunit.al".to_string(),
             "src/./Mutation.Codeunit.al".to_string(),
         ],
     )
     .expect_err("path aliases must not select one file twice");
-    assert!(duplicate.contains("same file"), "{duplicate}");
+    assert!(duplicate.message.contains("same file"), "{duplicate}");
+    assert_eq!(duplicate.code, error_codes::INVALID_PARAMS);
 
-    let not_indexed = resolve_mutation_file_allowlist(
-        &ws,
-        project.path(),
-        vec!["src/Unindexed.Codeunit.al".to_string()],
-    )
-    .expect_err("existing non-indexed files must be rejected");
-    assert!(not_indexed.contains("not an indexed AL workspace file"));
+    let not_indexed =
+        resolve_mutation_file_allowlist(&ws, vec!["src/Unindexed.Codeunit.al".to_string()])
+            .expect_err("existing non-indexed files must be rejected");
+    assert!(not_indexed
+        .message
+        .contains("not an indexed AL workspace file"));
 
-    let escaped = resolve_mutation_file_allowlist(
-        &ws,
-        project.path(),
-        vec![outside_file.to_string_lossy().into_owned()],
-    )
-    .expect_err("out-of-project files must be rejected");
-    assert!(escaped.contains("outside the loaded project"));
+    let escaped =
+        resolve_mutation_file_allowlist(&ws, vec![outside_file.to_string_lossy().into_owned()])
+            .expect_err("out-of-project files must be rejected");
+    assert!(escaped.message.contains("outside the project"), "{escaped}");
+    assert_eq!(escaped.code, error_codes::PATH_NOT_AUTHORIZED);
 }
 
 #[tokio::test(flavor = "multi_thread")]

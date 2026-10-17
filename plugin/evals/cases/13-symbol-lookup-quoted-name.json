@@ -1,0 +1,20 @@
+{
+  "id": "13-symbol-lookup-quoted-name",
+  "question": "What is the object ID of the It's Here codeunit, and where is its file?",
+  "skill": "al-bc:bc-symbol-lookup",
+  "fixture": "crates/al-test-harness/data/test_al_project",
+  "overlay": null,
+  "source": "plugin/TESTING.md, the question about a name that holds a quote",
+  "checks": [
+    {
+      "args": ["--compact", "--fields", "kind,id,name", "search", "--", "It's Here"],
+      "jq": "[.items[] | select(.name == \"It's Here\") | .id] | first",
+      "expect_exact": "50160"
+    },
+    {
+      "args": ["--compact", "location", "--", "It's Here"],
+      "jq": ".path | endswith(\"src/ItsHere.Codeunit.al\")",
+      "expect_exact": "true"
+    }
+  ]
+}

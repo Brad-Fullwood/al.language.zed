@@ -1,13 +1,16 @@
 //! `al-explorer debug`, `snapshot` and `profile` subcommands: the CLI front
 //! for the daemon's debug-session, snapshot and profiling methods.
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
+
+use serde_json::Value;
 
 use super::super::{DebugCommands, ProfileCommands, SnapshotCommands};
 
 use super::{
     absolutize_path, bc_server_params, connect, file_to_uri, print_json, report_error,
-    request_checked,
+    request_checked, terminal_text, text_field,
 };
 
 pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
@@ -27,11 +30,8 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let session = result
-                            .get("session")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let session = text_field(&result, "session", "?");
+                        let status = text_field(&result, "status", "?");
                         println!("Debug session started: {session} (status: {status})");
                     }
                     ExitCode::SUCCESS
@@ -94,28 +94,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        let session_id = result
-                            .get("sessionId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        println!("Session {session_id}: {status}");
-                        if let Some(loc) = result.get("location") {
-                            let file = loc.get("file").and_then(|v| v.as_str()).unwrap_or("?");
-                            let line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let proc = loc.get("procedure").and_then(|v| v.as_str()).unwrap_or("");
-                            println!("  at {file}:{line} ({proc})");
-                        }
-                        if let Some(vars) = result.get("variables").and_then(|v| v.as_array()) {
-                            println!("  Variables:");
-                            for var in vars {
-                                let name = var.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                let val = var.get("value").and_then(|v| v.as_str()).unwrap_or("?");
-                                let ty =
-                                    var.get("typeName").and_then(|v| v.as_str()).unwrap_or("?");
-                                println!("    {name}: {ty} = {val}");
-                            }
-                        }
+                        print!("{}", debug_state_text(&result));
                     }
                     ExitCode::SUCCESS
                 }
@@ -133,12 +112,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let val = result.get("result").and_then(|v| v.as_str()).unwrap_or("?");
-                        let ty = result
-                            .get("typeName")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        println!("{val} ({ty})");
+                        println!("{}", debug_eval_line(&result));
                     }
                     ExitCode::SUCCESS
                 }
@@ -156,7 +130,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let status = text_field(&result, "status", "?");
                         println!("Continued. Status: {status}");
                     }
                     ExitCode::SUCCESS
@@ -175,13 +149,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("Stepped. Status: {status}");
-                        if let Some(loc) = result.get("location") {
-                            let file = loc.get("file").and_then(|v| v.as_str()).unwrap_or("?");
-                            let line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-                            println!("  at {file}:{line}");
-                        }
+                        print!("{}", debug_step_text(&result));
                     }
                     ExitCode::SUCCESS
                 }
@@ -209,10 +177,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                             } else {
                                 for hit in hits {
                                     let seq = hit.get("seq").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    let ts = hit
-                                        .get("timestamp")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("?");
+                                    let ts = text_field(hit, "timestamp", "?");
                                     println!("Hit #{seq} at {ts}");
                                 }
                             }
@@ -238,7 +203,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                     } else if stopped {
                         println!("Debug session stopped.");
                     } else {
-                        println!("Debug stop: {status}.");
+                        println!("Debug stop: {}.", terminal_text(status));
                     }
                     if stopped {
                         ExitCode::SUCCESS
@@ -250,6 +215,88 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
             }
         }
     }
+}
+
+/// The text `debug state` prints: the session, where it stopped and each
+/// variable. Names and values come from the BC debugger.
+fn debug_state_text(result: &Value) -> String {
+    let mut out = String::new();
+    let status = text_field(result, "status", "?");
+    let session_id = text_field(result, "sessionId", "?");
+    let _ = writeln!(out, "Session {session_id}: {status}");
+    if let Some(loc) = result.get("location") {
+        let file = text_field(loc, "file", "?");
+        let line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+        let proc = text_field(loc, "procedure", "");
+        let _ = writeln!(out, "  at {file}:{line} ({proc})");
+    }
+    if let Some(vars) = result.get("variables").and_then(|v| v.as_array()) {
+        let _ = writeln!(out, "  Variables:");
+        for var in vars {
+            let name = text_field(var, "name", "?");
+            let val = text_field(var, "value", "?");
+            let ty = text_field(var, "typeName", "?");
+            let _ = writeln!(out, "    {name}: {ty} = {val}");
+        }
+    }
+    out
+}
+
+/// The line `debug eval` prints: the value and its type.
+fn debug_eval_line(result: &Value) -> String {
+    let val = text_field(result, "result", "?");
+    let ty = text_field(result, "typeName", "?");
+    format!("{val} ({ty})")
+}
+
+/// The text `debug step` prints: the status and the new location.
+fn debug_step_text(result: &Value) -> String {
+    let mut out = String::new();
+    let status = text_field(result, "status", "?");
+    let _ = writeln!(out, "Stepped. Status: {status}");
+    if let Some(loc) = result.get("location") {
+        let file = text_field(loc, "file", "?");
+        let line = loc.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
+        let _ = writeln!(out, "  at {file}:{line}");
+    }
+    out
+}
+
+/// The table `snapshot list` prints for the server's snapshots.
+fn snapshots_text(snaps: &[Value]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "{:<30} {:<25} {:>10}", "ID", "CREATED", "SIZE");
+    let _ = writeln!(out, "{}", "-".repeat(70));
+    for s in snaps {
+        let id = text_field(s, "id", "?");
+        let created = text_field(s, "createdAt", "-");
+        let size = s.get("sizeBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+        let _ = writeln!(out, "{id:<30} {created:<25} {size:>10}");
+    }
+    out
+}
+
+/// The table `profile analyze` prints for the profile's hotspots.
+fn hotspots_text(spots: &[Value]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:>8}  {:>8}  {:>8}  PROCEDURE",
+        "SELF(ms)", "TOTAL(ms)", "HITS"
+    );
+    let _ = writeln!(out, "{}", "-".repeat(80));
+    for h in spots {
+        let proc = text_field(h, "procedure", "?");
+        let self_ms = h.get("selfTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let total_ms = h.get("totalTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let hits = h.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        let label = match h.get("object").and_then(|v| v.as_str()) {
+            Some(object) => format!("{proc} ({})", terminal_text(object)),
+            None => proc,
+        };
+        let _ = writeln!(out, "{self_ms:>8.1}  {total_ms:>8.1}  {hits:>8}  {label}");
+    }
+    out
 }
 
 /// Whether a `debug stop` response's `status` field means a session was
@@ -294,11 +341,8 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let snapshot_id = result
-                            .get("snapshotId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let snapshot_id = text_field(&result, "snapshotId", "?");
+                        let status = text_field(&result, "status", "?");
                         println!("Snapshot started: {snapshot_id} (status: {status})");
                     }
                     ExitCode::SUCCESS
@@ -338,16 +382,7 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
                             if snaps.is_empty() {
                                 eprintln!("No snapshots available on server.");
                             } else {
-                                println!("{:<30} {:<25} {:>10}", "ID", "CREATED", "SIZE");
-                                println!("{}", "-".repeat(70));
-                                for s in snaps {
-                                    let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let created =
-                                        s.get("createdAt").and_then(|v| v.as_str()).unwrap_or("-");
-                                    let size =
-                                        s.get("sizeBytes").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    println!("{:<30} {:<25} {:>10}", id, created, size);
-                                }
+                                print!("{}", snapshots_text(snaps));
                                 eprintln!("\n{} snapshot(s)", snaps.len());
                             }
                         }
@@ -387,9 +422,9 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        println!("Snapshot {snapshot_id} {status}: {path}");
+                        let path = text_field(&result, "path", "?");
+                        let status = text_field(&result, "status", "?");
+                        println!("Snapshot {} {status}: {path}", terminal_text(snapshot_id));
                     }
                     ExitCode::SUCCESS
                 }
@@ -428,11 +463,8 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let session_id = result
-                            .get("sessionId")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("?");
-                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let session_id = text_field(&result, "sessionId", "?");
+                        let status = text_field(&result, "status", "?");
                         println!("Profiling started: session={session_id} ({status})");
                         eprintln!("Run `al profile stop --session-id {session_id}` when done.");
                     }
@@ -473,8 +505,8 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let path = result.get("path").and_then(|v| v.as_str()).unwrap_or("?");
-                        let status = result.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                        let path = text_field(&result, "path", "?");
+                        let status = text_field(&result, "status", "?");
                         println!("Profiling {status}. Profile saved: {path}");
                         eprintln!("Analyze with: al profile analyze {path}");
                     }
@@ -514,30 +546,7 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                             if spots.is_empty() {
                                 eprintln!("No hotspots found in profile.");
                             } else {
-                                println!(
-                                    "{:>8}  {:>8}  {:>8}  PROCEDURE",
-                                    "SELF(ms)", "TOTAL(ms)", "HITS"
-                                );
-                                println!("{}", "-".repeat(80));
-                                for h in spots {
-                                    let proc =
-                                        h.get("procedure").and_then(|v| v.as_str()).unwrap_or("?");
-                                    let self_ms =
-                                        h.get("selfTimeMs").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                                    let total_ms = h
-                                        .get("totalTimeMs")
-                                        .and_then(|v| v.as_f64())
-                                        .unwrap_or(0.0);
-                                    let hits =
-                                        h.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0);
-                                    let obj = h.get("object").and_then(|v| v.as_str());
-                                    let label = if let Some(o) = obj {
-                                        format!("{proc} ({o})")
-                                    } else {
-                                        proc.to_string()
-                                    };
-                                    println!("{self_ms:>8.1}  {total_ms:>8.1}  {hits:>8}  {label}");
-                                }
+                                print!("{}", hotspots_text(spots));
                                 eprintln!("\n{} hotspot(s) shown", spots.len());
                             }
                         }
@@ -567,5 +576,67 @@ mod debug_stop_exit_code_tests {
     #[test]
     fn unknown_status_is_not_success() {
         assert!(!debug_stop_actually_stopped("?"));
+    }
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{
+        debug_eval_line, debug_state_text, debug_step_text, hotspots_text, snapshots_text,
+    };
+
+    const COLOURED: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
+    const TITLE: &str = "Sec7 Caller\u{1b}]0;pwned\u{7}";
+    const CLEAR: &str = "Sec7 Tests\u{1b}[2J";
+
+    fn assert_escaped(text: &str) {
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "{text:?}"
+        );
+        assert!(text.contains(r"Sec7 Tests\u{1b}[2J"), "got: {text}");
+    }
+
+    #[test]
+    fn debugger_frames_variables_and_values_print_escaped() {
+        let state = serde_json::json!({
+            "status": "paused", "sessionId": "s1",
+            "location": {"file": CLEAR, "line": 3, "procedure": COLOURED},
+            "variables": [{"name": COLOURED, "value": TITLE, "typeName": CLEAR}]
+        });
+        let text = debug_state_text(&state);
+        assert_escaped(&text);
+        assert!(
+            text.contains(
+                r"    Bad\u{1b}[31m Name\u{1b}[0m: Sec7 Tests\u{1b}[2J = Sec7 Caller\u{1b}]0;pwned\u{7}"
+            ),
+            "got: {text}"
+        );
+
+        let eval = serde_json::json!({"result": CLEAR, "typeName": TITLE});
+        assert_escaped(&debug_eval_line(&eval));
+
+        let step = serde_json::json!({"status": COLOURED, "location": {"file": CLEAR, "line": 9}});
+        assert_eq!(
+            debug_step_text(&step),
+            "Stepped. Status: Bad\\u{1b}[31m Name\\u{1b}[0m\n  at Sec7 Tests\\u{1b}[2J:9\n"
+        );
+    }
+
+    #[test]
+    fn snapshot_ids_and_profile_procedures_print_escaped() {
+        let snaps = [serde_json::json!({"id": CLEAR, "createdAt": TITLE, "sizeBytes": 10})];
+        assert_escaped(&snapshots_text(&snaps));
+
+        let spots = [serde_json::json!({
+            "procedure": CLEAR, "object": COLOURED,
+            "selfTimeMs": 1.0, "totalTimeMs": 2.0, "hitCount": 3
+        })];
+        let text = hotspots_text(&spots);
+        assert_escaped(&text);
+        assert!(
+            text.contains(r"Sec7 Tests\u{1b}[2J (Bad\u{1b}[31m Name\u{1b}[0m)"),
+            "got: {text}"
+        );
     }
 }

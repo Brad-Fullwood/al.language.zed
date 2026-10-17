@@ -833,9 +833,9 @@ table 50100 Test
         assert_eq!(property_eq_pos("=x"), Some(0));
     }
 
-    /// `:=` is an assignment, not a property `=`: the character before it
-    /// disqualifies the match, so scanning must continue (and here finds
-    /// nothing else, so the whole line has no property `=`).
+    /// `:=` is an assignment: the `:` before the `=` disqualifies the match,
+    /// so scanning must continue (and here finds nothing else, so the whole
+    /// line has no property `=`).
     #[test]
     fn property_eq_pos_rejects_a_walrus_assignment() {
         assert_eq!(property_eq_pos(":=x"), None);
@@ -879,12 +879,11 @@ table 50100 Test
     // sort_object_properties: depth accounting for a stray brace
 
     /// A property value that carries an unbalanced `{` (defensive handling
-    /// for malformed/mid-edit source, per the comment at the accumulation
-    /// loop) must add to the running brace depth, not subtract from it. Get
-    /// the sign wrong and the object-level depth desyncs from the real
-    /// brace nesting, and a later `fields { ... }` block's own contents
-    /// spuriously reads as depth 1 again — sweeping its field-level
-    /// properties into the object-level sort.
+    /// for malformed or mid-edit source, per the comment at the accumulation
+    /// loop) adds to the running brace depth. With the sign wrong, the
+    /// object-level depth desyncs from the real brace nesting, and a later
+    /// `fields { ... }` block's own contents read as depth 1 again, which
+    /// sweeps its field-level properties into the object-level sort.
     #[test]
     fn sort_properties_stray_brace_depth_keeps_nested_properties_out_of_the_run() {
         let input = "\
@@ -912,10 +911,10 @@ codeunit 50100 T
 
     // wrap_long_property_lines: continuation tracking and the boundary check
 
-    /// A hanging-comma continuation's middle line (no `,` or `;` of its own)
-    /// must not be mistaken for the end of the continuation, and its last
-    /// line (ending `;`, but not itself `,`-continued) must not be mistaken
-    /// for a fresh, independently wrappable property.
+    /// The middle line of a continuation opened by a trailing comma (no `,`
+    /// or `;` of its own) must not be mistaken for the end of the
+    /// continuation, and its last line (ending `;`, with no `,` of its own)
+    /// must not be mistaken for a fresh property that wraps on its own.
     #[test]
     fn wrap_long_property_lines_keeps_tracking_through_a_bare_continuation_line() {
         let input = "Foo = 1,\nmiddle_value\nBar = 1, 2;\n".to_string();
@@ -946,8 +945,9 @@ codeunit 50100 T
         );
     }
 
-    /// Same as above with the block-comment-continuation spelling of
-    /// `is_comment` (a bare `*`), to reach the third disjunct in its chain.
+    /// Same as above with the spelling of `is_comment` for a line that
+    /// continues a block comment (a bare `*`), to reach the third disjunct
+    /// in its chain.
     #[test]
     fn wrap_long_property_lines_a_block_comment_continuation_comma_does_not_start_one() {
         let input = "* mid-comment,\nBar = 1, 2;\n".to_string();
@@ -988,7 +988,7 @@ codeunit 50100 T
         );
     }
 
-    // is_mergeable_brace_target: one input per otherwise-unreachable `||`
+    // is_mergeable_brace_target: one input per `||` that no other test reaches
 
     #[test]
     fn is_mergeable_brace_target_rejects_each_guarded_shape_on_its_own() {

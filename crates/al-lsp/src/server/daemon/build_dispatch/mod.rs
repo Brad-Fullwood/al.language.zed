@@ -73,21 +73,26 @@ pub(super) fn dispatch_package_diff(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let path = |key: &str| -> Result<std::path::PathBuf, String> {
+    let path = |key: &str| -> Result<std::path::PathBuf, super::PathRejection> {
         let requested = params
             .get(key)
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
-            .ok_or_else(|| format!("Missing '{key}': the path of a .app package"))?;
-        super::containment::resolve_within_project(workspace, std::path::Path::new(requested))
-            .map_err(|message| format!("'{key}' {message}"))
+            .ok_or_else(|| {
+                super::PathRejection::invalid(format!(
+                    "Missing '{key}': the path of a .app package"
+                ))
+            })?;
+        super::containment::resolve_param_within_project(
+            workspace,
+            key,
+            std::path::Path::new(requested),
+        )
     };
     let (from, to) = match (path("from"), path("to")) {
         (Ok(from), Ok(to)) => (from, to),
-        (Err(message), _) | (_, Err(message)) => {
-            return rpc_error(id, error_codes::INVALID_PARAMS, &message);
-        }
+        (Err(rejection), _) | (_, Err(rejection)) => return rejection.into_response(id),
     };
     let include_unused = params
         .get("all")

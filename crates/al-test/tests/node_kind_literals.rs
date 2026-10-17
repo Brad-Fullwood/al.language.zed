@@ -4,7 +4,7 @@
 //!
 //! A misspelled kind or field compiles and runs, and the branch behind it
 //! never matches. The interpreter and router matched eighteen kinds and looked
-//! up two fields that tree-sitter-al does not have (GR3-3). The same guard for
+//! up two fields that tree-sitter-al does not have. The same guard for
 //! al-analysis and al-insight is `al-analysis/tests/node_kind_literals.rs`.
 //! This one also reads the arms of `match node.kind() { ... }` and the names
 //! passed to `child_by_field_name`.

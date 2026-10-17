@@ -10,9 +10,11 @@ Quick lookup for the native language server (`al-lsp --stdio`). Behavior is docu
 `semanticTokens/full`, `signatureHelp`, `codeAction`, `codeLens`, `inlayHint`, `diagnostic` (pull),
 plus the document lifecycle (`didOpen`, `didChange`, `didClose`, `didSave`). `workspace/`: `symbol`,
 `diagnostic`, `executeCommand`, `didChangeConfiguration`, `didChangeWatchedFiles`. Lifecycle:
-`initialize`, `initialized`, `shutdown`. On `initialized` the server registers a `**/*.al` file
-watcher when the client supports dynamic registration of `workspace/didChangeWatchedFiles`, and
-the handler re-reads `.al` files changed outside the editor, skipping documents that are open.
+`initialize`, `initialized`, `shutdown`. On `initialized` the server registers file watchers for
+`**/*.al`, `**/app.json`, `**/.zed/debug.json` and `**/.vscode/launch.json` when the client
+supports dynamic registration of `workspace/didChangeWatchedFiles`. The handler re-reads `.al`
+files changed outside the editor, skipping documents that are open, and reads the project's
+`app.json` and debug configuration again when one of them changed.
 Custom: `experimental/runnables` (Zed runnables, with a `position` it returns only the
 test at the cursor).
 
@@ -33,7 +35,7 @@ receive the `source` actions (*AL: Format File*, *AL: Lint File*).
 | --- | --- |
 | `textDocument.definition.linkSupport` | `LocationLink[]` vs `Location[]` |
 | `textDocument.documentSymbol.hierarchicalDocumentSymbolSupport` | nested `DocumentSymbol[]` vs flat `SymbolInformation[]` |
-| `workspace.didChangeWatchedFiles.dynamicRegistration` | registers the `**/*.al` file watcher |
+| `workspace.didChangeWatchedFiles.dynamicRegistration` | registers the `.al`, `app.json` and debug configuration file watchers |
 
 ## Execute commands (`workspace/executeCommand`)
 

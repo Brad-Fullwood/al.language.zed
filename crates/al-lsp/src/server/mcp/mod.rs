@@ -1114,6 +1114,21 @@ fn agent_diagnostic(
     })
 }
 
+/// A daemon error made safe to hand to an MCP client.
+///
+/// Many errors quote a name or path read from the repository, and a client may
+/// show the decoded text on a terminal. Each line goes through
+/// [`al_project::trust::escape_controls`] and the line breaks stay, as in the
+/// `al-explorer` error output. A successful result needs none of this, because
+/// serde writes a control character as `\u001b`.
+fn client_error_text(message: &str) -> String {
+    message
+        .split('\n')
+        .map(al_project::trust::escape_controls)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn result_is_empty(result: &serde_json::Value) -> bool {
     // MCP calls carry a default `limit`, so a list result arrives as the
     // projection envelope. `total: 0` is the empty case there, and checking
@@ -1445,7 +1460,11 @@ pub(crate) async fn handle_mcp_message(
             let daemon_params = apply_agent_defaults(daemon_method, daemon_params);
             let req = Request::new(0, daemon_method, Some(daemon_params));
             let resp = super::daemon::dispatch_request(workspace, req, shutdown).await;
-            let error_message = resp.error.as_ref().map(|error| error.message.as_str());
+            let error_text = resp
+                .error
+                .as_ref()
+                .map(|error| client_error_text(&error.message));
+            let error_message = error_text.as_deref();
             let diagnostics = agent_diagnostics(
                 workspace,
                 daemon_method,
@@ -1471,20 +1490,17 @@ pub(crate) async fn handle_mcp_message(
                 None
             };
 
-            let (text, is_error, mut structured_content) = match (resp.result, resp.error) {
-                (_, Some(err)) => {
-                    let message = err.message;
-                    (
-                        message.clone(),
-                        true,
-                        serde_json::json!({
-                            "success": false,
-                            "tool": tool.name,
-                            "method": daemon_method,
-                            "error": message,
-                        }),
-                    )
-                }
+            let (text, is_error, mut structured_content) = match (resp.result, error_text) {
+                (_, Some(message)) => (
+                    message.clone(),
+                    true,
+                    serde_json::json!({
+                        "success": false,
+                        "tool": tool.name,
+                        "method": daemon_method,
+                        "error": message,
+                    }),
+                ),
                 (result, None) => {
                     let result = result.unwrap_or(serde_json::Value::Null);
                     (

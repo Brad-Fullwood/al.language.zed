@@ -82,11 +82,23 @@ only long enough to capture a document snapshot and release it before awaiting t
 bridge call cannot queue a `did_change` writer, and every reader behind it, for seconds.
 `did_close` aborts pending diagnostics and clears state. `did_save` always re-publishes.
 
-When the client supports dynamic registration, the server registers a `**/*.al` watcher on
-`initialized`. `workspace/didChangeWatchedFiles` then re-reads each `.al` file created, changed or
-deleted outside the editor, so a branch switch or a code generator reaches the index without the
-files being opened. Documents open in the editor are skipped, because their editor text is newer
-than the disk.
+When the client supports dynamic registration, the server registers watchers for `**/*.al`,
+`**/app.json`, `**/.zed/debug.json` and `**/.vscode/launch.json` on `initialized`.
+`workspace/didChangeWatchedFiles` then re-reads each `.al` file created, changed or deleted outside
+the editor, so a branch switch or a code generator reaches the index without the files being opened.
+Documents open in the editor are skipped, because their editor text is newer than the disk.
+
+The server reads the project's `app.json`, `.zed/debug.json` and `.vscode/launch.json` at
+initialization, on `al.reindex`, when the watcher reports a change to one of them, and before each
+`workspace/executeCommand`. After initialization the daemon's rule applies (see
+[daemon protocol](daemon-protocol.md)): the files are hashed by content and read again when the hash
+changed, and a manifest that no longer parses leaves the one read before in use. An edit to
+`application` or a dependency therefore reaches the next `al.downloadSymbols`,
+`al.downloadSymbolsServer` or `al.downloadSymbolsNuget` without a reindex. A watcher event for the
+`app.json` or debug configuration of an app in a subfolder of the project is ignored. A folder that had no `app.json` at startup is loaded as a
+project on `al.reindex`. The symbol package folders are listed again on `al.reindex`, after a symbol
+download and when a package setting changes, so a package copied into `.alpackages` by hand is
+loaded by `al.reindex`.
 
 ## LSP execute commands
 

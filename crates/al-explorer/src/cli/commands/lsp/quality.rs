@@ -1,5 +1,6 @@
 //! Code-quality commands: complexity metrics, SQL anti-pattern scan, and the annotation auto-fixers (application area, tooltips, data classification).
 
+use std::fmt::Write as _;
 use std::process::ExitCode;
 
 use crate::cli::commands::*;
@@ -61,7 +62,7 @@ pub fn cmd_metrics(
                         {
                             if !hotspots.is_empty() {
                                 for h in hotspots {
-                                    print_complexity_entry(Some(fname), h);
+                                    println!("{}", complexity_line(Some(fname), h));
                                 }
                                 total_hotspots += hotspots.len();
                             }
@@ -79,7 +80,7 @@ pub fn cmd_metrics(
                         eprintln!("No procedures found");
                     } else {
                         for p in procs {
-                            print_complexity_entry(file, p);
+                            println!("{}", complexity_line(file, p));
                         }
                     }
                 }
@@ -94,20 +95,20 @@ pub fn cmd_metrics(
     }
 }
 
-fn print_complexity_entry(file: Option<&str>, entry: &serde_json::Value) {
-    let name = entry.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+/// The line `metrics` prints for one procedure.
+fn complexity_line(file: Option<&str>, entry: &serde_json::Value) -> String {
+    let name = text_field(entry, "name", "?");
     let line = entry.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
     let cyclomatic = entry
         .get("cyclomatic")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
     let cognitive = entry.get("cognitive").and_then(|v| v.as_u64()).unwrap_or(0);
-    let loc_prefix = if let Some(f) = file {
-        format!("{f}:{line}: ")
-    } else {
-        format!("{line}: ")
+    let loc_prefix = match file {
+        Some(f) => format!("{}:{line}: ", terminal_text(f)),
+        None => format!("{line}: "),
     };
-    println!("{loc_prefix}{name}  cyclomatic={cyclomatic}  cognitive={cognitive}");
+    format!("{loc_prefix}{name}  cyclomatic={cyclomatic}  cognitive={cognitive}")
 }
 
 pub fn cmd_sql_scan(json: bool) -> ExitCode {
@@ -121,19 +122,7 @@ pub fn cmd_sql_scan(json: bool) -> ExitCode {
             if violations.is_empty() {
                 eprintln!("No SQL anti-patterns found");
             } else {
-                for v in &violations {
-                    let kind = v.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
-                    let object = v.get("object").and_then(|o| o.as_str()).unwrap_or("?");
-                    let procedure = v.get("procedure").and_then(|p| p.as_str()).unwrap_or("?");
-                    let line = v.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
-                    let message = v.get("message").and_then(|m| m.as_str()).unwrap_or("?");
-                    let file_path = v.get("file").and_then(|f| f.as_str()).unwrap_or("");
-                    if file_path.is_empty() {
-                        println!("{object}::{procedure}:{line}: [{kind}] {message}");
-                    } else {
-                        println!("{file_path}:{line}: [{kind}] {object}::{procedure}: {message}");
-                    }
-                }
+                print!("{}", sql_scan_text(&violations));
                 eprintln!("\n{} SQL anti-pattern(s) found", violations.len());
             }
         },
@@ -150,6 +139,28 @@ pub fn cmd_sql_scan(json: bool) -> ExitCode {
     )
 }
 
+/// The lines `sql-scan` prints, one per finding.
+fn sql_scan_text(violations: &[serde_json::Value]) -> String {
+    let mut out = String::new();
+    for v in violations {
+        let kind = text_field(v, "kind", "?");
+        let object = text_field(v, "object", "?");
+        let procedure = text_field(v, "procedure", "?");
+        let line = v.get("line").and_then(|l| l.as_u64()).unwrap_or(0);
+        let message = text_field(v, "message", "?");
+        let file_path = text_field(v, "file", "");
+        if file_path.is_empty() {
+            let _ = writeln!(out, "{object}::{procedure}:{line}: [{kind}] {message}");
+        } else {
+            let _ = writeln!(
+                out,
+                "{file_path}:{line}: [{kind}] {object}::{procedure}: {message}"
+            );
+        }
+    }
+    out
+}
+
 pub fn cmd_add_application_area(value: &str, dry_run: bool, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -161,7 +172,7 @@ pub fn cmd_add_application_area(value: &str, dry_run: bool, json: bool) -> ExitC
         Some(serde_json::json!({ "value": value, "dryRun": dry_run })),
     ) {
         Ok(result) => {
-            let (files, changes) = match bulk_fix_counts(&result, dry_run) {
+            let (files, changes): (usize, u64) = match bulk_fix_counts(&result, dry_run) {
                 Ok(summary) => summary,
                 Err(error) => return report_error(&error, json),
             };
@@ -172,7 +183,8 @@ pub fn cmd_add_application_area(value: &str, dry_run: bool, json: bool) -> ExitC
                     println!("Dry run: would modify {files} file(s) with {changes} change(s)");
                 } else {
                     println!(
-                        "Applied ApplicationArea = {value} to {changes} control(s) in {files} file(s)"
+                        "Applied ApplicationArea = {} to {changes} control(s) in {files} file(s)",
+                        terminal_text(value)
                     );
                 }
             }
@@ -190,7 +202,7 @@ pub fn cmd_add_tooltips(from_table: &str, dry_run: bool, json: bool) -> ExitCode
     let params = serde_json::json!({ "dryRun": dry_run, "fromTable": from_table });
     match request_checked(&mut client, "fix.tooltips", Some(params)) {
         Ok(result) => {
-            let (files, changes) = match bulk_fix_counts(&result, dry_run) {
+            let (files, changes): (usize, u64) = match bulk_fix_counts(&result, dry_run) {
                 Ok(summary) => summary,
                 Err(error) => return report_error(&error, json),
             };
@@ -220,7 +232,7 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
         Some(serde_json::json!({ "value": value, "dryRun": dry_run })),
     ) {
         Ok(result) => {
-            let (files, changes) = match bulk_fix_counts(&result, dry_run) {
+            let (files, changes): (usize, u64) = match bulk_fix_counts(&result, dry_run) {
                 Ok(summary) => summary,
                 Err(error) => return report_error(&error, json),
             };
@@ -231,7 +243,8 @@ pub fn cmd_add_data_classification(value: &str, dry_run: bool, json: bool) -> Ex
                     println!("Dry run: would modify {files} file(s) with {changes} field(s)");
                 } else {
                     println!(
-                        "Applied DataClassification = {value} to {changes} field(s) in {files} file(s)"
+                        "Applied DataClassification = {} to {changes} field(s) in {files} file(s)",
+                        terminal_text(value)
                     );
                 }
             }
@@ -284,7 +297,42 @@ fn bulk_fix_counts(
 
 #[cfg(test)]
 mod tests {
-    use super::bulk_fix_counts;
+    use super::{bulk_fix_counts, complexity_line, sql_scan_text};
+
+    #[test]
+    fn metrics_and_sql_scan_print_crafted_names_escaped() {
+        let procedure = serde_json::json!({
+            "name": "Bad\u{1b}[31m Name\u{1b}[0m",
+            "line": 3,
+            "cyclomatic": 4,
+            "cognitive": 5
+        });
+        let line = complexity_line(Some("src/Sec7\u{1b}[2J.al"), &procedure);
+        assert_eq!(
+            line,
+            r"src/Sec7\u{1b}[2J.al:3: Bad\u{1b}[31m Name\u{1b}[0m  cyclomatic=4  cognitive=5"
+        );
+
+        let findings = [serde_json::json!({
+            "kind": "findSetWithoutFilters",
+            "object": "Sec7 Caller\u{1b}]0;pwned\u{7}",
+            "procedure": "CallIt",
+            "line": 7,
+            "message": "FindSet on \u{1b}[2J",
+            "file": "src/Sec7Caller.Codeunit.al"
+        })];
+        let text = sql_scan_text(&findings);
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "{text:?}"
+        );
+        assert!(
+            text.contains(
+                r"src/Sec7Caller.Codeunit.al:7: [findSetWithoutFilters] Sec7 Caller\u{1b}]0;pwned\u{7}::CallIt: FindSet on \u{1b}[2J"
+            ),
+            "{text}"
+        );
+    }
 
     #[test]
     fn bulk_fix_response_contract_rejects_old_or_inconsistent_shapes() {

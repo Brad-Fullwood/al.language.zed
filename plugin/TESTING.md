@@ -30,7 +30,7 @@ fixture's `OnAfterProcess` and `OnBeforeProcess` events. The fixture ships no
 without it.
 
 The fixture has no `.alpackages`, so it cannot exercise a base-app lookup.
-Question 4 reads a workspace procedure instead. The package-side numbers below
+Question 4 reads a workspace procedure instead. The numbers for packages below
 are measured directly against the project Round 6 built for that (see its
 entry under Results): `al-explorer new` plus `download-symbols --source
 nuget`, Base Application 28.0.46665.48632 from the public feed.
@@ -214,7 +214,7 @@ Microsoft package.** Two projects, both `al-explorer new` in a temp directory
 followed by `download-symbols --source nuget`, against
 `target/release/al-explorer` and `al-lsp` built beside it.
 
-The five-skill project (`app.json` `application: 28.0.0.0`) downloaded Base
+The project for the five skills (`app.json` `application: 28.0.0.0`) downloaded Base
 Application 28.0.46665.48632 plus Application, Business Foundation, System
 Application and System. Two files were added so the questions had a real
 answer to find: `src/SalesPostSubscribers.Codeunit.al` subscribes to
@@ -227,17 +227,17 @@ downloaded again, landing 26.0.30643.38226 alongside it in the same
 `.alpackages` (see the recorded defect below: this needed a `daemon-shutdown`
 in between). `src/GLAccountHelper.Codeunit.al` reads the G/L Account table's
 `Income/Balance` field, an `Option` in 25 that became `Enum "G/L Account
-Report Type"` in 26, so `package-diff` and `obsolete --used` had a real,
-workspace-side hit to find.
+Report Type"` in 26, so `package-diff` and `obsolete --used` had a real hit in
+the workspace to find.
 
 | # | Skill | Question | Answer | Right? | Tool calls | Bytes | Wall time |
 | - | - | - | - | - | - | -: | -: |
 | 1 | `bc-base-app-source` | How does Business Central calculate a customer's available credit? Show me the source of `CalcAvailableCredit` on the Customer table. | Signature only, `procedure CalcAvailableCredit(): Decimal`, no body: the package shipped without source | right, first try | Skill, Bash x3 | 4,446 | 23.0 s |
 | 2 | `bc-event-map` | Who subscribes to the `OnAfterPostSalesDoc` event published by the Sales-Post codeunit? | 1 subscriber, `Sales Post Subscribers.OnAfterPostSalesDocHandler`, workspace, resolved | right, first try | Skill, Bash | 503 | 13.2 s |
-| 3 | `bc-impact-check` | What would changing the Blocked field on the Customer table affect in this extension? | 1 workspace consumer (`Customer Block Helper`, read, high confidence), 1 out-of-scope low-confidence row (`Serv. Customer` table extension, extends) | right, first try | Skill, Bash x2 | 684 | 23.1 s |
-| 4 | `bc-workspace-health` | Audit this extension before I deploy it. What problems does it have? | One dead-code finding (`IsFullyBlocked`, zero references, medium confidence) and three codeunits with no permission set coverage; native-check, sql-scan, arch-lint, audit-data, metrics and duplicates all clean | right, first try | Skill, Bash x9 | 645 | 27.3 s |
+| 3 | `bc-impact-check` | What would changing the Blocked field on the Customer table affect in this extension? | 1 workspace consumer (`Customer Block Helper`, read, high confidence), 1 row outside the scope, low confidence (`Serv. Customer` table extension, extends) | right, first try | Skill, Bash x2 | 684 | 23.1 s |
+| 4 | `bc-workspace-health` | Audit this extension before I deploy it. What problems does it have? | One dead-code finding (`IsFullyBlocked`, zero references, medium confidence) and three codeunits with no permission set coverage, with native-check, sql-scan, arch-lint, audit-data, metrics and duplicates all clean | right, first try | Skill, Bash x9 | 645 | 27.3 s |
 | 5 | `bc-object-id-allocator` | I want to add a new table to this extension. What is the next free table object ID? | 50100 (`idRanges` 50100-50149, none used yet for tables) | right, first try | Skill, ToolSearch, Bash | 276 | 15.1 s |
-| 6 | `bc-upgrade-impact` (`package-diff`) | I'm upgrading this app's Base Application dependency from version 25 to version 26. What changed that this extension actually uses, and is it a breaking change? | One breaking change, `G/L Account.Income/Balance` changed `Option` to `Enum`, used by `GL Account Helper` (read); no orphaned subscribers, no obsolete calls in use | right, first try | Skill, Bash x7 | 1,161 | 36.1 s |
+| 6 | `bc-upgrade-impact` (`package-diff`) | I'm upgrading this app's Base Application dependency from version 25 to version 26. What changed that this extension actually uses, and is it a breaking change? | One breaking change, `G/L Account.Income/Balance` changed `Option` to `Enum`, used by `GL Account Helper` (read), with no orphaned subscribers and no obsolete calls in use | right, first try | Skill, Bash x7 | 1,161 | 36.1 s |
 
 Bytes are the tool results the session pulled into its context, summed across
 the run, the same measure Round 4 used. All six right on the first try: no
@@ -250,7 +250,7 @@ subcommands that do not exist (`call`, `symbol-search`), and closed the gap
 with `grep` and a file read rather than a documented command. The final
 answer was still right, so nothing in the skill needed a fix: every one of
 its bash blocks already prefixes `al-explorer` with `al-bin.sh`, and Haiku
-just did not follow that consistently once it went looking for where the
+did not follow that consistently once it went looking for where the
 field was used.
 
 One binary defect, recorded here during this round (fixes to `al-explorer`
@@ -278,6 +278,34 @@ again when the hash changed, so the next `download-symbols` after the edit
 asks for `26.0.0.0` without a restart (`a_running_daemon_sees_an_app_json_edit`
 in `crates/al-test-harness/tests/cli_smoke.rs`).
 
+## A name that holds a quote
+
+The fixture declares `codeunit 50160 "It's Here"` in `src/ItsHere.Codeunit.al`.
+An AL quoted identifier may hold `'`, `;`, `$` and a backtick, and an agent
+that copies such a name from `search` into a single-quoted shell argument ends
+the quote early. Every skill and both agents end with the rule for this:
+prefer the plugin's MCP tools, which take the name as a JSON string, and in
+Bash keep the whole name inside single quotes and write each `'` in the name
+as `'\''`.
+
+| Skill | Question | Answer |
+| --- | --- | --- |
+| `bc-symbol-lookup` | What is the object ID of the It's Here codeunit, and where is its file? | 50160, `src/ItsHere.Codeunit.al` line 1 |
+
+A run passes when the answer is right and every Bash call that carries the
+name spells it `'It'\''s Here'`, or the name went through an MCP tool. A call
+that answers `No Codeunit named 'It'`, or a shell error such as `unexpected EOF
+while looking for matching`, fails the run even when a later call recovers.
+`plugin/evals/cases/13-symbol-lookup-quoted-name.json` checks the answer
+against `al-explorer` directly. The question has not been run through a live
+session yet.
+
+To try the rule on a name built to break it, add a file to the scratch copy
+that declares `codeunit 50152 "It'; echo pwned; echo '"`. Taken from `search`
+and placed in `object codeunit -- '<name>'` with the rule applied, the command
+finds codeunit 50152 and runs nothing else. Placed there as it is, the shell
+reads three commands and prints `pwned`.
+
 ## Downloading al-lsp and al-explorer
 
 `plugin/scripts/al-fetch-release.sh`, called from the `SessionStart` hook
@@ -294,14 +322,23 @@ What it does, in order:
 2. Refuses immediately, before any network request, if the URL it would fetch
    from is not `https://`.
 3. Fetches `binary-checksums.txt` from the pinned release
-   (`AL_PIN_RELEASE_TAG` in the script). No such asset, or an empty one,
-   refuses before the archive is ever requested.
+   (`AL_PIN_RELEASE_TAG` in the script) and compares its SHA-256 with
+   `AL_PIN_CHECKSUMS_SHA256`, the digest pinned beside the tag. A tag can be
+   moved and a release's assets uploaded again, so the tag alone pins no
+   bytes. No such asset, an empty one, or a digest that differs from the pin
+   refuses before the archive is ever requested. A digest that differs is
+   named in the refusal beside the pinned one. While the pin holds the
+   placeholder `unset` the script refuses before any request. The comment above the pin says how to fill it when
+   the tag is bumped.
 4. Fetches the platform archive and extracts it into a private staging
    directory, not yet the plugin's cache directory.
 5. Hashes every extracted file and compares it against
    `binary-checksums.txt`. A file the listing does not name, or a digest that
    does not match, deletes the staging directory and refuses; nothing is made
-   executable and nothing is added to `$CLAUDE_PLUGIN_DATA/bin`.
+   executable and nothing is added to `$CLAUDE_PLUGIN_DATA/bin`. A file the
+   listing names under the archive's name that the archive does not hold
+   (`bridge/AlBridge.dll`, say) refuses the same way, as `check_bridge_files`
+   in `src/lib.rs` does for the Zed extension.
 6. Only once every file matches does it `chmod +x` the two binaries and move
    the staging directory into place.
 
@@ -333,7 +370,9 @@ and the MCP server already find them in `$CLAUDE_PLUGIN_DATA/bin` through
   the tag). This is the honest current state: until a release is cut that
   publishes it, the script refuses every real download rather than
   installing an unverified binary. See the `binary-checksums.txt` item in
-  `plugin/ROADMAP.md`.
+  `plugin/ROADMAP.md`. Since `AL_PIN_CHECKSUMS_SHA256` was added the same run
+  refuses before any request, because the pin holds the placeholder `unset`
+  for a tag with no listing.
 - **A full successful install**, against `v0.2.2`'s real `al-linux-x86_64.tar.gz`
   served from a local `python3 -m http.server`, with a `binary-checksums.txt`
   built by hand from that archive's real digests (standing in for the asset
@@ -349,8 +388,9 @@ and the MCP server already find them in `$CLAUDE_PLUGIN_DATA/bin` through
 
 Not tested: a real download succeeding against this repository's own release
 process end to end, because no tagged release publishes
-`binary-checksums.txt` yet. Once one does, the "forced download path" run
-above should be repeated against it without `AL_RELEASE_BASE_URL` or
+`binary-checksums.txt` yet. Once one does, bump `AL_PIN_RELEASE_TAG`, fill
+`AL_PIN_CHECKSUMS_SHA256` from that release, and repeat the "forced download
+path" run above against it without `AL_RELEASE_BASE_URL` or
 `AL_ALLOW_INSECURE_RELEASE_URL` set.
 
 ## Validation

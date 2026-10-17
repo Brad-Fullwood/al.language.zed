@@ -31,7 +31,7 @@ pub(in crate::server::daemon) async fn dispatch_snapshot(
 
     let mut bc = match parse_bc_server_params(workspace, params, "snapshots") {
         Ok(config) => config,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
@@ -191,7 +191,7 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
 
     let mut bc = match parse_bc_server_params(workspace, params, "profiles") {
         Ok(config) => config,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
+        Err(rejection) => return rejection.into_response(id),
     };
     if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
         return err;
@@ -304,19 +304,15 @@ pub(in crate::server::daemon) async fn dispatch_profiling(
                     ..Default::default()
                 };
             }
-            let profile_path = match crate::server::daemon::containment::resolve_within_project(
-                workspace,
-                &profile_path,
-            ) {
-                Ok(path) => path,
-                Err(message) => {
-                    return rpc_error(
-                        id,
-                        error_codes::INVALID_PARAMS,
-                        &format!("'path' {message}"),
-                    )
-                }
-            };
+            let profile_path =
+                match crate::server::daemon::containment::resolve_param_within_project(
+                    workspace,
+                    "path",
+                    &profile_path,
+                ) {
+                    Ok(path) => path,
+                    Err(rejection) => return rejection.into_response(id),
+                };
             let top_n = match optional_bounded_usize_param(params, "topN", 20, 1000) {
                 Ok(top_n) => top_n,
                 Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
@@ -539,7 +535,9 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_and_profiling_reject_malformed_optional_params() {
-        let (_project, ws) = project_ws();
+        let (project, ws) = project_ws();
+        // Inside the project, so the request gets past the path check to `topN`.
+        let profile = project.path().join("profile.json");
         for params in [
             serde_json::json!({ "cmd": "list", "serverUrl": 7049 }),
             serde_json::json!({ "cmd": "list", "acceptInvalidCerts": "yes" }),
@@ -562,7 +560,7 @@ mod tests {
                 21,
                 &serde_json::json!({
                     "cmd": "analyze",
-                    "path": "/nonexistent/profile.json",
+                    "path": profile.to_str().unwrap(),
                     "topN": top_n
                 }),
             )

@@ -1084,6 +1084,70 @@ mod workspace_lifecycle_tests {
         );
     }
 
+    /// Collects everything a `tracing_subscriber::fmt` subscriber writes.
+    #[derive(Clone, Default)]
+    struct CapturedLog(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLog {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLog {
+        type Writer = CapturedLog;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    /// The daemon's stderr and file logs are read with `cat` or in an editor
+    /// panel, so the manifest name must reach them with its escape sequences
+    /// written out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_project_discovered_log_line_escapes_control_characters_in_the_manifest_name() {
+        let log = CapturedLog::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(log.clone())
+            .with_ansi(false)
+            .finish();
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let workspace = make_workspace();
+        let dir = unique_tempdir("escapedname");
+        std::fs::write(
+            dir.join("app.json"),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000000",
+                "name": "Test\u{1b}[31m App\u{7}",
+                "publisher": "Tester",
+                "version": "1.0.0.0"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        initialize_core_workspace(&workspace, &dir)
+            .await
+            .expect("valid project must initialize");
+
+        let text = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+        let line = text
+            .lines()
+            .find(|line| line.contains("workspace: project discovered"))
+            .unwrap_or_else(|| panic!("no project discovered line in: {text}"));
+        assert!(
+            line.contains(r"name=Test\u{1b}[31m App\u{7}"),
+            "got: {line:?}"
+        );
+        assert!(!line.chars().any(char::is_control), "got: {line:?}");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn initialize_core_workspace_loads_configured_local_package_folder() {
         let workspace = make_workspace();
@@ -1317,6 +1381,97 @@ mod workspace_lifecycle_tests {
             .as_deref()
             .expect("the parse failure is recorded");
         assert!(error.contains("launch.json"), "{error}");
+    }
+
+    fn table_package(app_id: &str, table: &str) -> Vec<u8> {
+        let symbols =
+            format!(r#"{{"Tables":[{{"Id":50123,"Name":"{table}","Fields":[],"Methods":[]}}]}}"#);
+        build_test_app_with_id(app_id, table, &symbols, &[])
+    }
+
+    /// `al.packageCachePath` changed in the project's settings: the trust
+    /// refresh put the new folder in the configuration, and the index built
+    /// from the old folder stayed until the daemon exited.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_changed_package_cache_setting_loads_the_new_folder() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("packagecachesetting");
+        write_manifest(&dir, "25.0.0.0");
+        let default_folder = dir.join(".alpackages");
+        let other_folder = dir.join("other-cache");
+        std::fs::create_dir_all(&default_folder).unwrap();
+        std::fs::create_dir_all(&other_folder).unwrap();
+        std::fs::write(
+            default_folder.join("Old.app"),
+            table_package("00000000-0000-0000-0000-0000000000b1", "Old Folder Table"),
+        )
+        .unwrap();
+        std::fs::write(
+            other_folder.join("New.app"),
+            table_package("00000000-0000-0000-0000-0000000000b2", "New Folder Table"),
+        )
+        .unwrap();
+        initialize_core_workspace(&workspace, &dir)
+            .await
+            .expect("the project loads");
+        assert_eq!(workspace.symbols.get_by_name("Old Folder Table").len(), 1);
+
+        let revision = workspace.package_revision();
+        refresh_project_files(&workspace).await;
+        assert_eq!(
+            workspace.package_revision(),
+            revision,
+            "unchanged folders are not loaded again"
+        );
+
+        workspace.config.write().await.package_cache_path = Some(PathBuf::from("other-cache"));
+        refresh_project_files(&workspace).await;
+
+        assert_eq!(workspace.symbols.get_by_name("New Folder Table").len(), 1);
+        assert!(workspace.symbols.get_by_name("Old Folder Table").is_empty());
+        let project = workspace.project.read().await;
+        let project = project.as_ref().unwrap();
+        assert_eq!(project.packages_dir, other_folder);
+        assert_eq!(project.packages, vec![other_folder.join("New.app")]);
+        let names: Vec<String> = workspace
+            .package_info
+            .read()
+            .unwrap()
+            .iter()
+            .map(|package| package.name.clone())
+            .collect();
+        assert_eq!(names, ["New Folder Table"]);
+    }
+
+    /// A project put in place without a package stamp, as tests do, keeps
+    /// the symbol index it was given until its folders change: the first
+    /// refresh only records the stamp.
+    #[tokio::test]
+    async fn the_first_refresh_of_an_unstamped_project_records_the_package_stamp() {
+        let workspace = make_workspace();
+        let dir = unique_tempdir("packagestamp");
+        write_manifest(&dir, "25.0.0.0");
+        let packages = dir.join(".alpackages");
+        std::fs::create_dir_all(&packages).unwrap();
+        std::fs::write(
+            packages.join("Present.app"),
+            table_package("00000000-0000-0000-0000-0000000000b3", "Present Table"),
+        )
+        .unwrap();
+        *workspace.project.write().await =
+            Some(al_project::project::find_project(&dir).expect("project loads"));
+
+        refresh_project_files(&workspace).await;
+        assert!(workspace.symbols.get_by_name("Present Table").is_empty());
+
+        std::fs::write(
+            packages.join("Copied.app"),
+            table_package("00000000-0000-0000-0000-0000000000b4", "Copied Table"),
+        )
+        .unwrap();
+        refresh_project_files(&workspace).await;
+        assert_eq!(workspace.symbols.get_by_name("Copied Table").len(), 1);
+        assert_eq!(workspace.symbols.get_by_name("Present Table").len(), 1);
     }
 }
 

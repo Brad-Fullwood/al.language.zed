@@ -171,10 +171,12 @@ local folders in configured order. Scans are deterministic, ignore non-files/non
 keep the newest parseable versioned filename across folders (exact filename ties keep the earlier
 folder). LSP configuration changes replace the file-backed symbol generation in place, reload runtime
 enums, and invalidate dependent analysis without a restart. If every file in a non-empty replacement
-set is invalid, the last good generation is retained instead of blanking the index. Workspace
-initialization loads packages leniently: a corrupt or truncated `.app` (a common state after an
-interrupted download) is skipped with a per-package warning instead of aborting initialization, and
-the failures are reported in the init result.
+set is invalid, the last good generation is retained instead of blanking the index. The daemon
+lists the folders again before a request when a package in them, or a setting that names them,
+changed on disk (see [daemon protocol](daemon-protocol.md)), and loads the packages as workspace
+initialization does. Workspace initialization loads packages leniently: a corrupt or truncated
+`.app` (a common state after an interrupted download) is skipped with a per-package warning instead
+of aborting initialization, and the failures are reported in the init result.
 
 Dependency acquisition checks each loaded package's manifest GUID and minimum version. A single
 cached package therefore cannot suppress downloads for unrelated missing dependencies, and a package

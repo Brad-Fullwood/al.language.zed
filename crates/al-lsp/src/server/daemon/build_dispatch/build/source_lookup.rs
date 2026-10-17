@@ -378,18 +378,13 @@ pub(in crate::server::daemon) fn dispatch_event_source(
     };
     // `event_source` falls back to reading the file from disk when it is not
     // in the parse cache, so the path is contained like any other.
-    let file = match crate::server::daemon::containment::resolve_within_project(
+    let file = match crate::server::daemon::containment::resolve_param_within_project(
         workspace,
+        "file",
         std::path::Path::new(file),
     ) {
         Ok(file) => file,
-        Err(message) => {
-            return rpc_error(
-                id,
-                error_codes::INVALID_PARAMS,
-                &format!("'file' {message}"),
-            )
-        }
+        Err(rejection) => return rejection.into_response(id),
     };
     match al_analysis::queries::source::event_source(
         workspace,

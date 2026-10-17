@@ -21,7 +21,7 @@
 //! than the client, and only the file on disk had moved.
 
 use std::path::Path;
-use std::time::UNIX_EPOCH;
+use std::time::{Duration, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +31,15 @@ use crate::socket::fnv1a64;
 /// directory the endpoint lives in.
 pub const SECRET_FILE: &str = "handshake.key";
 
-const SECRET_BYTES: usize = 32;
+/// The length of the handshake secret. A key file of any other length is
+/// treated as no key.
+pub const SECRET_BYTES: usize = 32;
+
+/// How many times a key file of the wrong length is read before it counts as
+/// bad, and the wait between reads. An older build creates the file and writes
+/// the key after, so its file is empty for a moment after it appears.
+const READ_ATTEMPTS: u32 = 5;
+const READ_RETRY_DELAY: Duration = Duration::from_millis(10);
 
 /// Read the per-user handshake secret, creating it if this is the first side
 /// to look.
@@ -42,18 +50,40 @@ const SECRET_BYTES: usize = 32;
 /// say whatever the client expects, and one did, in one line.
 ///
 /// The secret makes the answer something only a process that can read this
-/// file can produce. It lives beside the endpoint, mode 0600, created with
-/// `create_new` so two processes racing to make it cannot both win. Whichever
-/// side starts first creates it and both read it.
+/// file can produce. It lives beside the endpoint, mode 0600. It is linked
+/// into place with the whole key in it, and the link fails when the file
+/// exists, so two processes racing to make it cannot both win. Whichever side
+/// starts first creates it and both read it.
 ///
 /// This is not a second access control. The peer check in `crate::endpoint` is
 /// what decides who may answer; this is what stops a daemon that is allowed to
 /// answer from claiming a build it is not.
-pub fn shared_secret(runtime_dir: &Path) -> std::io::Result<Vec<u8>> {
+pub fn shared_secret(runtime_dir: &Path) -> std::io::Result<[u8; SECRET_BYTES]> {
     let path = runtime_dir.join(SECRET_FILE);
-    match std::fs::read(&path) {
-        Ok(secret) if secret.len() == SECRET_BYTES => return Ok(secret),
-        Ok(_) => {
+    match read_secret(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        other => return other,
+    }
+
+    let secret = random_bytes::<SECRET_BYTES>()?;
+    match create_secret_file(runtime_dir, &path, &secret) {
+        Ok(()) => Ok(secret),
+        // Lost the race to another process. Its secret is the one to use.
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_secret(&path),
+        Err(error) => Err(error),
+    }
+}
+
+/// Read the key at `path`, reading a file of the wrong length again a few
+/// times before refusing it.
+fn read_secret(path: &Path) -> std::io::Result<[u8; SECRET_BYTES]> {
+    let mut attempt = 1;
+    loop {
+        let bytes = std::fs::read(path)?;
+        if let Ok(secret) = <[u8; SECRET_BYTES]>::try_from(bytes.as_slice()) {
+            return Ok(secret);
+        }
+        if attempt == READ_ATTEMPTS {
             // A truncated or oversized file is not a secret this code wrote.
             // Refusing beats silently keying on whatever is there.
             return Err(std::io::Error::new(
@@ -61,23 +91,38 @@ pub fn shared_secret(runtime_dir: &Path) -> std::io::Result<Vec<u8>> {
                 format!("{} is not a {SECRET_BYTES}-byte secret", path.display()),
             ));
         }
-        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
-        Err(_) => {}
-    }
-
-    let mut secret = vec![0u8; SECRET_BYTES];
-    getrandom::fill(&mut secret)
-        .map_err(|error| std::io::Error::other(format!("no randomness available: {error}")))?;
-    match create_secret_file(&path, &secret) {
-        Ok(()) => Ok(secret),
-        // Lost the race to another process. Its secret is the one to use.
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => std::fs::read(&path),
-        Err(error) => Err(error),
+        attempt += 1;
+        std::thread::sleep(READ_RETRY_DELAY);
     }
 }
 
+fn random_bytes<const N: usize>() -> std::io::Result<[u8; N]> {
+    let mut bytes = [0u8; N];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| std::io::Error::other(format!("no randomness available: {error}")))?;
+    Ok(bytes)
+}
+
+/// Put `secret` at `path` in one step, failing with `AlreadyExists` when
+/// `path` exists.
+///
+/// The key is written to a file with a random name in the same directory, and
+/// a hard link then gives that file the name `path`. A reader finds either no
+/// file or the whole key.
+fn create_secret_file(dir: &Path, path: &Path, secret: &[u8]) -> std::io::Result<()> {
+    let tag: String = random_bytes::<16>()?
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let temporary = dir.join(format!("{SECRET_FILE}.{tag}.tmp"));
+    let linked =
+        write_new_file(&temporary, secret).and_then(|()| std::fs::hard_link(&temporary, path));
+    let _ = std::fs::remove_file(&temporary);
+    linked
+}
+
 #[cfg(unix)]
-fn create_secret_file(path: &Path, secret: &[u8]) -> std::io::Result<()> {
+fn write_new_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -86,18 +131,18 @@ fn create_secret_file(path: &Path, secret: &[u8]) -> std::io::Result<()> {
         .create_new(true)
         .mode(0o600)
         .open(path)?;
-    file.write_all(secret)
+    file.write_all(bytes)
 }
 
 #[cfg(not(unix))]
-fn create_secret_file(path: &Path, secret: &[u8]) -> std::io::Result<()> {
+fn write_new_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
 
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)?;
-    file.write_all(secret)
+    file.write_all(bytes)
 }
 
 /// HMAC-SHA256 over `nonce ‖ version ‖ build`, keyed by the shared secret.
@@ -347,5 +392,103 @@ mod tests {
     #[test]
     fn current_identity_is_captured_once() {
         assert_eq!(current_identity(), current_identity());
+    }
+
+    /// Processes that need the key before it exists all get the whole key, and
+    /// the same one. The editor's language server, the MCP server and an
+    /// `al-explorer` command can start together on a runtime directory that was
+    /// just cleared, and each must come away with the key the file holds.
+    #[test]
+    fn processes_racing_to_create_the_secret_all_read_the_whole_key() {
+        const THREADS: usize = 4;
+        let base = std::env::temp_dir().join(format!("al-identity-race-{}", std::process::id()));
+        let mut failures = Vec::new();
+        for round in 0..500 {
+            let dir = base.join(round.to_string());
+            std::fs::create_dir_all(&dir).expect("round dir");
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(THREADS));
+            let handles: Vec<_> = (0..THREADS)
+                .map(|_| {
+                    let dir = dir.clone();
+                    let barrier = barrier.clone();
+                    std::thread::spawn(move || {
+                        barrier.wait();
+                        shared_secret(&dir)
+                    })
+                })
+                .collect();
+            let results = handles
+                .into_iter()
+                .map(|handle| handle.join().expect("thread"))
+                .collect::<Vec<_>>();
+            let written = std::fs::read(dir.join(SECRET_FILE)).expect("the key file exists");
+            for result in results {
+                match result {
+                    Ok(secret) if secret.len() != SECRET_BYTES => {
+                        failures.push(format!("round {round}: a {} byte key", secret.len()));
+                    }
+                    Ok(secret) if secret[..] != written[..] => {
+                        failures.push(format!("round {round}: a key other than the file's"));
+                    }
+                    Ok(_) => {}
+                    Err(error) => failures.push(format!("round {round}: {error}")),
+                }
+            }
+            let names = std::fs::read_dir(&dir)
+                .expect("list round dir")
+                .map(|entry| entry.expect("entry").file_name())
+                .collect::<Vec<_>>();
+            if names != [SECRET_FILE] {
+                failures.push(format!("round {round}: the directory holds {names:?}"));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&base);
+        assert!(
+            failures.is_empty(),
+            "{} of the reads went wrong, the first: {:?}",
+            failures.len(),
+            &failures[..failures.len().min(5)]
+        );
+    }
+
+    /// Both callers take an error for no key, so a file that holds anything
+    /// but a whole key must come back as an error.
+    #[test]
+    fn a_key_file_of_the_wrong_length_is_refused() {
+        let dir = std::env::temp_dir().join(format!("al-identity-short-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("test dir");
+        let mut results = Vec::new();
+        for length in [0, 5, SECRET_BYTES + 1] {
+            std::fs::write(dir.join(SECRET_FILE), vec![7u8; length]).expect("write key");
+            results.push((length, shared_secret(&dir)));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        for (length, result) in results {
+            let error = result.expect_err("a key file of the wrong length is no key");
+            assert_eq!(
+                error.kind(),
+                std::io::ErrorKind::InvalidData,
+                "{length}: {error}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_key_file_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("al-identity-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("test dir");
+        let first = shared_secret(&dir);
+        let second = shared_secret(&dir);
+        let mode = std::fs::metadata(dir.join(SECRET_FILE)).map(|meta| meta.permissions().mode());
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(mode.expect("the key file exists") & 0o777, 0o600);
+        assert_eq!(
+            first.expect("created"),
+            second.expect("read back"),
+            "the second call reads the key the first one wrote"
+        );
     }
 }

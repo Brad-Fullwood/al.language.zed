@@ -248,7 +248,7 @@ fn with_temporary<T>(
     frame.bind(&name, value);
     let result = body(&name, stack);
     if let Some(frame) = stack.top_mut() {
-        frame.locals.remove(&name);
+        frame.unbind(&name);
     }
     result
 }

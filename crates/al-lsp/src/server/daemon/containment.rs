@@ -17,6 +17,8 @@ use std::path::{Path, PathBuf};
 
 use al_workspace::Workspace;
 
+use super::PathRejection;
+
 /// A path spelled the way the caller would have typed it.
 ///
 /// Containment canonicalises both sides, and on Windows `canonicalize` returns
@@ -273,6 +275,9 @@ pub(crate) fn resolve_output_path_within_project(
     )
 }
 
+const NO_PROJECT: &str =
+    "No project is loaded, so no file path can be authorised; open a project first";
+
 /// The directories a path parameter may name: the project root, the package
 /// cache, and the directory each resolved `.app` package came from.
 ///
@@ -291,9 +296,7 @@ pub(crate) fn project_boundary(workspace: &Workspace) -> Result<Vec<PathBuf>, St
             roots
         })
     })?;
-    let roots = roots.ok_or_else(|| {
-        "No project is loaded, so no file path can be authorised; open a project first".to_string()
-    })?;
+    let roots = roots.ok_or_else(|| NO_PROJECT.to_string())?;
     Ok(roots_the_project_vouches_for(roots))
 }
 
@@ -361,13 +364,68 @@ pub(crate) fn resolve_within_project(
 ) -> Result<PathBuf, String> {
     let roots = project_boundary(workspace)?;
     let base = roots[0].clone();
-    resolve_path_within_roots(requested, &base, &roots).ok_or_else(|| {
-        format!(
-            "path '{}' is outside the project at '{}'",
-            display_path(requested),
-            display_path(&base)
-        )
+    resolve_path_within_roots(requested, &base, &roots)
+        .ok_or_else(|| outside_the_project(requested, &base))
+}
+
+/// Resolve the path parameter `key` inside the loaded project's boundary.
+///
+/// Every path parameter is refused in the same words and with
+/// [`PATH_NOT_AUTHORIZED`](al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED),
+/// so a caller tells "the daemon will not touch this path" from a malformed
+/// request by the code alone.
+pub(crate) fn resolve_param_within_project(
+    workspace: &Workspace,
+    key: &str,
+    requested: &Path,
+) -> Result<PathBuf, PathRejection> {
+    resolve_within_project(workspace, requested)
+        .map_err(|message| PathRejection::unauthorized(format!("'{key}' {message}")))
+}
+
+/// Resolve the output path parameter `key` inside `project_root`.
+///
+/// A report or snapshot the caller asks for is written under the project root
+/// only, so the package directories the read boundary includes are left out.
+/// The refusal is the one [`resolve_param_within_project`] gives.
+pub(crate) fn resolve_output_param_within_project(
+    key: &str,
+    requested: &Path,
+    project_root: &Path,
+) -> Result<PathBuf, PathRejection> {
+    resolve_output_path_within_project(requested, project_root).ok_or_else(|| {
+        PathRejection::unauthorized(format!(
+            "'{key}' {}",
+            outside_the_project(requested, project_root)
+        ))
     })
+}
+
+/// Resolve the path parameter `key` of a method that creates or rewrites what
+/// it names, inside the loaded project's root.
+///
+/// The read boundary of [`resolve_param_within_project`] also holds the package
+/// cache and the folder of every resolved `.app`, and a trusted project keeps
+/// those where its links and settings put them, outside the project included.
+/// A method that writes stays under the project root, as
+/// [`resolve_output_param_within_project`] does for a report.
+pub(crate) fn resolve_write_param_within_project(
+    workspace: &Workspace,
+    key: &str,
+    requested: &Path,
+) -> Result<PathBuf, PathRejection> {
+    let root = super::project_root_with_wait(workspace)
+        .and_then(|root| root.ok_or_else(|| NO_PROJECT.to_string()))
+        .map_err(|message| PathRejection::unauthorized(format!("'{key}' {message}")))?;
+    resolve_output_param_within_project(key, requested, &root)
+}
+
+fn outside_the_project(requested: &Path, root: &Path) -> String {
+    format!(
+        "path '{}' is outside the project at '{}'",
+        display_path(requested),
+        display_path(root)
+    )
 }
 
 #[cfg(test)]
@@ -668,6 +726,60 @@ mod tests {
         assert!(error.contains("outside the project"), "{error}");
     }
 
+    /// A pull that changes the files under a trusted probing path changes no
+    /// settings file, and the daemon decided again only when a settings file,
+    /// a launch file or the trust store moved. It kept handing `alc` the
+    /// probing path while the record said `Stale`.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_probing_path_whose_files_change_leaves_the_alc_arguments() {
+        let _config = ScratchConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir_all(root.join(".vscode")).unwrap();
+        std::fs::create_dir_all(root.join("probe")).unwrap();
+        std::fs::write(root.join("app.json"), "{}").unwrap();
+        std::fs::write(root.join("probe/Helper.dll"), b"MZ first").unwrap();
+        std::fs::write(
+            root.join(".vscode/settings.json"),
+            r#"{"al.assemblyProbingPaths": ["./probe"]}"#,
+        )
+        .unwrap();
+        al_project::trust::grant(&root).unwrap();
+        let workspace = Workspace::new();
+        super::super::set_test_project_root(&workspace, &root);
+        super::super::TRUST_INPUTS.store(
+            al_project::trust::inputs_fingerprint(&root),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        *workspace.config.write().await = al_project::trust::evaluate(&root).unwrap().config;
+        let alc_args = |config: &al_project::config::AlConfig| {
+            al_compile::CompilationConfigOptions::from(config).to_alc_args()
+        };
+        assert_eq!(
+            alc_args(&*workspace.config.read().await),
+            ["/assemblyprobingpaths:./probe"],
+            "the granted probing path reaches alc"
+        );
+
+        std::fs::write(root.join("probe/Helper.dll"), b"MZ replaced by a pull").unwrap();
+        std::fs::write(root.join("probe/Added.dll"), b"MZ added by a pull").unwrap();
+        super::super::refresh_trust(&workspace).await;
+
+        assert_eq!(
+            al_project::trust::decide(&root).unwrap().state,
+            al_project::trust::TrustState::Stale
+        );
+        let after = alc_args(&*workspace.config.read().await);
+        assert!(
+            !after
+                .iter()
+                .any(|arg| arg.starts_with("/assemblyprobingpaths:")),
+            "a stale record must not keep the probing path: {after:?}"
+        );
+    }
+
     /// Trusting the project is how a user says its own paths may point where
     /// they point, and it is the same decision that lets `al.packageCachePath`
     /// name a directory outside the project.
@@ -684,6 +796,191 @@ mod tests {
         let resolved = resolve_within_project(&workspace, &outside.join("secret"))
             .expect("a trusted project's package directory stays a containment root");
         assert_eq!(resolved, outside.join("secret"));
+    }
+
+    /// Every file under `dir`, with its bytes, so a test can tell whether a
+    /// request created, changed or removed anything there.
+    #[cfg(unix)]
+    fn tree(dir: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        let mut files = std::collections::BTreeMap::new();
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(next) = pending.pop() {
+            for entry in std::fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path.clone());
+                    files.insert(path, Vec::new());
+                } else {
+                    files.insert(path.clone(), std::fs::read(&path).unwrap());
+                }
+            }
+        }
+        files
+    }
+
+    /// A trusted project keeps an outside package folder as a read root, and
+    /// no `named` or `named_write` arm may write there. Each arm is driven
+    /// with every path parameter it takes naming a place in that folder. A
+    /// `named_write` arm refuses with `PATH_NOT_AUTHORIZED`, and after all of
+    /// them the folder holds the bytes it started with, so an arm that writes
+    /// through the read resolver fails here whichever way it is declared.
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn no_named_arm_writes_into_a_trusted_projects_outside_package_folder() {
+        use super::super::{PathUse, DISPATCHERS};
+
+        let _config = ScratchConfig::new();
+        let dir = tempfile::tempdir().unwrap();
+        let (workspace, outside) = project_with_symlinked_packages(dir.path());
+        let root = dir.path().join("project");
+        std::fs::write(
+            root.join("App.g.xlf"),
+            r#"<xliff version="1.2"><file original="App" source-language="en-US"><body><group id="body"><trans-unit id="T1"><source>Hello</source></trans-unit></group></body></file></xliff>"#,
+        )
+        .unwrap();
+        std::fs::write(outside.join("de-DE.xlf"), b"<xliff/>").unwrap();
+        al_project::trust::grant(&root).expect("grant");
+        let workspace = std::sync::Arc::new(workspace);
+        let shutdown = tokio::sync::Notify::new();
+        let before = tree(&outside);
+        let at = |name: &str| outside.join(name).to_str().unwrap().to_string();
+        let generated = root.join("App.g.xlf").to_str().unwrap().to_string();
+
+        let writes = [
+            ("xlf.generate", serde_json::json!({ "project": at("") })),
+            (
+                "xlf.refresh",
+                serde_json::json!({ "xlf": at("secret"), "generated": generated }),
+            ),
+            (
+                "xlf.refresh",
+                serde_json::json!({ "xlf": at("de-DE.xlf"), "generated": generated }),
+            ),
+            (
+                "newProject",
+                serde_json::json!({ "dir": at("scaffolded"), "name": "Scaffold", "publisher": "Test" }),
+            ),
+            (
+                "snapshot",
+                serde_json::json!({ "cmd": "list", "outputDir": at("") }),
+            ),
+            (
+                "profiling",
+                serde_json::json!({ "cmd": "analyze", "outputDir": at(""), "path": at("secret") }),
+            ),
+            (
+                "tests.run_batch",
+                serde_json::json!({ "codeunitIds": [50100], "junitOut": at("junit.xml") }),
+            ),
+            (
+                "tests.run_batch",
+                serde_json::json!({ "codeunitIds": [50100], "coberturaOut": at("cobertura.xml") }),
+            ),
+            (
+                "tests.run_auto",
+                serde_json::json!({ "junitOut": at("junit.xml") }),
+            ),
+            (
+                "tests.run_auto",
+                serde_json::json!({ "coberturaOut": at("cobertura.xml") }),
+            ),
+            (
+                "tests.snapshot_capture",
+                serde_json::json!({
+                    "codeunitId": 50100,
+                    "codeunitName": "X",
+                    "methodName": "M",
+                    "bcVersion": "26.0",
+                    "breakpoints": [{ "file": "doc.al", "line": 1 }],
+                    "outputPath": at("capture.snap.json"),
+                }),
+            ),
+        ];
+        let reads = [
+            (
+                "eventSource",
+                serde_json::json!({ "file": at("secret"), "line": 1 }),
+            ),
+            (
+                "xlf.untranslated",
+                serde_json::json!({ "xlf": at("secret") }),
+            ),
+            ("xlf.suggest", serde_json::json!({ "xlf": at("secret") })),
+            (
+                "packageDiff",
+                serde_json::json!({ "from": at("secret"), "to": at("secret") }),
+            ),
+            (
+                "tests.snapshot_validate",
+                serde_json::json!({ "snapshotPath": at("secret") }),
+            ),
+            (
+                "tests.snapshot_replay",
+                serde_json::json!({ "snapshotPath": at("secret"), "bcVersion": "26.0" }),
+            ),
+            (
+                "tests.snapshot_diff",
+                serde_json::json!({ "pathA": at("secret"), "pathB": at("secret") }),
+            ),
+            (
+                "tests.mutate",
+                serde_json::json!({ "files": [at("secret")] }),
+            ),
+        ];
+
+        let mut answered = Vec::new();
+        for (method, params) in writes.iter().chain(reads.iter()) {
+            let response = super::super::dispatch_request(
+                &workspace,
+                al_protocol::jsonrpc::Request::new(1, *method, Some(params.clone())),
+                &shutdown,
+            )
+            .await;
+            let is_write = writes.iter().any(|(write, _)| write == method);
+            // The refusal names the path it refused, which tells it from the
+            // one a daemon with no project gives.
+            let refused = response.error.as_ref().is_some_and(|error| {
+                error.code == al_protocol::jsonrpc::error_codes::PATH_NOT_AUTHORIZED
+                    && error.message.contains(outside.to_str().unwrap())
+            });
+            if is_write && !refused {
+                answered.push(format!("{method} {params} -> {:?}", response.error));
+            }
+        }
+        assert!(
+            answered.is_empty(),
+            "a write arm took a path in the outside package folder: {answered:#?}"
+        );
+        assert_eq!(
+            tree(&outside),
+            before,
+            "a named arm changed the outside package folder"
+        );
+
+        let driven = |cases: &[(&'static str, serde_json::Value)]| {
+            cases
+                .iter()
+                .map(|(method, _)| *method)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let declared = |path: PathUse| {
+            DISPATCHERS
+                .iter()
+                .filter(|dispatcher| dispatcher.path == path)
+                .map(|dispatcher| dispatcher.method)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        assert_eq!(
+            driven(&writes),
+            declared(PathUse::NamedWrite),
+            "the write cases and the arms declared `named_write` differ"
+        );
+        assert_eq!(
+            driven(&reads),
+            declared(PathUse::Named),
+            "the read cases and the arms declared `named` differ"
+        );
     }
 
     /// A trusted project whose only privileged value is an on-premises launch

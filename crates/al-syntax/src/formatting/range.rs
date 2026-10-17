@@ -381,11 +381,11 @@ mod tests {
     }
 
     /// A single isolated blank line (its neighbour above has real content) is
-    /// not the second line of a collapsed double-blank run. Selecting a range
-    /// that starts on it, and needs a real edit for an unrelated reason
+    /// not the second line of a collapsed run of two blank lines. Selecting a
+    /// range that starts on it, and needs a real edit for an unrelated reason
     /// further in the range, must take the normal replacement path: the edit
-    /// ends on `end`, not `end + 1`. `end + 1` is the signature of the
-    /// collapsed-blank deletion path, which this line must not trigger.
+    /// ends on `end`. An edit that ends on `end + 1` came through the path
+    /// that deletes a collapsed blank line, which this line must not trigger.
     #[test]
     fn test_format_range_starting_on_an_isolated_blank_line_is_not_a_collapsed_run() {
         let input = "codeunit 50100 Test\n\
@@ -403,11 +403,11 @@ mod tests {
             ..Default::default()
         };
 
-        // Line 5 is the lone blank; line 4 ("    end;") is not blank, so this
-        // is not a double-blank run. Range [5, 7] also covers the
-        // badly-indented "procedure B()"/"begin", so the region does differ
-        // from the original and the function reaches the collapsed-blank
-        // check instead of returning early.
+        // Line 5 is the lone blank. Line 4 ("    end;") is not blank, so this
+        // is not a run of two blank lines. Range [5, 7] also covers
+        // "procedure B()" and "begin", which are indented wrong, so the region
+        // does differ from the original and the function reaches the check
+        // for a collapsed blank line instead of returning early.
         let edits = format_range(input, 5, 7, &opts).unwrap();
         assert_eq!(edits.len(), 1);
         assert_eq!(
@@ -419,8 +419,8 @@ mod tests {
         assert!(edits[0].new_text.contains("    begin"));
     }
 
-    /// A whitespace-only first line of the document (`start == 0`) must
-    /// short-circuit on `start > 0` before any `start - 1` indexing is
+    /// A first line of the document that holds only whitespace (`start == 0`)
+    /// must short-circuit on `start > 0` before any `start - 1` indexing is
     /// attempted. Selecting just that line, where the trailing whitespace
     /// itself needs stripping, exercises the boundary directly.
     #[test]

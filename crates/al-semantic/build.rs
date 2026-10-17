@@ -9,8 +9,12 @@ fn main() {
 
 /// Compile the C# semantic bridge DLL via `dotnet build`.
 ///
-/// The bridge DLL is placed in OUT_DIR/bridge/ and found at runtime by
-/// `host` via the baked-in OUT_DIR path.
+/// The bridge DLL is placed in OUT_DIR/bridge/. A debug build finds it there
+/// at runtime through the OUT_DIR path baked in at compile time. A release
+/// build does not keep that path (see `build_output_dir` in src/host.rs) and
+/// finds the bridge in bridge/ beside the executable or in AL_BRIDGE_DIR, so a
+/// release build run from a checkout needs AL_BRIDGE_DIR set to
+/// target/release/build/al-semantic-*/out/bridge.
 fn build_semantic_bridge() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let bridge_dir = manifest_dir.join("bridge");

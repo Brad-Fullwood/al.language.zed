@@ -16,6 +16,10 @@ tracing = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
 
+# `O_NOFOLLOW` and `O_NONBLOCK` for the snapshot and profile downloads.
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
 [dev-dependencies]
 wiremock = "0.6"
 tempfile = { workspace = true }

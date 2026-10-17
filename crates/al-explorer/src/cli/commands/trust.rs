@@ -18,13 +18,14 @@
 //! changes one. No refusal names those flags: a refusal addressed to a caller
 //! with no terminal is addressed to a script or an agent.
 
+use std::fmt::Write as _;
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use al_project::trust;
 
-use super::{print_json, report_error};
+use super::{path_text, print_json, report_error, terminal_lines, terminal_text};
 
 /// What a person types to record the trust.
 const CONFIRMATION: &str = "yes";
@@ -66,11 +67,7 @@ fn show_trust(root: &Path, json: bool) -> ExitCode {
         Ok(decision) => decision,
         Err(error) => return report_error(&format!("cannot read project settings: {error}"), json),
     };
-    let state = match decision.state {
-        trust::TrustState::Trusted => "trusted",
-        trust::TrustState::Untrusted => "untrusted",
-        trust::TrustState::Stale => "stale",
-    };
+    let state = state_label(decision.state);
     if json {
         print_json(&serde_json::json!({
             "project": decision.root.display().to_string(),
@@ -81,23 +78,57 @@ fn show_trust(root: &Path, json: bool) -> ExitCode {
         }));
         return ExitCode::SUCCESS;
     }
-    println!("Project: {}", decision.root.display());
-    println!("Trust:   {state}");
-    println!("Digest:  {}", decision.digest);
+    print!("{}", show_text(&decision));
+    ExitCode::SUCCESS
+}
+
+fn state_label(state: trust::TrustState) -> &'static str {
+    match state {
+        trust::TrustState::Trusted => "trusted",
+        trust::TrustState::Untrusted => "untrusted",
+        trust::TrustState::Stale => "stale",
+    }
+}
+
+/// The text `trust --show` prints: the project, its state, the digest and
+/// each value that needs trust.
+fn show_text(decision: &trust::TrustDecision) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "Project: {}", path_text(&decision.root));
+    let _ = writeln!(out, "Trust:   {}", state_label(decision.state));
+    let _ = writeln!(out, "Digest:  {}", terminal_text(&decision.digest));
     if decision.privileged.is_empty() {
-        println!("This project supplies no settings that need trust.");
-        return ExitCode::SUCCESS;
+        let _ = writeln!(out, "This project supplies no settings that need trust.");
+        return out;
     }
     let effect = if decision.is_trusted() {
         "in effect"
     } else {
         "ignored"
     };
-    println!("\nSettings from the repository that need trust ({effect}):");
+    let _ = writeln!(
+        out,
+        "\nSettings from the repository that need trust ({effect}):"
+    );
     for setting in &decision.privileged {
-        println!("  {}", setting.display_line());
+        let _ = writeln!(out, "  {}", setting.display_line());
     }
-    ExitCode::SUCCESS
+    out
+}
+
+/// The lines `trust` prints before it asks: the project and each value it
+/// would let the repository supply.
+fn values_text(decision: &trust::TrustDecision) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "Trusting {} lets its own files supply:",
+        path_text(&decision.root)
+    );
+    for setting in &decision.privileged {
+        let _ = writeln!(out, "  {}", setting.display_line());
+    }
+    out
 }
 
 fn revoke_trust(root: &Path, json: bool) -> ExitCode {
@@ -110,9 +141,9 @@ fn revoke_trust(root: &Path, json: bool) -> ExitCode {
                     "revoked": removed,
                 }));
             } else if removed {
-                println!("Trust revoked for {}", root.display());
+                println!("Trust revoked for {}", path_text(&root));
             } else {
-                println!("{} was not trusted", root.display());
+                println!("{} was not trusted", path_text(&root));
             }
             ExitCode::SUCCESS
         }
@@ -197,7 +228,7 @@ fn ask_the_terminal(prompt: &str) -> Result<bool, String> {
             trust::TRUST_COMMAND
         )
     })?;
-    write!(terminal, "{prompt}")
+    write!(terminal, "{}", terminal_lines(prompt))
         .and_then(|()| terminal.flush())
         .map_err(|error| format!("could not write the question to the terminal: {error}"))?;
 
@@ -247,7 +278,7 @@ fn grant_trust(root: &Path, unattended: Unattended<'_>, json: bool) -> ExitCode 
         } else {
             println!(
                 "{} supplies no settings that need trust; nothing recorded.",
-                decision.root.display()
+                path_text(&decision.root)
             );
         }
         return ExitCode::SUCCESS;
@@ -256,13 +287,7 @@ fn grant_trust(root: &Path, unattended: Unattended<'_>, json: bool) -> ExitCode 
     // Printed before the question, not after the record: the point of the
     // command is that a person reads these lines and decides. In --json mode
     // they go to stderr so stdout stays one JSON document.
-    let mut values = format!(
-        "Trusting {} lets its own files supply:\n",
-        decision.root.display()
-    );
-    for setting in &decision.privileged {
-        values.push_str(&format!("  {}\n", setting.display_line()));
-    }
+    let values = values_text(&decision);
     if json {
         eprint!("{values}");
     } else {
@@ -310,11 +335,11 @@ fn grant_trust(root: &Path, unattended: Unattended<'_>, json: bool) -> ExitCode 
                     "store": store.display().to_string(),
                 }));
             } else {
-                println!("\nRecorded in {}", store.display());
+                println!("\nRecorded in {}", path_text(&store));
                 println!("Changing any of these values requires trusting the project again.");
                 println!(
                     "Undo with: al-explorer trust --revoke {}",
-                    decision.root.display()
+                    path_text(&decision.root)
                 );
             }
             ExitCode::SUCCESS
@@ -494,5 +519,41 @@ mod tests {
             confirmation_needed(Path::new("/tmp/proj"), DIGEST, Unattended::default(), true),
             Ok(false)
         );
+    }
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::{show_text, trust, values_text};
+
+    /// A project cloned into a directory whose name clears the screen, with
+    /// a launch configuration whose name renames the window.
+    fn crafted_decision() -> trust::TrustDecision {
+        trust::TrustDecision::from_parts(
+            std::path::PathBuf::from("/tmp/Sec7 Tests\u{1b}[2J"),
+            trust::TrustState::Untrusted,
+            vec![trust::PrivilegedSetting {
+                key: "Sec7 Caller\u{1b}]0;pwned\u{7}".to_string(),
+                value: "https://bc.example".to_string(),
+                source: ".vscode/launch.json".to_string(),
+            }],
+            "sha256:reviewed".to_string(),
+        )
+    }
+
+    #[test]
+    fn show_and_the_grant_values_print_a_crafted_project_path_escaped() {
+        let decision = crafted_decision();
+        for text in [show_text(&decision), values_text(&decision)] {
+            assert!(
+                !text.contains('\u{1b}') && !text.contains('\u{7}'),
+                "{text:?}"
+            );
+            assert!(text.contains(r"/tmp/Sec7 Tests\u{1b}[2J"), "got: {text}");
+            assert!(
+                text.contains(r"  Sec7 Caller\u{1b}]0;pwned\u{7} = https://bc.example"),
+                "got: {text}"
+            );
+        }
     }
 }

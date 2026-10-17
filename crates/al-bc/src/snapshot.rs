@@ -279,11 +279,12 @@ pub async fn download_snapshot(
     let bytes = crate::bc_client::read_binary_body_capped(resp)
         .await
         .map_err(server_error_from_body_failure)?;
-    tokio::fs::write(&dest, &bytes).await?;
+    let len = bytes.len();
+    crate::output_file::write_no_follow(&dest, bytes).await?;
 
     info!(
         path = %dest.display(),
-        bytes = bytes.len(),
+        bytes = len,
         "snapshot: downloaded"
     );
 
@@ -379,6 +380,110 @@ mod tests {
             password: Some("password".to_string()),
             accept_invalid_certs: false,
         }
+    }
+
+    /// A project can ship `out/<id>.alvsc` as a link to a file outside it.
+    /// `outputDir` passes the daemon's containment check as a directory
+    /// inside the project, so the download itself refuses the link, whether
+    /// its target exists or not, and leaves the target untouched.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_refuses_a_link_at_the_file_name() {
+        let server = MockServer::start().await;
+        for id in ["snap1", "snap2"] {
+            Mock::given(method("GET"))
+                .and(path(format!("/dev/snapshots/{id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(b"SERVER BYTES".to_vec()))
+                .mount(&server)
+                .await;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("project").join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("existing"), b"USER FILE").unwrap();
+        std::os::unix::fs::symlink(outside.join("existing"), out.join("snap1.alvsc")).unwrap();
+        std::os::unix::fs::symlink(outside.join("created"), out.join("snap2.alvsc")).unwrap();
+        let mut config = config_for(&server.uri());
+        config.output_dir = out.canonicalize().unwrap();
+
+        for id in ["snap1", "snap2"] {
+            let error = download_snapshot(&config, id)
+                .await
+                .expect_err("a link at the destination must be refused");
+            assert!(
+                error
+                    .to_string()
+                    .contains("refusing to write through the symbolic link"),
+                "{id}: {error}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(outside.join("existing")).unwrap(),
+            "USER FILE"
+        );
+        assert!(!outside.join("created").exists());
+    }
+
+    /// A destination that exists and is not a regular file is refused. A FIFO
+    /// with a reader would otherwise take the bytes, and one without a reader
+    /// would block the write.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn download_refuses_a_destination_that_is_not_a_regular_file() {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let server = MockServer::start().await;
+        for id in ["fifo", "folder"] {
+            Mock::given(method("GET"))
+                .and(path(format!("/dev/snapshots/{id}")))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(b"SERVER BYTES".to_vec()))
+                .mount(&server)
+                .await;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("out");
+        std::fs::create_dir_all(out.join("folder.alvsc")).unwrap();
+        let fifo = out.join("fifo.alvsc");
+        let fifo_c = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let _reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
+        let mut config = config_for(&server.uri());
+        config.output_dir = out.clone();
+
+        for id in ["fifo", "folder"] {
+            let error = download_snapshot(&config, id)
+                .await
+                .expect_err("a destination that is not a regular file must be refused");
+            assert!(
+                error.to_string().contains("is not a regular file"),
+                "{id}: {error}"
+            );
+        }
+    }
+
+    /// An ordinary download still replaces a regular file left by an earlier
+    /// one.
+    #[tokio::test]
+    async fn download_replaces_an_earlier_regular_file() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/dev/snapshots/again"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"NEW".to_vec()))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("again.alvsc"), b"OLDER AND LONGER").unwrap();
+        let mut config = config_for(&server.uri());
+        config.output_dir = dir.path().to_path_buf();
+
+        let dest = download_snapshot(&config, "again").await.unwrap();
+        assert_eq!(std::fs::read(dest).unwrap(), b"NEW");
     }
 
     #[tokio::test]

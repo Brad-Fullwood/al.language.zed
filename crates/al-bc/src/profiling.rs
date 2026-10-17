@@ -187,11 +187,12 @@ pub async fn stop_profiling(
     let bytes = crate::bc_client::read_binary_body_capped(resp)
         .await
         .map_err(|e| ProfilingError::ParseError(format!("Failed to read profile data: {e}")))?;
-    tokio::fs::write(&dest, &bytes).await?;
+    let len = bytes.len();
+    crate::output_file::write_no_follow(&dest, bytes).await?;
 
     info!(
         path = %dest.display(),
-        bytes = bytes.len(),
+        bytes = len,
         "profiling: profile saved"
     );
 
@@ -1066,6 +1067,49 @@ mod tests {
             password: Some("password".to_string()),
             accept_invalid_certs: false,
         }
+    }
+
+    /// A project can ship links at the names the next seconds give the
+    /// profile. `stop_profiling` refuses the link it lands on and leaves the
+    /// target absent.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stop_refuses_a_link_at_the_profile_name() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/dev/profiler/stop"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"PROFILE BYTES".to_vec()))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("project").join("profiles");
+        std::fs::create_dir_all(&out).unwrap();
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for second in now..now + 60 {
+            std::os::unix::fs::symlink(
+                outside.join("created"),
+                out.join(format!("profile-{second}.alcpuprofile")),
+            )
+            .unwrap();
+        }
+        let mut config = config_for(&server.uri());
+        config.output_dir = out.canonicalize().unwrap();
+
+        let error = stop_profiling(&config, "sess-1")
+            .await
+            .expect_err("a link at the profile name must be refused");
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to write through the symbolic link"),
+            "{error}"
+        );
+        assert!(!outside.join("created").exists());
     }
 
     #[tokio::test]

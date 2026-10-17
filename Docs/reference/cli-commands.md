@@ -37,7 +37,10 @@ A file argument outside the current project is read by the CLI and sent to the d
 commands that only read a file (`parse`, `lint`, `metrics`, `symbols`, `hover`, `folding`,
 `tokens`, `definition`, `references`) answer for any file you can read. Commands that rewrite a
 file (`format`, `fix`, `sort-members`, `organize-files`, `rename`) refuse it and name the project
-they are confined to: the daemon changes files only inside the project it has loaded. See
+they are confined to. So do the commands that pass a path in another argument, such as
+`event-source`, the `xlf` and `test-snapshot` commands, `test-run-all --junit-out`,
+`test-mutate --files`, `profile analyze` and `snapshot download --output-dir`: the daemon reads
+and writes paths only inside the project it has loaded. See
 [daemon-methods](./daemon-methods.md#paths-and-the-project-boundary).
 
 ## Setup & diagnostics
@@ -97,7 +100,7 @@ they are confined to: the daemon changes files only inside the project it has lo
 | `compile` | `--project <dir>` | Compile (native default, `al.useOfficialCompiler` → `alc`) |
 | `package` | | Package compiled app into `.app` |
 | `publish` | `--config <name> [--incremental]` | Compile and publish the `.app` to the BC dev endpoint named in `.vscode/launch.json` or `.zed/debug.json`. `--incremental` uses the RAD API |
-| `pack-native` | `--project <dir> --out <path> [--validate [--analyzers <list>]]` | Verified pure-Rust `.app` build. Rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure. Global `--json` returns exact native ranges. `--validate` adds `alc` after native checks, with the project's `al.codeAnalyzers` or the `--analyzers` list (a custom analyzer found in the repository's own folders is refused unless the project is trusted and its trust record lists that file) |
+| `pack-native` | `--project <dir> --out <path> [--validate [--analyzers <list>]]` | Verified pure-Rust `.app` build. Rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure. Global `--json` returns exact native ranges. `--validate` adds `alc` after native checks, with the project's `al.codeAnalyzers` or the `--analyzers` list (a custom analyzer file the repository supplies, found in its own folders or named by a path into it, is refused unless the project is trusted and its trust record lists that file) |
 | `download-symbols` | `--project <dir> --source server\|nuget` | Download dependency symbols |
 | `authenticate [login\|status\|clear]` | `--tenant <tenant>` | BC / Entra authentication and cached-session management |
 

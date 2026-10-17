@@ -1,5 +1,6 @@
 //! Environment & cache commands: version, cache clearing, setup/doctor health checks, and symbol downloads.
 
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -42,19 +43,13 @@ pub fn cmd_clear_cache(json: bool) -> ExitCode {
                 if json {
                     print_json(&value);
                 } else {
-                    let path = value
-                        .get("path")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("<unknown>");
+                    let path = text_field(&value, "path", "<unknown>");
                     if !existed {
                         eprintln!("Cache directory does not exist: {path}");
                     } else if deleted {
                         eprintln!("Cleared cache: {path} (via daemon)");
                     } else {
-                        let err = value
-                            .get("error")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("unknown error");
+                        let err = text_field(&value, "error", "unknown error");
                         eprintln!("Daemon failed to clear cache at {path}: {err}");
                         return ExitCode::FAILURE;
                     }
@@ -62,7 +57,10 @@ pub fn cmd_clear_cache(json: bool) -> ExitCode {
                 return exit_code;
             }
             Err(e) => {
-                eprintln!("Daemon clearCache request failed ({e}); falling back to local removal.");
+                eprintln!(
+                    "Daemon clearCache request failed ({}); falling back to local removal.",
+                    terminal_text(&e)
+                );
             }
         }
     }
@@ -77,6 +75,7 @@ pub fn cmd_clear_cache(json: bool) -> ExitCode {
         }
     }
     let local_failed = error.is_some();
+    let shown_dir = terminal_text(&index_dir.display().to_string());
 
     if json {
         print_json(&serde_json::json!({
@@ -87,14 +86,13 @@ pub fn cmd_clear_cache(json: bool) -> ExitCode {
             "error": error,
         }));
     } else if !existed {
-        eprintln!("Cache directory does not exist: {}", index_dir.display());
+        eprintln!("Cache directory does not exist: {shown_dir}");
     } else if deleted {
-        eprintln!("Cleared cache: {}", index_dir.display());
+        eprintln!("Cleared cache: {shown_dir}");
     } else {
         eprintln!(
-            "Failed to clear cache at {}: {}",
-            index_dir.display(),
-            error.as_deref().unwrap_or("unknown error")
+            "Failed to clear cache at {shown_dir}: {}",
+            terminal_text(error.as_deref().unwrap_or("unknown error"))
         );
         return ExitCode::FAILURE;
     }
@@ -127,7 +125,10 @@ pub fn cmd_daemon_shutdown(json: bool) -> ExitCode {
                     "project": root,
                 }));
             } else {
-                eprintln!("No daemon is running for {}", root.display());
+                eprintln!(
+                    "No daemon is running for {}",
+                    terminal_text(&root.display().to_string())
+                );
             }
             return ExitCode::SUCCESS;
         }
@@ -166,7 +167,10 @@ pub fn cmd_daemon_shutdown(json: bool) -> ExitCode {
             "project": root,
         }));
     } else {
-        eprintln!("Stopped daemon for {}", root.display());
+        eprintln!(
+            "Stopped daemon for {}",
+            terminal_text(&root.display().to_string())
+        );
     }
     ExitCode::SUCCESS
 }
@@ -205,14 +209,10 @@ pub fn cmd_setup(json: bool) -> ExitCode {
         let dotnet = result.get("dotnetVersion").and_then(|v| v.as_str());
         let tc = result.get("toolchain");
         if altool {
-            let version = tc
-                .and_then(|t| t.get("version"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let alc = tc
-                .and_then(|t| t.get("alc"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("?");
+            let null = serde_json::Value::Null;
+            let tc = tc.unwrap_or(&null);
+            let version = text_field(tc, "version", "unknown");
+            let alc = text_field(tc, "alc", "?");
             println!("[OK] ALTool v{version}");
             println!("     alc: {alc}");
         } else {
@@ -222,7 +222,7 @@ pub fn cmd_setup(json: bool) -> ExitCode {
             );
         }
         if let Some(v) = dotnet {
-            println!("[OK] .NET SDK {v}");
+            println!("[OK] .NET SDK {}", terminal_text(v));
         } else {
             println!("[!!] .NET SDK not found");
         }
@@ -378,31 +378,8 @@ pub fn cmd_download_symbols(
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
                 let failed = result.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
-                let source_name = result
-                    .get("source")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("nuget");
-                if let Some(results) = result.get("results").and_then(|v| v.as_array()) {
-                    for r in results {
-                        let name = r.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let status = r.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        match status {
-                            "ok" => {
-                                let path = r.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                                eprintln!("[OK] {name} -> {path}");
-                            }
-                            "skipped" => {
-                                let path = r.get("path").and_then(|v| v.as_str()).unwrap_or("");
-                                eprintln!("[--] {name} — already in .alpackages ({path})");
-                            }
-                            _ => {
-                                let err =
-                                    r.get("error").and_then(|v| v.as_str()).unwrap_or("unknown");
-                                eprintln!("[!!] {name} — {err}");
-                            }
-                        }
-                    }
-                }
+                let source_name = text_field(&result, "source", "nuget");
+                eprint!("{}", download_results_text(&result));
                 let skipped = result.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0);
                 eprintln!(
                     "\n{downloaded} downloaded, {skipped} already present, {failed} failed (source: {source_name})"
@@ -415,6 +392,59 @@ pub fn cmd_download_symbols(
             }
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+/// One line per package a symbol download fetched, skipped or failed on.
+/// Package names come from `app.json` and from the symbol server.
+fn download_results_text(result: &serde_json::Value) -> String {
+    let mut out = String::new();
+    for r in result
+        .get("results")
+        .and_then(|v| v.as_array())
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+    {
+        let name = text_field(r, "name", "?");
+        let path = text_field(r, "path", "");
+        match r.get("status").and_then(|v| v.as_str()).unwrap_or("?") {
+            "ok" => {
+                let _ = writeln!(out, "[OK] {name} -> {path}");
+            }
+            "skipped" => {
+                let _ = writeln!(out, "[--] {name} — already in .alpackages ({path})");
+            }
+            _ => {
+                let err = text_field(r, "error", "unknown");
+                let _ = writeln!(out, "[!!] {name} — {err}");
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod terminal_text_tests {
+    use super::download_results_text;
+
+    #[test]
+    fn download_symbols_prints_package_names_and_errors_escaped() {
+        let result = serde_json::json!({"results": [
+            {"name": "Sec7 Tests\u{1b}[2J", "status": "ok", "path": ".alpackages/a.app"},
+            {"name": "Bad\u{1b}[31m Name\u{1b}[0m", "status": "skipped", "path": "b\u{7}.app"},
+            {"name": "c", "status": "failed", "error": "Sec7 Caller\u{1b}]0;pwned\u{7}"}
+        ]});
+        let text = download_results_text(&result);
+        assert!(
+            !text.contains('\u{1b}') && !text.contains('\u{7}'),
+            "{text:?}"
+        );
+        assert_eq!(
+            text,
+            "[OK] Sec7 Tests\\u{1b}[2J -> .alpackages/a.app\n\
+             [--] Bad\\u{1b}[31m Name\\u{1b}[0m — already in .alpackages (b\\u{7}.app)\n\
+             [!!] c — Sec7 Caller\\u{1b}]0;pwned\\u{7}\n"
+        );
     }
 }
 

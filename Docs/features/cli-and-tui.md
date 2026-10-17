@@ -42,6 +42,12 @@ Every command accepts the global `--json` flag. Human mode prints tables/indente
 stderr). JSON mode prints structured results to stdout, with errors as `{ "error": "…" }`, which is what
 scripts, CI and agents read. Example error when the daemon is unreachable: `{ "error": "… Hint: Is the daemon running? Start it with: al-lsp daemon --project <dir>" }`.
 
+Object, package and manifest names come from the project's files and from every `.app` under
+`.alpackages`, so a name can hold a terminal escape sequence. Human mode writes each control
+character in error text and in the names `search`, `object`, `by-id`, `packages`, `deps` and
+`lint` print as its escape (`\u{1b}`), so the terminal prints it instead of acting on it. JSON
+mode escapes the same characters as JSON does (`\u001b`).
+
 Human and JSON modes also share exit codes. `0` means the requested check passed, `1` means an
 error or blocking findings, and `75` is `doctor`'s answer while the daemon is still loading the
 workspace. Complexity hotspots, any dead-code finding, SQL anti-patterns,
