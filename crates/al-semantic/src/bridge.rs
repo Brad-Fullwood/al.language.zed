@@ -583,7 +583,7 @@ impl SemanticBridge {
     }
 
     /// Compiler and analyzer diagnostics of every file in a project, as a
-    /// build reports them. Runs under [`PROJECT_TIMEOUT`], since a large
+    /// build reports them. Runs with a 10 minute limit, since a large
     /// project with several analyzers takes far longer than one file.
     pub async fn analyze_project(
         &self,
