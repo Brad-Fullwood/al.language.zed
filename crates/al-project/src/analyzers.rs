@@ -1469,9 +1469,10 @@ mod tests {
 
         assert_eq!(
             found,
-            home.path().join(
-                ".cursor/extensions/ms-dynamics-smb.al-18.0.2819426/bin/ALCops.LinterCop.dll"
-            )
+            home.path()
+                .join(".cursor/extensions/ms-dynamics-smb.al-18.0.2819426/bin/ALCops.LinterCop.dll")
+                .canonicalize()
+                .unwrap()
         );
     }
 

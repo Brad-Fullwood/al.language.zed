@@ -100,7 +100,8 @@ grim "$OUT" 2>&1 && echo "SHOT: $OUT ($(stat -c%s "$OUT") bytes)" || echo "GRIM 
 lsp_count=$(pgrep -af 'al-lsp' | grep -c -- --stdio)
 echo "AL_LSP_PROCS: $lsp_count stdio server(s) running"
 echo "=== al-lsp processes and how Zed started them ==="
-ps -eo pid,ppid,args | grep -E 'al-lsp' | grep -v grep || true
+lsp_pids=$(pgrep -d, -f 'al-lsp' || true)
+if [ -n "$lsp_pids" ]; then ps -o pid,ppid,args -p "$lsp_pids"; fi
 echo "=== zed.log (al / lsp / extension / error) ==="
 grep -iE "al-lsp|extension|language server|grammar|fail|error|panic" /tmp/zed.log | tail -20
 if [ "$lsp_count" -eq 0 ]; then

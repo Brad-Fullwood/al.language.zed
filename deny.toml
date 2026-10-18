@@ -7,7 +7,16 @@ wildcards = "warn"
 highlight = "all"
 
 [advisories]
-ignore = []
+# keyring 3's Secret Service store (al-symbols, `nuget` feature) runs on zbus 4,
+# which depends on the standalone zbus_names, zvariant and zvariant_derive
+# crates. zbus 6 merged them in, and these advisories mark the standalone
+# crates unmaintained. They report no vulnerability. The newest keyring stores
+# still use zbus 5, which depends on the same crates.
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, no zbus 6 keyring store yet" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, no zbus 6 keyring store yet" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, no zbus 6 keyring store yet" },
+]
 
 [licenses]
 allow = [

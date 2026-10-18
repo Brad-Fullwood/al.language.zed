@@ -297,7 +297,7 @@ mod entry_names {
                     let mut zip =
                         zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
                     prop_assert_eq!(zip.len(), 1);
-                    let stored = zip.by_index(0).unwrap().name().to_string();
+                    let stored = zip.by_index(0).unwrap().name().unwrap().to_string();
                     prop_assert_eq!(stored, name);
                 }
             }
