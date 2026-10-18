@@ -133,7 +133,9 @@ jobs:
         if: matrix.cross
         env:
           AL_BRIDGE_PREBUILT: ${{ github.workspace }}/prebuilt-bridge
-          CROSS_CONTAINER_OPTS: "-e AL_BRIDGE_PREBUILT=/project/prebuilt-bridge"
+          # cross mounts the workspace at its host path, so the container sees
+          # the prebuilt bridge at the same path as the host.
+          CROSS_CONTAINER_OPTS: "-e AL_BRIDGE_PREBUILT=${{ github.workspace }}/prebuilt-bridge"
         run: cross build -p al-lsp --bin al-lsp --release --features semantic --target ${{ matrix.target }}
 
       - name: Build al-explorer binary (cross)
