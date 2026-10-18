@@ -403,7 +403,7 @@ pub(crate) async fn initialize_workspace(
         return Ok(());
     }
     if should_prompt {
-        if let Ok(Some(action)) = client
+        if let Ok(response) = client
             .show_message_request(
                 MessageType::INFO,
                 "Apply recommended AL development settings? (Updates Zed settings.json)"
@@ -421,7 +421,7 @@ pub(crate) async fn initialize_workspace(
             )
             .await
         {
-            if action.title == "Yes" {
+            if response.is_some_and(|action| action.title == "Yes") {
                 match tokio::task::spawn_blocking(apply_recommended_settings).await {
                     Ok(Ok(())) => {
                         client
@@ -444,7 +444,8 @@ pub(crate) async fn initialize_workspace(
                     }
                 }
             }
-            // Mark as shown only after user explicitly responded (Yes or No).
+            // Mark as shown once the user answered Yes or No or dismissed the
+            // notification, which also declines it.
             // Run the sentinel write on the blocking pool so the async
             // executor thread is not stalled on disk I/O. Await the join
             // handle so a runtime shutdown mid-write surfaces in the log
@@ -457,8 +458,8 @@ pub(crate) async fn initialize_workspace(
                 }
             }
         }
-        // If show_message_request returned Ok(None) or Err, do NOT mark —
-        // the prompt was dismissed/lost, so retry next time.
+        // An Err means the request did not reach the user, so the prompt
+        // comes back next time.
     }
 
     if let Some(diagnostic_state) = diagnostic_state {

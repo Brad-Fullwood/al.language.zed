@@ -17,7 +17,7 @@ pub fn cmd_rules(json: bool) -> ExitCode {
             return;
         }
         print!("{}", rules_table_text(rules));
-        eprintln!("\n{} rules", rules.len());
+        eprintln!("\n{}", count_text(rules.len(), "rule"));
     })
 }
 
@@ -251,7 +251,7 @@ pub fn cmd_hints(
                     eprintln!("No inlay hints");
                 } else {
                     print!("{}", inlay_hints_text(hints));
-                    eprintln!("\n{} hints", hints.len());
+                    eprintln!("\n{}", count_text(hints.len(), "hint"));
                     print_page_footer(&result);
                 }
             }

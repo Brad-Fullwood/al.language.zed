@@ -418,7 +418,7 @@ pub fn app_has_source(app_path: &Path) -> std::io::Result<bool> {
 
     for i in 0..archive.len() {
         let entry = archive.by_index_raw(i)?;
-        if entry.name().to_ascii_lowercase().ends_with(".al") {
+        if entry.name()?.to_ascii_lowercase().ends_with(".al") {
             return Ok(true);
         }
     }

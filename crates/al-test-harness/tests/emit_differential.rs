@@ -180,7 +180,7 @@ fn entry_names(app: &Path) -> Vec<String> {
     let reader = std::io::Cursor::new(bytes[40..].to_vec());
     let mut zip = zip::ZipArchive::new(reader).unwrap();
     let mut names: Vec<String> = (0..zip.len())
-        .map(|i| zip.by_index(i).unwrap().name().to_string())
+        .map(|i| zip.by_index(i).unwrap().name().unwrap().to_string())
         .collect();
     names.sort();
     names

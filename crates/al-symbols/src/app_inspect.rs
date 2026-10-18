@@ -128,7 +128,7 @@ pub fn list_app_entries(data: &[u8]) -> Result<AppContents, AppReaderError> {
     let mut entries = Vec::with_capacity(archive.len());
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        let name = file.name()?.to_string();
         let size = file.size();
         let compressed_size = file.compressed_size();
         let mut head = [0u8; PEEK_LEN];
@@ -167,7 +167,7 @@ pub fn extract_app(data: &[u8], dest_dir: &Path) -> Result<AppContents, AppReade
 
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        let name = file.name()?.to_string();
         let Some(rel) = safe_join(dest_dir, &name) else {
             tracing::warn!(entry = %name, "skipping .app entry with unsafe path");
             continue;

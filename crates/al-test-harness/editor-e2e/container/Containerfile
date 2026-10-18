@@ -11,6 +11,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       `# wlroots compositor + screenshot + input (wayland: wtype, xwayland: xdotool) + compositing` \
       cage grim wlr-randr wtype xdotool imagemagick \
+      `# fish: run Zed with a non-POSIX login shell (ZED_SHELL=fish)` \
+      fish \
       `# mesa software vulkan/GL (Zed)` \
       libvulkan1 mesa-vulkan-drivers vulkan-tools \
       libgl1-mesa-dri libegl1 libgles2 libglx-mesa0 libglvnd0 \

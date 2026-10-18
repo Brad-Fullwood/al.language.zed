@@ -480,7 +480,7 @@ impl InsightGraph {
         }
 
         let elapsed = started.elapsed();
-        tracing::info!(
+        tracing::debug!(
             entries = all_entries.len(),
             nodes = self.node_count(),
             edges = self.edge_count(),

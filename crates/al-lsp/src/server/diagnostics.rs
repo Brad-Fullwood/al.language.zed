@@ -13,9 +13,10 @@ use tower_lsp::lsp_types::*;
 use super::lsp::LspSessionState;
 use super::AlServer;
 
+/// The latest Microsoft (compiler and analyzer) diagnostics of one file. They
+/// are kept until a newer pass for the file replaces them, so every publish
+/// for the file can include them.
 pub(crate) struct CachedSemanticDiagnostics {
-    pub(crate) text: Arc<String>,
-    pub(crate) client_version: i32,
     pub(crate) diagnostics: Vec<Diagnostic>,
 }
 
@@ -83,9 +84,72 @@ pub(crate) async fn compute_diagnostics(
         .map(syntax_diag_to_lsp)
         .collect();
 
-    diagnostics.extend(run_semantic_analysis(server, uri, text).await);
+    diagnostics.extend(
+        run_semantic_analysis(server, uri, text)
+            .await
+            .unwrap_or_default(),
+    );
 
     diagnostics
+}
+
+/// Native rules and the analyzer whose rule reports the same thing: AL-NL007
+/// (control without a tooltip) and CodeCop's AA0218, AL-NL005 (a read
+/// without SetLoadFields) and ALCops PlatformCop's PC0030.
+const NATIVE_RULES_COVERED_BY_ANALYZERS: &[(&str, &str)] =
+    &[("AL-NL007", "codecop"), ("AL-NL005", "alcops.platformcop")];
+
+/// The native rules a configured analyzer already covers. An entry is
+/// matched by its bare name, whatever the spelling: `CodeCop`, `${CodeCop}`,
+/// `${analyzerFolder}ALCops.PlatformCop.dll`, or a path to the DLL.
+fn native_rules_covered_by(configured_analyzers: &[String]) -> Vec<&'static str> {
+    let names: Vec<String> = configured_analyzers
+        .iter()
+        .map(|entry| {
+            let entry = entry.trim();
+            let entry = entry.strip_prefix("${analyzerFolder}").unwrap_or(entry);
+            let file = entry.rsplit(['/', '\\']).next().unwrap_or(entry);
+            al_project::analyzers::analyzer_name(file).to_ascii_lowercase()
+        })
+        .collect();
+    NATIVE_RULES_COVERED_BY_ANALYZERS
+        .iter()
+        .filter(|(_, analyzer)| names.iter().any(|name| name == analyzer))
+        .map(|(rule, _)| *rule)
+        .collect()
+}
+
+/// The configuration native lint runs with. A native rule that a configured
+/// analyzer covers is off while the compiler pass can run (code analysis on,
+/// a toolchain found), so a finding is not listed twice. A rule turned on
+/// explicitly in `al.nativeLintRules` stays on.
+pub(crate) async fn native_lint_config(
+    workspace: &al_workspace::Workspace,
+    mut config: al_project::config::AlConfig,
+) -> al_project::config::AlConfig {
+    let compiler_pass_runs = config.enable_code_analysis
+        && config.background_code_analysis
+        && workspace.toolchain.read().await.is_some();
+    if compiler_pass_runs {
+        for rule in native_rules_covered_by(&config.code_analyzers) {
+            config
+                .native_lint_rules
+                .entry(rule.to_string())
+                .or_insert(false);
+        }
+    }
+    config
+}
+
+/// Remove native findings of rules `config` turns off.
+fn drop_silenced_native_rules(
+    diagnostics: &mut Vec<Diagnostic>,
+    config: &al_project::config::AlConfig,
+) {
+    diagnostics.retain(|diagnostic| match &diagnostic.code {
+        Some(NumberOrString::String(code)) => config.native_lint_rules.get(code) != Some(&false),
+        _ => true,
+    });
 }
 
 /// Phase 1 syntax and lint diagnostics for `uri`.
@@ -107,13 +171,30 @@ async fn syntax_diagnostics(
         .await
         .as_ref()
         .map(|project| project.root.clone());
-    let config = server.workspace.config.read().await;
-    al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-        &server.workspace,
-        uri,
-        &config,
-        project_root.as_deref(),
-    )
+    let config = server.workspace.config.read().await.clone();
+    let config = native_lint_config(&server.workspace, config).await;
+    // Native lint walks the project for its cross-file rules, which takes
+    // hundreds of milliseconds on a real project. On the blocking pool it
+    // does not hold up the requests (semantic tokens, inlay hints) that the
+    // editor sends right after an open.
+    let workspace = Arc::clone(&server.workspace);
+    let uri = uri.clone();
+    match tokio::task::spawn_blocking(move || {
+        al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
+            &workspace,
+            &uri,
+            &config,
+            project_root.as_deref(),
+        )
+    })
+    .await
+    {
+        Ok(diagnostics) => diagnostics,
+        Err(error) => {
+            tracing::error!(%error, "native diagnostics worker failed");
+            Vec::new()
+        }
+    }
 }
 
 /// Compute project-scope diagnostics keyed by file for `workspace/diagnostic`.
@@ -264,6 +345,7 @@ async fn compute_workspace_push_diagnostics(
     force_clear_uri: Option<&Url>,
 ) -> Result<StagedPass, WorkspaceDiagnosticError> {
     let config = workspace.config.read().await.clone();
+    let config = native_lint_config(&workspace, config).await;
     let project_root = workspace
         .project
         .read()
@@ -282,7 +364,12 @@ async fn compute_workspace_push_diagnostics(
     .map_err(|error| WorkspaceDiagnosticError::Worker(error.to_string()))?
     .map_err(|error| WorkspaceDiagnosticError::Analysis(error.to_string()))?;
 
-    let semantic_cache = semantic_cache.lock().await;
+    // Native diagnostics are staged here. Microsoft diagnostics are added when
+    // the pass publishes (`with_semantic`), so results that arrive while this
+    // pass computes are not overwritten by a native-only set. A URI is staged
+    // when it has either kind.
+    let semantic_uris: std::collections::HashSet<Url> =
+        semantic_cache.lock().await.keys().cloned().collect();
     let mut reports = Vec::new();
     for (path, diagnostics) in native {
         let Ok(uri) = Url::from_file_path(&path) else {
@@ -291,20 +378,13 @@ async fn compute_workspace_push_diagnostics(
         if is_cache_path(&uri) {
             continue;
         }
-        let mut diagnostics: Vec<Diagnostic> = diagnostics.iter().map(syntax_diag_to_lsp).collect();
+        let diagnostics: Vec<Diagnostic> = diagnostics.iter().map(syntax_diag_to_lsp).collect();
+        if diagnostics.is_empty() && !semantic_uris.contains(&uri) {
+            continue;
+        }
         let input = StagedInput::read(&workspace, Some(path), &uri);
-        if let (Some((text, version)), Some(cached)) =
-            (input.document.as_ref(), semantic_cache.get(&uri))
-        {
-            if *version == cached.client_version && Arc::ptr_eq(text, &cached.text) {
-                diagnostics.extend(cached.diagnostics.clone());
-            }
-        }
-        if !diagnostics.is_empty() {
-            reports.push((uri, input, diagnostics));
-        }
+        reports.push((uri, input, diagnostics));
     }
-    drop(semantic_cache);
 
     let reported: std::collections::HashSet<&Url> = reports.iter().map(|(uri, _, _)| uri).collect();
     let candidates: Vec<Url> = published_uris
@@ -420,8 +500,16 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         }
 
         let mut current = std::collections::BTreeMap::new();
-        for (uri, input, diagnostics) in staged.reports {
-            current.insert(uri, (input, diagnostics));
+        {
+            let semantic = semantic_cache.lock().await;
+            for (uri, input, mut diagnostics) in staged.reports {
+                if let Some(cached) = semantic.get(&uri) {
+                    diagnostics.extend(cached.diagnostics.iter().cloned());
+                }
+                if !diagnostics.is_empty() {
+                    current.insert(uri, (input, diagnostics));
+                }
+            }
         }
         let mut published = published_uris.lock().await;
         let mut stale: Vec<Url> = published
@@ -522,18 +610,32 @@ pub(crate) async fn publish_diagnostics(
         diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
     }
 
-    let phase1_count = diagnostics.len();
+    // Phase 1 carries the file's last Microsoft diagnostics until phase 2
+    // replaces them. Publishing native diagnostics alone would make every
+    // compiler and analyzer finding vanish for the length of the semantic
+    // pass, then come back.
+    let previous_semantic = server
+        .semantic_diagnostic_cache
+        .lock()
+        .await
+        .get(uri)
+        .map(|cached| cached.diagnostics.clone())
+        .unwrap_or_default();
+    let mut phase1 = diagnostics.clone();
+    phase1.extend(previous_semantic);
+    let phase1_count = phase1.len();
     if server.session.is_cancelled() {
         return;
     }
     tracing::debug!(uri = %uri, phase1_count, "publish_diagnostics: publishing phase 1");
+    record_project_publication(server, uri, !phase1.is_empty()).await;
     if !publish_if_current(
         &server.workspace,
         &server.client,
         uri,
         &text,
         expected_client_version,
-        diagnostics.clone(),
+        phase1,
     )
     .await
     {
@@ -557,18 +659,30 @@ pub(crate) async fn publish_diagnostics(
         );
         return;
     }
+    // No pass ran (no toolchain, or the bridge is not up): phase 1 already
+    // shows the last results, which stay.
+    let Some(semantic_diags) = semantic_diags else {
+        return;
+    };
     server.semantic_diagnostic_cache.lock().await.insert(
         uri.clone(),
         CachedSemanticDiagnostics {
-            text: Arc::clone(&text),
-            client_version: expected_client_version,
             diagnostics: semantic_diags.clone(),
         },
     );
-    if !semantic_diags.is_empty() {
+    // The native pass can run before the toolchain is found, when no native
+    // rule is silenced yet. By phase 2 the compiler pass has run, so the rules
+    // its analyzers cover are dropped here.
+    let config = server.workspace.config.read().await.clone();
+    let config = native_lint_config(&server.workspace, config).await;
+    drop_silenced_native_rules(&mut diagnostics, &config);
+    // Always published, also when the semantic pass found nothing: phase 1
+    // may hold findings this pass no longer reports.
+    {
         diagnostics.extend(semantic_diags);
         let total_count = diagnostics.len();
         tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");
+        record_project_publication(server, uri, !diagnostics.is_empty()).await;
         if !publish_if_current(
             &server.workspace,
             &server.client,
@@ -585,6 +699,23 @@ pub(crate) async fn publish_diagnostics(
                 "publish_diagnostics: document changed before phase 2 was published; skipping"
             );
         }
+    }
+}
+
+/// Keep the project pass's record of published URIs in step with a per-file
+/// publish. The project pass clears only URIs it recorded, so a file that
+/// gained diagnostics here must be recorded and one that lost them dropped.
+async fn record_project_publication(server: &AlServer, uri: &Url, has_diagnostics: bool) {
+    if server.workspace.config.read().await.diagnostics_scope
+        != al_project::config::DiagnosticsScope::Project
+    {
+        return;
+    }
+    let mut published = server.workspace_diagnostic_uris.lock().await;
+    if has_diagnostics {
+        published.insert(uri.clone());
+    } else {
+        published.remove(uri);
     }
 }
 
@@ -649,7 +780,11 @@ pub(crate) fn snapshot_is_current(
 /// Run semantic analysis via .NET bridge if enabled. Returns diagnostics or empty vec.
 ///
 /// Shared between `compute_diagnostics` (pull) and `publish_diagnostics` (push Phase 2).
-async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<Diagnostic> {
+async fn run_semantic_analysis(
+    server: &AlServer,
+    uri: &Url,
+    text: &str,
+) -> Option<Vec<Diagnostic>> {
     // The analyzers below are loaded into this process, so they come from the
     // trust decision as it stands now.
     server.refresh_trust().await;
@@ -671,23 +806,23 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     };
     if !enable_analysis || !bg_analysis {
         tracing::debug!(uri = %uri, enable_analysis, bg_analysis, "semantic analysis disabled by config");
-        return vec![];
+        return Some(Vec::new());
     }
     if let Err(error) = server.await_semantic_workspace().await {
         if server.session.is_cancelled() {
-            return vec![];
+            return None;
         }
-        return vec![semantic_pipeline_diagnostic(format!(
+        return Some(vec![semantic_pipeline_diagnostic(format!(
             "Microsoft semantic analysis could not start because workspace initialization failed: {error}"
-        ))];
+        ))]);
     }
 
     let file_path = match uri.to_file_path() {
         Ok(path) => path,
         Err(()) => {
-            return vec![semantic_pipeline_diagnostic(format!(
+            return Some(vec![semantic_pipeline_diagnostic(format!(
                 "Microsoft semantic analysis requires a local file URI, got {uri}"
-            ))];
+            ))]);
         }
     };
     let project = server.workspace.project.read().await.clone();
@@ -701,9 +836,7 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
         .unwrap_or_else(|| project_root.join(".alpackages"));
 
     // The bridge starts from this toolchain, so without one there is no pass.
-    let Some(toolchain) = server.workspace.toolchain.read().await.clone() else {
-        return vec![];
-    };
+    let toolchain = server.workspace.toolchain.read().await.clone()?;
     let analyzers = match tokio::task::spawn_blocking(move || {
         resolve_semantic_analyzer_entries(
             &configured_analyzers,
@@ -715,29 +848,41 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
     .await
     {
         Ok(Ok(analyzers)) => analyzers,
-        Ok(Err(error)) => return vec![semantic_pipeline_diagnostic(error)],
+        Ok(Err(error)) => return Some(vec![semantic_pipeline_diagnostic(error)]),
         Err(error) => {
-            return vec![semantic_pipeline_diagnostic(format!(
+            return Some(vec![semantic_pipeline_diagnostic(format!(
                 "analyzer discovery worker failed: {error}"
-            ))];
+            ))]);
         }
     };
 
     let guard = match server.get_or_init_bridge().await {
         Some(g) => g,
-        None => return vec![],
+        None => return None,
     };
     let bridge = match guard.as_ref() {
         Some(b) => b,
-        None => return vec![],
+        None => return None,
     };
     let bridge_generation = bridge.generation();
+
+    // Inside its project, the file is compiled with the project's other files
+    // and dependencies. A file outside it (a rendered symbol file, for one) is
+    // compiled alone.
+    let project_context =
+        al_workspace::semantic_project_context(&server.workspace, &file_path).await;
+    let (project_root, open_documents) = match project_context {
+        Some(context) => (Some(context.root), context.open_documents),
+        None => (None, Vec::new()),
+    };
 
     let req = crate::semantic::AnalyzeRequest {
         file: file_path,
         source: text.to_string(),
         analyzers,
         package_cache,
+        project_root,
+        open_documents,
     };
 
     let semantic_start = std::time::Instant::now();
@@ -755,21 +900,24 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
             server.ensure_error_codes_loaded().await;
 
             results
-                .into_iter()
-                .map(|entry| {
-                    let mut diag = semantic_to_diagnostic(&entry);
-                    if let Some(desc) = server.error_code_description(&entry.code) {
-                        if !diag.message.contains(&desc) {
-                            diag.message = format!("{} — {}", diag.message, desc);
-                        }
-                    }
-                    diag
-                })
-                .collect()
+                .iter()
+                .map(|entry| semantic_entry_to_lsp(server, entry))
+                .collect::<Vec<_>>()
+                .into()
         }
         Err(error) => {
             if server.session.is_cancelled() {
-                return vec![];
+                return None;
+            }
+            // Waiting behind another call, or the short pause after a
+            // timeout: the bridge is fine, and the last results stay.
+            if matches!(
+                &error,
+                crate::semantic::SemanticError::Busy(_)
+                    | crate::semantic::SemanticError::Cooldown(_)
+            ) {
+                tracing::debug!(uri = %uri, %error, "semantic analysis deferred");
+                return None;
             }
             let semantic_elapsed = semantic_start.elapsed();
             tracing::warn!(uri = %uri, %error, elapsed_us = semantic_elapsed.as_micros() as u64, "semantic analysis failed");
@@ -803,11 +951,247 @@ async fn run_semantic_analysis(server: &AlServer, uri: &Url, text: &str) -> Vec<
                     ));
                 }
             }
-            vec![semantic_pipeline_diagnostic(format!(
+            Some(vec![semantic_pipeline_diagnostic(format!(
                 "Microsoft semantic analysis failed: {error}"
-            ))]
+            ))])
         }
     }
+}
+
+/// A bridge diagnostic as an LSP diagnostic, its message extended with the
+/// error code's description from the compiler's catalog.
+fn semantic_entry_to_lsp(
+    server: &AlServer,
+    entry: &crate::semantic::DiagnosticEntry,
+) -> Diagnostic {
+    let mut diag = semantic_to_diagnostic(entry);
+    if let Some(desc) = server.error_code_description(&entry.code) {
+        if !diag.message.contains(&desc) {
+            diag.message = format!("{} — {}", diag.message, desc);
+        }
+    }
+    diag
+}
+
+/// Work-done progress for the whole-project compiler pass, shown in the
+/// editor's status bar. The first pass on a project loads every dependency's
+/// symbols and takes seconds, and without progress nothing shows it running.
+struct ProjectProgress {
+    token: Option<NumberOrString>,
+}
+
+impl ProjectProgress {
+    async fn begin(server: &AlServer) -> Self {
+        if !server
+            .work_done_progress
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Self { token: None };
+        }
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let token = NumberOrString::String(format!(
+            "al-project-analysis-{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let created = server
+            .client
+            .send_request::<request::WorkDoneProgressCreate>(WorkDoneProgressCreateParams {
+                token: token.clone(),
+            })
+            .await;
+        if created.is_err() {
+            return Self { token: None };
+        }
+        server
+            .client
+            .send_notification::<notification::Progress>(ProgressParams {
+                token: token.clone(),
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(
+                    WorkDoneProgressBegin {
+                        title: "AL compiler".to_string(),
+                        cancellable: Some(false),
+                        message: Some("Analyzing the project".to_string()),
+                        percentage: None,
+                    },
+                )),
+            })
+            .await;
+        Self { token: Some(token) }
+    }
+
+    async fn end(self, server: &AlServer, message: &str) {
+        let Some(token) = self.token else {
+            return;
+        };
+        server
+            .client
+            .send_notification::<notification::Progress>(ProgressParams {
+                token,
+                value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(WorkDoneProgressEnd {
+                    message: Some(message.to_string()),
+                })),
+            })
+            .await;
+    }
+}
+
+/// Compile and analyze the whole project in the background and store each
+/// file's compiler and analyzer findings, then republish the project.
+///
+/// The per-file pass covers open files only. This pass gives every other file
+/// the findings a build reports, as the Problems list of VS Code shows them.
+/// It runs only with `diagnosticsScope: "project"`. An open file whose text
+/// changed after the pass read it keeps its own newer findings.
+pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
+    server.refresh_trust().await;
+    let (scope, enabled, configured_analyzers, assembly_probing_paths, configured_package_cache) = {
+        let cfg = server.workspace.config.read().await;
+        (
+            cfg.diagnostics_scope,
+            cfg.enable_code_analysis && cfg.background_code_analysis,
+            cfg.code_analyzers.clone(),
+            cfg.assembly_probing_paths.clone(),
+            cfg.package_cache_path.clone(),
+        )
+    };
+    if scope != al_project::config::DiagnosticsScope::Project || !enabled {
+        return;
+    }
+    if server.await_semantic_workspace().await.is_err() || server.session.is_cancelled() {
+        return;
+    }
+    let Some(project) = server.workspace.project.read().await.clone() else {
+        return;
+    };
+    let Some(toolchain) = server.workspace.toolchain.read().await.clone() else {
+        return;
+    };
+    let root = project.root.clone();
+    let package_cache = configured_package_cache.unwrap_or_else(|| project.packages_dir.clone());
+    let analyzer_root = root.clone();
+    let analyzers = match tokio::task::spawn_blocking(move || {
+        resolve_semantic_analyzer_entries(
+            &configured_analyzers,
+            &analyzer_root,
+            &assembly_probing_paths,
+            &toolchain.analyzers,
+        )
+    })
+    .await
+    {
+        Ok(Ok(analyzers)) => analyzers,
+        // The per-file pass reports a broken analyzer setting on the file.
+        _ => return,
+    };
+
+    // Open buffers go with the request. Their versions decide afterwards which
+    // results are still about the text on screen.
+    let documents = &server.workspace.documents;
+    let mut versions = std::collections::HashMap::new();
+    let mut open = Vec::new();
+    for uri in documents.open_uris() {
+        let Some((text, version)) = documents.get_text_and_client_version(&uri) else {
+            continue;
+        };
+        let Ok(path) = uri.to_file_path() else {
+            continue;
+        };
+        versions.insert(uri, version);
+        open.push((path, text));
+    }
+    let open_documents = al_workspace::project_open_documents(open, &root, Path::new(""));
+
+    let started = std::time::Instant::now();
+    let progress = ProjectProgress::begin(server).await;
+    let outcome = match server.get_or_init_bridge().await {
+        Some(guard) => match guard.as_ref() {
+            Some(bridge) => Some(
+                bridge
+                    .analyze_project(crate::semantic::AnalyzeProjectRequest {
+                        project_root: root.clone(),
+                        package_cache,
+                        analyzers,
+                        open_documents,
+                    })
+                    .await,
+            ),
+            None => None,
+        },
+        None => None,
+    };
+    let Some(outcome) = outcome else {
+        progress
+            .end(server, "The AL compiler is not available.")
+            .await;
+        return;
+    };
+    let entries = match outcome {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(%error, "project semantic analysis failed");
+            progress
+                .end(server, "The AL compiler pass failed. See the log.")
+                .await;
+            return;
+        }
+    };
+    progress
+        .end(
+            server,
+            &format!(
+                "{} in {:.1} s",
+                if entries.len() == 1 {
+                    "1 finding".to_string()
+                } else {
+                    format!("{} findings", entries.len())
+                },
+                started.elapsed().as_secs_f64()
+            ),
+        )
+        .await;
+    server.ensure_error_codes_loaded().await;
+    tracing::info!(
+        findings = entries.len(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "project semantic analysis complete"
+    );
+
+    let mut by_file: std::collections::HashMap<Url, Vec<Diagnostic>> =
+        std::collections::HashMap::new();
+    for entry in &entries {
+        if let Ok(uri) = Url::from_file_path(&entry.file) {
+            by_file
+                .entry(uri)
+                .or_default()
+                .push(semantic_entry_to_lsp(server, entry));
+        }
+    }
+    // Every project file gets an entry, an empty one when it is clean, so a
+    // finding fixed on disk leaves the list.
+    let project_files: Vec<Url> = server
+        .workspace
+        .file_index
+        .files
+        .iter()
+        .map(|entry| entry.key().clone())
+        .filter(|path| path.starts_with(&root))
+        .filter_map(|path| Url::from_file_path(path).ok())
+        .collect();
+    {
+        let mut cache = server.semantic_diagnostic_cache.lock().await;
+        for uri in project_files.into_iter().chain(by_file.keys().cloned()) {
+            if is_cache_path(&uri) {
+                continue;
+            }
+            let current = documents.get_client_version(&uri);
+            if current.is_some() && current != versions.get(&uri).copied() {
+                continue;
+            }
+            let diagnostics = by_file.get(&uri).cloned().unwrap_or_default();
+            cache.insert(uri, CachedSemanticDiagnostics { diagnostics });
+        }
+    }
+    publish_workspace_diagnostics(server).await;
 }
 
 fn resolve_semantic_analyzer_entries(
@@ -1072,6 +1456,53 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_findings_of_a_silenced_rule_are_dropped() {
+        let finding = |code: &str| Diagnostic {
+            code: Some(NumberOrString::String(code.to_string())),
+            ..Diagnostic::default()
+        };
+        let mut config = al_project::config::AlConfig::default();
+        config
+            .native_lint_rules
+            .insert("AL-NL007".to_string(), false);
+        config
+            .native_lint_rules
+            .insert("AL-NL005".to_string(), true);
+        let mut diagnostics = vec![finding("AL-NL007"), finding("AL-NL005"), finding("AA0218")];
+
+        drop_silenced_native_rules(&mut diagnostics, &config);
+
+        let codes: Vec<_> = diagnostics.iter().map(|d| d.code.clone()).collect();
+        assert_eq!(
+            codes,
+            vec![
+                Some(NumberOrString::String("AL-NL005".to_string())),
+                Some(NumberOrString::String("AA0218".to_string())),
+            ]
+        );
+    }
+
+    /// Native rules that repeat a configured analyzer's rule were reported
+    /// twice: every page field without a tooltip got AL-NL007 and CodeCop's
+    /// AA0218 on the same line.
+    #[test]
+    fn a_native_rule_another_analyzer_covers_is_silenced_while_that_analyzer_runs() {
+        let configured = [
+            "${CodeCop}".to_string(),
+            "${analyzerFolder}ALCops.PlatformCop.dll".to_string(),
+        ];
+        let mut covered = native_rules_covered_by(&configured);
+        covered.sort_unstable();
+        assert_eq!(covered, vec!["AL-NL005", "AL-NL007"]);
+
+        assert!(native_rules_covered_by(&["UICop".to_string()]).is_empty());
+        assert_eq!(
+            native_rules_covered_by(&["codecop".to_string()]),
+            vec!["AL-NL007"]
+        );
+    }
 
     /// Analyzer paths for a toolchain in `dir`, with CodeCop installed and the
     /// other cops missing.
@@ -1707,7 +2138,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_session_never_publishes_a_workspace_generation() {
-        let (service, _socket) = tower_lsp::LspService::new(super::super::AlServer::new);
+        let (service, _socket) = tower_lsp::LspService::new(super::super::AlLsp::new);
         let server = service.inner();
         let session = server.session.clone();
         session.cancel();

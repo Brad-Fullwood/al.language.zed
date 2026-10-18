@@ -7,14 +7,13 @@
     <GenerateRuntimeConfigurationFiles>true</GenerateRuntimeConfigurationFiles>
     <EnableDefaultCompileItems>true</EnableDefaultCompileItems>
     <!--
-      Roll-forward across major .NET versions. The bridge targets net8.0, but a
-      user may only have a NEWER major runtime installed (e.g. .NET 10). Without
-      this, hostfxr refuses to run an 8.0 app on a 10.x runtime ("framework
-      'Microsoft.NETCore.App' version '8.0.0' not found") and the semantic bridge
-      fails to initialize ("Bridge not initialized"). `Major` rolls forward to the
-      lowest available higher major; the pre-release flag covers preview/RC SDKs.
+      Run on the newest installed .NET runtime. The bridge targets net8.0, but
+      the AL 18 toolchain also ships a net10.0 build, and the ALCops analyzers
+      bundled with the AL 18 VS Code extension reference .NET 10 only. On .NET 8
+      they cannot load. `LatestMajor` also covers a machine with only a newer
+      runtime than 8. Bridge.cs then picks the toolchain build for this runtime.
     -->
-    <RollForward>Major</RollForward>
+    <RollForward>LatestMajor</RollForward>
     <RollForwardToPreReleaseVersions>true</RollForwardToPreReleaseVersions>
   </PropertyGroup>
 </Project>

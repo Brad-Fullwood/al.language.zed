@@ -80,6 +80,11 @@
             "font_style": null,
             "font_weight": null
           },
+          "attribute.al": {
+            "color": "#D4D4D4",
+            "font_style": null,
+            "font_weight": null
+          },
           "boolean": {
             "color": "#62CFD7",
             "font_style": null,
@@ -95,8 +100,33 @@
             "font_style": null,
             "font_weight": null
           },
+          "comment.doc.attribute.al": {
+            "color": "#379199",
+            "font_style": null,
+            "font_weight": null
+          },
+          "comment.doc.delimiter.al": {
+            "color": "#569CD6",
+            "font_style": null,
+            "font_weight": null
+          },
+          "comment.doc.name.al": {
+            "color": "#B5BDC4",
+            "font_style": null,
+            "font_weight": null
+          },
+          "comment.doc.text.al": {
+            "color": "#7D878E",
+            "font_style": null,
+            "font_weight": null
+          },
           "constant": {
             "color": "#62CFD7",
+            "font_style": null,
+            "font_weight": null
+          },
+          "constant.enum.al": {
+            "color": "#9FD89F",
             "font_style": null,
             "font_weight": null
           },
@@ -124,6 +154,11 @@
             "font_style": null,
             "font_weight": null
           },
+          "function.builtin.al": {
+            "color": "#D4D4D4",
+            "font_style": null,
+            "font_weight": null
+          },
           "keyword": {
             "color": "#379199",
             "font_style": null,
@@ -144,6 +179,11 @@
             "font_weight": null
           },
           "property": {
+            "color": "#9CDCFE",
+            "font_style": null,
+            "font_weight": null
+          },
+          "property.json_key": {
             "color": "#4EC9B0",
             "font_style": null,
             "font_weight": null
@@ -175,6 +215,11 @@
           },
           "type": {
             "color": "#4EC9B0",
+            "font_style": null,
+            "font_weight": null
+          },
+          "type.builtin.al": {
+            "color": "#379199",
             "font_style": null,
             "font_weight": null
           },
@@ -268,6 +313,11 @@
             "font_style": null,
             "font_weight": null
           },
+          "attribute.al": {
+            "color": "#202428",
+            "font_style": null,
+            "font_weight": null
+          },
           "boolean": {
             "color": "#00747F",
             "font_style": null,
@@ -283,8 +333,33 @@
             "font_style": null,
             "font_weight": null
           },
+          "comment.doc.attribute.al": {
+            "color": "#00747F",
+            "font_style": null,
+            "font_weight": null
+          },
+          "comment.doc.delimiter.al": {
+            "color": "#005760",
+            "font_style": null,
+            "font_weight": null
+          },
+          "comment.doc.name.al": {
+            "color": "#56616C",
+            "font_style": null,
+            "font_weight": null
+          },
+          "comment.doc.text.al": {
+            "color": "#3B424A",
+            "font_style": null,
+            "font_weight": null
+          },
           "constant": {
             "color": "#00747F",
+            "font_style": null,
+            "font_weight": null
+          },
+          "constant.enum.al": {
+            "color": "#098658",
             "font_style": null,
             "font_weight": null
           },
@@ -312,6 +387,11 @@
             "font_style": null,
             "font_weight": null
           },
+          "function.builtin.al": {
+            "color": "#202428",
+            "font_style": null,
+            "font_weight": null
+          },
           "keyword": {
             "color": "#00747F",
             "font_style": null,
@@ -332,6 +412,11 @@
             "font_weight": null
           },
           "property": {
+            "color": "#001080",
+            "font_style": null,
+            "font_weight": null
+          },
+          "property.json_key": {
             "color": "#56616C",
             "font_style": null,
             "font_weight": null
@@ -363,6 +448,11 @@
           },
           "type": {
             "color": "#267F99",
+            "font_style": null,
+            "font_weight": null
+          },
+          "type.builtin.al": {
+            "color": "#00747F",
             "font_style": null,
             "font_weight": null
           },

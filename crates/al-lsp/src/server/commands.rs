@@ -544,8 +544,251 @@ pub(super) async fn find_references(
     .await
     .map_err(|error| format!("al.findReferences worker failed: {error}"))??;
     let lsp_locations: Vec<Location> = locations.into_iter().map(Into::into).collect();
+    go_to(server, "reference", &lsp_locations).await;
     serde_json::to_value(lsp_locations)
         .map_err(|error| format!("serializing al.findReferences result failed: {error}"))
+}
+
+/// The `{ uri, position }` argument a lens passes to its command.
+fn lens_target(arguments: &[serde_json::Value], command: &str) -> Result<(Url, Position), String> {
+    let arg = arguments.first();
+    let uri = arg
+        .and_then(|v| v.get("uri"))
+        .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok());
+    let position = arg
+        .and_then(|v| v.get("position"))
+        .and_then(|v| serde_json::from_value::<Position>(v.clone()).ok());
+    match (uri, position) {
+        (Some(uri), Some(position)) => Ok((uri, position)),
+        _ => Err(format!("{command} requires {{ uri, position }} arguments")),
+    }
+}
+
+/// `al.showSubscribers` — go to the subscribers of the event declared at the
+/// lens: straight there for one, a list to choose from for several.
+pub(super) async fn show_subscribers(
+    server: &AlServer,
+    arguments: &[serde_json::Value],
+) -> Result<serde_json::Value, String> {
+    let (uri, position) = lens_target(arguments, "al.showSubscribers")?;
+    let workspace = std::sync::Arc::clone(&server.workspace);
+    let locations = tokio::task::spawn_blocking(move || {
+        let (text, tree) = al_source::parsing::get_or_parse(&workspace.documents, &uri)
+            .ok_or_else(|| format!("{uri} is not open"))?;
+        match al_analysis::queries::events::event_role(&text, &tree, position.into()) {
+            Some(al_analysis::queries::events::EventRole::Publisher { object, event }) => Ok(
+                al_analysis::queries::events::subscriber_locations(&workspace, &object, &event),
+            ),
+            _ => Err("the lens is not on an event publisher".to_string()),
+        }
+    })
+    .await
+    .map_err(|error| format!("al.showSubscribers worker failed: {error}"))??;
+    let lsp_locations: Vec<Location> = locations.into_iter().map(Into::into).collect();
+    go_to(server, "subscriber", &lsp_locations).await;
+    serde_json::to_value(lsp_locations)
+        .map_err(|error| format!("serializing al.showSubscribers result failed: {error}"))
+}
+
+/// `al.showEventSource` — go to the declaration of the event the subscriber
+/// at the lens handles, in the workspace or a package's extracted source.
+pub(super) async fn show_event_source(
+    server: &AlServer,
+    arguments: &[serde_json::Value],
+) -> Result<serde_json::Value, String> {
+    let (uri, position) = lens_target(arguments, "al.showEventSource")?;
+    let workspace = std::sync::Arc::clone(&server.workspace);
+    let location = tokio::task::spawn_blocking(move || {
+        al_analysis::queries::events::publisher_location(&workspace, &uri, position.into())
+    })
+    .await
+    .map_err(|error| format!("al.showEventSource worker failed: {error}"))?;
+    let lsp_locations: Vec<Location> = location.into_iter().map(Into::into).collect();
+    go_to(server, "event declaration", &lsp_locations).await;
+    serde_json::to_value(lsp_locations)
+        .map_err(|error| format!("serializing al.showEventSource result failed: {error}"))
+}
+
+/// How long a report may run before it is abandoned.
+const REPORT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// The `al-explorer` arguments for a report on `object` declared in `file`.
+fn report_arguments(report: &str, object: &str, file: &std::path::Path) -> Option<Vec<String>> {
+    let args = match report {
+        "composed" => vec!["composed".to_string(), object.to_string()],
+        "impact" => vec!["impact".to_string(), object.to_string()],
+        "suggest-event" => vec![
+            "suggest-event".to_string(),
+            "--object".to_string(),
+            object.to_string(),
+        ],
+        "metrics" => vec!["metrics".to_string(), file.display().to_string()],
+        _ => return None,
+    };
+    Some(args)
+}
+
+/// A report file name for `object`: letters and digits kept, the rest `_`.
+fn report_file_name(report: &str, object: &str) -> String {
+    let object: String = object
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("{report}-{object}.txt")
+}
+
+/// `al.showReport` — run the `al-explorer` report the old editor task ran,
+/// for the object the code action was offered on, save the output under the
+/// cache folder and open it in the editor.
+pub(super) async fn show_report(
+    server: &AlServer,
+    arguments: &[serde_json::Value],
+) -> Result<serde_json::Value, String> {
+    let arg = arguments
+        .first()
+        .ok_or("al.showReport requires { report, object, uri }")?;
+    let report = arg
+        .get("report")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let object = arg
+        .get("object")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let uri = arg
+        .get("uri")
+        .and_then(|v| serde_json::from_value::<Url>(v.clone()).ok())
+        .ok_or("al.showReport requires a file uri")?;
+    let file = uri
+        .to_file_path()
+        .map_err(|()| format!("al.showReport needs a local file, got {uri}"))?;
+    let args = report_arguments(report, object, &file)
+        .ok_or_else(|| format!("unknown report '{report}'"))?;
+
+    let explorer = super::lsp::resolve_explorer_binary()?;
+    let cwd = match server.workspace.project.read().await.as_ref() {
+        Some(project) => project.root.clone(),
+        None => file
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default(),
+    };
+    let run = tokio::process::Command::new(&explorer)
+        .args(&args)
+        .current_dir(&cwd)
+        .output();
+    let output = tokio::time::timeout(REPORT_TIMEOUT, run)
+        .await
+        .map_err(|_| {
+            format!(
+                "al-explorer {} did not finish in {REPORT_TIMEOUT:?}",
+                args.join(" ")
+            )
+        })?
+        .map_err(|error| format!("cannot run {}: {error}", explorer.display()))?;
+    let mut text = format!("al-explorer {}\n\n", args.join(" "));
+    text.push_str(&String::from_utf8_lossy(&output.stdout));
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+
+    let dir = dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("al-lsp")
+        .join("reports");
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
+    let path = dir.join(report_file_name(report, object));
+    std::fs::write(&path, text)
+        .map_err(|error| format!("cannot write {}: {error}", path.display()))?;
+    let report_uri =
+        Url::from_file_path(&path).map_err(|()| format!("cannot address {}", path.display()))?;
+    show_location(
+        server,
+        &Location {
+            uri: report_uri,
+            range: Range::default(),
+        },
+    )
+    .await;
+    Ok(serde_json::json!({ "path": path }))
+}
+
+/// Most entries a choice offers. A longer list does not fit the prompt.
+const MAX_CHOICES: usize = 12;
+
+/// Take the editor to `locations`: straight there for one, a list to choose
+/// from for several, and a short message for none. A command's own result is
+/// not shown by Zed, so this is how a lens click becomes visible.
+async fn go_to(server: &AlServer, noun: &str, locations: &[Location]) {
+    match locations {
+        [] => {
+            server
+                .client
+                .show_message(MessageType::INFO, format!("No {noun}s found."))
+                .await;
+        }
+        [only] => show_location(server, only).await,
+        many => {
+            let labels: Vec<String> = many
+                .iter()
+                .take(MAX_CHOICES)
+                .enumerate()
+                .map(|(index, location)| location_label(index, location))
+                .collect();
+            let more = many.len().saturating_sub(MAX_CHOICES);
+            let mut message = format!("{} {noun}s. Choose one to open.", many.len());
+            if more > 0 {
+                message.push_str(&format!(
+                    " The first {MAX_CHOICES} are listed. Find All References lists every one."
+                ));
+            }
+            let actions = labels
+                .iter()
+                .map(|title| tower_lsp::lsp_types::MessageActionItem {
+                    title: title.clone(),
+                    properties: Default::default(),
+                })
+                .collect();
+            let choice = server
+                .client
+                .show_message_request(MessageType::INFO, message, Some(actions))
+                .await;
+            if let Ok(Some(choice)) = choice {
+                if let Some(index) = labels.iter().position(|label| *label == choice.title) {
+                    show_location(server, &many[index]).await;
+                }
+            }
+        }
+    }
+}
+
+/// "3. PalletManagement.Codeunit.al:42": numbered, so two entries in the same
+/// file never share a label.
+fn location_label(index: usize, location: &Location) -> String {
+    let file = location
+        .uri
+        .to_file_path()
+        .ok()
+        .and_then(|path| {
+            path.file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| location.uri.to_string());
+    format!("{}. {file}:{}", index + 1, location.range.start.line + 1)
+}
+
+async fn show_location(server: &AlServer, location: &Location) {
+    let shown = server
+        .client
+        .show_document(tower_lsp::lsp_types::ShowDocumentParams {
+            uri: location.uri.clone(),
+            external: Some(false),
+            take_focus: Some(true),
+            selection: Some(location.range),
+        })
+        .await;
+    if let Err(error) = shown {
+        tracing::warn!(%error, uri = %location.uri, "the editor did not open the location");
+    }
 }
 
 /// `al.showProfiler` — return the active `.alcpuprofile` session's hotspots so
@@ -817,6 +1060,29 @@ async fn run_test_background(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each object action runs the command its editor task ran.
+    #[test]
+    fn a_report_runs_the_command_its_task_ran() {
+        let file = std::path::Path::new("/p/Pallet.Codeunit.al");
+        assert_eq!(
+            report_arguments("composed", "Item", file).unwrap(),
+            vec!["composed", "Item"]
+        );
+        assert_eq!(
+            report_arguments("suggest-event", "Item", file).unwrap(),
+            vec!["suggest-event", "--object", "Item"]
+        );
+        assert_eq!(
+            report_arguments("metrics", "Item", file).unwrap(),
+            vec!["metrics", "/p/Pallet.Codeunit.al"]
+        );
+        assert!(report_arguments("rm -rf", "Item", file).is_none());
+        assert_eq!(
+            report_file_name("impact", "AUK Pallet/Management"),
+            "impact-AUK_Pallet_Management.txt"
+        );
+    }
     use al_compile::{CompileDiagnostic, DiagnosticSeverity as S};
 
     fn diag(file: &str, line: u32, column: u32, sev: S, code: &str) -> CompileDiagnostic {

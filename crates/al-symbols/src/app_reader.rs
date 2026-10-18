@@ -462,8 +462,8 @@ fn find_files_in_archive<R: Read + Seek>(
     }
     let wanted: Vec<String> = targets.iter().map(|target| target.to_lowercase()).collect();
     let mut found: Vec<Option<String>> = vec![None; targets.len()];
-    for name in archive.file_names() {
-        let filename = name.rsplit('/').next().unwrap_or(name).to_lowercase();
+    for name in archive.file_names().filter_map(Result::ok) {
+        let filename = name.rsplit('/').next().unwrap_or(&name).to_lowercase();
         for (slot, want) in found.iter_mut().zip(&wanted) {
             if slot.is_none() && filename == *want {
                 *slot = Some(name.to_string());

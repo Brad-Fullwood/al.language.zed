@@ -61,7 +61,7 @@ pub fn cmd_lint(file: Option<&str>, all: bool, json: bool) -> ExitCode {
                     for d in &diagnostics {
                         print_lint_diag(file, d);
                     }
-                    eprintln!("\n{} diagnostics", diagnostics.len());
+                    eprintln!("\n{}", count_text(diagnostics.len(), "diagnostic"));
                 }
             }
             if diagnostic_count > 0 {

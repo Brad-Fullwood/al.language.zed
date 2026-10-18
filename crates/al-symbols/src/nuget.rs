@@ -724,7 +724,7 @@ fn extract_app_from_nupkg_reader<R: std::io::Read + std::io::Seek>(
 
     for i in 0..archive.len() {
         let file = archive.by_index(i)?;
-        let name = file.name().to_string();
+        let name = file.name()?.to_string();
 
         if name.to_lowercase().ends_with(".app") {
             // Take the bare filename, then resolve it with the same joiner the

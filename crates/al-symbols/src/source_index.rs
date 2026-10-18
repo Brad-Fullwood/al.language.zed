@@ -133,7 +133,7 @@ impl AppSourceIndex {
 
         for i in 0..archive.len() {
             let mut file = archive.by_index(i)?;
-            let name = file.name().to_string();
+            let name = file.name()?.to_string();
             if !name.to_lowercase().ends_with(".al") {
                 continue;
             }

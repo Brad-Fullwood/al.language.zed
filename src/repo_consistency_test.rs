@@ -174,7 +174,8 @@ fn extension_builds_and_releases_a_wasm_component() {
 /// Gallery installs download `al-lsp` into the extension work directory, which
 /// is not part of the user's shell PATH. LSP, DAP, and MCP therefore have to
 /// share the path-returning release resolver; a bare context-server command
-/// would work only in developer checkouts that ran `make install`.
+/// would work only in developer checkouts that ran `make install`. The context
+/// server asks PATH first and keeps the release as its fallback.
 #[test]
 fn mcp_and_dap_do_not_depend_on_path_installed_sidecars() {
     let lib = include_str!("lib.rs");
@@ -182,8 +183,8 @@ fn mcp_and_dap_do_not_depend_on_path_installed_sidecars() {
     let manifest = include_str!("../extension.toml");
 
     assert!(
-        lib.contains("self.find_or_download_binary(None, None, None)?")
-            && lib.contains("command: al_lsp_path"),
+        lib.contains("match self.find_or_download_binary(None, None, None)")
+            && lib.contains("context_server_launch(recorded, release, posix_shell)"),
         "MCP context_server_command must use the same resolved/downloaded al-lsp path as LSP/DAP"
     );
     assert!(

@@ -9,6 +9,8 @@
 #   SETTLE       secs to wait before trusting     (default: 16)
 #   POST         secs after trust for LSP/paint   (default: 14)
 #   KEYS         extra shell run after trust (e.g. 'wtype -M ctrl -k p -m ctrl')
+#   ZED_SETTINGS_JSON  a Zed settings.json to use (theme, LSP settings)
+#   ZED_SHELL    login shell Zed starts servers through, `fish` or `bash`
 set -uo pipefail
 REPO=${REPO:-/repo}
 PROJ_SUBDIR=${PROJ_SUBDIR:-crates/al-test-harness/data/test_al_project}
@@ -39,10 +41,20 @@ else
 fi
 echo "  extension.wasm: $(stat -c%s "$EXT/installed/al/extension.wasm") bytes"
 
+if [ -n "${ZED_SETTINGS_JSON:-}" ] && [ -f "$ZED_SETTINGS_JSON" ]; then
+  mkdir -p "$HOME/.config/zed"
+  cp "$ZED_SETTINGS_JSON" "$HOME/.config/zed/settings.json"
+  echo "  settings.json: provided"
+fi
+
 echo "=== al-lsp on PATH (host-built binary, runs in this container) ==="
 mkdir -p "$HOME/.local/bin"
 ln -sf "$REPO/target/debug/al-lsp" "$HOME/.local/bin/al-lsp"
 export PATH="$HOME/.local/bin:$PATH"
+if [ "${ZED_SHELL:-}" = fish ]; then
+  export SHELL=/usr/bin/fish
+  echo "  login shell: $SHELL"
+fi
 al-lsp --help >/dev/null 2>&1 && echo "  al-lsp OK" || echo "  al-lsp NOT runnable"
 
 echo "=== writable copy of project under test ==="
@@ -87,6 +99,9 @@ sleep "$POST"
 grim "$OUT" 2>&1 && echo "SHOT: $OUT ($(stat -c%s "$OUT") bytes)" || echo "GRIM FAILED"
 lsp_count=$(pgrep -af 'al-lsp' | grep -c -- --stdio)
 echo "AL_LSP_PROCS: $lsp_count stdio server(s) running"
+echo "=== al-lsp processes and how Zed started them ==="
+lsp_pids=$(pgrep -d, -f 'al-lsp' || true)
+if [ -n "$lsp_pids" ]; then ps -o pid,ppid,args -p "$lsp_pids"; fi
 echo "=== zed.log (al / lsp / extension / error) ==="
 grep -iE "al-lsp|extension|language server|grammar|fail|error|panic" /tmp/zed.log | tail -20
 if [ "$lsp_count" -eq 0 ]; then

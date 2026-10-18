@@ -58,6 +58,13 @@ pub mod token_types {
     pub const NAMESPACE_DECL: u32 = 41;
     /// Custom AL attribute decorator name token.
     pub const ATTRIBUTE_NAME: u32 = 42;
+    /// The parts of an XML documentation comment (`/// <summary>…`): the
+    /// `///` and the angle brackets, a tag name, an attribute with its quotes,
+    /// and the text between tags.
+    pub const DOC_COMMENT_DELIMITER: u32 = 43;
+    pub const DOC_COMMENT_NAME: u32 = 44;
+    pub const DOC_COMMENT_ATTRIBUTE: u32 = 45;
+    pub const DOC_COMMENT_TEXT: u32 = 46;
 
     /// The legend entries in order, for registering with the LSP server.
     pub const LEGEND: &[&str] = &[
@@ -104,6 +111,10 @@ pub mod token_types {
         "datetime",
         "namespaceName",
         "attribute",
+        "docCommentDelimiter",
+        "docCommentName",
+        "docCommentAttribute",
+        "docCommentText",
     ];
 }
 
@@ -188,6 +199,20 @@ fn collect_tokens(
 
     while let Some(current) = stack.pop() {
         let kind = current.kind();
+        // The grammar gives a documentation comment (exactly three slashes)
+        // its parts as children.
+        if kind == "comment" && current.named_child_count() > 0 {
+            if let Ok(comment) = current.utf8_text(source) {
+                let start = current.start_position();
+                let line_bytes = line_index.line_bytes(start.row);
+                let line_str = std::str::from_utf8(line_bytes).unwrap_or("");
+                let utf16_col = super::byte_col_to_utf16_col(line_str, start.column);
+                for (offset, len, token_type) in doc_comment_parts(comment) {
+                    tokens.push((start.row as u32, utf16_col + offset, len, token_type));
+                }
+                continue;
+            }
+        }
         if let Some(token_type) = classify_node(kind, current, source, type_resolver) {
             let start = current.start_position();
             let end = current.end_position();
@@ -264,12 +289,18 @@ fn classify_node(
             }
             Some(token_types::KEYWORD)
         }
-        "keyword" => Some(token_types::KEYWORD),
+        // A keyword that names a property (`DataClassification = …`) is the
+        // property. Anywhere else, the value of a property included
+        // (`tabledata` in `Permissions`), it is a keyword.
+        "keyword" | "metadata_keyword" | "property_keyword" => {
+            if is_property_name(node) {
+                Some(token_types::PROPERTY)
+            } else {
+                Some(token_types::KEYWORD)
+            }
+        }
         "object_keyword" => Some(token_types::OBJECT_KEYWORD),
-        "metadata_keyword" => Some(token_types::KEYWORD),
         "type_keyword" => Some(token_types::BUILTIN_TYPE),
-
-        "property_keyword" => Some(token_types::PROPERTY),
 
         "operator_word" | "op_and" | "op_or" | "op_not" | "op_div" | "op_mod" | "op_xor"
         | "op_is" | "op_as" => Some(token_types::OPERATOR),
@@ -355,7 +386,9 @@ fn classify_name_like_node(
         "member_call_suffix" | "scope_call_suffix" => {
             if parent.child_by_field_name("member").map(|n| n.id()) == Some(node.id()) {
                 if parent.kind() == "member_call_suffix"
-                    && is_builtin_record_member(parent, node, source, type_resolver)
+                    && (is_builtin_record_member(parent, node, source, type_resolver)
+                        || has_object_kind_receiver(parent, source)
+                        || is_enum_value_method(node, source))
                 {
                     Some(token_types::BUILTIN_FUNCTION)
                 } else {
@@ -409,6 +442,14 @@ fn classify_name_like_node(
                 None
             }
         }
+        // `Comment`, `Locked`, `MaxLength` after a label's text.
+        "label_property" => {
+            if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
+                Some(token_types::KEYWORD)
+            } else {
+                None
+            }
+        }
         "attribute" => {
             if parent.child_by_field_name("name").map(|n| n.id()) == Some(node.id()) {
                 Some(token_types::ATTRIBUTE_NAME)
@@ -443,7 +484,14 @@ fn classify_name_like_node(
         // Covers: pageView names, reportLayout names, xmlport element names, queryFilter
         // names, and table field names (`field(1; Name; Type)` in a table).
         "parenthesized_block" => classify_parenthesized_block_name(node, parent, source)
-            .or_else(|| classify_table_field_name(node, parent, source)),
+            .or_else(|| classify_table_field_name(node, parent, source))
+            .or_else(|| {
+                let text = node.utf8_text(source).ok()?;
+                (node.kind() == "identifier"
+                    && is_global_builtin_call(node, text, source)
+                    && super::language_data::is_builtin_function(text))
+                .then_some(token_types::BUILTIN_FUNCTION)
+            }),
         "object_declaration" => {
             if is_object_name(node, parent) {
                 Some(token_types::TYPE)
@@ -455,13 +503,22 @@ fn classify_name_like_node(
             if has_ancestor_kind(node, "type_reference") {
                 Some(token_types::TYPE)
             } else if matches!(node.kind(), "string" | "verbatim_string") {
-                Some(token_types::STRING)
-            } else if matches!(node.kind(), "quoted_identifier") {
-                // Double-quoted identifiers in AL are always object/identifier references
-                Some(token_types::TYPE)
+                if is_subscribed_event_name(node, source) {
+                    Some(token_types::EVENT_CREATION)
+                } else {
+                    Some(token_types::STRING)
+                }
+            } else if let Some(role) = name_role(node, source) {
+                // A name in a scope access or a property value. In code a
+                // name is a field or a variable, which the grammar's
+                // highlighting already colors.
+                role
             } else if matches!(node.kind(), "identifier") {
+                if is_subscribed_event_name(node, source) {
+                    return Some(token_types::EVENT_CREATION);
+                }
                 if let Ok(text) = node.utf8_text(source) {
-                    if is_global_builtin_call(node, text)
+                    if is_global_builtin_call(node, text, source)
                         && super::language_data::is_builtin_function(text)
                     {
                         return Some(token_types::BUILTIN_FUNCTION);
@@ -480,9 +537,330 @@ fn classify_name_like_node(
     }
 }
 
-fn is_global_builtin_call(node: Node<'_>, text: &str) -> bool {
+/// The parts of a `///` documentation comment as (UTF-16 offset, UTF-16
+/// length, token type), the way Microsoft's server splits it: the `///` and
+/// the brackets `<`, `</`, `>`, `/>` are delimiters, a tag name is a name, an
+/// attribute and its quotes are attributes, the value of a `name` attribute
+/// (a parameter) is a parameter, and the rest is text.
+fn doc_comment_parts(comment: &str) -> Vec<(u32, u32, u32)> {
+    let chars: Vec<char> = comment.chars().collect();
+    let utf16_at: Vec<u32> = std::iter::once(0)
+        .chain(chars.iter().scan(0u32, |acc, c| {
+            *acc += c.len_utf16() as u32;
+            Some(*acc)
+        }))
+        .collect();
+    let mut parts = Vec::new();
+    let mut push = |from: usize, to: usize, token_type: u32| {
+        if to > from {
+            parts.push((utf16_at[from], utf16_at[to] - utf16_at[from], token_type));
+        }
+    };
+
+    push(0, 3.min(chars.len()), token_types::DOC_COMMENT_DELIMITER);
+    let mut i = 3;
+    let mut text_start = i;
+    while i < chars.len() {
+        if chars[i] != '<' {
+            i += 1;
+            continue;
+        }
+        push(text_start, i, token_types::DOC_COMMENT_TEXT);
+        let open_end = if chars.get(i + 1) == Some(&'/') {
+            i + 2
+        } else {
+            i + 1
+        };
+        push(i, open_end, token_types::DOC_COMMENT_DELIMITER);
+        i = open_end;
+        let name_start = i;
+        while i < chars.len() && (chars[i].is_alphanumeric() || matches!(chars[i], '_' | '-' | ':'))
+        {
+            i += 1;
+        }
+        push(name_start, i, token_types::DOC_COMMENT_NAME);
+        // Attributes up to the closing bracket.
+        while i < chars.len() && chars[i] != '>' {
+            if chars[i] == '/' && chars.get(i + 1) == Some(&'>') {
+                break;
+            }
+            if chars[i].is_alphabetic() {
+                let attr_start = i;
+                while i < chars.len()
+                    && (chars[i].is_alphanumeric() || matches!(chars[i], '_' | '-'))
+                {
+                    i += 1;
+                }
+                let attribute: String = chars[attr_start..i].iter().collect();
+                push(attr_start, i, token_types::DOC_COMMENT_ATTRIBUTE);
+                while i < chars.len() && (chars[i] == '=' || chars[i].is_whitespace()) {
+                    if chars[i] == '=' {
+                        push(i, i + 1, token_types::DOC_COMMENT_DELIMITER);
+                    }
+                    i += 1;
+                }
+                if let Some(&quote) = chars.get(i).filter(|c| matches!(c, '"' | '\'')) {
+                    push(i, i + 1, token_types::DOC_COMMENT_ATTRIBUTE);
+                    let value_start = i + 1;
+                    let mut end = value_start;
+                    while end < chars.len() && chars[end] != quote {
+                        end += 1;
+                    }
+                    let value_type = if attribute.eq_ignore_ascii_case("name") {
+                        token_types::PARAMETER
+                    } else {
+                        token_types::DOC_COMMENT_ATTRIBUTE
+                    };
+                    push(value_start, end, value_type);
+                    if end < chars.len() {
+                        push(end, end + 1, token_types::DOC_COMMENT_ATTRIBUTE);
+                        i = end + 1;
+                    } else {
+                        i = end;
+                    }
+                }
+                continue;
+            }
+            i += 1;
+        }
+        let close_end = if chars.get(i) == Some(&'/') {
+            (i + 2).min(chars.len())
+        } else {
+            (i + 1).min(chars.len())
+        };
+        push(i, close_end, token_types::DOC_COMMENT_DELIMITER);
+        i = close_end;
+        text_start = i;
+    }
+    push(text_start, chars.len(), token_types::DOC_COMMENT_TEXT);
+    parts
+}
+
+/// Whether a string or name is the event name in `[EventSubscriber(ObjectType,
+/// Object, 'EventName', …)]`, its third argument, which Microsoft colors as the
+/// event.
+fn is_subscribed_event_name(node: Node<'_>, source: &[u8]) -> bool {
+    let mut current = node;
+    let argument = loop {
+        let Some(parent) = current.parent() else {
+            return false;
+        };
+        if parent.kind() == "attribute_argument" {
+            break parent;
+        }
+        if !matches!(
+            parent.kind(),
+            "expression"
+                | "unary_expression"
+                | "postfix_expression"
+                | "primary_expression"
+                | "name"
+        ) {
+            return false;
+        }
+        current = parent;
+    };
+    let Some(list) = argument.parent() else {
+        return false;
+    };
+    let is_subscriber = list
+        .parent()
+        .filter(|attribute| attribute.kind() == "attribute")
+        .and_then(|attribute| attribute.child_by_field_name("name"))
+        .and_then(|name| name.utf8_text(source).ok())
+        .is_some_and(|name| name.eq_ignore_ascii_case("EventSubscriber"));
+    if !is_subscriber {
+        return false;
+    }
+    let mut cursor = list.walk();
+    let position = list
+        .children(&mut cursor)
+        .filter(|child| child.kind() == "attribute_argument")
+        .position(|child| child.id() == argument.id());
+    position == Some(2)
+}
+
+/// A data item's name: a query's data item has its own token type, while
+/// Microsoft's server reports a report's data item as a variable, which is how
+/// report code uses it.
+fn data_item_type(node: Node<'_>) -> u32 {
+    let mut ancestor = node.parent();
+    while let Some(candidate) = ancestor {
+        if candidate.kind() == "object_declaration" {
+            let in_report = candidate
+                .child_by_field_name("kind")
+                .is_some_and(|kind| matches!(kind.kind(), "kw_report" | "kw_reportextension"));
+            if in_report {
+                return token_types::VARIABLE;
+            }
+            break;
+        }
+        ancestor = candidate.parent();
+    }
+    token_types::QUERY_DATA_ITEM
+}
+
+/// Whether `node` is the name of a `property_assignment`.
+fn is_property_name(node: Node<'_>) -> bool {
+    node.parent()
+        .filter(|parent| parent.kind() == "property_assignment")
+        .and_then(|parent| parent.child_by_field_name("name"))
+        .is_some_and(|name| name.id() == node.id())
+}
+
+/// Object kinds that, before `::`, make the member an object name
+/// (`Page::"Item Card"`). After any other prefix the member is an enum or
+/// option value (`Status::Released`, `ObjectType::Codeunit`).
+const OBJECT_KIND_PREFIXES: &[&str] = &[
+    "codeunit",
+    "database",
+    "enum",
+    "interface",
+    "page",
+    "query",
+    "report",
+    "table",
+    "xmlport",
+];
+
+/// Properties whose unquoted value names an object.
+const OBJECT_REFERENCE_PROPERTIES: &[&str] = &[
+    "cardpageid",
+    "dataitemtable",
+    "defaultlayout",
+    "defaultrenderinglayout",
+    "drilldownpageid",
+    "linkedobject",
+    "lookuppageid",
+    "pageid",
+    "runobject",
+    "sourcetable",
+    "sourcetableview",
+    "tablerelation",
+    "tableno",
+];
+
+/// The token of an identifier or quoted name that sits in a scope access or
+/// a property value, as Microsoft's server reports it: `Some(Some(TYPE))` for
+/// an object, `Some(Some(ENUM_MEMBER))` for an enum value, `Some(None)` for a
+/// name that gets no token (a permission letter), and `None` when the name is
+/// in neither place.
+fn name_role(node: Node<'_>, source: &[u8]) -> Option<Option<u32>> {
+    if !matches!(node.kind(), "identifier" | "quoted_identifier") {
+        return None;
+    }
+    let name = node.parent().filter(|parent| parent.kind() == "name")?;
+    let holder = name.parent()?;
+    // `TableRelation = Vendor."No."`: the receiver of an expression in a
+    // property value is the property's object.
+    if holder.kind() == "primary_expression" {
+        let mut up = holder;
+        while let Some(parent) = up.parent() {
+            match parent.kind() {
+                "postfix_expression" | "unary_expression" | "expression" => up = parent,
+                "property_assignment" => {
+                    let property = parent
+                        .child_by_field_name("name")
+                        .and_then(|property| property.utf8_text(source).ok())
+                        .map(|text| text.trim().to_ascii_lowercase())
+                        .unwrap_or_default();
+                    return OBJECT_REFERENCE_PROPERTIES
+                        .contains(&property.as_str())
+                        .then_some(Some(token_types::TYPE));
+                }
+                _ => return None,
+            }
+        }
+        return None;
+    }
+    match holder.kind() {
+        // `TableRelation = Vendor."No."`: the first name is the object, the
+        // rest are its fields.
+        "qualified_name" => {
+            let property = holder
+                .parent()
+                .filter(|parent| parent.kind() == "property_assignment")?
+                .child_by_field_name("name")
+                .and_then(|property| property.utf8_text(source).ok())
+                .map(|text| text.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if !OBJECT_REFERENCE_PROPERTIES.contains(&property.as_str()) {
+                return None;
+            }
+            let first = holder
+                .named_child(0)
+                .is_some_and(|first| first.id() == name.id());
+            Some(first.then_some(token_types::TYPE))
+        }
+        // `extends Item`, `implements "My Interface"`.
+        "implements_clause" => Some(Some(token_types::TYPE)),
+        "scope_suffix" => {
+            let member = holder.child_by_field_name("member")?;
+            if member.id() != name.id() {
+                return None;
+            }
+            let prefix = holder
+                .prev_sibling()
+                .and_then(|prefix| prefix.utf8_text(source).ok())
+                .map(|text| text.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if OBJECT_KIND_PREFIXES.contains(&prefix.as_str()) {
+                Some(Some(token_types::TYPE))
+            } else {
+                Some(Some(token_types::ENUM_MEMBER))
+            }
+        }
+        "property_assignment" => {
+            let property = holder.child_by_field_name("name")?;
+            if property.id() == name.id() {
+                return None;
+            }
+            let property = property
+                .utf8_text(source)
+                .map(|text| text.trim().to_ascii_lowercase())
+                .unwrap_or_default();
+            if property == "permissions" {
+                // `tabledata Item = r`: the name after the object kind is the
+                // object, the letters after `=` are the permissions.
+                let after_kind = name
+                    .prev_sibling()
+                    .is_some_and(|prev| prev.kind() == "property_keyword");
+                return Some(after_kind.then_some(token_types::TYPE));
+            }
+            let text = node.utf8_text(source).unwrap_or_default();
+            if text.eq_ignore_ascii_case("true") || text.eq_ignore_ascii_case("false") {
+                return Some(None);
+            }
+            if node.kind() == "quoted_identifier"
+                || OBJECT_REFERENCE_PROPERTIES.contains(&property.as_str())
+            {
+                Some(Some(token_types::TYPE))
+            } else {
+                Some(Some(token_types::ENUM_MEMBER))
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Whether `node` is the name of a call that is not a member call: `Name(…)`
+/// in code, or in a section's arguments, which the grammar keeps as a flat
+/// list, `column(Date; Format(Rec.Date))`.
+fn is_global_builtin_call(node: Node<'_>, text: &str, source: &[u8]) -> bool {
     if text.is_empty() {
         return false;
+    }
+    if node
+        .parent()
+        .is_some_and(|parent| parent.kind() == "parenthesized_block")
+    {
+        let called = node
+            .next_sibling()
+            .is_some_and(|next| next.kind() == "parenthesized_block");
+        let member = node.prev_sibling().is_some_and(|previous| {
+            previous.kind() == "operator" && matches!(previous.utf8_text(source), Ok("." | "::"))
+        });
+        return called && !member;
     }
     let Some(name) = node.parent().filter(|parent| parent.kind() == "name") else {
         return false;
@@ -502,6 +880,42 @@ fn is_global_builtin_call(node: Node<'_>, text: &str) -> bool {
     (0..postfix.child_count())
         .filter_map(|index| postfix.child(index))
         .any(|child| child.kind() == "call_suffix")
+}
+
+/// Whether a member call is made on an object kind or a system scope,
+/// `Report.Run(…)`, `Codeunit.Run(…)`, `Page.RunModal(…)`, `Session.SessionId()`:
+/// every such method is built into the platform.
+fn has_object_kind_receiver(suffix: Node<'_>, source: &[u8]) -> bool {
+    const RECEIVERS: &[&str] = &[
+        "codeunit",
+        "database",
+        "page",
+        "query",
+        "report",
+        "xmlport",
+        "session",
+        "system",
+        "currentsession",
+        "companyproperty",
+        "navapp",
+        "numbersequence",
+        "taskscheduler",
+        "debugger",
+        "isolatedstorage",
+        "productname",
+    ];
+    let Some(postfix) = suffix
+        .parent()
+        .filter(|parent| parent.kind() == "postfix_expression")
+    else {
+        return false;
+    };
+    let receiver = (0..postfix.child_count())
+        .filter_map(|index| postfix.child(index))
+        .find(|child| child.kind() == "primary_expression")
+        .and_then(|primary| primary.utf8_text(source).ok())
+        .map(|text| text.trim().to_ascii_lowercase());
+    receiver.is_some_and(|receiver| RECEIVERS.contains(&receiver.as_str()))
 }
 
 fn is_builtin_record_member(
@@ -541,6 +955,12 @@ fn is_builtin_record_member(
         return false;
     }
 
+    // `Rec` and `xRec` are the current record wherever a page or table uses
+    // them, though their table is not declared in the file.
+    if receiver.eq_ignore_ascii_case("rec") || receiver.eq_ignore_ascii_case("xrec") {
+        return true;
+    }
+
     // Tree-sitter columns are byte offsets, but the type resolver expects
     // UTF-16 code units (LSP convention). Convert before resolving so lines
     // containing non-ASCII text don't resolve at the wrong point.
@@ -553,6 +973,14 @@ fn is_builtin_record_member(
     type_resolver
         .resolve_type(&receiver, position)
         .is_some_and(|declaration| declaration.type_name.eq_ignore_ascii_case("Record"))
+}
+
+/// Whether `member` is `AsInteger`, the method every enum value has. No other
+/// built-in type has a method of that name.
+fn is_enum_value_method(member: Node<'_>, source: &[u8]) -> bool {
+    member
+        .utf8_text(source)
+        .is_ok_and(|name| name.eq_ignore_ascii_case("AsInteger"))
 }
 
 fn is_record_builtin_method(name: &str) -> bool {
@@ -635,7 +1063,7 @@ fn classify_key_declaration_name(node: Node, declaration: Node, source: &[u8]) -
 
     match kw.as_str() {
         "key" => Some(token_types::TABLE_KEY),
-        "dataitem" => Some(token_types::QUERY_DATA_ITEM),
+        "dataitem" => Some(data_item_type(node)),
         "column" => Some(token_types::QUERY_COLUMN),
         "tableelement" => Some(token_types::XMLPORT_TABLE_ELEMENT),
         _ => None,
@@ -711,6 +1139,13 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
     if first_meaningful.id() != node.id() {
         return None;
     }
+    // Only a name: a string in a table view filter is a literal.
+    if matches!(
+        node.kind(),
+        "string" | "verbatim_string" | "integer" | "decimal" | "number"
+    ) {
+        return None;
+    }
 
     let prev_sibling = prev_named_sibling(paren_block)?;
     let kw = prev_sibling.utf8_text(source).ok()?;
@@ -730,10 +1165,97 @@ fn classify_parenthesized_block_name(node: Node, paren_block: Node, source: &[u8
         ("column", token_types::QUERY_COLUMN),
         ("tableelement", token_types::XMLPORT_TABLE_ELEMENT),
     ];
-    TABLE
+    if let Some(ty) = TABLE
         .iter()
         .find(|(name, _)| kw.eq_ignore_ascii_case(name))
         .map(|(_, ty)| *ty)
+    {
+        if ty == token_types::QUERY_DATA_ITEM {
+            return Some(data_item_type(node));
+        }
+        return Some(ty);
+    }
+    page_member_name(paren_block, kw, source)
+}
+
+/// The token of the name in `keyword(Name …)` inside a page, page extension
+/// or page customization: a control in `layout`, an action in `actions`.
+fn page_member_name(paren_block: Node<'_>, keyword: &str, source: &[u8]) -> Option<u32> {
+    const LAYOUT: &[&str] = &[
+        "field",
+        "group",
+        "part",
+        "repeater",
+        "cuegroup",
+        "fixed",
+        "grid",
+        "usercontrol",
+        "systempart",
+        "label",
+        "addfirst",
+        "addlast",
+        "addafter",
+        "addbefore",
+        "movefirst",
+        "movelast",
+        "moveafter",
+        "movebefore",
+        "modify",
+    ];
+    const ACTIONS: &[&str] = &[
+        "action",
+        "actionref",
+        "group",
+        "separator",
+        "customaction",
+        "fileuploadaction",
+        "systemaction",
+        "addfirst",
+        "addlast",
+        "addafter",
+        "addbefore",
+        "movefirst",
+        "movelast",
+        "moveafter",
+        "movebefore",
+        "modify",
+    ];
+    let mut in_actions = false;
+    let mut object_kind = None;
+    let mut ancestor = paren_block.parent();
+    while let Some(node) = ancestor {
+        match node.kind() {
+            "object_section" => {
+                let is_actions = node
+                    .child_by_field_name("keyword")
+                    .and_then(|keyword| keyword.utf8_text(source).ok())
+                    .is_some_and(|text| text.eq_ignore_ascii_case("actions"));
+                in_actions |= is_actions;
+            }
+            "object_declaration" => {
+                object_kind = node.child_by_field_name("kind").map(|kind| kind.kind());
+                break;
+            }
+            _ => {}
+        }
+        ancestor = node.parent();
+    }
+    if !matches!(
+        object_kind,
+        Some("kw_page" | "kw_pageextension" | "kw_pagecustomization")
+    ) {
+        return None;
+    }
+    let keyword = keyword.to_ascii_lowercase();
+    if in_actions {
+        ACTIONS
+            .contains(&keyword.as_str())
+            .then_some(token_types::PAGE_ACTION)
+    } else {
+        LAYOUT
+            .contains(&keyword.as_str())
+            .then_some(token_types::PAGE_CONTROL)
+    }
 }
 
 #[cfg(test)]
@@ -779,6 +1301,252 @@ mod tests {
             });
 
         assert!(found, "Expected token {:?} with type {}", text, expected);
+    }
+
+    fn token_types_for_text(source: &str, tokens: &[SemanticToken], text: &str) -> Vec<u32> {
+        decoded_tokens(tokens)
+            .into_iter()
+            .filter(|&(line, col, len, _)| token_text_at(source, line, col, len) == Some(text))
+            .map(|(_, _, _, token_type)| token_type)
+            .collect()
+    }
+
+    /// A quoted name in an expression is a field or a variable. It was sent
+    /// as a type, so `SetRange("AUK Active", true)` drew the field in the
+    /// type color. Only a scope access such as `Page::"Item Card"` names an
+    /// object.
+    #[test]
+    fn a_quoted_name_is_a_type_only_in_a_scope_access() {
+        let src = "codeunit 50010 X\n{\n    procedure P()\n    begin\n        Rec.SetRange(\"AUK Field\", 1);\n        Rec.\"My Field\" := 1;\n        Page.Run(Page::\"Item Card\");\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert!(
+            !token_types_for_text(src, &tokens, "\"AUK Field\"").contains(&token_types::TYPE),
+            "a field argument is not a type"
+        );
+        assert!(
+            !token_types_for_text(src, &tokens, "\"My Field\"").contains(&token_types::TYPE),
+            "a field member is not a type"
+        );
+        assert_token_type_for_text(src, &tokens, "\"Item Card\"", token_types::TYPE);
+    }
+
+    /// Microsoft's theme draws a property name in the foreground and the
+    /// keywords in its value, such as `tabledata`, in the keyword color. A
+    /// property named by a keyword was sent as a keyword, and `tabledata` as
+    /// a property.
+    #[test]
+    fn a_property_name_is_a_property_and_a_keyword_in_its_value_is_a_keyword() {
+        let src = "codeunit 50010 X\n{\n    Permissions = tabledata \"Item Ledger Entry\" = r;\n}\ntable 50000 T\n{\n    fields\n    {\n        field(1; Code; Code[20])\n        {\n            DataClassification = CustomerContent;\n        }\n    }\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(src, &tokens, "Permissions", token_types::PROPERTY);
+        assert_token_type_for_text(src, &tokens, "DataClassification", token_types::PROPERTY);
+        assert_token_type_for_text(src, &tokens, "tabledata", token_types::KEYWORD);
+        assert_token_type_for_text(src, &tokens, "\"Item Ledger Entry\"", token_types::TYPE);
+    }
+
+    /// Microsoft colors an enum value apart from an object: `Status::Released`
+    /// and a property's enum value are enum members, `Page::"Item Card"` and
+    /// the objects in `Permissions` and `SourceTable` are types.
+    #[test]
+    fn enum_values_are_enum_members_and_object_references_are_types() {
+        let src = "page 50000 P\n{\n    SourceTable = Item;\n    ApplicationArea = All;\n    Permissions = tabledata Item = r;\n    trigger OnOpenPage()\n    begin\n        Rec.SetRange(Status, Status::Released);\n        x := \"Document Type\"::\"Purchase Receipt\";\n        Page.Run(Page::\"Item Card\");\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(src, &tokens, "Released", token_types::ENUM_MEMBER);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "\"Purchase Receipt\"",
+            token_types::ENUM_MEMBER,
+        );
+        assert_token_type_for_text(src, &tokens, "All", token_types::ENUM_MEMBER);
+        assert_token_type_for_text(src, &tokens, "\"Item Card\"", token_types::TYPE);
+        let item_types = token_types_for_text(src, &tokens, "Item");
+        assert_eq!(
+            item_types,
+            vec![token_types::TYPE, token_types::TYPE],
+            "SourceTable and Permissions name the Item table"
+        );
+        assert!(
+            token_types_for_text(src, &tokens, "r").is_empty(),
+            "a permission letter is not a name"
+        );
+    }
+
+    /// Microsoft splits an XML documentation comment into its parts, each
+    /// with its own color.
+    #[test]
+    fn a_documentation_comment_is_split_into_its_parts() {
+        let src = "codeunit 50000 C\n{\n    /// <param name=\"ItemNo\">The item.</param>\n    procedure P(ItemNo: Code[20])\n    begin\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(src, &tokens, "///", token_types::DOC_COMMENT_DELIMITER);
+        assert_token_type_for_text(src, &tokens, "<", token_types::DOC_COMMENT_DELIMITER);
+        assert_token_type_for_text(src, &tokens, "param", token_types::DOC_COMMENT_NAME);
+        assert_token_type_for_text(src, &tokens, "name", token_types::DOC_COMMENT_ATTRIBUTE);
+        assert_token_type_for_text(src, &tokens, "ItemNo", token_types::PARAMETER);
+        assert_token_type_for_text(src, &tokens, "The item.", token_types::DOC_COMMENT_TEXT);
+        assert_token_type_for_text(src, &tokens, "</", token_types::DOC_COMMENT_DELIMITER);
+        assert_eq!(
+            token_types::LEGEND[token_types::DOC_COMMENT_TEXT as usize],
+            "docCommentText"
+        );
+    }
+
+    /// A built-in called in a report column's source expression is a
+    /// built-in, as in code.
+    #[test]
+    fn a_builtin_called_in_a_column_expression_is_a_builtin() {
+        let src = "report 50100 R\n{\n    dataset\n    {\n        dataitem(Item; Item)\n        {\n            column(PostingDate; Format(Item.\"Last Date Modified\", 0, 4)) { }\n            column(Shown; 'x' + Format(Item.\"No.\")) { }\n            column(Member; Item.Format()) { }\n        }\n    }\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        // The two calls, one after `+`, are built-ins. `Item.Format()` is a
+        // member call.
+        let builtins = token_types_for_text(src, &tokens, "Format")
+            .into_iter()
+            .filter(|token_type| *token_type == token_types::BUILTIN_FUNCTION)
+            .count();
+        assert_eq!(builtins, 2);
+    }
+
+    /// Microsoft sends `AsInteger` on an enum value as a built-in.
+    #[test]
+    fn as_integer_on_an_enum_value_is_a_builtin() {
+        let src = "codeunit 50100 C\n{\n    procedure P(Line: Record \"Item Journal Line\"): Integer\n    begin\n        exit(Line.\"Entry Type\".AsInteger());\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(src, &tokens, "AsInteger", token_types::BUILTIN_FUNCTION);
+    }
+
+    /// Microsoft treats four or more slashes as a plain comment.
+    #[test]
+    fn four_slashes_start_a_plain_comment() {
+        let src = "codeunit 50000 C\n{\n    //// <b>not documentation</b>\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "//// <b>not documentation</b>",
+            token_types::COMMENT,
+        );
+    }
+
+    /// Microsoft gives the names of a page's controls and actions their own
+    /// token types, which its theme draws in the type color.
+    #[test]
+    fn page_controls_and_actions_are_named_as_such() {
+        let src = "pageextension 50001 \"AUK Item Card\" extends \"Item Card\"\n{\n    layout\n    {\n        addlast(Item)\n        {\n            field(\"CoA Check Required\"; Rec.\"AUK CoA\")\n            {\n            }\n        }\n    }\n    actions\n    {\n        addlast(processing)\n        {\n            action(PostPallet)\n            {\n            }\n        }\n    }\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+
+        assert_token_type_for_text(src, &tokens, "Item", token_types::PAGE_CONTROL);
+        assert_token_type_for_text(
+            src,
+            &tokens,
+            "\"CoA Check Required\"",
+            token_types::PAGE_CONTROL,
+        );
+        assert_token_type_for_text(src, &tokens, "processing", token_types::PAGE_ACTION);
+        assert_token_type_for_text(src, &tokens, "PostPallet", token_types::PAGE_ACTION);
+        assert!(
+            !token_types_for_text(src, &tokens, "\"AUK CoA\"").contains(&token_types::PAGE_CONTROL),
+            "the field's source expression is not the control name"
+        );
+    }
+
+    #[test]
+    fn a_method_on_an_object_kind_is_a_builtin() {
+        let src = "codeunit 50000 C\n{\n    procedure P()\n    begin\n        Report.Run(Report::\"Goods In Label\");\n        Codeunit.Run(50001);\n        MyHelper.Run();\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        let runs = token_types_for_text(src, &tokens, "Run");
+        assert_eq!(
+            runs,
+            vec![
+                token_types::BUILTIN_FUNCTION,
+                token_types::BUILTIN_FUNCTION,
+                token_types::FUNCTION
+            ],
+            "Report.Run and Codeunit.Run are built in, a variable's Run is not"
+        );
+    }
+
+    #[test]
+    fn the_event_name_of_a_subscriber_is_the_event() {
+        let src = "codeunit 50000 C\n{\n    [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Whse.-Post Receipt\", 'OnAfterRun', '', false, false)]\n    local procedure H()\n    begin\n        Message('OnAfterRun');\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_eq!(
+            token_types_for_text(src, &tokens, "'OnAfterRun'"),
+            vec![token_types::EVENT_CREATION, token_types::STRING],
+            "only the attribute's event name is the event"
+        );
+    }
+
+    #[test]
+    fn extended_objects_layouts_and_booleans_get_their_own_types() {
+        let src = "tableextension 50001 \"AUK Item\" extends Item\n{\n}\nreport 50002 R\n{\n    UseRequestPage = false;\n    DefaultRenderingLayout = RDLCLayout;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(src, &tokens, "Item", token_types::TYPE);
+        assert_token_type_for_text(src, &tokens, "RDLCLayout", token_types::TYPE);
+        assert!(
+            !token_types_for_text(src, &tokens, "false").contains(&token_types::ENUM_MEMBER),
+            "a boolean value is not an enum member"
+        );
+    }
+
+    #[test]
+    fn a_report_data_item_is_a_variable_and_a_query_data_item_is_not() {
+        let src = "report 50000 R\n{\n    dataset\n    {\n        dataitem(ItemLedgerEntry; \"Item Ledger Entry\")\n        {\n        }\n    }\n}\nquery 50001 Q\n{\n    elements\n    {\n        dataitem(CustomerItem; Customer)\n        {\n        }\n    }\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(src, &tokens, "ItemLedgerEntry", token_types::VARIABLE);
+        assert_token_type_for_text(src, &tokens, "CustomerItem", token_types::QUERY_DATA_ITEM);
+    }
+
+    #[test]
+    fn label_options_unquoted_event_names_and_doc_equals_follow_microsoft() {
+        let src = "codeunit 50000 C\n{\n    var\n        BinErr: Label 'Bin', Comment = 'x', Locked = true;\n\n    /// <param name=\"Qty\">Amount.</param>\n    [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Whse.-Post Receipt\", OnAfterRun, '', false, false)]\n    local procedure H(Qty: Decimal)\n    begin\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(src, &tokens, "Comment", token_types::KEYWORD);
+        assert_token_type_for_text(src, &tokens, "Locked", token_types::KEYWORD);
+        assert_token_type_for_text(src, &tokens, "OnAfterRun", token_types::EVENT_CREATION);
+        assert_token_type_for_text(src, &tokens, "=", token_types::DOC_COMMENT_DELIMITER);
+    }
+
+    #[test]
+    fn a_table_relation_target_and_rec_builtins_follow_microsoft() {
+        let src = "tableextension 50000 E extends \"Lot No. Information\"\n{\n    fields\n    {\n        field(50002; \"AUK Vendor No.\"; Code[20])\n        {\n            TableRelation = Vendor.\"No.\";\n        }\n    }\n    trigger OnAfterModify()\n    begin\n        Rec.CalcFields(\"AUK Vendor No.\");\n    end;\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+        let tokens = extract_semantic_tokens(&result.tree, src);
+        assert_token_type_for_text(src, &tokens, "Vendor", token_types::TYPE);
+        assert_token_type_for_text(src, &tokens, "CalcFields", token_types::BUILTIN_FUNCTION);
     }
 
     #[test]
@@ -1475,7 +2243,7 @@ codeunit 50100 Test
     fn test_legend_length_matches_constants() {
         assert_eq!(
             token_types::LEGEND.len(),
-            (token_types::ATTRIBUTE_NAME + 1) as usize,
+            (token_types::DOC_COMMENT_TEXT + 1) as usize,
             "LEGEND length must match the number of registered token types"
         );
     }

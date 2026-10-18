@@ -57,7 +57,9 @@ clap_complete = "4"
 # build requirement — native-tls -> openssl-sys fails to cross-compile to
 # aarch64-linux in the release pipeline. rustls is pure-Rust + vendored.
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "charset", "http2"] }
-zip = "2"
+# .app and .nupkg files use deflate. The default features add bzip2 and PPMd,
+# whose licenses deny.toml does not allow.
+zip = { version = "9", default-features = false, features = ["deflate", "time"] }
 quick-xml = { version = "0.41", features = ["serialize"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

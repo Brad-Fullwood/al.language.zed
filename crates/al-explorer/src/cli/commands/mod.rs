@@ -43,6 +43,16 @@ fn json_text<T: Serialize>(value: &T) -> serde_json::Result<String> {
     }
 }
 
+/// "1 subscriber", "2 subscribers": a count with its noun in the right number.
+pub fn count_text(count: usize, noun: &str) -> String {
+    let noun = terminal_text(noun);
+    if count == 1 {
+        format!("{count} {noun}")
+    } else {
+        format!("{count} {noun}s")
+    }
+}
+
 /// Whether an object kind (as the daemon serializes it) carries a
 /// developer-assigned numeric ID in AL syntax. Interfaces, profiles, page
 /// customizations, control add-ins, entitlements, and .NET packages are
@@ -873,6 +883,18 @@ mod bc_server_params_tests {
         .unwrap();
         assert!(params.get("username").is_none());
         assert!(params.get("password").is_none());
+    }
+}
+
+#[cfg(test)]
+mod count_text_tests {
+    use super::count_text;
+
+    #[test]
+    fn one_is_singular_and_every_other_count_is_plural() {
+        assert_eq!(count_text(1, "subscriber"), "1 subscriber");
+        assert_eq!(count_text(0, "subscriber"), "0 subscribers");
+        assert_eq!(count_text(2, "subscriber"), "2 subscribers");
     }
 }
 

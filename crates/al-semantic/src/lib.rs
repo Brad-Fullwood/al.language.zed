@@ -12,7 +12,8 @@ pub(crate) mod host;
 pub mod lifecycle;
 
 pub use bridge::{
-    AnalyzeRequest, BuiltinMethod, BuiltinType, CompletionItem, DiagnosticEntry, ErrorCodeInfo,
-    MethodParameter, SemanticBridge, SemanticError, TypeInfo,
+    AnalyzeProjectRequest, AnalyzeRequest, BuiltinMethod, BuiltinType, CompletionItem,
+    DiagnosticEntry, ErrorCodeInfo, MethodParameter, OpenDocument, ProjectContext, SemanticBridge,
+    SemanticError, TypeInfo,
 };
 pub use lifecycle::SemanticCache;

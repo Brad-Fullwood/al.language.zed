@@ -85,7 +85,7 @@ impl Harness {
         let (client_side, server_side) = tokio::io::duplex(1024 * 1024);
         let (server_read, server_write) = tokio::io::split(server_side);
         let (client_read, client_write) = tokio::io::split(client_side);
-        let (service, socket) = LspService::new(al_lsp::server::AlServer::new);
+        let (service, socket) = LspService::new(al_lsp::server::AlLsp::new);
         let server = tokio::spawn(async move {
             Server::new(server_read, server_write, socket)
                 .serve(service)

@@ -151,6 +151,67 @@ pub enum ReleaseChoice {
     Fail { message: String },
 }
 
+/// Pick an `al-lsp` that needs no release lookup: `al-lsp` on the worktree's
+/// PATH, then the binary this session already resolved. `None` sends the
+/// caller to the release lookup.
+///
+/// PATH comes before the session cache because the AL Tools context server
+/// resolves with no worktree, so it can only reach a release. When it started
+/// first, its release sat in the cache and the language server never asked
+/// PATH.
+pub fn known_binary(on_path: Option<String>, cached: Option<String>) -> Option<String> {
+    on_path.or(cached)
+}
+
+/// The file in the extension's work directory that names the `al-lsp` the
+/// language server last found on PATH.
+const PATH_BINARY_RECORD: &str = "al-lsp-on-path";
+
+/// The `al-lsp` the AL Tools context server runs when the language server has
+/// recorded one on PATH. The context server has no worktree to ask PATH, so
+/// without the record it ran the downloaded release while the language server
+/// ran a developer build. `None` sends it to the release.
+pub fn recorded_path_binary(record: Option<String>) -> Option<String> {
+    record
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+}
+
+/// The shell script the context server starts through on Linux and macOS: the
+/// `al-lsp` on PATH when there is one, else the release named by `$0`.
+const CONTEXT_SERVER_SCRIPT: &str = "command -v al-lsp >/dev/null 2>&1 && exec al-lsp mcp; \
+     [ -n \"$0\" ] && exec \"$0\" mcp; \
+     echo 'al-lsp is not on PATH and no release could be downloaded' >&2; exit 1";
+
+/// The program and arguments that start the AL Tools context server.
+///
+/// Zed can start it before any language server, and a `Project` cannot ask
+/// PATH, so it used to run the downloaded release while the language server
+/// ran the `al-lsp` on PATH. In order: the binary the language server recorded
+/// on PATH; on Linux and macOS a `/bin/sh` script that asks PATH itself and
+/// falls back to `release`; elsewhere `release`. `release` is absolute, since
+/// Zed resolves only the program against the extension's directory.
+pub fn context_server_launch(
+    recorded: Option<String>,
+    release: Option<String>,
+    posix_shell: bool,
+) -> Option<(String, Vec<String>)> {
+    if let Some(path) = recorded {
+        return Some((path, vec!["mcp".to_string()]));
+    }
+    if posix_shell {
+        return Some((
+            "/bin/sh".to_string(),
+            vec![
+                "-c".to_string(),
+                CONTEXT_SERVER_SCRIPT.to_string(),
+                release.unwrap_or_default(),
+            ],
+        ));
+    }
+    release.map(|path| (path, vec!["mcp".to_string()]))
+}
+
 /// Pick a binary from what is cached and what the release lookup said.
 ///
 /// The lookup runs first so a published upgrade is picked up: an earlier
@@ -472,14 +533,22 @@ impl AlExtension {
             return Ok(path.to_string());
         }
 
-        if let Some(path) = &self.cached_binary_path {
-            if fs::metadata(path).is_ok_and(|m| m.is_file()) {
-                return Ok(path.clone());
-            }
+        if self
+            .cached_binary_path
+            .as_ref()
+            .is_some_and(|path| !fs::metadata(path).is_ok_and(|m| m.is_file()))
+        {
             self.cached_binary_path = None;
         }
 
-        if let Some(path) = worktree.and_then(|worktree| worktree.which("al-lsp")) {
+        let on_path = worktree.and_then(|worktree| worktree.which("al-lsp"));
+        if worktree.is_some() {
+            let _ = match &on_path {
+                Some(path) => fs::write(PATH_BINARY_RECORD, path),
+                None => fs::remove_file(PATH_BINARY_RECORD),
+            };
+        }
+        if let Some(path) = known_binary(on_path, self.cached_binary_path.clone()) {
             self.cached_binary_path = Some(path.clone());
             return Ok(path);
         }
@@ -750,11 +819,30 @@ impl zed::Extension for AlExtension {
         context_server_id: &zed::ContextServerId,
         project: &zed::Project,
     ) -> Result<zed::Command> {
-        // A Project does not expose `which`, but the release cache/download
-        // portion of the resolver is worktree-independent. This makes a fresh
-        // gallery install self-contained instead of silently depending on a
-        // developer `make install`.
-        let al_lsp_path = self.find_or_download_binary(None, None, None)?;
+        // See `context_server_launch`. The release cache/download part of the
+        // resolver needs no worktree and keeps a fresh gallery install
+        // self-contained. Through the shell its failure only removes the
+        // fallback, since `al-lsp` may be on PATH.
+        let recorded = recorded_path_binary(fs::read_to_string(PATH_BINARY_RECORD).ok());
+        let posix_shell = !matches!(zed::current_platform().0, zed::Os::Windows);
+        let release = if recorded.is_some() {
+            None
+        } else {
+            match self.find_or_download_binary(None, None, None) {
+                Ok(path) => Some(
+                    std::env::current_dir()
+                        .map(|dir| dir.join(&path).to_string_lossy().into_owned())
+                        .unwrap_or(path),
+                ),
+                Err(error) if posix_shell => {
+                    eprintln!("al-lsp release unavailable for the context server: {error}");
+                    None
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        let (command, args) = context_server_launch(recorded, release, posix_shell)
+            .ok_or_else(|| "al-lsp is not available".to_string())?;
 
         // `cached_dotnet_path` is only populated once an LSP session has
         // started (`language_server_command`). A `Project` cannot resolve
@@ -770,8 +858,8 @@ impl zed::Extension for AlExtension {
         });
 
         Ok(zed::Command {
-            command: al_lsp_path,
-            args: vec!["mcp".to_string()],
+            command,
+            args,
             env: dotnet_path
                 .map(|path| vec![("AL_DOTNET_PATH".to_string(), path)])
                 .unwrap_or_default(),

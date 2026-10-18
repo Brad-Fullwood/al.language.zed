@@ -42,40 +42,16 @@
     "tags": ["al-authenticate"]
   },
   {
-    "label": "AL: Lint Current File",
-    "command": "al-explorer",
-    "args": ["lint", "\"$ZED_FILE\""],
-    "tags": ["al-lint"]
-  },
-  {
     "label": "AL: Lint All",
     "command": "al-explorer",
     "args": ["lint", "--all"],
     "tags": ["al-lint-all"]
   },
   {
-    "label": "AL: Format Current File",
-    "command": "al-explorer",
-    "args": ["format", "\"$ZED_FILE\""],
-    "tags": ["al-format"]
-  },
-  {
     "label": "AL: Format All",
     "command": "al-explorer",
     "args": ["format", "--all"],
     "tags": ["al-format-all"]
-  },
-  {
-    "label": "AL: Apply Quick Fixes (Current File)",
-    "command": "al-explorer",
-    "args": ["fix", "\"$ZED_FILE\""],
-    "tags": ["al-fix"]
-  },
-  {
-    "label": "AL: Sort Members (Current File)",
-    "command": "al-explorer",
-    "args": ["sort-members", "\"$ZED_FILE\""],
-    "tags": ["al-sort-members"]
   },
   {
     "label": "AL: Organize File Names (Preview)",
@@ -134,20 +110,6 @@
     "tags": ["al-clear-cache"]
   },
   {
-    "label": "AL: Search Symbol '$ZED_SYMBOL'",
-    "command": "al-explorer",
-    "args": ["search", "\"$ZED_SYMBOL\""],
-    "tags": ["al-search"],
-    "reveal": "always"
-  },
-  {
-    "label": "AL: Composed Object '$ZED_SYMBOL' (base + extensions)",
-    "command": "al-explorer",
-    "args": ["composed", "\"$ZED_SYMBOL\""],
-    "tags": ["al-composed"],
-    "reveal": "always"
-  },
-  {
     "label": "AL: List Symbol Packages",
     "command": "al-explorer",
     "args": ["packages"],
@@ -175,45 +137,10 @@
     "reveal": "always"
   },
   {
-    "label": "AL: Impact Analysis for '$ZED_SYMBOL'",
-    "command": "al-explorer",
-    "args": ["impact", "\"$ZED_SYMBOL\""],
-    "tags": ["al-impact"],
-    "reveal": "always"
-  },
-  {
     "label": "AL: Entry Points (no incoming calls)",
     "command": "al-explorer",
     "args": ["entrypoints"],
     "tags": ["al-entrypoints"],
-    "reveal": "always"
-  },
-  {
-    "label": "AL: Suggest Events for '$ZED_SYMBOL'",
-    "command": "al-explorer",
-    "args": ["suggest-event", "--object", "\"$ZED_SYMBOL\""],
-    "tags": ["al-suggest-event"],
-    "reveal": "always"
-  },
-  {
-    "label": "AL: Trace Event '$ZED_SYMBOL'",
-    "command": "al-explorer",
-    "args": ["trace", "\"$ZED_SYMBOL\""],
-    "tags": ["al-trace", "al-event-publisher"],
-    "reveal": "always"
-  },
-  {
-    "label": "AL: Find Subscribers for '$ZED_SYMBOL'",
-    "command": "al-explorer",
-    "args": ["subscribers", "\"$ZED_SYMBOL\""],
-    "tags": ["al-event-publisher"],
-    "reveal": "always"
-  },
-  {
-    "label": "AL: Show Event Source (publisher of subscriber under cursor)",
-    "command": "al-explorer",
-    "args": ["event-source", "--file", "\"$ZED_FILE\"", "--line", "$ZED_ROW"],
-    "tags": ["al-event-subscriber"],
     "reveal": "always"
   },
   {
@@ -224,24 +151,10 @@
     "reveal": "always"
   },
   {
-    "label": "AL: Complexity Metrics (Current File)",
-    "command": "al-explorer",
-    "args": ["metrics", "\"$ZED_FILE\""],
-    "tags": ["al-metrics"],
-    "reveal": "always"
-  },
-  {
     "label": "AL: Complexity Metrics (Workspace)",
     "command": "al-explorer",
     "args": ["metrics", "--all"],
     "tags": ["al-metrics-all"],
-    "reveal": "always"
-  },
-  {
-    "label": "AL: Profiler Hints (Current File)",
-    "command": "al-explorer",
-    "args": ["profiler-hints", "\"$ZED_FILE\""],
-    "tags": ["al-profiler-hints"],
     "reveal": "always"
   },
   {

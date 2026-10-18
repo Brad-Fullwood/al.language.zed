@@ -174,11 +174,137 @@ pub(crate) fn handle_code_action(
         }));
     }
 
+    if kind_requested(only, &CodeActionKind::REFACTOR) {
+        actions.extend(object_actions(server, uri, range.start.line));
+    }
+
     if actions.is_empty() {
         None
     } else {
         Some(actions)
     }
+}
+
+/// The object declared on a line: its name, and for an extension the name of
+/// the object it extends.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct DeclaredObject {
+    pub(crate) name: String,
+    pub(crate) base: Option<String>,
+}
+
+pub(crate) fn object_declared_on_line(
+    text: &str,
+    tree: &tree_sitter::Tree,
+    line: u32,
+) -> Option<DeclaredObject> {
+    let source = text.as_bytes();
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    let declaration = root.children(&mut cursor).find(|node| {
+        node.kind() == "object_declaration" && node.start_position().row == line as usize
+    })?;
+    let name_of =
+        |node: tree_sitter::Node| node.utf8_text(source).ok().map(al_syntax::clean_attr_arg);
+    let name = declaration.child_by_field_name("name").and_then(name_of)?;
+    let mut cursor = declaration.walk();
+    let base = declaration
+        .children(&mut cursor)
+        .filter(|child| child.kind() == "implements_clause")
+        .find(|clause| {
+            clause
+                .child(0)
+                .and_then(|keyword| keyword.utf8_text(source).ok())
+                .is_some_and(|keyword| keyword.eq_ignore_ascii_case("extends"))
+        })
+        .and_then(|clause| {
+            let mut cursor = clause.walk();
+            let target = clause
+                .children(&mut cursor)
+                .find(|child| child.kind() == "name");
+            target
+        })
+        .and_then(name_of);
+    Some(DeclaredObject { name, base })
+}
+
+/// Actions for the object declared on the cursor's line: sort its members,
+/// and open its composed view, impact, event suggestions or complexity
+/// metrics. These were global editor tasks, which ran on whatever symbol the
+/// cursor happened to be on.
+fn object_actions(server: &AlServer, uri: &Url, line: u32) -> Vec<CodeActionOrCommand> {
+    let Some((text, tree)) = al_source::parsing::get_or_parse(&server.workspace.documents, uri)
+    else {
+        return Vec::new();
+    };
+    let Some(object) = object_declared_on_line(&text, &tree, line) else {
+        return Vec::new();
+    };
+    let mut actions = Vec::new();
+
+    if let Some(sorted) = al_syntax::sort_members(&text).filter(|sorted| *sorted != *text) {
+        let end = position_at_end(&text);
+        let edit = TextEdit {
+            range: Range::new(Position::new(0, 0), end),
+            new_text: sorted,
+        };
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: "AL: Sort Members".to_string(),
+            kind: Some(CodeActionKind::REFACTOR_REWRITE),
+            edit: Some(WorkspaceEdit {
+                changes: Some(std::collections::HashMap::from([(uri.clone(), vec![edit])])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }));
+    }
+
+    let composed = object.base.as_deref().unwrap_or(&object.name);
+    for (title, report, target) in [
+        (
+            format!("AL: Show Composed Object \"{composed}\" (Base + Extensions)"),
+            "composed",
+            composed,
+        ),
+        (
+            format!("AL: Show Impact of Changing \"{}\"", object.name),
+            "impact",
+            object.name.as_str(),
+        ),
+        (
+            format!("AL: Suggest Events for \"{composed}\""),
+            "suggest-event",
+            composed,
+        ),
+        (
+            "AL: Show Complexity Metrics".to_string(),
+            "metrics",
+            object.name.as_str(),
+        ),
+    ] {
+        actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+            title: title.clone(),
+            kind: Some(CodeActionKind::REFACTOR),
+            command: Some(Command {
+                title,
+                command: "al.showReport".to_string(),
+                arguments: Some(vec![serde_json::json!({
+                    "report": report,
+                    "object": target,
+                    "uri": uri,
+                })]),
+            }),
+            ..Default::default()
+        }));
+    }
+    actions
+}
+
+/// The LSP position just past the last character of `text`.
+fn position_at_end(text: &str) -> Position {
+    let line = text.matches('\n').count() as u32;
+    let last = text.rsplit('\n').next().unwrap_or("");
+    Position::new(line, last.encode_utf16().count() as u32)
 }
 
 /// Cheap "would formatting change anything?" probe.
@@ -255,4 +381,45 @@ pub(crate) fn handle_inlay_hint(
 ) -> Result<Option<Vec<InlayHint>>, String> {
     al_analysis::queries::inlay_hints::inlay_hints(&server.workspace, uri, range.into())
         .map(|hints| hints.map(|items| items.into_iter().map(Into::into).collect()))
+}
+
+#[cfg(test)]
+mod object_action_tests {
+    use super::*;
+
+    fn tree(text: &str) -> tree_sitter::Tree {
+        al_syntax::AlParser::parse_quick(text).tree
+    }
+
+    #[test]
+    fn the_object_on_its_declaration_line_is_found_with_the_object_it_extends() {
+        let codeunit = "codeunit 50010 \"AUK Pallet Management\"\n{\n}\n";
+        assert_eq!(
+            object_declared_on_line(codeunit, &tree(codeunit), 0),
+            Some(DeclaredObject {
+                name: "AUK Pallet Management".to_string(),
+                base: None,
+            })
+        );
+        assert_eq!(
+            object_declared_on_line(codeunit, &tree(codeunit), 1),
+            None,
+            "only the declaration line names the object"
+        );
+
+        let extension = "tableextension 50000 \"AUK Item\" extends Item\n{\n}\n";
+        assert_eq!(
+            object_declared_on_line(extension, &tree(extension), 0),
+            Some(DeclaredObject {
+                name: "AUK Item".to_string(),
+                base: Some("Item".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn the_end_position_counts_utf16_units_on_the_last_line() {
+        assert_eq!(position_at_end("ab\ncdé"), Position::new(1, 3));
+        assert_eq!(position_at_end("ab\n"), Position::new(1, 0));
+    }
 }

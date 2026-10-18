@@ -30,7 +30,7 @@ pub fn cmd_search(query: &str, limit: Option<usize>, json: bool) -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
                 print!("{}", search_table_text(entries));
-                eprintln!("\n{} results", entries.len());
+                eprintln!("\n{}", count_text(entries.len(), "result"));
             }
             ExitCode::SUCCESS
         }
@@ -301,7 +301,7 @@ pub fn cmd_events(name: &str, json: bool) -> ExitCode {
                          publishers — narrow the search for full chains)"
                     );
                 }
-                eprintln!("\n{} publishers", events.len());
+                eprintln!("\n{}", count_text(events.len(), "publisher"));
                 eprintln!(
                     "Tip: `al-explorer trace <event>` shows the full chain; \
                      subscriber coverage is workspace source only (symbol packages \
@@ -367,7 +367,7 @@ pub fn cmd_subscribers(event: &str, json: bool) -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
                 print!("{}", subscribers_text(subs));
-                eprintln!("\n{} subscribers", subs.len());
+                eprintln!("\n{}", count_text(subs.len(), "subscriber"));
                 // be explicit about coverage — Microsoft symbol
                 // packages strip EventSubscriber attributes, so package
                 // subscribers are fundamentally invisible to any tool.

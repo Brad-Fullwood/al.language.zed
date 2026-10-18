@@ -58,7 +58,7 @@ blindly batch-applied.
 ## How to use
 
 - **In Zed:** trigger the code-action menu on a diagnostic or anywhere in an object. Pick the action.
-- **CLI:** `al-explorer fix [file] [--dry-run] [--rule <code>]` (Zed task: *AL: Apply Quick Fixes (Current File)*).
+- **CLI:** `al-explorer fix [file] [--dry-run] [--rule <code>]`. In the editor the same fixes are code actions on the line.
   With a file it applies that file's registered safe diagnostic edits. Without one it scans the
   loaded project. `AL-NL001`, `AL-NL005`, and `AL-NL007` remain explicitly unfixable because changing
   query shape, choosing loaded fields, or inventing user-facing text requires developer intent.

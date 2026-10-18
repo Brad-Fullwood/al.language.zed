@@ -589,4 +589,23 @@ mod tests {
         }
         assert!(object_type_by_keyword("").is_none());
     }
+
+    /// The highlight query colors a member call as a built-in when its name
+    /// is in its Record method list, which must be the catalog the server
+    /// classifies with, regenerated from each new AL toolchain.
+    #[test]
+    fn the_highlight_query_lists_every_record_method() {
+        let query = tree_sitter_al::HIGHLIGHTS_QUERY;
+        let marker = "(member_call_suffix\n  member: (name (identifier) @function.builtin.al)\n  (#match? @function.builtin.al \"^(?i)(";
+        let start = query.find(marker).expect("the Record method pattern") + marker.len();
+        let end = start + query[start..].find(")$").expect("the end of the list");
+        let mut listed: Vec<String> = query[start..end]
+            .split('|')
+            .map(str::to_ascii_lowercase)
+            .collect();
+        listed.sort();
+        let mut catalog: Vec<String> = RECORD_METHOD_SET.iter().cloned().collect();
+        catalog.sort();
+        assert_eq!(listed, catalog);
+    }
 }
