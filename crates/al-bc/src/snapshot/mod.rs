@@ -7,6 +7,9 @@
 //!
 //! Snapshots are stored locally in the output directory for offline analysis.
 
+pub mod archive;
+pub mod rest;
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};

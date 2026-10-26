@@ -15,6 +15,7 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }
+zip = { workspace = true }
 
 # `O_NOFOLLOW` and `O_NONBLOCK` for the snapshot and profile downloads.
 [target.'cfg(unix)'.dependencies]
