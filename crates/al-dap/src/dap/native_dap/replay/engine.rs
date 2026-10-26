@@ -68,7 +68,6 @@ pub struct Engine {
     /// Call site of each context in its caller.
     parent: Vec<Option<Pos>>,
     /// Contexts called from a statement, in call order.
-    #[allow(dead_code)] // read by stepIn, added with stepping
     callees: HashMap<Pos, Vec<usize>>,
     /// Every statement of a line, in walk order.
     occurrences: HashMap<LineKey, Vec<Pos>>,
@@ -252,6 +251,74 @@ impl Engine {
         match next {
             Some(pos) => self.land(pos, false),
             None => self.end(),
+        }
+    }
+
+    /// The next statement of the same context, or the return to the caller.
+    #[allow(clippy::should_implement_trait)] // DAP "next", not an iterator
+    pub fn next(&mut self) -> Step {
+        let Some(cur) = self.current else {
+            return self.start();
+        };
+        if cur.line + 1 < self.lens[cur.ctx] {
+            return self.land(
+                Pos {
+                    ctx: cur.ctx,
+                    line: cur.line + 1,
+                },
+                false,
+            );
+        }
+        self.step_out_of(cur.ctx)
+    }
+
+    /// Enter the first call recorded at the current statement. Without one
+    /// the walk stays on the statement, as Microsoft's adapter does.
+    pub fn step_in(&mut self) -> Step {
+        let Some(cur) = self.current else {
+            return self.start();
+        };
+        match self.callees.get(&cur).and_then(|c| c.first()).copied() {
+            Some(callee) if self.lens[callee] > 0 => self.land(
+                Pos {
+                    ctx: callee,
+                    line: 0,
+                },
+                false,
+            ),
+            _ => self.land(cur, false),
+        }
+    }
+
+    /// Leave the current context for the statement after its call site.
+    pub fn step_out(&mut self) -> Step {
+        let Some(cur) = self.current else {
+            return self.start();
+        };
+        self.step_out_of(cur.ctx)
+    }
+
+    fn step_out_of(&mut self, ctx: usize) -> Step {
+        match self.parent[ctx] {
+            Some(site) => self.next_after(site),
+            // An entry method that is not the first context restarts the walk.
+            // The first context ends the replay.
+            None if ctx == 0 => self.end(),
+            None => self.start_over(),
+        }
+    }
+
+    fn next_after(&mut self, site: Pos) -> Step {
+        if site.line + 1 < self.lens[site.ctx] {
+            self.land(
+                Pos {
+                    ctx: site.ctx,
+                    line: site.line + 1,
+                },
+                false,
+            )
+        } else {
+            self.step_out_of(site.ctx)
         }
     }
 

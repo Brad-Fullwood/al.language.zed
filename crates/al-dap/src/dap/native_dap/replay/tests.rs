@@ -126,6 +126,9 @@ fn without_breakpoints_the_walk_starts_at_the_first_statement() {
     };
     assert!(l.start_over);
     assert_eq!(l.pos, Pos { ctx: 0, line: 0 });
+    assert_eq!(at(e.next()), (0, 1));
+    // The last statement of context 0 ends the replay.
+    assert_eq!(e.next(), Step::Ended);
 }
 
 #[test]
@@ -134,6 +137,55 @@ fn start_runs_to_the_first_snappoint_and_continue_ends() {
     assert_eq!(e.snappoints().len(), 1);
     assert_eq!(at(e.start()), (2, 0));
     assert_eq!(e.cont(), Step::Ended);
+}
+
+#[test]
+fn next_steps_over_calls_and_step_in_out_walk_through_them() {
+    let mut e = Engine::new(&sample());
+    e.start_over();
+    assert_eq!(at(e.next()), (0, 1));
+    assert_eq!(at(e.step_in()), (1, 0));
+    assert_eq!(at(e.next()), (1, 1));
+    // Leaving the callee goes to the statement after the call.
+    assert_eq!(at(e.step_out()), (0, 2));
+    assert_eq!(e.next(), Step::Ended);
+
+    // next over the call site does not enter the callee.
+    let mut e = Engine::new(&sample());
+    e.start_over();
+    e.next();
+    assert_eq!(at(e.next()), (0, 2));
+}
+
+#[test]
+fn next_off_the_end_of_a_later_entry_method_starts_over() {
+    let mut e = Engine::new(&sample());
+    assert_eq!(at(e.start()), (2, 0));
+    assert_eq!(at(e.next()), (2, 1));
+    let Step::Stopped(l) = e.next() else {
+        panic!("no restart")
+    };
+    assert!(l.start_over);
+    assert_eq!(l.pos, Pos { ctx: 0, line: 0 });
+}
+
+#[test]
+fn step_out_of_a_callee_that_ends_its_caller_returns_further() {
+    let mut e = Engine::new(&sample());
+    e.start_over();
+    e.next();
+    e.step_in();
+    e.next();
+    // Callee's last statement: next returns to the caller's following statement.
+    assert_eq!(at(e.next()), (0, 2));
+}
+
+#[test]
+fn step_in_without_a_call_stays_on_the_statement() {
+    let mut e = Engine::new(&sample());
+    e.start_over();
+    assert_eq!(at(e.step_in()), (0, 0));
+    assert_eq!(at(e.step_in()), (0, 0));
 }
 
 #[test]
@@ -150,6 +202,20 @@ fn user_breakpoints_stop_continue_once_per_occurrence() {
     assert_eq!(at(e.start()), (0, 1));
     assert_eq!(at(e.cont()), (1, 1));
     assert_eq!(e.cont(), Step::Ended);
+}
+
+#[test]
+fn a_breakpoint_set_late_ignores_statements_already_passed() {
+    let ctxs = vec![
+        ctx(0, "Main", &[], &[10, 11], &[]),
+        ctx(1, "Main", &[], &[10, 11], &[]),
+    ];
+    let mut e = Engine::new(&ctxs);
+    e.start();
+    e.next();
+    e.set_user_breakpoints("a.al", 5, 50000, &[11]);
+    // Line 10 was passed in context 0, so only context 1 is left.
+    assert_eq!(at(e.cont()), (1, 0));
 }
 
 #[test]
@@ -257,6 +323,16 @@ fn scopes_and_variables_follow_the_oracle_shape() {
     let v = p.req("variables", json!({"variablesReference": 131072}));
     assert_eq!(v[0]["body"]["variables"][0]["name"], "Counter");
     assert_eq!(v[0]["body"]["variables"][0]["value"], "30");
+    // Next lands on a statement without variables.
+    p.req("next", json!({}));
+    let v = p.req("variables", json!({"variablesReference": 131072}));
+    assert_eq!(v[0]["body"]["variables"][0]["name"], "EmptyNodeMessage");
+    assert_eq!(
+        v[0]["body"]["variables"][0]["value"],
+        "Variable information is only available on snappoints."
+    );
+    let v = p.req("variables", json!({"variablesReference": 196608}));
+    assert_eq!(v[0]["body"]["variables"].as_array().unwrap().len(), 0);
 }
 
 #[test]
@@ -766,6 +842,10 @@ macro_rules! parity_test {
 }
 
 parity_test!(replay_parity_83a73940_continue, "83a73940", "continue");
+parity_test!(replay_parity_83a73940_next, "83a73940", "next");
+parity_test!(replay_parity_83a73940_stepin, "83a73940", "stepin");
 parity_test!(replay_parity_83a73940_breakpoint, "83a73940", "breakpoint");
 parity_test!(replay_parity_a0d62542_continue, "a0d62542", "continue");
+parity_test!(replay_parity_a0d62542_next, "a0d62542", "next");
+parity_test!(replay_parity_a0d62542_stepin, "a0d62542", "stepin");
 parity_test!(replay_parity_a0d62542_breakpoint, "a0d62542", "breakpoint");

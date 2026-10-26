@@ -289,7 +289,10 @@ impl ReplaySession {
         }
         Some(match command {
             "configurationDone" => self.engine.start(),
-            _ => self.engine.cont(),
+            "continue" => self.engine.cont(),
+            "next" => self.engine.next(),
+            "stepIn" => self.engine.step_in(),
+            _ => self.engine.step_out(),
         })
     }
 
@@ -305,7 +308,7 @@ impl ReplaySession {
         let ok = |body: Option<Value>| make_response(seq, request_seq, command, true, body, None);
         let mut messages = Vec::new();
         match command {
-            "configurationDone" | "continue" => {
+            "configurationDone" | "continue" | "next" | "stepIn" | "stepOut" => {
                 let body = (command == "continue").then(|| json!({ "allThreadsContinued": true }));
                 messages.push(ok(body));
                 if let Some(step) = self.run(command) {
