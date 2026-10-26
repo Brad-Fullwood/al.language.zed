@@ -524,6 +524,18 @@ pub fn render_outline_with_note(entry: &SymbolEntry) -> String {
     out
 }
 
+/// Whether `text` is a file this module rendered from symbols, not real
+/// package source. Both renderers start with their note, so a prefix check is
+/// reliable. Line numbers in such a file are not source lines.
+pub fn is_generated_outline(text: &str) -> bool {
+    text.starts_with(OUTLINE_NOTE) || text.starts_with(METADATA_ONLY_NOTE)
+}
+
+/// The directory name under [`cache_dir`] that holds the files of `package`.
+pub fn package_dir_name(package: &str) -> String {
+    sanitize_filename(package)
+}
+
 pub fn render_metadata_only_with_note(entry: &SymbolEntry) -> String {
     let body = render_outline(entry);
     let mut out = String::with_capacity(METADATA_ONLY_NOTE.len() + body.len());
@@ -1471,6 +1483,17 @@ mod tests {
 
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
         assert_eq!(fs::read(settings_path).unwrap(), original);
+    }
+
+    #[test]
+    fn is_generated_outline_tells_outlines_from_source() {
+        let entry = package_codeunit();
+        assert!(is_generated_outline(&render_outline_with_note(&entry)));
+        assert!(is_generated_outline(&render_metadata_only_with_note(
+            &entry
+        )));
+        assert!(!is_generated_outline("codeunit 50100 Foo\n{\n}\n"));
+        assert_eq!(package_dir_name("Base Application"), "Base_Application");
     }
 
     #[test]
