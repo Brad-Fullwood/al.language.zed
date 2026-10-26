@@ -475,7 +475,8 @@ fn an_exception_stop_names_the_message_and_fills_alexception() {
         .messages;
     let stopped = events(&m, "stopped");
     assert_eq!(stopped[0]["body"]["reason"], "exception");
-    assert_eq!(stopped[0]["body"]["text"], "Boom");
+    assert!(stopped[0]["body"].get("text").is_none());
+    assert!(stopped[0]["body"].get("description").is_none());
     let v = s
         .handle(
             &seq,
@@ -727,7 +728,10 @@ async fn parity_run(
         )
         .await;
         let want = bp["response"]["body"]["breakpoints"][0]["verified"].clone();
-        if r[0]["body"]["breakpoints"][0]["verified"] != want {
+        // A host breakpoint on a decompiled `al-preview://` copy names a file
+        // we do not have here, so it cannot be set the same way.
+        let decompiled = bp["path"].as_str().unwrap().starts_with("al-preview://");
+        if !decompiled && r[0]["body"]["breakpoints"][0]["verified"] != want {
             diffs.push(format!(
                 "breakpoint verified: ours {} vs host {want}",
                 r[0]["body"]["breakpoints"][0]["verified"]
@@ -776,6 +780,16 @@ async fn parity_run(
                 host["reason"]
             ));
         }
+        let body = &m.iter().find(|e| e["event"] == "stopped").unwrap()["body"];
+        for k in ["description", "text"] {
+            if body.get(k).unwrap_or(&Value::Null) != &host[k] {
+                diffs.push(format!(
+                    "stop {n} {k}: ours {} vs host {}",
+                    body.get(k).unwrap_or(&Value::Null),
+                    host[k]
+                ));
+            }
+        }
         let st_r = send(&st, "stackTrace", json!({"threadId": 1})).await;
         let ours = st_r[0]["body"]["stackFrames"].as_array().unwrap().clone();
         let theirs = host["frames"].as_array().unwrap();
@@ -800,7 +814,10 @@ async fn parity_run(
                     ));
                 }
             }
-            if o["source"]["name"] != h["sourceName"] {
+            // The host also names a decompiled package copy for objects that
+            // ship no source. We send no source for them unless a package has
+            // one, which the test state does not provide.
+            if o["source"]["name"] != h["sourceName"] && !(external && o["source"].is_null()) {
                 diffs.push(format!(
                     "stop {n} frame {i} source name: ours {} vs host {}",
                     o["source"]["name"], h["sourceName"]

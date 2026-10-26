@@ -73,6 +73,9 @@ pub struct Engine {
     occurrences: HashMap<LineKey, Vec<Pos>>,
     /// Lines of statements that carry variables or an exception, first seen first.
     snappoints: Vec<LineKey>,
+    /// Snappoint lines the host reports in `al/updateSnappointsEvent`: lines with
+    /// variables on a statement that is not the error statement.
+    listed: Vec<LineKey>,
     /// User breakpoint lines per source the client named.
     user: HashMap<String, Vec<LineKey>>,
     /// Occurrences of each line already passed.
@@ -86,6 +89,7 @@ impl Engine {
         let mut exception_at = Vec::with_capacity(contexts.len());
         let mut occurrences: HashMap<LineKey, Vec<Pos>> = HashMap::new();
         let mut snappoints = Vec::new();
+        let mut listed = Vec::new();
         for (c, ctx) in contexts.iter().enumerate() {
             let exc = ctx.exception.as_ref().map(|e| {
                 usize::try_from(e.line_number)
@@ -109,6 +113,9 @@ impl Engine {
                 if (!lc.variables.is_empty() || exc == Some(l)) && !snappoints.contains(&key) {
                     snappoints.push(key);
                 }
+                if !lc.variables.is_empty() && exc != Some(l) && !listed.contains(&key) {
+                    listed.push(key);
+                }
                 row.push(key);
             }
             keys.push(row);
@@ -122,6 +129,7 @@ impl Engine {
             callees,
             occurrences,
             snappoints,
+            listed,
             user: HashMap::new(),
             hits: HashMap::new(),
             current: None,
@@ -130,6 +138,10 @@ impl Engine {
 
     pub fn snappoints(&self) -> &[LineKey] {
         &self.snappoints
+    }
+
+    pub fn listed_snappoints(&self) -> &[LineKey] {
+        &self.listed
     }
 
     pub fn current(&self) -> Option<Pos> {

@@ -18,10 +18,13 @@
 //!   break request is still running. That is not copied.
 //! - `stopped.reason` is the DAP value `step` (the host sends `Step`).
 //! - An error stop (a context that carries an exception) is reason
-//!   `exception` with the message as `text`, and Locals gets a variable named
-//!   `_ALException` holding the message. ASSUMPTION: no sample zip has an
-//!   exception, so the reason string and the variable name come from the
-//!   decompiled host's error node and are untested against a real recording.
+//!   `exception` and nothing else in the `stopped` event, and Locals ends with
+//!   a `String` variable named `_ALException` holding the message. Checked
+//!   against Microsoft's host on one recorded error: zip e751152d, "You
+//!   cannot change Costing Method ..." in Table 27 Item, stop events, frames,
+//!   scopes and variables compared for continue, next, stepIn and a breakpoint
+//!   on the error line. The host lists no snappoint line for the error
+//!   statement in `al/updateSnappointsEvent`, and neither do we.
 //! - Timestamps are not added to `output` text.
 
 pub mod engine;
@@ -43,7 +46,7 @@ use tokio::sync::Mutex;
 
 use crate::dap::Result;
 
-use self::engine::{Engine, Landing, LineKey, Pos, Step};
+use self::engine::{Engine, Landing, LineKey, Step};
 use super::{make_event, make_response, write_dap, NativeDapState, ResolvedObject};
 
 const THREAD_ID: i64 = 1;
@@ -157,7 +160,7 @@ impl ReplaySession {
     pub(super) fn snappoints_event(&self, seq: &AtomicU64) -> Value {
         let items: Vec<Value> = self
             .engine
-            .snappoints()
+            .listed_snappoints()
             .iter()
             .map(|k| {
                 let t = ObjectType::from_i8(k.object_type);
@@ -262,10 +265,6 @@ impl ReplaySession {
                 });
                 if landing.exception {
                     body["reason"] = json!("exception");
-                    body["description"] = json!("Paused on exception");
-                    if let Some(msg) = self.exception_message(landing.pos) {
-                        body["text"] = json!(msg);
-                    }
                 }
                 out.push(make_event(seq, "stopped", Some(body)));
             }
@@ -280,15 +279,6 @@ impl ReplaySession {
                 ));
             }
         }
-    }
-
-    fn exception_message(&self, pos: Pos) -> Option<String> {
-        self.archive
-            .method_contexts()
-            .get(pos.ctx)?
-            .exception
-            .as_ref()
-            .map(|e| e.message.clone())
     }
 
     fn run(&mut self, command: &str) -> Option<Step> {
@@ -498,14 +488,13 @@ impl ReplaySession {
         }
         let (mut locals, globals) = split_scopes(&lc.variables);
         if let Some(m) = message {
-            locals.insert(
-                0,
-                Variable {
-                    name: "_ALException".to_string(),
-                    value: m,
-                    ..Variable::default()
-                },
-            );
+            // The host lists the message last, after the recorded locals.
+            locals.push(Variable {
+                name: "_ALException".to_string(),
+                value: m,
+                type_name: "String".to_string(),
+                ..Variable::default()
+            });
         }
         if group == 1 {
             globals
