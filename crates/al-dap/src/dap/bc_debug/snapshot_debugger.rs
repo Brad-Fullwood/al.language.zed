@@ -351,7 +351,7 @@ fn session_telemetry_id() -> &'static str {
 }
 
 /// Refuse Production unless the caller says it is allowed.
-fn guard_production(config: &BcDebugConfig, allow_production: bool) -> Result<()> {
+pub fn guard_production(config: &BcDebugConfig, allow_production: bool) -> Result<()> {
     let production = config.environment_type.eq_ignore_ascii_case("Production")
         || config
             .environment_name

@@ -153,7 +153,7 @@ pub(super) fn resolve_debug_config(
     Ok(debug_config_from_server_config(bc_cfg))
 }
 
-fn debug_config_from_server_config(
+pub(super) fn debug_config_from_server_config(
     bc_cfg: &al_bc::launch::BcServerConfig,
 ) -> al_dap::dap::bc_debug::BcDebugConfig {
     use al_bc::launch::{AuthMethod, EnvironmentType};

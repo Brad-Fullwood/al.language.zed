@@ -914,3 +914,13 @@ fn golden_a0d62542() {
     // The host shows one placeholder stop here. That is replay adapter behaviour.
     assert_eq!(g["stops"].as_array().unwrap().len(), 1);
 }
+
+/// Regenerates the synthetic zip that the daemon `snapshot show` tests read
+/// (`crates/al-lsp/src/server/daemon/testdata/synthetic-snapshot.zip`).
+/// Run with `AL_SYNTHETIC_ZIP_OUT=<path> cargo test -p al-bc write_synthetic_zip -- --ignored`.
+#[test]
+#[ignore]
+fn write_synthetic_zip() {
+    let out = std::env::var_os("AL_SYNTHETIC_ZIP_OUT").expect("AL_SYNTHETIC_ZIP_OUT is not set");
+    std::fs::write(out, sample_zip()).unwrap();
+}

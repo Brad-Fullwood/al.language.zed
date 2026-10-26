@@ -546,7 +546,11 @@ mod dispatch_tests {
             ),
             (
                 "snapshot",
-                serde_json::json!({ "cmd": "list", "outputDir": directory }),
+                serde_json::json!({ "cmd": "finish", "outputDir": directory }),
+            ),
+            (
+                "snapshot",
+                serde_json::json!({ "cmd": "show", "path": file }),
             ),
             (
                 "profiling",

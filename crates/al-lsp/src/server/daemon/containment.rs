@@ -863,7 +863,7 @@ mod tests {
             ),
             (
                 "snapshot",
-                serde_json::json!({ "cmd": "list", "outputDir": at("") }),
+                serde_json::json!({ "cmd": "finish", "outputDir": at("") }),
             ),
             (
                 "profiling",
