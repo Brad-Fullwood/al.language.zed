@@ -10,7 +10,7 @@ use super::super::{DebugCommands, ProfileCommands, SnapshotCommands};
 
 use super::{
     absolutize_path, bc_server_params, connect, file_to_uri, print_json, report_error,
-    request_checked, terminal_text, text_field,
+    request_checked, terminal_lines, terminal_text, text_field,
 };
 
 pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
@@ -262,20 +262,6 @@ fn debug_step_text(result: &Value) -> String {
     out
 }
 
-/// The table `snapshot list` prints for the server's snapshots.
-fn snapshots_text(snaps: &[Value]) -> String {
-    let mut out = String::new();
-    let _ = writeln!(out, "{:<30} {:<25} {:>10}", "ID", "CREATED", "SIZE");
-    let _ = writeln!(out, "{}", "-".repeat(70));
-    for s in snaps {
-        let id = text_field(s, "id", "?");
-        let created = text_field(s, "createdAt", "-");
-        let size = s.get("sizeBytes").and_then(|v| v.as_u64()).unwrap_or(0);
-        let _ = writeln!(out, "{id:<30} {created:<25} {size:>10}");
-    }
-    out
-}
-
 /// The table `profile analyze` prints for the profile's hotspots.
 fn hotspots_text(spots: &[Value]) -> String {
     let mut out = String::new();
@@ -308,130 +294,247 @@ fn debug_stop_actually_stopped(status: &str) -> bool {
     status == "stopped"
 }
 
-pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
-    match subcmd {
-        SnapshotCommands::Start {
-            server,
-            company,
-            description,
-            username,
-            password,
-            output_dir,
-        } => {
-            let mut client = match connect(None) {
-                Ok(c) => c,
-                Err(e) => return report_error(&e, json),
-            };
-            let mut params = match bc_server_params(
-                "start",
-                server,
-                company,
-                username.as_deref(),
-                password.as_deref(),
-                output_dir.as_deref(),
-            ) {
-                Ok(params) => params,
-                Err(error) => return report_error(&error, json),
-            };
-            if let Some(d) = description {
-                params["description"] = serde_json::json!(d);
-            }
-            match request_checked(&mut client, "snapshot", Some(params)) {
-                Ok(result) => {
-                    if json {
-                        print_json(&result);
-                    } else {
-                        let snapshot_id = text_field(&result, "snapshotId", "?");
-                        let status = text_field(&result, "status", "?");
-                        println!("Snapshot started: {snapshot_id} (status: {status})");
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(e) => report_error(&e, json),
-            }
-        }
+fn warning_lines(result: &Value) -> String {
+    let mut out = String::new();
+    for warning in result
+        .get("warnings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        let _ = writeln!(out, "Warning: {}", terminal_text(warning));
+    }
+    out
+}
 
-        SnapshotCommands::List {
-            server,
-            company,
-            username,
-            password,
-        } => {
-            let mut client = match connect(None) {
-                Ok(c) => c,
-                Err(e) => return report_error(&e, json),
-            };
-            let params = match bc_server_params(
-                "list",
-                server,
-                company,
-                username.as_deref(),
-                password.as_deref(),
-                None,
-            ) {
-                Ok(params) => params,
-                Err(error) => return report_error(&error, json),
-            };
-            match request_checked(&mut client, "snapshot", Some(params)) {
-                Ok(result) => {
-                    if json {
-                        print_json(&result);
-                    } else {
-                        let snapshots = result.get("snapshots").and_then(|v| v.as_array());
-                        if let Some(snaps) = snapshots {
-                            if snaps.is_empty() {
-                                eprintln!("No snapshots available on server.");
-                            } else {
-                                print!("{}", snapshots_text(snaps));
-                                eprintln!("\n{} snapshot(s)", snaps.len());
-                            }
-                        }
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(e) => report_error(&e, json),
+/// What `snapshot start` prints.
+fn snapshot_start_text(result: &Value) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "Snapshot session started: {} ({})",
+        text_field(result, "debuggingContext", "?"),
+        text_field(result, "attachKind", "?")
+    );
+    for point in result
+        .get("snappoints")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let line = point.get("line").and_then(Value::as_u64).unwrap_or(0);
+        let id = point.get("id").and_then(Value::as_i64).unwrap_or(0);
+        let condition = match point.get("condition").and_then(Value::as_str) {
+            Some(condition) if !condition.is_empty() => {
+                format!(" if {}", terminal_text(condition))
             }
-        }
+            _ => String::new(),
+        };
+        let _ = writeln!(
+            out,
+            "  {} {id} line {line}{condition} ({})",
+            text_field(point, "objectType", "?"),
+            text_field(point, "origin", "?")
+        );
+    }
+    out.push_str(&warning_lines(result));
+    out
+}
 
-        SnapshotCommands::Download {
-            snapshot_id,
-            server,
-            company,
-            username,
-            password,
-            output_dir,
-        } => {
-            let mut client = match connect(None) {
-                Ok(c) => c,
-                Err(e) => return report_error(&e, json),
-            };
-            let mut params = match bc_server_params(
-                "download",
-                server,
-                company,
-                username.as_deref(),
-                password.as_deref(),
-                output_dir.as_deref(),
-            ) {
-                Ok(params) => params,
-                Err(error) => return report_error(&error, json),
-            };
-            params["snapshotId"] = serde_json::json!(snapshot_id);
-            match request_checked(&mut client, "snapshot", Some(params)) {
-                Ok(result) => {
-                    if json {
-                        print_json(&result);
-                    } else {
-                        let path = text_field(&result, "path", "?");
-                        let status = text_field(&result, "status", "?");
-                        println!("Snapshot {} {status}: {path}", terminal_text(snapshot_id));
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(e) => report_error(&e, json),
-            }
+/// What `snapshot status` prints.
+fn snapshot_status_text(result: &Value) -> String {
+    let seconds = result
+        .get("secondsSinceStarted")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut out = format!(
+        "{}: {} ({seconds}s since started)\n",
+        text_field(result, "debuggingContext", "?"),
+        text_field(result, "status", "?")
+    );
+    out.push_str(&warning_lines(result));
+    out
+}
+
+/// What `snapshot finish` prints.
+fn snapshot_finish_text(result: &Value) -> String {
+    let mut out = String::new();
+    if result.get("empty").and_then(Value::as_bool) == Some(true) {
+        let _ = writeln!(out, "{}", text_field(result, "message", "Empty snapshot."));
+    } else {
+        let bytes = result.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+        let _ = writeln!(
+            out,
+            "Snapshot saved: {} ({bytes} bytes)",
+            text_field(result, "zipPath", "?")
+        );
+        if let Some(profile) = result.get("cpuProfilePath").and_then(Value::as_str) {
+            let _ = writeln!(out, "CPU profile: {}", terminal_text(profile));
         }
     }
+    out.push_str(&warning_lines(result));
+    out
+}
+
+/// The table `snapshot list` prints for the stored sessions.
+fn snapshot_sessions_text(sessions: &[Value]) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "{:<38} {:<12} {:<28} {:<10} ZIP",
+        "CONTEXT", "STATUS", "ENVIRONMENT", "STARTED"
+    );
+    for session in sessions {
+        let started = session
+            .get("createdAt")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let environment = match session.get("environmentName").and_then(Value::as_str) {
+            Some(name) => terminal_text(name),
+            None => text_field(session, "environmentType", "?"),
+        };
+        let _ = writeln!(
+            out,
+            "{:<38} {:<12} {:<28} {:<10} {}",
+            text_field(session, "debuggingContext", "?"),
+            text_field(session, "lastStatus", "-"),
+            environment,
+            started,
+            text_field(session, "zipPath", "-")
+        );
+    }
+    out
+}
+
+fn snapshot_params(cmd: &str, pairs: Vec<(&str, Option<Value>)>) -> Value {
+    let mut params = serde_json::json!({ "cmd": cmd });
+    for (key, value) in pairs {
+        if let Some(value) = value {
+            params[key] = value;
+        }
+    }
+    params
+}
+
+/// The daemon `snapshot` request each `snapshot` subcommand sends.
+fn snapshot_request(subcmd: &SnapshotCommands) -> Result<Value, String> {
+    Ok(match subcmd {
+        SnapshotCommands::Start {
+            config,
+            snap,
+            break_on_next,
+            user,
+            session_id,
+            verbosity,
+            allow_production,
+        } => snapshot_params(
+            "start",
+            vec![
+                ("config", Some(serde_json::json!(config))),
+                ("snaps", Some(serde_json::json!(snap))),
+                ("breakOnNext", Some(serde_json::json!(break_on_next))),
+                ("userId", user.as_ref().map(|u| serde_json::json!(u))),
+                ("sessionId", session_id.map(|id| serde_json::json!(id))),
+                (
+                    "verbosity",
+                    verbosity.as_ref().map(|v| serde_json::json!(v)),
+                ),
+                (
+                    "allowProduction",
+                    allow_production.then(|| serde_json::json!(true)),
+                ),
+            ],
+        ),
+        SnapshotCommands::Status { context } => snapshot_params(
+            "status",
+            vec![("context", context.as_ref().map(|c| serde_json::json!(c)))],
+        ),
+        SnapshotCommands::Finish { context, out } => {
+            let out_dir = match out {
+                Some(dir) => Some(serde_json::json!(absolutize_path(dir)?)),
+                None => None,
+            };
+            snapshot_params(
+                "finish",
+                vec![
+                    ("context", context.as_ref().map(|c| serde_json::json!(c))),
+                    ("outputDir", out_dir),
+                ],
+            )
+        }
+        SnapshotCommands::List => snapshot_params("list", Vec::new()),
+        SnapshotCommands::Show {
+            zip,
+            vars,
+            fields,
+            stop,
+        } => snapshot_params(
+            "show",
+            vec![
+                ("path", Some(serde_json::json!(absolutize_path(zip)?))),
+                ("vars", vars.as_ref().map(|v| serde_json::json!(v))),
+                ("fields", fields.as_ref().map(|f| serde_json::json!(f))),
+                ("stop", stop.map(|n| serde_json::json!(n))),
+            ],
+        ),
+    })
+}
+
+pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
+    let mut params = match snapshot_request(subcmd) {
+        Ok(params) => params,
+        Err(error) => return report_error(&error, json),
+    };
+    if json {
+        if let SnapshotCommands::Show { .. } = subcmd {
+            params["json"] = serde_json::json!(true);
+        }
+    }
+    let mut client = match connect(None) {
+        Ok(c) => c,
+        Err(e) => return report_error(&e, json),
+    };
+    match request_checked(&mut client, "snapshot", Some(params)) {
+        Ok(result) => {
+            if json {
+                print_json(&result);
+                return ExitCode::SUCCESS;
+            }
+            match subcmd {
+                SnapshotCommands::Start { .. } => print!("{}", snapshot_start_text(&result)),
+                SnapshotCommands::Status { .. } => print!("{}", snapshot_status_text(&result)),
+                SnapshotCommands::Finish { .. } => print!("{}", snapshot_finish_text(&result)),
+                SnapshotCommands::List => {
+                    let sessions = result
+                        .get("sessions")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default();
+                    if sessions.is_empty() {
+                        eprintln!("No snapshot sessions on this machine.");
+                    } else {
+                        print!("{}", snapshot_sessions_text(&sessions));
+                    }
+                }
+                SnapshotCommands::Show { .. } => {
+                    let text = text_field_raw(&result, "text");
+                    println!("{}", terminal_lines(&text));
+                }
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&e, json),
+    }
+}
+
+/// The string at `key` without escaping, for text escaped line by line at the print site.
+fn text_field_raw(result: &Value, key: &str) -> String {
+    result
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
@@ -582,7 +685,8 @@ mod debug_stop_exit_code_tests {
 #[cfg(test)]
 mod terminal_text_tests {
     use super::{
-        debug_eval_line, debug_state_text, debug_step_text, hotspots_text, snapshots_text,
+        debug_eval_line, debug_state_text, debug_step_text, hotspots_text, snapshot_sessions_text,
+        snapshot_start_text,
     };
 
     const COLOURED: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
@@ -625,8 +729,18 @@ mod terminal_text_tests {
 
     #[test]
     fn snapshot_ids_and_profile_procedures_print_escaped() {
-        let snaps = [serde_json::json!({"id": CLEAR, "createdAt": TITLE, "sizeBytes": 10})];
-        assert_escaped(&snapshots_text(&snaps));
+        let sessions = [serde_json::json!({
+            "debuggingContext": CLEAR, "lastStatus": TITLE, "createdAt": 10
+        })];
+        assert_escaped(&snapshot_sessions_text(&sessions));
+        let started = serde_json::json!({
+            "debuggingContext": "c", "attachKind": "UserSession",
+            "snappoints": [{"objectType": "Codeunit", "id": 1, "line": 2,
+                "condition": CLEAR, "origin": "object id"}],
+            "warnings": [CLEAR]
+        });
+        let text = snapshot_start_text(&started);
+        assert_escaped(&text);
 
         let spots = [serde_json::json!({
             "procedure": CLEAR, "object": COLOURED,

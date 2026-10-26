@@ -366,7 +366,7 @@ The CLI command surface includes:
 - Tests: `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`, `test-classify`, `test-snapshot`, `test-results`.
 - Translation: `xlf`.
 
-Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot capture|validate|replay|diff`, and `xlf generate|refresh|untranslated|suggest`. `daemon-shutdown` stops an existing daemon for the current project without starting one, so a cold-start check can begin with no daemon running.
+Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|status|finish|list|show`, `profile start|stop|analyze`, `test-snapshot capture|validate|replay|diff`, and `xlf generate|refresh|untranslated|suggest`. `daemon-shutdown` stops an existing daemon for the current project without starting one, so a cold-start check can begin with no daemon running.
 
 ### Daemon Protocol
 

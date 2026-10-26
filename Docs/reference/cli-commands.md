@@ -39,7 +39,7 @@ commands that only read a file (`parse`, `lint`, `metrics`, `symbols`, `hover`, 
 file (`format`, `fix`, `sort-members`, `organize-files`, `rename`) refuse it and name the project
 they are confined to. So do the commands that pass a path in another argument, such as
 `event-source`, the `xlf` and `test-snapshot` commands, `test-run-all --junit-out`,
-`test-mutate --files`, `profile analyze` and `snapshot download --output-dir`: the daemon reads
+`test-mutate --files`, `profile analyze` and `snapshot finish --out` and `snapshot show`: the daemon reads
 and writes paths only inside the project it has loaded. See
 [daemon-methods](./daemon-methods.md#paths-and-the-project-boundary).
 

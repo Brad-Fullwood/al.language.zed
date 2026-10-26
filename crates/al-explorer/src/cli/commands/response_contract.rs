@@ -780,29 +780,90 @@ fn validate_debug(params: Option<&Value>, result: &Value) -> Result<(), String> 
 
 fn validate_snapshot(params: Option<&Value>, result: &Value) -> Result<(), String> {
     match requested_command(params, "snapshot")? {
-        "start" => fields(
-            result,
-            "snapshot.start",
-            &[("snapshotId", Kind::String), ("status", Kind::String)],
-        ),
-        "list" => {
-            fields(result, "snapshot.list", &[("snapshots", Kind::Array)])?;
+        "start" => {
+            fields(
+                result,
+                "snapshot.start",
+                &[
+                    ("debuggingContext", Kind::String),
+                    ("attachKind", Kind::String),
+                    ("snappoints", Kind::Array),
+                    ("warnings", Kind::Array),
+                ],
+            )?;
             named_array_objects(
                 result,
-                "snapshots",
+                "snappoints",
                 &[
-                    ("id", Kind::String),
-                    ("createdAt", Kind::String),
-                    ("sizeBytes", Kind::Unsigned),
+                    ("objectType", Kind::String),
+                    ("id", Kind::Integer),
+                    ("line", Kind::Unsigned),
+                    ("origin", Kind::String),
+                ],
+            )?;
+            string_array_field(result, "warnings")
+        }
+        "status" => {
+            fields(
+                result,
+                "snapshot.status",
+                &[
+                    ("debuggingContext", Kind::String),
+                    ("status", Kind::String),
+                    ("secondsSinceStarted", Kind::Unsigned),
+                    ("warnings", Kind::Array),
+                ],
+            )?;
+            string_array_field(result, "warnings")
+        }
+        "finish" => {
+            fields(
+                result,
+                "snapshot.finish",
+                &[
+                    ("debuggingContext", Kind::String),
+                    ("bytes", Kind::Unsigned),
+                    ("empty", Kind::Boolean),
+                ],
+            )?;
+            optional_kind(result, "zipPath", Kind::String, true)?;
+            optional_kind(result, "cpuProfilePath", Kind::String, true)?;
+            optional_kind(result, "message", Kind::String, false)?;
+            if result.get("empty").and_then(Value::as_bool) == Some(false)
+                && !result.get("zipPath").is_some_and(Value::is_string)
+            {
+                return Err("snapshot.finish zipPath must be a string".to_string());
+            }
+            Ok(())
+        }
+        "list" => {
+            fields(result, "snapshot.list", &[("sessions", Kind::Array)])?;
+            named_array_objects(
+                result,
+                "sessions",
+                &[
+                    ("debuggingContext", Kind::String),
+                    ("createdAt", Kind::Unsigned),
                 ],
             )
         }
-        "download" => fields(
-            result,
-            "snapshot.download",
-            &[("path", Kind::String), ("status", Kind::String)],
-        ),
+        "show" => {
+            // Text by default, the stops array with --json.
+            if result.get("stops").is_some() {
+                fields(result, "snapshot.show", &[("stops", Kind::Array)])
+            } else {
+                fields(result, "snapshot.show", &[("text", Kind::String)])
+            }
+        }
         other => Err(format!("unsupported snapshot response command '{other}'")),
+    }
+}
+
+/// `field` is an array of strings.
+fn string_array_field(result: &Value, field: &str) -> Result<(), String> {
+    match result.get(field) {
+        Some(value) => string_array(value, field),
+        None => Ok(()),
     }
 }
 
@@ -1671,6 +1732,86 @@ fn type_name(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::validate;
+
+    #[test]
+    fn snapshot_responses_follow_the_daemon_shapes() {
+        let ok = |cmd: &str, value: serde_json::Value| {
+            let params = serde_json::json!({ "cmd": cmd });
+            validate("snapshot", Some(&params), &value)
+        };
+        assert!(
+            ok(
+                "start",
+                serde_json::json!({
+                    "debuggingContext": "c", "attachKind": "UserSession",
+                    "snappoints": [{"objectType": "Codeunit", "id": 1, "line": 2,
+                        "condition": null, "origin": "object id"}],
+                    "warnings": []
+                })
+            )
+            .is_ok()
+        );
+        assert!(
+            ok(
+                "status",
+                serde_json::json!({"debuggingContext": "c", "status": "Started",
+                "secondsSinceStarted": 3, "warnings": ["w"]})
+            )
+            .is_ok()
+        );
+        assert!(
+            ok(
+                "finish",
+                serde_json::json!({"debuggingContext": "c", "zipPath": "/p/c.zip", "bytes": 5,
+                "cpuProfilePath": null, "empty": false})
+            )
+            .is_ok()
+        );
+        assert!(
+            ok(
+                "finish",
+                serde_json::json!({"debuggingContext": "c", "zipPath": null, "bytes": 0,
+                "cpuProfilePath": null, "empty": true, "message": "none"})
+            )
+            .is_ok()
+        );
+        assert!(
+            ok(
+                "list",
+                serde_json::json!({"sessions": [
+            {"debuggingContext": "c", "createdAt": 1}]})
+            )
+            .is_ok()
+        );
+        assert!(ok("show", serde_json::json!({"text": "== Stop 1"})).is_ok());
+        assert!(ok("show", serde_json::json!({"stops": []})).is_ok());
+
+        // Wrong shapes and the removed download command are refused.
+        assert!(
+            ok(
+                "start",
+                serde_json::json!({"snapshotId": "x", "status": "ok"})
+            )
+            .is_err()
+        );
+        assert!(
+            ok(
+                "status",
+                serde_json::json!({"debuggingContext": "c", "status": "Started",
+                "secondsSinceStarted": "3", "warnings": []})
+            )
+            .is_err()
+        );
+        assert!(
+            ok(
+                "finish",
+                serde_json::json!({"debuggingContext": "c", "zipPath": null, "bytes": 5,
+                "empty": false})
+            )
+            .is_err()
+        );
+        assert!(ok("download", serde_json::json!({"path": "p", "status": "ok"})).is_err());
+    }
 
     #[test]
     fn clean_looking_defaults_are_not_valid_manual_responses() {
