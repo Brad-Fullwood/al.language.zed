@@ -555,6 +555,17 @@ impl ReplaySession {
     }
 }
 
+/// A relative `snapshotFileName` is relative to the project root, as in
+/// `.zed/debug.json`, not to the adapter's working directory.
+fn snapshot_zip_path(project_root: &Path, file_name: &str) -> PathBuf {
+    let path = Path::new(file_name);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    }
+}
+
 fn scopes(frame: i64) -> Value {
     let frame = frame & 0xffff;
     json!({ "scopes": [
@@ -614,7 +625,8 @@ where
         command: &str,
         arguments: &Value,
     ) -> Result<()> {
-        let zip = PathBuf::from(
+        let zip = snapshot_zip_path(
+            Path::new(&self.project_root),
             arguments
                 .get("snapshotFileName")
                 .and_then(Value::as_str)

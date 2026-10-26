@@ -546,6 +546,39 @@ async fn launch_with_a_missing_zip_fails_without_compiling() {
         .contains("Cannot read snapshot"));
 }
 
+#[test]
+fn a_relative_snapshot_file_name_resolves_against_the_project_root() {
+    let root = Path::new("/work/proj");
+    assert_eq!(
+        snapshot_zip_path(root, ".snapshots/a.zip"),
+        PathBuf::from("/work/proj/.snapshots/a.zip")
+    );
+    assert_eq!(
+        snapshot_zip_path(root, "/abs/b.zip"),
+        PathBuf::from("/abs/b.zip")
+    );
+}
+
+#[tokio::test]
+async fn a_relative_snapshot_file_name_is_read_from_the_project_root() {
+    let project = tempfile::tempdir().unwrap();
+    let mut st = test_state();
+    st.project_root = project.path().display().to_string();
+    let (_, frames) = run_request_on(
+        &st,
+        "launch",
+        json!({"snapshotFileName": ".snapshots/none.zip"}),
+    )
+    .await;
+    assert_eq!(frames[0]["success"], false);
+    let message = frames[0]["message"].as_str().unwrap();
+    let expected = project.path().join(".snapshots/none.zip");
+    assert!(
+        message.contains(&expected.display().to_string()),
+        "{message}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Parity with Microsoft's adapter (needs AL_SNAPSHOT_FIXTURE_DIR)
 // ---------------------------------------------------------------------------
