@@ -140,6 +140,11 @@ and convert BC's 0-based line/column to DAP's 1-based ones.
 - **Snapshots (`snapshot/`):** the snapshot debugger zip reader, the session store that remembers a
   started session between commands, and `save_finished_snapshot`. The REST calls (attach, status,
   finish) are in `al-dap`. Use `al-explorer snapshot start|status|finish|list|show`.
+- **Capture and replay in Zed:** an `attach` with `"snapshot": "capture"` records instead of
+  debugging. Breakpoints become snappoints, the capture arms at `configurationDone`, status changes
+  appear as Output events, and disconnecting finishes it and saves the zip under `.snapshots`. The
+  orchestration is `bc_debug/snapshot_capture.rs`, shared with the daemon `snapshot` method. A
+  `launch` with `snapshotFileName` replays a zip. The fields are in `debug_adapter_schemas/al.json`.
 
 ## Zed integration
 

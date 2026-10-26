@@ -316,4 +316,73 @@ mod tests {
         assert!(config.get("launchBrowser").is_none());
         assert!(config.get("breakOnError").is_none());
     }
+
+    // ── snapshot capture and replay configurations ───────────────────────
+
+    /// The two `.zed/debug.json` shapes that use snapshots. Zed passes the
+    /// configuration through untouched, so only the request kind and the schema
+    /// matter here.
+    fn snapshot_configs() -> [(Value, zed::StartDebuggingRequestArgumentsRequest); 2] {
+        [
+            (
+                json!({
+                    "adapter": "al",
+                    "label": "Capture next web client session",
+                    "request": "attach",
+                    "snapshot": "capture",
+                    "breakOnNext": "WebClient",
+                    "userId": "ALICE",
+                    "snapshotVerbosity": "SnapPoint",
+                    "snapshotOutputPath": ".snapshots",
+                    "environmentType": "Sandbox",
+                    "environmentName": "Dev",
+                    "snapshotPort": 7083,
+                    "allowProduction": false,
+                }),
+                zed::StartDebuggingRequestArgumentsRequest::Attach,
+            ),
+            (
+                json!({
+                    "adapter": "al",
+                    "label": "Replay a snapshot",
+                    "request": "launch",
+                    "snapshotFileName": ".snapshots/example.zip",
+                }),
+                zed::StartDebuggingRequestArgumentsRequest::Launch,
+            ),
+        ]
+    }
+
+    #[test]
+    fn dap_request_kind_passes_a_capture_attach_and_a_replay_launch() {
+        for (config, expected) in snapshot_configs() {
+            assert_eq!(dap_request_kind(config).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn snapshot_configurations_use_only_fields_the_schema_declares() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../debug_adapter_schemas/al.json")).unwrap();
+        let known = schema["properties"].as_object().unwrap();
+        for (config, _) in snapshot_configs() {
+            for key in config.as_object().unwrap().keys() {
+                assert!(known.contains_key(key), "{key:?} is not declared");
+            }
+        }
+        assert_eq!(known["snapshot"]["enum"], json!(["capture"]));
+        assert_eq!(
+            known["snapshotVerbosity"]["enum"],
+            json!(["SnapPoint", "Full"])
+        );
+        assert_eq!(known["snapshotVerbosity"]["default"], json!("SnapPoint"));
+    }
+
+    #[test]
+    fn a_snapshot_request_kind_stays_unsupported() {
+        // Capture is `attach` with `snapshot: capture`, never a request of its own.
+        let error =
+            dap_request_kind(json!({ "request": "snapshot", "snapshot": "capture" })).unwrap_err();
+        assert!(error.contains("unsupported request type"), "{error}");
+    }
 }

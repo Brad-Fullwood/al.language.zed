@@ -886,6 +886,7 @@ mod tests {
         let zed_owned = ["adapter", "build", "label", "request"];
         let native_owned = [
             "acceptInvalidCerts",
+            "allowProduction",
             "authentication",
             "breakOnError",
             "breakOnNext",
@@ -903,10 +904,16 @@ mod tests {
             "server",
             "serverInstance",
             "sessionId",
+            "snapshot",
+            "snapshotFileName",
+            "snapshotOutputPath",
+            "snapshotPort",
+            "snapshotVerbosity",
             "startupCompany",
             "startupObjectId",
             "startupObjectType",
             "tenant",
+            "userId",
             "validateServerCertificate",
         ];
         let owned = zed_owned
@@ -923,11 +930,8 @@ mod tests {
     /// Fields `from_dap_args` reads but the schema does not declare, with the
     /// reason each is deliberately undeclared. An entry here gets no
     /// completion, no description and no validation signal in `.zed/debug.json`,
-    /// so adding one is a decision, not a default.
-    ///
-    /// - `snapshotPort`: read for the snapshot debugger REST calls, which no debug
-    ///   session starts yet. Declare it when a launch configuration can start one.
-    const UNDECLARED_BY_DESIGN: [&str; 1] = ["snapshotPort"];
+    /// so adding one is a decision, not a default. None today.
+    const UNDECLARED_BY_DESIGN: [&str; 0] = [];
 
     /// Collect every literal key `from_dap_args` looks up in the DAP argument
     /// object: `optional_*(args, "key", …)` and `args.get("key")`.

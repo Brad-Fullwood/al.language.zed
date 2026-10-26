@@ -24,7 +24,7 @@
         "launch",
         "attach"
       ],
-      "description": "Debug request type. Snapshot initialization is not supported by this adapter; use `al-explorer snapshot start` instead."
+      "description": "Debug request type. `launch` publishes and debugs, or replays a snapshot when `snapshotFileName` is set. `attach` connects to a running session, or records a snapshot when `snapshot` is `capture`."
     },
     "build": {
       "description": "Build step to run before debugging",
@@ -87,7 +87,7 @@
         "Agent"
       ],
       "default": "WebServiceClient",
-      "description": "Specifies that attach should break on the next available client session."
+      "description": "Specifies that attach should break on the next available client session. With snapshot `capture` it is required and the kind of session to record next (Agent cannot be recorded)."
     },
     "breakOnRecordWrite": {
       "oneOf": [
@@ -186,7 +186,7 @@
       "type": "integer",
       "minimum": -1,
       "default": -1,
-      "description": "For attach requests, the id of the BC client session to attach to. Use -1 (the default) to attach via `breakOnNext` instead of a specific session."
+      "description": "For attach requests, the id of the BC client session to attach to. Use -1 (the default) to attach via `breakOnNext` instead of a specific session. With snapshot `capture`, the server session to record."
     },
     "startupCompany": {
       "type": "string",
@@ -222,6 +222,46 @@
       "type": "boolean",
       "default": false,
       "description": "The inverse of validateServerCertificate, accepted for parity with the AL CLI. Setting it to true disables TLS certificate verification for every request the native debug session makes to Business Central, so a man-in-the-middle can read and alter the session. Setting both this and validateServerCertificate to the same value is a configuration error."
+    },
+    "snapshot": {
+      "type": "string",
+      "enum": [
+        "capture"
+      ],
+      "description": "Attach only. `capture` records a snapshot instead of debugging: the breakpoints you set become snappoints, the capture arms when the configuration finishes, and disconnecting finishes it and saves the zip to snapshotOutputPath. Requires breakOnNext. A capture only records, so it does not step or show variables. Replay the zip with a launch that sets snapshotFileName."
+    },
+    "userId": {
+      "type": "string",
+      "description": "With snapshot `capture`: record only this user's session, given as a user security ID (GUID) or a user name. Without it the next session of any user on the tenant is recorded."
+    },
+    "snapshotVerbosity": {
+      "type": "string",
+      "enum": [
+        "SnapPoint",
+        "Full"
+      ],
+      "default": "SnapPoint",
+      "description": "With snapshot `capture`: SnapPoint records variables at the snappoints and where an exception is held. Full also records every call."
+    },
+    "snapshotOutputPath": {
+      "type": "string",
+      "default": ".snapshots",
+      "description": "With snapshot `capture`: the folder for the saved snapshot zip, inside the project. A relative path is relative to the project root. A .gitignore is written into a folder the capture creates."
+    },
+    "snapshotFileName": {
+      "type": "string",
+      "description": "Launch only: replay this snapshot zip instead of publishing and debugging. A relative path is relative to the project root. Nothing is compiled or published and no token is read."
+    },
+    "snapshotPort": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535,
+      "description": "With snapshot `capture` on an on-premises server: the port of the snapshot debugger services. The default is 7083."
+    },
+    "allowProduction": {
+      "type": "boolean",
+      "default": false,
+      "description": "With snapshot `capture`: allow a capture on a Production environment. Without it a Production target is refused before any sign-in."
     }
   }
 }
