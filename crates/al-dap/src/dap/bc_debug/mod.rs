@@ -19,6 +19,7 @@
 //! `get_metadata`), `wire` (SignalR message shape, negotiate, handshake), and
 //! `session` (`BcDebugSession` + its `invoke()` loop and test doubles).
 
+pub mod automation;
 mod events;
 mod rest;
 mod session;
