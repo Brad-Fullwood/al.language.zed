@@ -91,8 +91,9 @@ Replay is a `launch` with `snapshotFileName`:
 ]
 ```
 
-A relative path is relative to the project root. Nothing is compiled or published and no token is
-read, so replay works offline. The adapter reads the zip and walks the recorded statements with the
+A relative path is relative to the project root. The entry can sit in the same `debug.json` as the
+server configurations. It names no server, so the CLI and the language server skip it when they
+look for one. Nothing is compiled or published and no token is read, so replay works offline. The adapter reads the zip and walks the recorded statements with the
 stepping rules of Microsoft's debug adapter. It supports continue, next, stepIn, stepOut and
 breakpoints (continue runs to the next snappoint or breakpoint). Variables exist only at snappoints
 and at a context that holds an error. An error stop has reason `exception`, and the error message is
