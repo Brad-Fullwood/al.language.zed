@@ -256,7 +256,8 @@ fn refuse_unauthorised_launch(
     if command != "launch" && command != "attach" {
         return None;
     }
-    // A replay reads a local zip and sends no credential anywhere.
+    // A replay reads a local zip and sends no credential anywhere, so the
+    // credential gate does not apply. Microsoft's host replays it offline.
     if is_snapshot_launch(msg) {
         return None;
     }

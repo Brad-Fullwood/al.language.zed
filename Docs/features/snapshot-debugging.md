@@ -195,9 +195,9 @@ and `json`. `breakOnNext` is required for `start`. See [mcp-tools](../reference/
   it the extension's code is not recorded.
 - Only the first web client session after arming is recorded, see Capture in Zed.
 - Production is refused unless `allowProduction` is set, before any sign-in.
-- Microsoft's platform snapshot MCP proxy needs the environment's MCP Server Configuration. On the
-  test Sandbox its upstream `tools/list` answered error -32603. This project does not use that proxy.
 - A snapshot zip holds customer data. Keep it out of git. The adapter writes a `.gitignore` into a
   folder it creates. Replay extracts the zip's sources to the system temp folder, not the project.
 - Capture is authorised like any other attach, so a refused target fails in the debug console. A
-  replay launch reads a local zip, sends no credential and skips that check.
+  replay launch reads a local zip, sends no credential and skips that check, as Microsoft's adapter
+  does. The package folders it reads for sources pass the same project trust check as the compile
+  step.

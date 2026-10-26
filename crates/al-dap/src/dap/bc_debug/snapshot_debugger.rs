@@ -1,13 +1,10 @@
 //! Snapshot debugger REST calls: endpoint metadata, attach, status and finish.
 //!
 //! Routes checked before writing this:
-//! - Microsoft's platform snapshot MCP proxy (`al launchsnapshotmcpproxy`,
-//!   streamable HTTP to `<base>/mcp/`). It signs in with the AL tool's own
-//!   Entra login and takes no token. On a BC 29.0 Sandbox (snapshot web API
-//!   5.0) the upstream `initialize` answers, but `tools/list` for the
-//!   debugging tool sets fails with -32603 until the environment's MCP Server
-//!   Configuration allows them. There is no read only way to check that
-//!   setting, so it is not relied on.
+//! - Microsoft's platform snapshot MCP proxy (`al launchsnapshotmcpproxy`).
+//!   Not used: this toolchain does not depend on Microsoft's MCP servers, and
+//!   the proxy needs the environment's MCP Server Configuration. Our own MCP
+//!   tool `al_snapshot` calls the functions here instead.
 //! - The AL host's LSP route (`al/initializeSnapshotDebuggerAttach` and the
 //!   calls after it). It works but needs .NET and the AL extension installed and
 //!   a host process for each call.

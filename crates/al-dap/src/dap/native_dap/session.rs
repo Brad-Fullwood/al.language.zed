@@ -108,6 +108,10 @@ where
             };
             return self.reply_failure(out, request_seq, command, message).await;
         }
+        // A replay reads a local zip and sends no credential, so
+        // `authorize_target` does not apply. Microsoft's adapter also replays
+        // without a sign-in. The package folders the replay reads come from
+        // al-lsp's resolver, which applies the project trust gate.
         if command == "launch"
             && arguments
                 .get("snapshotFileName")

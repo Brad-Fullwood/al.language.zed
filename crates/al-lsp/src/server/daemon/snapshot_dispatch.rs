@@ -1,9 +1,10 @@
 //! Snapshot debugging of a Business Central environment: the daemon method
 //! `snapshot` with the commands `start`, `status`, `finish`, `list` and `show`.
 //!
-//! Routes checked before writing this: the AL host's LSP route and Microsoft's
-//! snapshot MCP proxy both need the AL extension or a server side feature, so
-//! the commands call the snapshot debugger REST endpoints natively through
+//! Routes checked before writing this: the AL host's LSP route needs the AL
+//! extension, and Microsoft's snapshot MCP proxy needs a server side MCP
+//! configuration and is a Microsoft dependency this toolchain avoids, so the
+//! commands call the snapshot debugger REST endpoints natively through
 //! `al_dap::dap::bc_debug::snapshot_debugger`, which reuses the debugger's
 //! `BcDebugConfig` and token path. Configuration lookup, authorisation and
 //! token acquisition are the ones `debug start` uses (`debug_dispatch`), and the
