@@ -27,6 +27,20 @@ fn parse_debug_task_config(raw: &str) -> zed::Result<Value> {
 /// al-lsp's `--dap` mode runs the native DAP server over stdio. Zed
 /// communicates with it using the DAP protocol for breakpoints, stepping, etc.
 ///
+/// A downloaded al-lsp release is found as a path relative to the extension's
+/// work folder, which is the extension's current directory. Zed resolves such
+/// a path for a language server, but starts a debug adapter with `cwd` set to
+/// the project, where the relative path does not exist (ENOENT). Join it onto
+/// `work_dir` so the adapter starts from any `cwd`.
+pub fn absolute_adapter_path(path: String, work_dir: Option<&std::path::Path>) -> String {
+    match work_dir {
+        Some(dir) if std::path::Path::new(&path).is_relative() => {
+            dir.join(&path).to_string_lossy().into_owned()
+        }
+        _ => path,
+    }
+}
+
 /// `user_settings` is the `lsp."al-lsp".settings` object. The native adapter
 /// (`--dap`) is the default; `al.useOfficialDap: true` opts into Microsoft's
 /// EditorServices.Host proxy (`--dap-legacy`) - see `resolve_dap_backend_flag`.
@@ -145,6 +159,20 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_downloaded_relative_adapter_path_is_joined_onto_the_work_folder() {
+        let work = std::path::Path::new("/ext/work");
+        assert_eq!(
+            absolute_adapter_path("al-lsp-v0.4.0/al-lsp".to_string(), Some(work)),
+            "/ext/work/al-lsp-v0.4.0/al-lsp"
+        );
+        assert_eq!(
+            absolute_adapter_path("/usr/bin/al-lsp".to_string(), Some(work)),
+            "/usr/bin/al-lsp"
+        );
+        assert_eq!(absolute_adapter_path("al-lsp".to_string(), None), "al-lsp");
+    }
 
     // ── dap_request_kind ────────────────────────────────────────────────
 

@@ -883,7 +883,10 @@ impl zed::Extension for AlExtension {
         // The adapter path comes from the debug scenario, which a repository's
         // `.zed/debug.json` writes, and it names the program to run. Same rule
         // as `binary.path`: ignored. See `settings::resolve_server_launch`.
-        let al_lsp_path = self.find_or_download_binary(None, Some(worktree), None)?;
+        let al_lsp_path = dap::absolute_adapter_path(
+            self.find_or_download_binary(None, Some(worktree), None)?,
+            std::env::current_dir().ok().as_deref(),
+        );
 
         // Read the same lsp."al-lsp".settings block the LSP uses so the
         // al.useOfficialDap toggle lives alongside al.useOfficialLsp. The DAP
