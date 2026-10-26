@@ -23,6 +23,7 @@ mod events;
 mod rest;
 mod session;
 mod session_config;
+pub mod snapshot_debugger;
 mod wire;
 
 pub use events::{BcEvent, BreakLocation};

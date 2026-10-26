@@ -1,0 +1,51 @@
+{
+  "method": "POST",
+  "raw_target": "/BC/snapshotdebugger/attach?debuggingcontext=47a54b3a-a8c6-4cb7-8e35-d3aaafd56908&sessionid=0&userid=00000000-0000-0000-0000-0000000000aa&tenant=11111111-2222-3333-4444-555555555555",
+  "http_version": "HTTP/1.1",
+  "headers": [
+    [
+      "Host",
+      "127.0.0.1:44471"
+    ],
+    [
+      "Authorization",
+      "Bearer RECORDING-FAKE-TOKEN"
+    ],
+    [
+      "d365-bc-client-activity-telemetry-id",
+      "62ba0e81-c668-401f-80c5-c953839e9a97"
+    ],
+    [
+      "d365-bc-client-session-telemetry-id",
+      "fc45898d-b725-46ff-8d19-87b6800850c2"
+    ],
+    [
+      "x-ms-correlation-id",
+      "62ba0e81-c668-401f-80c5-c953839e9a97"
+    ],
+    [
+      "Content-Type",
+      "text/plain; charset=utf-8"
+    ],
+    [
+      "Content-Length",
+      "260"
+    ]
+  ],
+  "body_text": "{\"DebuggingContext\":\"47a54b3a-a8c6-4cb7-8e35-d3aaafd56908\",\"UserId\":\"00000000-0000-0000-0000-0000000000aa\",\"SourceBreakpointLocations\":[{\"Id\":{\"objectNumber\":22,\"objectType\":5,\"ObjectNumber\":22,\"ObjectType\":5},\"Lines\":[{\"Condition\":\"\"}]}],\"ExecutionContext\":3}",
+  "body_b64": "eyJEZWJ1Z2dpbmdDb250ZXh0IjoiNDdhNTRiM2EtYThjNi00Y2I3LThlMzUtZDNhYWFmZDU2OTA4IiwiVXNlcklkIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMGFhIiwiU291cmNlQnJlYWtwb2ludExvY2F0aW9ucyI6W3siSWQiOnsib2JqZWN0TnVtYmVyIjoyMiwib2JqZWN0VHlwZSI6NSwiT2JqZWN0TnVtYmVyIjoyMiwiT2JqZWN0VHlwZSI6NX0sIkxpbmVzIjpbeyJDb25kaXRpb24iOiIifV19XSwiRXhlY3V0aW9uQ29udGV4dCI6M30=",
+  "response": {
+    "status": 200,
+    "headers": [
+      [
+        "Content-Type",
+        "text/plain"
+      ],
+      [
+        "Set-Cookie",
+        "ApplicationGatewayAffinity=abcdefghij0123456789AB%3D%3D; Path=/"
+      ]
+    ],
+    "body_b64": "VXNlclNlc3Npb24="
+  }
+}

@@ -60,6 +60,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "mul
 # .app and .nupkg files use deflate. The default features add bzip2 and PPMd,
 # whose licenses deny.toml does not allow.
 zip = { version = "9", default-features = false, features = ["deflate", "time"] }
+uuid = { version = "1", default-features = false, features = ["v4"] }
 quick-xml = { version = "0.41", features = ["serialize"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
