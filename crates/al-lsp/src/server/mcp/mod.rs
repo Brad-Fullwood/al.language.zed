@@ -192,6 +192,14 @@ fn result_schema(tool_name: &str) -> serde_json::Value {
             }),
             &["cmd"],
         ),
+        "al_snapshot" => object_result_schema(
+            serde_json::json!({
+                "cmd": {"type": "string"},
+                "debuggingContext": {"type": "string"},
+                "warnings": {"type": "array", "items": {"type": "string"}},
+            }),
+            &["cmd"],
+        ),
         "al_build" => object_result_schema(
             serde_json::json!({
                 "success": {"type": "boolean"},
@@ -769,6 +777,95 @@ fn tools() -> &'static [ToolDef] {
                         }
                     }),
                     &["cmd"],
+                )
+            },
+        },
+        ToolDef {
+            name: "al_snapshot",
+            method: "snapshot",
+            description: "Use for snapshot debugging of a Business Central environment: capture what \
+                          happens at snappoints in the next matching session, then read the call \
+                          stack and variables afterwards. Use action=start with snaps and \
+                          breakOnNext to begin, status to watch it (a started session is cut off \
+                          after 10 minutes), finish to save the snapshot zip under .snapshots, \
+                          list for the sessions started from this machine, and show to print the \
+                          stops of a zip. A Production environment is refused unless \
+                          allowProduction is true.",
+            schema: || {
+                obj_schema(
+                    serde_json::json!({
+                        "action": {
+                            "type": "string",
+                            "enum": ["start", "status", "finish", "list", "show"],
+                            "description": "Snapshot operation. A typical run is start, status, finish, then show."
+                        },
+                        "config": {
+                            "type": "string",
+                            "description": "For start: exact launch configuration name."
+                        },
+                        "snaps": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "For start: snappoints as `<type>:<id or name>:<line>[?condition]` or `<file>:<line>[?condition]`. Lines are 1-based."
+                        },
+                        "breakOnNext": {
+                            "type": "string",
+                            "enum": ["WebServiceClient", "WebClient", "Background", "ClientService"],
+                            "description": "For start: the client session type to capture next."
+                        },
+                        "userId": {
+                            "type": "string",
+                            "description": "For start: user security id (GUID) or user name. A name is looked up through the Automation API on SaaS only."
+                        },
+                        "sessionId": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "For start: capture one existing session by its id."
+                        },
+                        "verbosity": {
+                            "type": "string",
+                            "enum": ["snappoint", "full"],
+                            "description": "For start: how much the snapshot records. Default full."
+                        },
+                        "allowProduction": {
+                            "type": "boolean",
+                            "description": "For start: required to attach to a Production environment. Default false."
+                        },
+                        "accessToken": {
+                            "type": "string",
+                            "description": "For start, status and finish: optional BC OAuth bearer token. When omitted the shared keyring-backed authentication cache is used."
+                        },
+                        "context": {
+                            "type": "string",
+                            "description": "For status and finish: debugging context (GUID). Default: the latest session."
+                        },
+                        "outputDir": {
+                            "type": "string",
+                            "description": "For finish: folder for the zip, inside the project. Default: .snapshots."
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "For show: path to a snapshot zip inside the project."
+                        },
+                        "vars": {
+                            "type": "string",
+                            "description": "For show: comma separated variable names to print. Default: all."
+                        },
+                        "fields": {
+                            "type": "string",
+                            "description": "For show: comma separated record fields to print, for example `No.,Lot No.`."
+                        },
+                        "stop": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "For show: print only this stop (1-based)."
+                        },
+                        "json": {
+                            "type": "boolean",
+                            "description": "For show: return the stops as JSON instead of text."
+                        }
+                    }),
+                    &["action"],
                 )
             },
         },
@@ -1452,6 +1549,15 @@ pub(crate) async fn handle_mcp_message(
                     .cloned()
                     .unwrap_or_else(|| serde_json::json!({}));
                 (method, method_params)
+            } else if tool.name == "al_snapshot" {
+                // The tool names the operation `action`, the daemon method `cmd`.
+                let mut arguments = arguments;
+                if let Some(object) = arguments.as_object_mut() {
+                    if let Some(action) = object.remove("action") {
+                        object.insert("cmd".to_string(), action);
+                    }
+                }
+                (tool.method, arguments)
             } else {
                 (tool.method, arguments)
             };

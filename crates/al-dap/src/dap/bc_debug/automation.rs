@@ -165,7 +165,11 @@ pub async fn base_application_version(
     base_app_version_at(http, &automation_base(config)?, access_token).await
 }
 
-pub async fn base_app_version_at(http: &reqwest::Client, base: &str, token: &str) -> Result<String> {
+pub async fn base_app_version_at(
+    http: &reqwest::Client,
+    base: &str,
+    token: &str,
+) -> Result<String> {
     let company = first_company_id(http, base, token).await?;
     let url = format!(
         "{base}/companies({company})/extensions?$filter={}",

@@ -70,6 +70,12 @@ thread_local! {
     pub(super) static TEST_AUTOMATION_BASE: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
+/// Point the session store of the current test thread at `dir`.
+#[cfg(test)]
+pub(crate) fn use_test_store(dir: PathBuf) {
+    TEST_STORE.with(|cell| *cell.borrow_mut() = Some(dir));
+}
+
 fn session_store() -> Result<SessionStore, Failure> {
     #[cfg(test)]
     if let Some(dir) = TEST_STORE.with(|cell| cell.borrow().clone()) {

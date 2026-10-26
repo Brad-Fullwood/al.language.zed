@@ -12,6 +12,7 @@ are named aliases for common agent workflows and do not limit what `al_call` can
 | --- | --- | --- | --- |
 | `al_call` | selected by `method` | `method: string` (required), `params: object = {}` | the selected daemon method's result |
 | `al_debug` | `debug` | `cmd: start\|breakpoint\|state\|stack\|variables\|globals\|expand\|eval\|continue\|step\|history\|stop` plus command-specific fields | persistent debug-session control and inspection result |
+| `al_snapshot` | `snapshot` | `action: start\|status\|finish\|list\|show` (required). `start`: `config`, `snaps`, `breakOnNext`, `userId`, `sessionId`, `verbosity`, `allowProduction`, `accessToken`. `status`, `finish`: `context`, `outputDir`. `show`: `path`, `vars`, `fields`, `stop`, `json` | snapshot debugger session, saved zip path or the stops of a zip. Production needs `allowProduction` |
 | `al_build` | `compile` | _(none)_ | success of the verified native build (or the configured `alc`), structured diagnostics, `.app` path |
 | `al_downloadsymbols` | `downloadSymbols` | `source: nuget \| server = nuget`, `config: string` (launch configuration for `source=server`, first one when omitted) | downloaded package list |
 | `al_symbolsearch` | `search` | `query: string` (required), `limit: number = 50`, `summary: boolean = true` (false includes every member) | matching objects with kind, id, name and package |

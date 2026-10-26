@@ -89,6 +89,7 @@ async fn tools_list_exposes_the_registry_and_complete_dispatch_bridge() {
     for expected in [
         "al_call",
         "al_debug",
+        "al_snapshot",
         "al_build",
         "al_symbolsearch",
         "al_getdiagnostics",
@@ -524,6 +525,90 @@ async fn al_debug_reaches_the_shared_debug_dispatcher() {
     .expect("debug result JSON");
     assert_eq!(payload["cmd"], "stop");
     assert_eq!(payload["status"], "no active debug session");
+}
+
+/// `al_snapshot` is listed with its five actions, and the Production switch
+/// and the token are in its schema.
+#[tokio::test]
+async fn al_snapshot_is_listed_with_its_actions() {
+    let resp = handle_mcp_message(
+        &ws(),
+        &Notify::new(),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    )
+    .await
+    .expect("response");
+    let list = resp["result"]["tools"].as_array().expect("tools array");
+    let tool = list
+        .iter()
+        .find(|tool| tool["name"] == "al_snapshot")
+        .expect("al_snapshot definition");
+    let actions = tool["inputSchema"]["properties"]["action"]["enum"]
+        .as_array()
+        .expect("action enum");
+    for action in ["start", "status", "finish", "list", "show"] {
+        assert!(
+            actions.iter().any(|value| value == action),
+            "missing {action}"
+        );
+    }
+    for property in [
+        "config",
+        "snaps",
+        "breakOnNext",
+        "allowProduction",
+        "accessToken",
+        "path",
+    ] {
+        assert!(
+            tool["inputSchema"]["properties"].get(property).is_some(),
+            "al_snapshot schema missing {property}"
+        );
+    }
+    assert_eq!(
+        tool["inputSchema"]["required"],
+        serde_json::json!(["action"])
+    );
+    let description = tool["description"].as_str().expect("description");
+    assert!(description.contains("snapshot debugging"), "{description}");
+    assert!(description.contains("allowProduction"), "{description}");
+}
+
+/// A call to `al_snapshot` reaches the daemon `snapshot` method: `action`
+/// arrives as `cmd`. The store is an empty temp folder, so no BC call is made.
+#[tokio::test]
+async fn al_snapshot_routes_to_the_daemon_method() {
+    let dir = tempfile::tempdir().unwrap();
+    crate::server::daemon::use_test_store(dir.path().join("store"));
+    let call = |arguments: serde_json::Value| {
+        let workspace = ws();
+        async move {
+            handle_mcp_message(
+                &workspace,
+                &Notify::new(),
+                serde_json::json!({
+                    "jsonrpc":"2.0","id":9,"method":"tools/call",
+                    "params": {"name": "al_snapshot", "arguments": arguments}
+                }),
+            )
+            .await
+            .expect("response")
+        }
+    };
+    let listed = call(serde_json::json!({"action": "list"})).await;
+    assert_eq!(listed["result"]["isError"], false, "resp: {listed}");
+    let payload: serde_json::Value =
+        serde_json::from_str(listed["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(payload["cmd"], "list");
+    assert_eq!(payload["sessions"], serde_json::json!([]));
+
+    let status = call(serde_json::json!({"action": "status"})).await;
+    assert_eq!(status["result"]["isError"], true, "resp: {status}");
+    let text = status["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("snapshot start"), "{text}");
+
+    let bad = call(serde_json::json!({"action": "download"})).await;
+    assert_eq!(bad["error"]["code"], -32602, "resp: {bad}");
 }
 
 /// Every registered tool must advertise a well-formed JSON Schema and a

@@ -23,6 +23,8 @@ mod process_memory;
 mod projection;
 mod scope;
 mod snapshot_dispatch;
+#[cfg(test)]
+pub(crate) use snapshot_dispatch::use_test_store;
 
 pub(crate) use debug_dispatch::authorize_live_test_target;
 pub(crate) use projection::list_target;
