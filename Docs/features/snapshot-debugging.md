@@ -3,7 +3,7 @@
 Snapshot debugging records what a Business Central session does at the lines you choose (snappoints)
 while the session runs, then lets you read the call stack and variables afterwards. It needs no
 stopped session and no paused user, so it suits a Production-like error that is hard to reproduce
-while you watch. This is Business Central's snapshot debugger. The `test-snapshot` commands and the
+while you watch. This page covers Business Central's snapshot debugger. The `test-snapshot` commands and the
 `al_testsnapshot` tools are a separate feature: they record variables while one test method runs and
 are described in [native-test-runtime](./native-test-runtime.md).
 
@@ -53,6 +53,12 @@ them.
 Snappoints are optional. With none, the default `SnapPoint` verbosity still records a method context
 that holds an exception.
 
+Only the first web client session after the capture is armed is recorded. A browser reload or a new
+tab starts a new session, which is not recorded.
+
+`Full` verbosity records every method context. Opening one sales order recorded 1.47 MB with `Full`
+and 30 KB with `SnapPoint`, so use `Full` only when you need the whole call path.
+
 ### What you see
 
 The capture only records, so Zed shows no stack, no variables and no stepping. Progress arrives as
@@ -66,8 +72,8 @@ Output events:
   set against (see below).
 
 Disconnect to finish. The adapter downloads the snapshot, saves the zip under `snapshotOutputPath`
-and prints `Snapshot saved to <path>`. If the finish fails, the session record stays on this machine and `al-explorer snapshot finish` retries it. When the adapter creates the output folder it also writes a `.gitignore` with
-`*` into it. An existing folder is left alone. `al-explorer snapshot finish` does the same from a
+and prints `Snapshot saved to <path>`. If the finish fails, the session record stays on this machine and `al-explorer snapshot finish` retries it. When the adapter creates the output folder it also writes
+a `.gitignore` with `*` into it. An existing folder is left alone. `al-explorer snapshot finish` does the same from a
 terminal.
 
 ## Replay in Zed
@@ -90,21 +96,32 @@ read, so replay works offline. The adapter reads the zip and walks the recorded 
 stepping rules of Microsoft's debug adapter. It supports continue, next, stepIn, stepOut and
 breakpoints (continue runs to the next snappoint or breakpoint). Variables exist only at snappoints
 and at a context that holds an error. An error stop has reason `exception`, the message as text and a
-Locals entry named `_ALException`. That error stop is built from the decompiled host's error node and
-is untested against a real recording with an exception.
+Locals entry named `_ALException`. A capture with no snappoints that hit an AL error replayed this
+way on the live Sandbox: the stop had reason `exception`, the error text was in `_ALException` in
+Locals, and the call stack showed the trigger chain.
 
 Each frame opens the first source that exists, in the order Microsoft's host uses: the workspace
 file when the workspace declares the object, then the source stored in the zip (written read-only to
-the `snapshot-sources` cache folder), then the source of a dependency package in `.alpackages`, the
-same file that go to definition opens. A generated outline is never used. An object with none of
+the `snapshot-sources` cache folder), then the source of a dependency package, the
+same file that go to definition opens. The packages come from the folders the compile step of the
+adapter uses: the packages folder (`.alpackages` by default, or `al.packageCachePath`) and
+`appLocalFolderPaths`. A generated outline is not used. An object with none of
 these gets a frame without source and one `output` line. When the workspace file differs from the
 zip's source of the same object, one `output` warning says line numbers can be off. A file that
 cannot be made read-only is reported in one `output` line. Differences from Microsoft's adapter: the
 `stopped` reason is the DAP value `step`, `initialized` is sent by `initialize`, no extra `stopped`
 follows `terminated`, and `output` text carries no timestamps.
 
-On the live Sandbox test, the replay of a web client capture matched Microsoft's host in continue,
-next, stepIn and breakpoint modes.
+## Live test results
+
+Tested on a BC 29.0 Sandbox:
+
+- A web client capture with Base Application snappoints (page 42 Sales Order) recorded the stops.
+  Replaying it matched Microsoft's AL host for continue, next, stepIn and breakpoints.
+- A Zed capture with breakpoints in the project's own files recorded 6 stops, in a page extension
+  and a codeunit, with variables at each stop.
+- A capture with no snappoints recorded an AL error, and replay showed it as described above.
+- `WebServiceClient` capture failed, see Limits.
 
 With `--dap-legacy` (the setting `al.useOfficialDap`) a `launch` with `snapshotFileName` goes to
 Microsoft's `EditorServices.Host`, which replays it. The proxy does not compile, publish or edit that
@@ -129,7 +146,7 @@ BaseApp in `.alpackages`, and warns when they differ.
 ## Command line
 
 All commands run through the daemon and use a launch configuration from `.zed/debug.json` or
-`.vscode/launch.json` for the server, tenant and sign-in. `--config` names it, the first configuration is used when it is left out.
+`.vscode/launch.json` for the server, tenant and sign-in. `--config` names it and is optional on `start` (the first configuration is used when it is left out).
 
 ```sh
 # start: snappoints on page 42 for the next web client session of one user
@@ -151,7 +168,7 @@ al-explorer snapshot show .snapshots/3033906a-fe68-4bee-85e3-bbb2ebc91e1b.zip --
 
 `start` requires `--break-on-next` and takes `--config` (default: the first configuration), `--snap` (repeatable, optional),
 `--user`, `--session-id`, `--verbosity snappoint|full` (default `snappoint`) and `--allow-production`.
-`status` and `finish` take `--context`, `finish` also `--out`. `show` takes `--vars`, `--fields`,
+`status` and `finish` take `--context`, `finish` also `--out` (a folder inside the project, relative or absolute). `show` takes `--vars`, `--fields`,
 `--stop` and `--json`. The session record is kept on this machine, so `status` and `finish` find the
 latest session without arguments.
 
@@ -168,12 +185,14 @@ and `json`. `breakOnNext` is required for `start`. See [mcp-tools](../reference/
   session 10 minutes after it started. The error "the server no longer knows this debugging context"
   means one of these happened or the session was finished elsewhere.
 - `WebServiceClient` capture did not work on the BC 29.0 Sandbox used for testing. The server dropped
-  the debugging context before the first status call in every attempt. The likely cause is that the
-  attach and status calls, made with the same user's token, count as that user's next web service
-  session. This is not proven. `WebClient` capture works.
+  the debugging context before the first status call in every attempt. This happened with and without
+  a user and with and without a web service request. The likely cause is that the attach and status
+  calls, made with the same user's token, count as that user's next web service session. This is
+  unproven. `WebClient` capture works.
 - A per-tenant extension is recorded only when its `app.json` has
   `"resourceExposurePolicy": { "allowDebugging": true }`. Microsoft's default is false, and without
   it the extension's code is not recorded.
+- Only the first web client session after arming is recorded, see Capture in Zed.
 - Production is refused unless `allowProduction` is set, before any sign-in.
 - Microsoft's platform snapshot MCP proxy needs the environment's MCP Server Configuration. On the
   test Sandbox its upstream `tools/list` answered error -32603. This project does not use that proxy.
