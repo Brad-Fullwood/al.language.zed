@@ -582,14 +582,8 @@ async fn a_relative_snapshot_file_name_is_read_from_the_project_root() {
 }
 
 // ---------------------------------------------------------------------------
-// Parity with Microsoft's adapter (needs AL_SNAPSHOT_FIXTURE_DIR)
+// Parity with Microsoft's adapter (needs AL_SNAPSHOT_PARITY_ZIP)
 // ---------------------------------------------------------------------------
-
-fn fixture_dir() -> PathBuf {
-    PathBuf::from(
-        std::env::var("AL_SNAPSHOT_FIXTURE_DIR").expect("AL_SNAPSHOT_FIXTURE_DIR is not set"),
-    )
-}
 
 fn read_json(path: &std::path::Path) -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
@@ -651,14 +645,6 @@ fn diff_tree(path: &str, ours: &[Value], golden: &[Value], depth: usize, out: &m
             diff_tree(&here, &oc, &gc, depth - 1, out);
         }
     }
-}
-
-/// Run one oracle trace from the fixture directory against the full server.
-async fn parity(zip8: &str, mode: &str) -> Vec<String> {
-    let dir = fixture_dir();
-    let oracle = read_json(&dir.join(format!("oracle/oracle-{zip8}-{mode}.json")));
-    let zip = dir.join(oracle["zip"].as_str().unwrap());
-    parity_run(&zip, &oracle, &dir).await
 }
 
 /// Compare our replay of `zip` with the host oracle trace `oracle`. The host's
@@ -898,31 +884,6 @@ async fn parity_run(
     }
     diffs
 }
-
-macro_rules! parity_test {
-    ($name:ident, $zip:expr, $mode:expr) => {
-        #[tokio::test]
-        #[ignore = "needs AL_SNAPSHOT_FIXTURE_DIR"]
-        async fn $name() {
-            let diffs = parity($zip, $mode).await;
-            assert!(
-                diffs.is_empty(),
-                "{} differences:\n{}",
-                diffs.len(),
-                diffs.join("\n")
-            );
-        }
-    };
-}
-
-parity_test!(replay_parity_83a73940_continue, "83a73940", "continue");
-parity_test!(replay_parity_83a73940_next, "83a73940", "next");
-parity_test!(replay_parity_83a73940_stepin, "83a73940", "stepin");
-parity_test!(replay_parity_83a73940_breakpoint, "83a73940", "breakpoint");
-parity_test!(replay_parity_a0d62542_continue, "a0d62542", "continue");
-parity_test!(replay_parity_a0d62542_next, "a0d62542", "next");
-parity_test!(replay_parity_a0d62542_stepin, "a0d62542", "stepin");
-parity_test!(replay_parity_a0d62542_breakpoint, "a0d62542", "breakpoint");
 
 /// Parity for any zip: `AL_SNAPSHOT_PARITY_ZIP` is the snapshot zip and
 /// `AL_SNAPSHOT_PARITY_ORACLE_DIR` holds `oracle-<zip8>-<mode>.json` for the

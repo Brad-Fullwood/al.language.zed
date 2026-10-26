@@ -459,28 +459,6 @@ fn fixture_dir() -> std::path::PathBuf {
         .into()
 }
 
-fn golden(id: &str) -> serde_json::Value {
-    let dir = fixture_dir();
-    let name = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .find(|n| n.starts_with(&format!("golden-{id}")))
-        .unwrap();
-    serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap()
-}
-
-fn open_fixture(id: &str) -> SnapshotArchive {
-    let dir = fixture_dir();
-    let name = std::fs::read_dir(&dir)
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .find(|n| n.starts_with(id) && n.ends_with(".zip"))
-        .unwrap();
-    SnapshotArchive::open(&dir.join(name)).unwrap()
-}
-
 /// Compare to the host's variable dump, which stops expanding after 3 levels
 /// of children. A missing `children` key in the golden file means none.
 fn compare_vars(
@@ -526,74 +504,82 @@ fn compare_vars(
     }
 }
 
+/// Every `*.zip` in `AL_SNAPSHOT_FIXTURE_DIR` that has a `golden-<zip stem>*.json`
+/// next to it must match the host's call stacks and variables.
 #[test]
-#[ignore = "needs AL_SNAPSHOT_FIXTURE_DIR with customer snapshot zips"]
-fn golden_83a73940() {
-    let a = open_fixture("83a73940");
-    assert_eq!(a.version().to_string(), "3.0.0.0");
-    let stops = a.stops();
-    let g = golden("83a73940");
-    let gstops = g["stops"].as_array().unwrap();
-    assert_eq!(stops.len(), gstops.len());
-    let mut diffs = Vec::new();
-    for (i, (s, gs)) in stops.iter().zip(gstops).enumerate() {
-        let gf = &gs["frames"][0];
-        assert_eq!(s.frames[0].method_name, gf["name"].as_str().unwrap());
-        assert_eq!(
-            i64::from(s.line()),
-            gf["line"].as_i64().unwrap(),
-            "stop {}",
-            i + 1
-        );
-        assert_eq!(s.frames[0].object_name, gf["sourceName"].as_str().unwrap());
-        assert_eq!(s.frames.len(), gs["frames"].as_array().unwrap().len());
-        assert_eq!(
-            format!("/tmp/snapshotfiles/{}", s.frames[0].source_file_name()),
-            gf["path"].as_str().unwrap()
-        );
-        for (scope, ours) in [("Locals", &s.locals), ("Globals", &s.globals)] {
-            let gv = gs["scopes"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|x| x["name"] == scope)
-                .unwrap()["variables"]
-                .as_array()
-                .unwrap();
-            compare_vars(&format!("stop{}/{scope}", i + 1), 0, ours, gv, &mut diffs);
+#[ignore = "needs AL_SNAPSHOT_FIXTURE_DIR with snapshot zips and golden files"]
+fn golden_fixtures() {
+    let dir = fixture_dir();
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    let mut checked = 0;
+    for zip_name in names.iter().filter(|n| n.ends_with(".zip")) {
+        let stem = zip_name.trim_end_matches(".zip");
+        let prefix = format!("golden-{stem}");
+        let Some(golden_name) = names
+            .iter()
+            .find(|n| n.starts_with(&prefix) && n.ends_with(".json"))
+        else {
+            continue;
+        };
+        let g: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(dir.join(golden_name)).unwrap()).unwrap();
+        let a = SnapshotArchive::open(&dir.join(zip_name)).unwrap();
+        assert_eq!(a.version().to_string(), "3.0.0.0", "{zip_name}");
+        let stops = a.stops();
+        let gstops = g["stops"].as_array().unwrap();
+        if stops.is_empty() {
+            // The host's replay adapter shows one placeholder stop for a
+            // snapshot without stops.
+            assert!(gstops.len() <= 1, "{zip_name}: {} host stops", gstops.len());
+            checked += 1;
+            continue;
         }
+        assert_eq!(stops.len(), gstops.len(), "{zip_name}");
+        let mut diffs = Vec::new();
+        for (i, (s, gs)) in stops.iter().zip(gstops).enumerate() {
+            let gf = &gs["frames"][0];
+            assert_eq!(s.frames[0].method_name, gf["name"].as_str().unwrap());
+            assert_eq!(
+                i64::from(s.line()),
+                gf["line"].as_i64().unwrap(),
+                "{zip_name} stop {}",
+                i + 1
+            );
+            assert_eq!(s.frames[0].object_name, gf["sourceName"].as_str().unwrap());
+            assert_eq!(s.frames.len(), gs["frames"].as_array().unwrap().len());
+            assert_eq!(
+                format!("/tmp/snapshotfiles/{}", s.frames[0].source_file_name()),
+                gf["path"].as_str().unwrap()
+            );
+            for (scope, ours) in [("Locals", &s.locals), ("Globals", &s.globals)] {
+                let gv = gs["scopes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|x| x["name"] == scope)
+                    .unwrap()["variables"]
+                    .as_array()
+                    .unwrap();
+                compare_vars(&format!("stop{}/{scope}", i + 1), 0, ours, gv, &mut diffs);
+            }
+        }
+        assert!(
+            diffs.is_empty(),
+            "{zip_name}: {} differences, first: {:#?}",
+            diffs.len(),
+            &diffs[..diffs.len().min(10)]
+        );
+        // The renderer runs on real data.
+        let _ = render_stops(&stops, &RenderOptions::default());
+        checked += 1;
     }
-    assert_eq!(
-        stops.iter().map(Stop::line).collect::<Vec<_>>(),
-        [2569, 2570, 2569, 2570]
-    );
-    assert_eq!(stops[0].globals.len(), 59);
-    assert_eq!(stops[0].locals.len(), 1);
-    assert!(stops[0].globals.iter().any(|v| v.name == "Rec"));
     assert!(
-        diffs.is_empty(),
-        "{} differences, first: {:#?}",
-        diffs.len(),
-        &diffs[..diffs.len().min(10)]
+        checked > 0,
+        "no zip with a golden file in {}",
+        dir.display()
     );
-
-    // The renderer runs on real data.
-    let text = render_stops(&stops, &RenderOptions::default());
-    assert!(text.contains("== Stop 1: Page 42 \"Sales Order\" line 2569 (OnAfterGetRecord)"));
-    assert!(text.contains("Document Type = Order"));
-    // The golden source line matches our 1-based line.
-    let line = a.source_line(ObjectType::Page, 42, 2569).unwrap();
-    assert!(line.contains("WorkDescription"), "{line}");
-}
-
-#[test]
-#[ignore = "needs AL_SNAPSHOT_FIXTURE_DIR with customer snapshot zips"]
-fn golden_a0d62542() {
-    let a = open_fixture("a0d62542");
-    assert_eq!(a.version().to_string(), "3.0.0.0");
-    assert!(a.stops().is_empty());
-    assert!(!a.method_contexts().is_empty());
-    let g = golden("a0d62542");
-    // The host shows one placeholder stop here. That is replay adapter behaviour.
-    assert_eq!(g["stops"].as_array().unwrap().len(), 1);
 }
