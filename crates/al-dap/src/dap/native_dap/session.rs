@@ -21,11 +21,11 @@ use super::{make_event, make_response, write_dap, NativeDapState, ResolvedObject
 impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
-    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
 {
     pub(super) async fn handle_initialize<W: tokio::io::AsyncWrite + Unpin>(
@@ -92,6 +92,22 @@ where
         command: &str,
         arguments: &serde_json::Value,
     ) -> Result<()> {
+        if let Some(mode) = arguments
+            .get("snapshot")
+            .and_then(serde_json::Value::as_str)
+        {
+            if command == "attach" && mode == "capture" {
+                return self
+                    .handle_capture_attach(out, request_seq, command, arguments)
+                    .await;
+            }
+            let message = if mode == "capture" {
+                "snapshot capture is an attach request, not a launch".to_string()
+            } else {
+                format!("snapshot must be \"capture\", got `{mode}`")
+            };
+            return self.reply_failure(out, request_seq, command, message).await;
+        }
         if command == "launch"
             && arguments
                 .get("snapshotFileName")
@@ -633,10 +649,10 @@ mod tests {
                 *authorised_by_hook.lock().unwrap() = Some((config.server.clone(), config.port));
                 Err("Refusing to send a cached Business Central token: not trusted".to_string())
             }),
-            acquire_token: move |_: String| {
+            acquire_token: Arc::new(move |_: String| {
                 token_read_by_hook.store(true, Ordering::SeqCst);
                 std::future::ready(Ok("test-token".to_string()))
-            },
+            }),
             resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
             compile: move |_: PathBuf| {
@@ -645,6 +661,7 @@ mod tests {
             },
             find_app: |_: &Path| -> std::result::Result<Option<PathBuf>, String> { Ok(None) },
             replay: Default::default(),
+            capture: Default::default(),
         };
 
         let port = url::Url::parse(&collector.uri()).unwrap().port().unwrap();
@@ -724,7 +741,7 @@ mod tests {
             dap_event_tx,
             project_root: "/test/project".to_string(),
             authorize_target: allow_every_target(),
-            acquire_token: |_: String| std::future::ready(Ok("test-token".to_string())),
+            acquire_token: Arc::new(|_: String| std::future::ready(Ok("test-token".to_string()))),
             resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
             compile: move |_: PathBuf| {
@@ -735,6 +752,7 @@ mod tests {
             // no match must fail rather than publishing a stale neighbouring app.
             find_app: |_: &Path| -> std::result::Result<Option<PathBuf>, String> { Ok(None) },
             replay: Default::default(),
+            capture: Default::default(),
         };
 
         let (mut client, server) = tokio::io::duplex(64 * 1024);

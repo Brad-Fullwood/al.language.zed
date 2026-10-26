@@ -62,12 +62,13 @@ pub(super) fn test_state() -> TestState {
         dap_event_tx,
         project_root: "/nonexistent/test-project".to_string(),
         authorize_target: allow_every_target(),
-        acquire_token: no_token,
+        acquire_token: Arc::new(no_token),
         resolve_object: |_, _| None,
         resolve_path: |_, _| None,
         compile: no_compile,
         find_app: |_| Ok(None),
         replay: Default::default(),
+        capture: Default::default(),
     }
 }
 

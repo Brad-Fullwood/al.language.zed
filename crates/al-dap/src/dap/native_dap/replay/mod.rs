@@ -567,11 +567,11 @@ fn scopes(frame: i64) -> Value {
 impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
-    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
 {
     /// Route a request to the active replay. `Some(done)` when the replay

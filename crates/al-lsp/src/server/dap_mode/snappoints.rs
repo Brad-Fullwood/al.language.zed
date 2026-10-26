@@ -299,6 +299,32 @@ pub fn resolve_file_line(
     })
 }
 
+/// The `setBreakpoints` line of a native DAP snapshot capture as a snappoint.
+/// The conditions stay with the caller.
+pub fn capture_snappoint(
+    file_index: &FileIndex,
+    project_root: &Path,
+    path: &str,
+    line1: i64,
+) -> Result<al_dap::dap::native_dap::CaptureSnappoint, String> {
+    let resolved = resolve_file_line(file_index, project_root, Path::new(path), line1, None)
+        .map_err(|error| error.to_string())?;
+    let (in_package_source, package_version) = match &resolved.source {
+        SnapSource::PackageSource { version, .. } => (true, version.clone()),
+        _ => (false, None),
+    };
+    Ok(al_dap::dap::native_dap::CaptureSnappoint {
+        object_type: resolved.object_type,
+        object_id: resolved.object_id,
+        line0: resolved.line0,
+        in_package_source,
+        package_version,
+        alpackages_base_app: in_package_source
+            .then(|| alpackages_app_version(project_root, "Microsoft", "Base Application"))
+            .flatten(),
+    })
+}
+
 /// The object at or above `line1` in `text`, through the same code the
 /// workspace path uses, on a throwaway index holding just this file.
 fn object_in_text(

@@ -14,11 +14,11 @@ use super::{make_event, make_response, write_dap, NativeDapState, ResolvedObject
 impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
-    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
 {
     /// Write a successful response with no body.
@@ -106,6 +106,12 @@ where
     ) -> Result<bool> {
         if let Some(done) = self
             .dispatch_replay(out, command, request_seq, arguments)
+            .await?
+        {
+            return Ok(done);
+        }
+        if let Some(done) = self
+            .dispatch_capture(out, command, request_seq, arguments)
             .await?
         {
             return Ok(done);

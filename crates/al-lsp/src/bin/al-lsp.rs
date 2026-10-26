@@ -412,6 +412,8 @@ async fn run() {
         }
         let fi = file_index.clone();
         let fi2 = file_index.clone();
+        let fi3 = file_index.clone();
+        let snap_root = PathBuf::from(&project_root);
         let authorize_root = PathBuf::from(&project_root);
 
         if let Err(e) = al_dap::dap::native_dap::run_native_dap(
@@ -516,6 +518,11 @@ async fn run() {
             },
             // Next to the `symbols` folder of the virtual source cache.
             al_symbols::virtual_file::cache_dir().with_file_name("snapshot-sources"),
+            std::sync::Arc::new(move |path: &str, line| {
+                al_lsp::server::dap_mode::snappoints::capture_snappoint(
+                    &fi3, &snap_root, path, line,
+                )
+            }),
         )
         .await
         {

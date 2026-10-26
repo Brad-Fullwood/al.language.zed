@@ -20,6 +20,7 @@
 
 pub mod breakpoints;
 pub mod browser;
+pub mod capture;
 pub mod events;
 pub mod execution;
 pub mod replay;
@@ -32,6 +33,7 @@ pub mod variables;
 mod test_support;
 
 pub use browser::build_debug_browser_url;
+pub use capture::{CaptureSnappoint, SnappointResolver};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -216,7 +218,8 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     project_root: String,
     /// Runs before any compile, token or request on `launch`/`attach`.
     authorize_target: TargetAuthorizer,
-    acquire_token: F,
+    /// Shared so the capture status poll task can read a fresh token.
+    acquire_token: Arc<F>,
     resolve_object: R,
     resolve_path: P,
     /// Compile the project; `Ok(build log)` on success, `Err(log)` on failure.
@@ -228,6 +231,8 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     find_app: A,
     /// The snapshot replay started by a launch with `snapshotFileName`.
     replay: replay::ReplayState,
+    /// The snapshot capture started by an attach with `snapshot: capture`.
+    capture: capture::CaptureState,
 }
 
 /// Run the native DAP server on stdio.
@@ -240,6 +245,7 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
 /// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
 /// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
 /// `snapshot_sources_dir` is the cache folder the sources of replayed snapshots are written to.
+/// `snappoint_resolver` turns a `setBreakpoints` line into a snappoint for a snapshot capture.
 #[allow(clippy::too_many_arguments)] // one injected callback or path per host service
 pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
     project_root: &str,
@@ -250,14 +256,15 @@ pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
     compile: C,
     find_app: A,
     snapshot_sources_dir: PathBuf,
+    snappoint_resolver: SnappointResolver,
 ) -> Result<()>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
     P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
-    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send,
+    CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
 {
     let (cancel_tx, cancel_rx) = watch::channel(0u64);
@@ -276,12 +283,13 @@ where
         dap_event_tx,
         project_root: project_root.to_string(),
         authorize_target,
-        acquire_token,
+        acquire_token: Arc::new(acquire_token),
         resolve_object,
         resolve_path,
         compile,
         find_app,
         replay: replay::ReplayState::new(snapshot_sources_dir),
+        capture: capture::CaptureState::new(snappoint_resolver),
     };
 
     let mut stdout = io::stdout();
@@ -656,3 +664,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod capture_tests;
