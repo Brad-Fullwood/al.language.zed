@@ -223,7 +223,7 @@ pub async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
 
 /// Upper bound on binary download bodies (profile / snapshot files) from the
 /// BC dev API. 500 MB mirrors `MAX_UPLOADABLE_APP_BYTES`: profiling
-/// `.alcpuprofile` and snapshot `.alvsc` files are typically a few MB to tens
+/// `.alcpuprofile` and snapshot zips are typically a few MB to tens
 /// of MB; anything past 500 MB is almost certainly a misbehaving server and
 /// we refuse to buffer it into the daemon's address space.
 pub(crate) const MAX_BC_BINARY_RESPONSE_BYTES: u64 = 500 * 1024 * 1024;

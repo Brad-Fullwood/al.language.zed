@@ -1,7 +1,7 @@
 # Debugging (DAP) & Business Central Runtime
 
 **Modules:** `crates/al-dap/src/dap/`, `crates/al-dap/src/native_debug.rs`, and
-`crates/al-bc/src/` (`bc_client.rs`, `http_auth.rs`, `launch.rs`, `profiling.rs`, `snapshot.rs`) +
+`crates/al-bc/src/` (`bc_client.rs`, `http_auth.rs`, `launch.rs`, `profiling.rs`, `snapshot/`) +
 `crates/al-lsp/src/server/daemon/debug_dispatch.rs` (CLI/MCP control plane) + `src/dap.rs` (Zed
 glue) + `debug_adapter_schemas/al.json`.
 **Status:** ✅ shipped (core flow). Every field advertised by the native schema is
@@ -46,7 +46,7 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 | BC REST | `bc_client.rs` | publish `.app`, RAD delta, status (size caps + secret redaction) |
 | TLS helper | `http_auth.rs` | client builder. Warns loudly when cert validation is disabled |
 | Profiling | `profiling.rs` | start/stop CPU profiling, parse `.alcpuprofile` hotspots |
-| Snapshots | `snapshot.rs` | start/list/download snapshot (`.alvsc`) |
+| Snapshots | `snapshot/` | snapshot debugger zip reader, session store and saved zips |
 
 ## DAP requests implemented
 
@@ -137,8 +137,9 @@ and convert BC's 0-based line/column to DAP's 1-based ones.
   `.alcpuprofile` (Chrome DevTools format), and analyze hotspots using sampled `timeDeltas`, with
   hit counts as a fallback when timing data is absent. See also
   [analysis-and-insight](./analysis-and-insight.md) for mapping hotspots to source.
-- **Snapshots (`snapshot.rs`):** start/list/download snapshot debugging data (`.alvsc`), with response
-  shapes for both bare arrays and OData envelopes and filename sanitization against path traversal.
+- **Snapshots (`snapshot/`):** the snapshot debugger zip reader, the session store that remembers a
+  started session between commands, and `save_finished_snapshot`. The REST calls (attach, status,
+  finish) are in `al-dap`. Use `al-explorer snapshot start|status|finish|list|show`.
 
 ## Zed integration
 
@@ -228,7 +229,7 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   with `breakpoint`, `state`, `stack`, `variables`/`globals`/`expand`, `eval`, `continue`/`step`, and
   `stop` calls in the same MCP process.
 - **CLI:** `al-explorer debug start|breakpoint|state|eval|continue|step|history|stop`.
-  `al-explorer profile start|stop|analyze`. `al-explorer snapshot start|list|download`.
+  `al-explorer profile start|stop|analyze`. `al-explorer snapshot start|status|finish|list|show`.
   `al-explorer init-debug` to scaffold `.zed/debug.json`.
 
 ## Limitations
