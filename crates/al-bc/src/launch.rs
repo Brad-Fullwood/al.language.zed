@@ -356,11 +356,23 @@ fn read_launch_file_capped(path: &Path) -> Result<String, Box<dyn std::error::Er
 /// "Attach to Remote Program" snippet writes `"port": "<debug port of
 /// debuggee>"` verbatim, and `port` is an `Option<u16>` here.
 fn is_al_debug_config(value: &serde_json::Value, kind_key: &str) -> bool {
-    value.get(kind_key).and_then(serde_json::Value::as_str) == Some("al")
+    (value.get(kind_key).and_then(serde_json::Value::as_str) == Some("al")
         || value
             .get("environmentType")
             .and_then(serde_json::Value::as_str)
-            .is_some()
+            .is_some())
+        && !is_snapshot_replay_only(value)
+}
+
+/// A configuration that only replays a snapshot zip (`snapshotFileName`, no
+/// `environmentType`) names no server, so it is not a server configuration.
+/// Parsing it as one failed the whole file on the missing `environmentType`.
+fn is_snapshot_replay_only(value: &serde_json::Value) -> bool {
+    value
+        .get("snapshotFileName")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|name| !name.is_empty())
+        && value.get("environmentType").is_none()
 }
 
 fn parse_zed_debug_file(path: &Path) -> Result<DebugConfigFile, Box<dyn std::error::Error>> {
@@ -633,6 +645,62 @@ mod tests {
             parse_vscode_launch_file(&vscode_path).expect("VS Code launch config must parse");
         assert_eq!(vscode.configs.len(), 1);
         assert_eq!(vscode.configs[0].debug_args, vscode_debug);
+    }
+
+    #[test]
+    fn snapshot_replay_entries_are_not_server_configs() {
+        let dir = make_tempdir("snapshot-replay");
+        let replay = serde_json::json!({
+            "adapter": "al",
+            "label": "Replay",
+            "request": "launch",
+            "snapshotFileName": ".snapshots/x.zip"
+        });
+        let server = serde_json::json!({
+            "adapter": "al",
+            "label": "Sandbox",
+            "request": "attach",
+            "environmentType": "Sandbox",
+            "environmentName": "Sandbox",
+            "tenant": "tenant.example"
+        });
+
+        let replay_only = dir.join("replay-only.json");
+        std::fs::write(
+            &replay_only,
+            serde_json::to_vec(&serde_json::json!([replay.clone()])).unwrap(),
+        )
+        .unwrap();
+        let parsed = parse_zed_debug_file(&replay_only).expect("replay-only file must parse");
+        assert!(parsed.configs.is_empty());
+
+        let mixed = dir.join("mixed.json");
+        std::fs::write(
+            &mixed,
+            serde_json::to_vec(&serde_json::json!([replay, server])).unwrap(),
+        )
+        .unwrap();
+        let parsed = parse_zed_debug_file(&mixed).expect("mixed file must parse");
+        assert_eq!(parsed.configs.len(), 1);
+        assert_eq!(parsed.configs[0].name, "Sandbox");
+
+        let vscode = dir.join("launch.json");
+        std::fs::write(
+            &vscode,
+            serde_json::to_vec(&serde_json::json!({
+                "version": "0.2.0",
+                "configurations": [{
+                    "type": "al",
+                    "name": "Replay",
+                    "request": "launch",
+                    "snapshotFileName": ".snapshots/x.zip"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let parsed = parse_vscode_launch_file(&vscode).expect("replay-only launch.json must parse");
+        assert!(parsed.configs.is_empty());
     }
 
     #[test]
