@@ -798,14 +798,9 @@ fn every_top_level_command_has_a_structured_black_box_path() {
         &["impact", "Hello World"],
         &["suggest-event", "--object", "Hello World"],
         &["debug", "stop"],
-        &[
-            "snapshot",
-            "list",
-            "--server",
-            "http://127.0.0.1:1/BC",
-            "--company",
-            "CRONUS",
-        ],
+        // A missing zip gives the structured failure path without a server and
+        // without reading the user's snapshot session store.
+        &["snapshot", "show", "missing.zip"],
         &["profile", "analyze", "missing.alcpuprofile"],
         &["xlf", "generate"],
         &["add-application-area", "--dry-run"],
