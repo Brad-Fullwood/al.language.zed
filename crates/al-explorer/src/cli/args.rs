@@ -913,7 +913,7 @@ mod clap_wiring_tests {
                         allow_production,
                     },
             } => {
-                assert_eq!(config, "Live");
+                assert_eq!(config.as_deref(), Some("Live"));
                 assert_eq!(snap, ["codeunit:80:12", "src/A.al:9?x > 1"]);
                 assert_eq!(break_on_next, "WebClient");
                 assert_eq!(user.as_deref(), Some("ALICE"));
@@ -923,6 +923,15 @@ mod clap_wiring_tests {
             }
             _ => panic!("expected snapshot start"),
         }
+
+        let cli = parse(&["snapshot", "start", "--break-on-next", "WebClient"])
+            .expect("start without --config parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Snapshot {
+                subcmd: S::Start { config: None, .. }
+            }
+        ));
 
         let cli = parse(&["snapshot", "status", "--context", "g"]).unwrap();
         assert!(

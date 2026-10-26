@@ -436,19 +436,14 @@ async fn status(workspace: &Workspace, params: &Value) -> Result<Value, Failure>
     }))
 }
 
-/// An explicit `outputDir` resolved inside the project. `None` means the
-/// default `<project>/.snapshots`, which the shared finish contains the same way.
+/// An explicit `outputDir` resolved inside the project. A relative path is
+/// taken from the project root. `None` means the default `<project>/.snapshots`,
+/// which the shared finish contains the same way.
 fn output_dir(workspace: &Workspace, params: &Value) -> Result<Option<PathBuf>, Failure> {
     match opt_str(params, "outputDir")? {
-        Some(dir) => {
-            let dir = PathBuf::from(dir);
-            if !dir.is_absolute() {
-                return Err(invalid("'outputDir' must be an absolute path"));
-            }
-            resolve_write_param_within_project(workspace, "outputDir", &dir)
-                .map(Some)
-                .map_err(|rejection| (rejection.code, rejection.message))
-        }
+        Some(dir) => resolve_write_param_within_project(workspace, "outputDir", Path::new(dir))
+            .map(Some)
+            .map_err(|rejection| (rejection.code, rejection.message)),
         None => Ok(None),
     }
 }

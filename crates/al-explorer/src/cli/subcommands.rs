@@ -108,9 +108,9 @@ pub enum DebugCommands {
 pub enum SnapshotCommands {
     /// Start a snapshot debugger session with snappoints for the next matching session
     Start {
-        /// Name of the launch.json configuration to debug
+        /// Name of the launch.json configuration to debug. Default: the first one.
         #[arg(long)]
-        config: String,
+        config: Option<String>,
         /// Snappoint: `<type>:<id|name>:<line>[?condition]` or `<file>:<line>[?condition]`.
         /// Repeat for several snappoints. Optional: the default SnapPoint
         /// verbosity also records a method context that holds an exception.

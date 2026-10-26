@@ -355,6 +355,36 @@ async fn finish_to_a_folder_inside_the_project_and_refusing_one_outside() {
 }
 
 #[tokio::test]
+async fn finish_takes_a_relative_output_folder_from_the_project_root() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    ok(&env, start_params()).await;
+    mock_op(
+        &env,
+        "finish",
+        ResponseTemplate::new(200).set_body_bytes(SYNTHETIC_ZIP.to_vec()),
+    )
+    .await;
+    let (code, message) = err(
+        &env,
+        json!({ "cmd": "finish", "outputDir": "../elsewhere", "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(code, error_codes::PATH_NOT_AUTHORIZED);
+    assert!(message.contains("outside the project"), "{message}");
+    let result = ok(
+        &env,
+        json!({ "cmd": "finish", "outputDir": "relative-captures", "accessToken": TOKEN }),
+    )
+    .await;
+    let inside = env.root.join("relative-captures");
+    assert!(result["zipPath"]
+        .as_str()
+        .unwrap()
+        .starts_with(inside.to_str().unwrap()));
+}
+
+#[tokio::test]
 async fn an_empty_finish_says_nothing_was_recorded() {
     let env = env().await;
     mock_attach(&env, "UserSession").await;

@@ -93,8 +93,13 @@ and at a context that holds an error. An error stop has reason `exception`, the 
 Locals entry named `_ALException`. That error stop is built from the decompiled host's error node and
 is untested against a real recording with an exception.
 
-The sources stored in the zip are written read-only to `al-lsp-snapshot-sources` in the system temp
-folder, so frames in base application code open there. Differences from Microsoft's adapter: the
+Each frame opens the first source that exists, in the order Microsoft's host uses: the workspace
+file when the workspace declares the object, then the source stored in the zip (written read-only to
+the `snapshot-sources` cache folder), then the source of a dependency package in `.alpackages`, the
+same file that go to definition opens. A generated outline is never used. An object with none of
+these gets a frame without source and one `output` line. When the workspace file differs from the
+zip's source of the same object, one `output` warning says line numbers can be off. A file that
+cannot be made read-only is reported in one `output` line. Differences from Microsoft's adapter: the
 `stopped` reason is the DAP value `step`, `initialized` is sent by `initialize`, no extra `stopped`
 follows `terminated`, and `output` text carries no timestamps.
 
@@ -124,7 +129,7 @@ BaseApp in `.alpackages`, and warns when they differ.
 ## Command line
 
 All commands run through the daemon and use a launch configuration from `.zed/debug.json` or
-`.vscode/launch.json` for the server, tenant and sign-in. `--config` names it.
+`.vscode/launch.json` for the server, tenant and sign-in. `--config` names it, the first configuration is used when it is left out.
 
 ```sh
 # start: snappoints on page 42 for the next web client session of one user
@@ -144,7 +149,7 @@ al-explorer snapshot list
 al-explorer snapshot show .snapshots/3033906a-fe68-4bee-85e3-bbb2ebc91e1b.zip --stop 1 --fields "No.,Description"
 ```
 
-`start` takes `--config` and `--break-on-next` (both required), `--snap` (repeatable, optional),
+`start` requires `--break-on-next` and takes `--config` (default: the first configuration), `--snap` (repeatable, optional),
 `--user`, `--session-id`, `--verbosity snappoint|full` (default `snappoint`) and `--allow-production`.
 `status` and `finish` take `--context`, `finish` also `--out`. `show` takes `--vars`, `--fields`,
 `--stop` and `--json`. The session record is kept on this machine, so `status` and `finish` find the

@@ -431,7 +431,7 @@ fn snapshot_request(subcmd: &SnapshotCommands) -> Result<Value, String> {
         } => snapshot_params(
             "start",
             vec![
-                ("config", Some(serde_json::json!(config))),
+                ("config", config.as_ref().map(|c| serde_json::json!(c))),
                 ("snaps", Some(serde_json::json!(snap))),
                 ("breakOnNext", Some(serde_json::json!(break_on_next))),
                 ("userId", user.as_ref().map(|u| serde_json::json!(u))),

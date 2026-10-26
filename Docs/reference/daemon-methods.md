@@ -220,7 +220,7 @@ Common parameter shapes: position queries accept `uri` plus `{line, character}`.
 `tests.snapshot_diff` accepts `pathA` and `pathB`. `snapshot` takes `cmd` `start`, `status`, `finish`,
 `list` or `show`. `start` requires `breakOnNext` and accepts `config` (a launch configuration name, the first one when omitted), `snaps` (optional: SnapPoint also records an
 exception), `userId`, `sessionId`, `verbosity` (`snappoint` by default, or `full`), `allowProduction` and `accessToken`. `status` and `finish` accept `context` (default: the
-latest session), `finish` also `outputDir` (an absolute path inside the project, default `.snapshots`, and `al-explorer` makes `--out` absolute). `show` requires
+latest session), `finish` also `outputDir` (a path inside the project, relative paths start at the project root, default `.snapshots`). `show` requires
 `path` and accepts `vars`, `fields`, `stop` and `json`. A Production environment is refused without
 `allowProduction`. `source` requires `name` and accepts the
 disambiguators `kind`, `package`, `proc`, or `trigger` (`proc` and `trigger` are mutually
