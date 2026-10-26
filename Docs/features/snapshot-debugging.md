@@ -95,10 +95,10 @@ A relative path is relative to the project root. Nothing is compiled or publishe
 read, so replay works offline. The adapter reads the zip and walks the recorded statements with the
 stepping rules of Microsoft's debug adapter. It supports continue, next, stepIn, stepOut and
 breakpoints (continue runs to the next snappoint or breakpoint). Variables exist only at snappoints
-and at a context that holds an error. An error stop has reason `exception`, the message as text and a
-Locals entry named `_ALException`. A capture with no snappoints that hit an AL error replayed this
-way on the live Sandbox: the stop had reason `exception`, the error text was in `_ALException` in
-Locals, and the call stack showed the trigger chain.
+and at a context that holds an error. An error stop has reason `exception`, and the error message is
+the value of the last Locals entry, `_ALException`, as in Microsoft's host. A capture with no
+snappoints that hit an AL error replayed this way on the live Sandbox, the same as in Microsoft's
+host, and the call stack showed the trigger chain.
 
 Each frame opens the first source that exists, in the order Microsoft's host uses: the workspace
 file when the workspace declares the object, then the source stored in the zip (written read-only to
