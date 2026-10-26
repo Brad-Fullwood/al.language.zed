@@ -358,8 +358,8 @@ mod tests {
     // =======================================================================
     // Mock-harness coverage for the live-infra dispatchers.
     //
-    // These exercise the REAL code paths of `dispatch_snapshot` and
-    // `dispatch_profiling` without a live BC server:
+    // These exercise the real code path of `dispatch_profiling` without a
+    // live BC server:
     //   * BC HTTP is mocked with wiremock — the dispatcher's `serverUrl`
     //     param points at the mock, so the request shape it builds and the
     //     response it parses are asserted end-to-end.

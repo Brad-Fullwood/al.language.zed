@@ -114,6 +114,7 @@ forwards tool calls into the same daemon dispatcher used by the CLI.
 Current MCP tools:
 
 - `al_call` - invoke any method in the shared daemon tool catalog, so every daemon method is reachable from MCP.
+- `al_snapshot` - snapshot debugging: start with snappoints, status, finish, list, show.
 - `al_debug` - retain and drive a Business Central debug session across agent calls (start/attach,
   conditional breakpoints, state, stack, locals/globals/expansion, evaluate, step, continue,
   history, stop).
