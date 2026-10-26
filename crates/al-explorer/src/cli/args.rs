@@ -998,14 +998,34 @@ mod clap_wiring_tests {
 
         let cli = parse(&["snapshot", "status", "--context", "g"]).unwrap();
         assert!(
-            matches!(cli.command, Commands::Snapshot { subcmd: S::Status { context } }
-            if context.as_deref() == Some("g"))
+            matches!(cli.command, Commands::Snapshot { subcmd: S::Status { context, allow_production } }
+            if context.as_deref() == Some("g") && !allow_production)
         );
+        let cli = parse(&["snapshot", "status", "--allow-production"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Snapshot {
+                subcmd: S::Status {
+                    allow_production: true,
+                    ..
+                }
+            }
+        ));
         let cli = parse(&["snapshot", "finish", "--out", "caps"]).unwrap();
         assert!(
-            matches!(cli.command, Commands::Snapshot { subcmd: S::Finish { context, out } }
-            if context.is_none() && out.as_deref() == Some("caps"))
+            matches!(cli.command, Commands::Snapshot { subcmd: S::Finish { context, out, allow_production } }
+            if context.is_none() && out.as_deref() == Some("caps") && !allow_production)
         );
+        let cli = parse(&["snapshot", "finish", "--allow-production"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Snapshot {
+                subcmd: S::Finish {
+                    allow_production: true,
+                    ..
+                }
+            }
+        ));
         let cli = parse(&["snapshot", "list"]).unwrap();
         assert!(matches!(
             cli.command,
