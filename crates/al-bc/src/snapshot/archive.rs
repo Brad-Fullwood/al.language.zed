@@ -883,6 +883,20 @@ impl SnapshotArchive {
         self.version
     }
 
+    /// Build an archive from decoded parts, for callers that replay recorded
+    /// contexts they did not read from a zip.
+    pub fn from_parts(
+        version: FormatVersion,
+        contexts: Vec<MethodContext>,
+        sources: HashMap<(ObjectType, i32), String>,
+    ) -> Self {
+        SnapshotArchive {
+            version,
+            contexts,
+            sources,
+        }
+    }
+
     /// Method contexts in numeric `N` order.
     pub fn method_contexts(&self) -> &[MethodContext] {
         &self.contexts
@@ -943,7 +957,7 @@ fn error_stop(ctx: &MethodContext) -> Stop {
 }
 
 /// Split recorded variables into Locals and Globals the way the host does.
-fn split_scopes(vars: &[Variable]) -> (Vec<Variable>, Vec<Variable>) {
+pub fn split_scopes(vars: &[Variable]) -> (Vec<Variable>, Vec<Variable>) {
     match vars.first() {
         Some(g) if g.name.eq_ignore_ascii_case("<Globals>") => {
             (vars[1..].to_vec(), g.children.clone())

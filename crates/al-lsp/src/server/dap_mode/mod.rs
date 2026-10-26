@@ -255,6 +255,10 @@ fn refuse_unauthorised_launch(
     if command != "launch" && command != "attach" {
         return None;
     }
+    // A replay reads a local zip and sends no credential anywhere.
+    if is_snapshot_launch(msg) {
+        return None;
+    }
     let arguments = msg
         .get("arguments")
         .cloned()
@@ -500,6 +504,16 @@ pub async fn run_dap_proxy(toolchain: &AlToolchain, project_root: &str) -> Resul
     Ok(())
 }
 
+/// A `launch` that replays a snapshot zip (`snapshotFileName`). The host
+/// handles it on its own, so the proxy neither compiles, publishes nor edits it.
+fn is_snapshot_launch(msg: &serde_json::Value) -> bool {
+    msg.get("command").and_then(|v| v.as_str()) == Some("launch")
+        && msg
+            .pointer("/arguments/snapshotFileName")
+            .and_then(|v| v.as_str())
+            .is_some_and(|f| !f.is_empty())
+}
+
 async fn patch_outgoing(
     body: &[u8],
     toolchain: &AlToolchain,
@@ -517,6 +531,10 @@ async fn patch_outgoing(
             return body.to_vec();
         }
     };
+
+    if is_snapshot_launch(&msg) {
+        return body.to_vec();
+    }
 
     let command = msg.get("command").and_then(|v| v.as_str()).unwrap_or("");
 
@@ -1126,6 +1144,28 @@ mod tests {
             Some(&serde_json::Value::Bool(false)),
             "attach must apply patch_launch_args ('none' → false)"
         );
+    }
+
+    #[tokio::test]
+    async fn patch_outgoing_snapshot_launch_goes_through_unchanged_without_compiling() {
+        // A snapshot replay launch is forwarded byte for byte: no compile
+        // (the dummy toolchain would fail one), no argument patching.
+        let toolchain = dummy_toolchain();
+        let seq = AtomicI64::new(1);
+        let out = tokio::sync::Mutex::new(io::stdout());
+        let body = br#"{"type":"request","command":"launch","arguments":{"snapshotFileName":"/x/a.zip","breakOnError":"none"}}"#;
+        let patched = patch_outgoing(body, &toolchain, "/nonexistent", &out, &seq).await;
+        assert_eq!(patched, body);
+        assert_eq!(seq.load(Ordering::Relaxed), 1, "no output event was sent");
+    }
+
+    #[test]
+    fn snapshot_launch_is_not_refused_for_its_scenario() {
+        let launch = serde_json::json!({
+            "seq": 1, "type": "request", "command": "launch",
+            "arguments": {"snapshotFileName": "/x/a.zip", "server": "https://erp.example.test"},
+        });
+        assert!(refuse_unauthorised_launch(&launch, "/nonexistent", &AtomicI64::new(1)).is_none());
     }
 
     /// Points `XDG_CONFIG_HOME` at a scratch directory, so trust is decided

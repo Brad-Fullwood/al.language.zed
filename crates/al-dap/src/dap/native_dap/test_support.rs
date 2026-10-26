@@ -67,6 +67,7 @@ pub(super) fn test_state() -> TestState {
         resolve_path: |_, _| None,
         compile: no_compile,
         find_app: |_| Ok(None),
+        replay: Default::default(),
     }
 }
 

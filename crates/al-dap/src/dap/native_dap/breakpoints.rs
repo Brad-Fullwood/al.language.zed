@@ -379,6 +379,7 @@ mod tests {
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
             compile: no_compile,
             find_app: |_| Ok(None),
+            replay: Default::default(),
         };
 
         // 1. setBreakpoints arrives before any session exists.

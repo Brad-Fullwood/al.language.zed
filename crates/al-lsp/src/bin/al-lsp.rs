@@ -514,6 +514,8 @@ async fn run() {
             |project_root: &std::path::Path| {
                 al_compile::find_app_file(project_root).map_err(|error| error.to_string())
             },
+            // Next to the `symbols` folder of the virtual source cache.
+            al_symbols::virtual_file::cache_dir().with_file_name("snapshot-sources"),
         )
         .await
         {

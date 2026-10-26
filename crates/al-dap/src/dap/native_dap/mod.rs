@@ -22,6 +22,7 @@ pub mod breakpoints;
 pub mod browser;
 pub mod events;
 pub mod execution;
+pub mod replay;
 pub mod requests;
 pub mod session;
 pub mod stack;
@@ -225,6 +226,8 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     /// Locate the deploy `.app` for a project root. Injected for the same
     /// reason as `compile`.
     find_app: A,
+    /// The snapshot replay started by a launch with `snapshotFileName`.
+    replay: replay::ReplayState,
 }
 
 /// Run the native DAP server on stdio.
@@ -236,6 +239,8 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
 /// the AL object around that line, using the workspace index.
 /// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
 /// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
+/// `snapshot_sources_dir` is the cache folder the sources of replayed snapshots are written to.
+#[allow(clippy::too_many_arguments)] // one injected callback or path per host service
 pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
     project_root: &str,
     authorize_target: TargetAuthorizer,
@@ -244,6 +249,7 @@ pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
     resolve_path: P,
     compile: C,
     find_app: A,
+    snapshot_sources_dir: PathBuf,
 ) -> Result<()>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
@@ -275,6 +281,7 @@ where
         resolve_path,
         compile,
         find_app,
+        replay: replay::ReplayState::new(snapshot_sources_dir),
     };
 
     let mut stdout = io::stdout();

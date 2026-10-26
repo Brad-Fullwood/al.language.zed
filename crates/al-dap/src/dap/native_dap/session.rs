@@ -92,6 +92,16 @@ where
         command: &str,
         arguments: &serde_json::Value,
     ) -> Result<()> {
+        if command == "launch"
+            && arguments
+                .get("snapshotFileName")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|f| !f.is_empty())
+        {
+            return self
+                .handle_replay_launch(out, request_seq, command, arguments)
+                .await;
+        }
         let config = BcDebugConfig::from_dap_args(arguments);
         if let Err(error) = config.validate_native() {
             self.reply_failure(out, request_seq, command, error).await?;
@@ -634,6 +644,7 @@ mod tests {
                 std::future::ready(Ok(String::new()))
             },
             find_app: |_: &Path| -> std::result::Result<Option<PathBuf>, String> { Ok(None) },
+            replay: Default::default(),
         };
 
         let port = url::Url::parse(&collector.uri()).unwrap().port().unwrap();
@@ -723,6 +734,7 @@ mod tests {
             // This is the shared manifest-name selector supplied by al-lsp;
             // no match must fail rather than publishing a stale neighbouring app.
             find_app: |_: &Path| -> std::result::Result<Option<PathBuf>, String> { Ok(None) },
+            replay: Default::default(),
         };
 
         let (mut client, server) = tokio::io::duplex(64 * 1024);

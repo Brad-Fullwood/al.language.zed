@@ -104,6 +104,12 @@ where
         request_seq: i64,
         arguments: &serde_json::Value,
     ) -> Result<bool> {
+        if let Some(done) = self
+            .dispatch_replay(out, command, request_seq, arguments)
+            .await?
+        {
+            return Ok(done);
+        }
         match command {
             "initialize" => self.handle_initialize(out, request_seq, command).await?,
             "configurationDone" => {
