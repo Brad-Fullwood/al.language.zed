@@ -2,10 +2,12 @@
 //!
 //! Routes checked before writing this:
 //! - Microsoft's platform snapshot MCP proxy (`al launchsnapshotmcpproxy`,
-//!   streamable HTTP to `<base>/mcp/`). It needs the Business Central MCP server
-//!   on the environment. The Sandbox runs application 28.5, platform 28.0 and
-//!   snapshot web API 3.0, and offers no read only way to see whether the MCP
-//!   server is enabled, so it is not relied on.
+//!   streamable HTTP to `<base>/mcp/`). It signs in with the AL tool's own
+//!   Entra login and takes no token. On a BC 29.0 Sandbox (snapshot web API
+//!   5.0) the upstream `initialize` answers, but `tools/list` for the
+//!   debugging tool sets fails with -32603 until the environment's MCP Server
+//!   Configuration allows them. There is no read only way to check that
+//!   setting, so it is not relied on.
 //! - The AL host's LSP route (`al/initializeSnapshotDebuggerAttach` and the
 //!   calls after it). It works but needs .NET and the AL extension installed and
 //!   a host process for each call.
