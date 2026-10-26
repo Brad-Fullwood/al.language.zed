@@ -189,6 +189,17 @@ fn step_in_without_a_call_stays_on_the_statement() {
 }
 
 #[test]
+fn step_in_without_a_call_in_the_last_context_ends() {
+    let mut e = Engine::new(&sample());
+    e.start_over();
+    // The last context has no later context to hold a callee.
+    let mut e2 = Engine::new(&sample()[2..]);
+    e2.start_over();
+    assert!(matches!(e2.step_in(), Step::Ended));
+    assert_eq!(at(e.step_in()), (0, 0));
+}
+
+#[test]
 fn user_breakpoints_stop_continue_once_per_occurrence() {
     // Line 11 runs in two contexts.
     let ctxs = vec![
@@ -607,12 +618,24 @@ fn diff_tree(path: &str, ours: &[Value], golden: &[Value], depth: usize, out: &m
     }
 }
 
-/// Run one oracle trace against the full server and list every difference.
+/// Run one oracle trace from the fixture directory against the full server.
 async fn parity(zip8: &str, mode: &str) -> Vec<String> {
     let dir = fixture_dir();
     let oracle = read_json(&dir.join(format!("oracle/oracle-{zip8}-{mode}.json")));
+    let zip = dir.join(oracle["zip"].as_str().unwrap());
+    parity_run(&zip, &oracle, &dir).await
+}
+
+/// Compare our replay of `zip` with the host oracle trace `oracle`. The host's
+/// variable dump `golden-<zip8>*.json` is looked up in `golden_dir`.
+async fn parity_run(
+    zip: &std::path::Path,
+    oracle: &Value,
+    golden_dir: &std::path::Path,
+) -> Vec<String> {
     let zip_name = oracle["zip"].as_str().unwrap().to_string();
-    let golden = std::fs::read_dir(&dir)
+    let zip8 = &zip_name[..8];
+    let golden = std::fs::read_dir(golden_dir)
         .unwrap()
         .flatten()
         .find(|e| {
@@ -629,7 +652,7 @@ async fn parity(zip8: &str, mode: &str) -> Vec<String> {
     let launch = send(
         &st,
         "launch",
-        json!({"snapshotFileName": dir.join(&zip_name), "request": "launch"}),
+        json!({"snapshotFileName": zip, "request": "launch"}),
     )
     .await;
     let mut diffs = Vec::new();
@@ -849,3 +872,35 @@ parity_test!(replay_parity_a0d62542_continue, "a0d62542", "continue");
 parity_test!(replay_parity_a0d62542_next, "a0d62542", "next");
 parity_test!(replay_parity_a0d62542_stepin, "a0d62542", "stepin");
 parity_test!(replay_parity_a0d62542_breakpoint, "a0d62542", "breakpoint");
+
+/// Parity for any zip: `AL_SNAPSHOT_PARITY_ZIP` is the snapshot zip and
+/// `AL_SNAPSHOT_PARITY_ORACLE_DIR` holds `oracle-<zip8>-<mode>.json` for the
+/// four modes and the host's `golden-<zip8>*.json` variable dump. Skips when
+/// either variable is unset.
+#[tokio::test]
+#[ignore = "needs AL_SNAPSHOT_PARITY_ZIP and AL_SNAPSHOT_PARITY_ORACLE_DIR"]
+async fn replay_parity_env_zip() {
+    let (Ok(zip), Ok(dir)) = (
+        std::env::var("AL_SNAPSHOT_PARITY_ZIP"),
+        std::env::var("AL_SNAPSHOT_PARITY_ORACLE_DIR"),
+    ) else {
+        eprintln!("skipped: AL_SNAPSHOT_PARITY_ZIP or AL_SNAPSHOT_PARITY_ORACLE_DIR is unset");
+        return;
+    };
+    let zip = PathBuf::from(zip);
+    let dir = PathBuf::from(dir);
+    let zip8: String = zip.file_name().unwrap().to_string_lossy()[..8].to_string();
+    let mut failed = Vec::new();
+    for mode in ["continue", "next", "stepin", "breakpoint"] {
+        let oracle = read_json(&dir.join(format!("oracle-{zip8}-{mode}.json")));
+        let diffs = parity_run(&zip, &oracle, &dir).await;
+        eprintln!("mode {mode}: {} differences", diffs.len());
+        for d in &diffs {
+            eprintln!("  {mode}: {d}");
+        }
+        if !diffs.is_empty() {
+            failed.push(mode);
+        }
+    }
+    assert!(failed.is_empty(), "modes with differences: {failed:?}");
+}

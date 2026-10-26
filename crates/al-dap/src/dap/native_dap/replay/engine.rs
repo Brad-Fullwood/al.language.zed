@@ -273,7 +273,9 @@ impl Engine {
     }
 
     /// Enter the first call recorded at the current statement. Without one
-    /// the walk stays on the statement, as Microsoft's adapter does.
+    /// the walk stays on the statement, as Microsoft's adapter does, except
+    /// in the last recorded context: the host's GetNextFrameIndex returns
+    /// index + 1 there, which is past the end, so the replay terminates.
     pub fn step_in(&mut self) -> Step {
         let Some(cur) = self.current else {
             return self.start();
@@ -286,6 +288,7 @@ impl Engine {
                 },
                 false,
             ),
+            _ if cur.ctx + 1 >= self.lens.len() => self.end(),
             _ => self.land(cur, false),
         }
     }
