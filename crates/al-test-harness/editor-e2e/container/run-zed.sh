@@ -10,6 +10,7 @@
 #   POST         secs after trust for LSP/paint   (default: 14)
 #   KEYS         extra shell run after trust (e.g. 'wtype -M ctrl -k p -m ctrl')
 #   ZED_SETTINGS_JSON  a Zed settings.json to use (theme, LSP settings)
+#   EXT_PROJ     absolute project dir mounted from outside the repo (overrides PROJ_SUBDIR)
 #   ZED_SHELL    login shell Zed starts servers through, `fish` or `bash`
 set -uo pipefail
 REPO=${REPO:-/repo}
@@ -31,6 +32,7 @@ cp    "$REPO/grammars/al.wasm" "$EXT/installed/al/grammars/"
 cp -r "$REPO/languages"        "$EXT/installed/al/"
 cp -r "$REPO/themes"           "$EXT/installed/al/"
 cp -r "$REPO/snippets"         "$EXT/installed/al/"
+cp -r "$REPO/debug_adapter_schemas" "$EXT/installed/al/"
 # index.json is generated on the host (gen-zed-index, Rust) and mounted in — the
 # container ships no Python. Fall back to letting Zed regenerate it if absent.
 if [ -n "${ZED_INDEX_JSON:-}" ] && [ -f "$ZED_INDEX_JSON" ]; then
@@ -58,7 +60,7 @@ fi
 al-lsp --help >/dev/null 2>&1 && echo "  al-lsp OK" || echo "  al-lsp NOT runnable"
 
 echo "=== writable copy of project under test ==="
-rm -rf /tmp/proj; cp -r "$REPO/$PROJ_SUBDIR" /tmp/proj
+rm -rf /tmp/proj; cp -r "${EXT_PROJ:-$REPO/$PROJ_SUBDIR}" /tmp/proj
 [ -f "/tmp/proj/$OPEN_FILE" ] || { echo "OPEN_FILE not found: $OPEN_FILE"; exit 2; }
 
 echo "=== launch Zed under cage (headless wlroots) ==="

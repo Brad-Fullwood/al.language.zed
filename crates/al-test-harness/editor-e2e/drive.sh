@@ -13,6 +13,10 @@
 #   drive.sh --build-image                # force-rebuild the container image first
 #   drive.sh --keys 'wtype -M ctrl -k p'  # extra wtype interaction (Zed mode)
 #   drive.sh --zed-settings my.json       # Zed settings.json to use (theme, LSP settings)
+#   drive.sh --proj-dir DIR               # open a project outside the repo (copied, never written back)
+#   drive.sh --keys-file steps.sh         # script run in the container after trust, may call
+#                                         #   wtype and `grim /out/shot-NAME.png` (copied next to --out)
+#   drive.sh --mount HOST:CONT            # extra read-only mount (e.g. a dotnet runtime), repeatable
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
@@ -23,6 +27,9 @@ OUT=""
 BUILD_IMAGE=0
 KEYS=""
 PROJ=""   # repo-relative project subdir to open (default: the bundled fixture in run-zed.sh)
+PROJ_DIR=""      # absolute project dir outside the repo
+KEYS_FILE=""     # script mounted at /out/keys.sh and run after trust
+MOUNTS=()        # extra podman -v arguments
 ZED_SETTINGS=""  # a settings.json for the Zed under test (theme, LSP settings)
 
 while [[ $# -gt 0 ]]; do
@@ -34,6 +41,9 @@ while [[ $# -gt 0 ]]; do
     --build-image) BUILD_IMAGE=1; shift ;;
     --keys)        KEYS="$2"; shift 2 ;;
     --proj)        PROJ="$2"; shift 2 ;;
+    --proj-dir)    PROJ_DIR="$(cd "$2" && pwd)" || exit 2; shift 2 ;;
+    --keys-file)   KEYS_FILE="$2"; shift 2 ;;
+    --mount)       MOUNTS+=(-v "$2:ro"); shift 2 ;;
     --zed-settings) ZED_SETTINGS="$2"; shift 2 ;;
     *) echo "unknown arg: $1"; exit 2 ;;
   esac
@@ -98,11 +108,28 @@ if [[ "$MODE" != "vscode" ]]; then
   fi
 fi
 
+EXTRA_ENV=()
+# `target` is often a symlink to a build cache outside the repo. Inside the
+# container that link dangles, so Zed would not find target/debug/al-lsp and
+# the extension would download a released al-lsp instead. Mount the real
+# directory at its host path so the link resolves.
+if [[ -L "$ROOT/target" ]]; then
+  TARGET_REAL="$(readlink -f "$ROOT/target")"
+  MOUNTS+=(-v "$TARGET_REAL:$TARGET_REAL:ro")
+fi
+if [[ -n "$PROJ_DIR" ]]; then
+  MOUNTS+=(-v "$PROJ_DIR:/extproj:ro"); EXTRA_ENV+=(-e EXT_PROJ=/extproj)
+fi
+if [[ -n "$KEYS_FILE" ]]; then
+  cp "$KEYS_FILE" "$OUTDIR/keys.sh" || { echo "cannot read $KEYS_FILE"; exit 2; }
+  KEYS="bash /out/keys.sh"
+fi
+
 # 3. Run the editor(s) headless in the container.
 echo "=== running headless $MODE (isolated container; your desktop is untouched) ==="
 podman run --rm --userns=keep-id \
   -v "$ROOT":/repo:ro -v "$OUTDIR":/out:rw \
-  -e OPEN_FILE="$OPEN_FILE" -e OUTD=/out "${INDEX_ENV[@]}" ${KEYS:+-e KEYS="$KEYS"} ${PROJ:+-e PROJ_SUBDIR="$PROJ"} ${ZED_SHELL:+-e ZED_SHELL="$ZED_SHELL"} \
+  -e OPEN_FILE="$OPEN_FILE" -e OUTD=/out "${INDEX_ENV[@]}" "${EXTRA_ENV[@]}" "${MOUNTS[@]}" ${KEYS:+-e KEYS="$KEYS"} ${PROJ:+-e PROJ_SUBDIR="$PROJ"} ${ZED_SHELL:+-e ZED_SHELL="$ZED_SHELL"} \
   "$IMG" "$SCRIPT" 2>&1 | tee "$LOG"
 
 # 3. Collect screenshot(s).
@@ -110,6 +137,8 @@ mkdir -p "$(dirname "$OUT")"
 [[ -f "$OUTDIR/$RESULT" ]] && cp "$OUTDIR/$RESULT" "$OUT"
 [[ -f "$OUTDIR/zed.log" ]] && cp "$OUTDIR/zed.log" "$(dirname "$OUT")/zed-editor.log"
 [[ -f "$OUTDIR/zed-app.log" ]] && cp "$OUTDIR/zed-app.log" "$(dirname "$OUT")/zed-app.log"
+for f in "$OUTDIR"/shot-*.png; do [[ -f "$f" ]] && cp "$f" "$(dirname "$OUT")/"; done
+[[ -f "$OUTDIR/dap.log" ]] && cp "$OUTDIR/dap.log" "$(dirname "$OUT")/"
 if [[ "$MODE" == "compare" ]]; then
   [[ -f "$OUTDIR/zed.png" ]]    && cp "$OUTDIR/zed.png"    "$(dirname "$OUT")/zed.png"
   [[ -f "$OUTDIR/vscode.png" ]] && cp "$OUTDIR/vscode.png" "$(dirname "$OUT")/vscode.png"
