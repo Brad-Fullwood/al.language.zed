@@ -41,7 +41,7 @@ published input schema, including `minItems`/`maxItems` on array arguments.
 | --- | --- | --- | --- |
 | `al_call` | selected at call time | `method` (string, required), `params` (object, default `{}`) | Call any method in the shared daemon catalog through one generic entry point. |
 | `al_debug` | `debug` | `cmd` (required) plus command-specific debug parameters | Drive a persistent BC debug session: start, breakpoint, state, stack, locals/globals/expansion, evaluate, continue, step, history, and stop. |
-| `al_snapshot` | `snapshot` | `action` (required) plus action-specific parameters | Snapshot debugging of a BC environment: start with snappoints, status, finish to save the zip under `.snapshots`, list the sessions, show the stops of a zip. Production needs `allowProduction`. |
+| `al_snapshot` | `snapshot` | `action` (required) plus action-specific parameters | Snapshot debugging of a BC environment, see [snapshot-debugging](./snapshot-debugging.md): `start` needs `breakOnNext` and takes optional snappoints, status, finish to save the zip under `.snapshots`, list the sessions, show the stops of a zip. Production needs `allowProduction`. |
 | `al_build` | `compile` | | Compile the project (native emitter by default). Returns success, diagnostics, `.app` path. |
 | `al_downloadsymbols` | `downloadSymbols` | `source` (`nuget` or `server`, default `nuget`), `config` (launch configuration for `server`) | Download dependency symbol packages into `.alpackages`. |
 | `al_symbolsearch` | `search` | `query` (string), `limit` (number, default 50 through MCP), `summary` (default true: name, kind, id and package only, false adds every member) | Fuzzy-search symbols across workspace and packages. |

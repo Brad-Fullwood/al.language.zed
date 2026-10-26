@@ -73,7 +73,8 @@ feature pages for implementation details and limitations.
 | Debug adapter | ✅ native Rust DAP (direct SignalR/REST) | 🔷 `EditorServices.Host` |
 | Launch / attach / breakpoints (conditional) / step / stack / scopes / variables / evaluate | ✅ | ✅ |
 | Pause-while-running | ❌ (BC limitation) | ❌ (BC limitation) |
-| Profiling / snapshots | ✅ start/stop/analyze, download | ✅ |
+| Profiling | ✅ start/stop/analyze | ✅ |
+| Snapshot debugging | ✅ capture in Zed, CLI and MCP, replay in Zed (see [snapshot-debugging](./features/snapshot-debugging.md)). `WebServiceClient` capture failed on the test Sandbox | ✅ |
 | BC runtime execution | 🔷 BC server | 🔷 BC server |
 | Delegate to Microsoft adapter | ✅ `al.useOfficialDap` | n/a |
 

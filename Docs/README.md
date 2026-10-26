@@ -33,6 +33,7 @@ limitations, and the maintained release contract in [ROADMAP.md](../ROADMAP.md).
 | [Analysis and insight](./features/analysis-and-insight.md) | Graph, impact, lint, audit, and upgrade tools |
 | [Native test runtime](./features/native-test-runtime.md) | Interpreter, routing, coverage, and mutation testing |
 | [Debugging](./features/debugging-dap.md) | DAP and Business Central runtime integration |
+| [Snapshot debugging](./features/snapshot-debugging.md) | Capture and replay of Business Central snapshots in Zed, the CLI and MCP |
 | [MCP](./features/ai-mcp.md) | Agent access to the shared daemon catalog |
 | [CLI and TUI](./features/cli-and-tui.md) | Terminal command and interactive interfaces |
 | [Daemon protocol](./features/daemon-protocol.md) | Local IPC over Unix-domain sockets or Windows named pipes |

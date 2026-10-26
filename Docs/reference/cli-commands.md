@@ -151,7 +151,7 @@ and writes paths only inside the project it has loaded. See
 | Command | Subcommands / flags | Purpose |
 | --- | --- | --- |
 | `debug` | `start [--config]`, `breakpoint <file> <line> [--condition]`, `state`, `eval <expr>`, `continue`, `step [over\|into\|out]`, `history [--var]`, `stop` | Drive a debug session |
-| `snapshot` | `start [--description]`, `list`, `download <id>`, all with `--company` (required) and `--server --username --password --output-dir` | Snapshot debugging |
+| `snapshot` | `start --config <name> --break-on-next <WebClient\|WebServiceClient\|Background\|ClientService> [--snap <spec>]... [--user] [--session-id] [--verbosity snappoint\|full] [--allow-production]`, `status [--context]`, `finish [--context] [--out]`, `list`, `show <zip> [--vars] [--fields] [--stop]` | Business Central snapshot debugging, see [snapshot-debugging](../features/snapshot-debugging.md) |
 | `profile` | `start`, `stop [--session-id]`, `analyze <path> [--top N]`, with the server and auth flags | CPU profiling |
 
 ## Tests

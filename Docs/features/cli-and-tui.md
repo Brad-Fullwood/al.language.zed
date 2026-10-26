@@ -31,7 +31,7 @@ The [CLI command reference](../reference/cli-commands.md) lists every command an
 - **Format/refactor/codegen:** `format`, `lint`, `fix`, `permissions`, `generate`, `new`,
   `add-application-area`, `add-tooltips`, `add-data-classification`, `sort-members`, `organize-files`.
 - **Debug/profiling:** `debug {start|breakpoint|state|eval|continue|step|history|stop}`,
-  `snapshot {start|list|download}`, `profile {start|stop|analyze}`.
+  `snapshot {start|status|finish|list|show}`, `profile {start|stop|analyze}`.
 - **Tests:** `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`,
   `test-classify`, `test-snapshot {capture|validate|replay|diff}`, `test-results`.
 - **Translation:** `xlf {generate|refresh|untranslated|suggest}`.

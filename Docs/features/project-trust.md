@@ -365,7 +365,9 @@ sent. Zed reads the debug scenario from the worktree's `.zed/debug.json` or from
 own debug settings, and the adapter cannot tell which, so the scenario is judged as a file
 the repository carries: an on-premises server needs a trusted project, and
 `acceptInvalidCerts` is honoured only when the project's launch file sets it for the same
-server. A refused launch fails with the reason in the debug console.
+server. A refused launch fails with the reason in the debug console. A snapshot capture (`attach` with
+`snapshot` set to `capture`) is judged like any attach. A snapshot replay (`launch` with
+`snapshotFileName`) reads a local zip and sends no credential, so the adapter skips the check.
 
 The EditorServices proxy forwards the scenario to Microsoft's host as Zed sent it, so it
 judges the scenario the way that host might read it. It judges a scenario as on-premises, the
@@ -388,7 +390,9 @@ the target is authorised and the refusal says "Business Central credentials" rat
 naming a cached token. The Run Test code lens in the language server runs the same check
 before it starts a live test.
 
-`snapshot` and `profiling` take `serverUrl`, `username` and `password` from the request.
+`profiling` takes `serverUrl`, `username` and `password` from the request. `snapshot` takes its
+server, tenant and sign-in from a launch configuration of the project (`config`, or the first one) and an
+optional `accessToken`, and has no inline server. The rest of this paragraph applies to `profiling`.
 The credential is the caller's, but the server is a string an agent can choose through
 `al_call`, so an inline `serverUrl` must match a launch configuration of a trusted project,
 compared on scheme, host and the port the client connects to (the URL's own, or 443 or 80 by

@@ -72,6 +72,16 @@ required tenant/environment/version/token contract. The default repository
 fixture generates its launch configuration outside the checkout; never commit
 credentials or a custom tenant launch configuration.
 
+To try Business Central snapshot debugging by hand, use a Sandbox (never Production) and a project
+whose launch configuration names it. Run `al-explorer snapshot start --config <name> --break-on-next
+WebClient --snap <type>:<id>:<line>`, open a page in the web client as the same user, then run
+`al-explorer snapshot status` until it reads `Started`, `al-explorer snapshot finish` and
+`al-explorer snapshot show .snapshots/<context>.zip`. A per-tenant extension needs
+`resourceExposurePolicy.allowDebugging: true` in its `app.json` to be recorded. Finish within 10
+minutes of `Started`. Keep the zip out of git, it holds tenant data. The steps are in
+[snapshot-debugging](Docs/features/snapshot-debugging.md). This is separate from the test snapshots
+of `make live-bc-contracts`.
+
 ## Two-repository grammar workflow
 
 `tree-sitter-al` is an owned repository as well as a submodule. Publish in this
