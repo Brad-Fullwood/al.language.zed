@@ -147,6 +147,10 @@ pub(crate) async fn initialize_workspace(
                 packages = project.packages.len(),
                 "Found AL project"
             );
+            // Read and write the shared dependency source summaries as the
+            // daemon and MCP server do. Without this every editor start parses
+            // every embedded .al file of the dependencies again.
+            crate::server::daemon::persist_dependency_source_summaries(&workspace, &project.root);
 
             // Stage source and package indexes independently from the active
             // workspace. A failed reindex must not publish new source files
