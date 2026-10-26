@@ -2,7 +2,7 @@
 //!
 //! The session records instead of debugging. `setBreakpoints` lines become
 //! snappoints, `configurationDone` arms the capture on the server through the
-//! shared [`snapshot_capture`] module, a poll task reports status changes as
+//! shared [`snapshot_capture`](crate::dap::bc_debug::snapshot_capture) module, a poll task reports status changes as
 //! Output events, and `disconnect` finishes the session and saves the zip.
 //! No SignalR connection is opened, so stepping, stack and variables requests
 //! are refused. Replay is a launch with `snapshotFileName`.
