@@ -85,3 +85,10 @@ tempfile = "3"
 dirs = "6"
 sha2 = "0.10"
 rayon = "1"
+
+# Optimize dependencies in debug builds. The unoptimized parser and analysis
+# dependencies made test runs against large projects use every core for minutes.
+# Dependencies carry no debug info. That roughly halves the size of target/debug.
+[profile.dev.package."*"]
+opt-level = 2
+debug = false

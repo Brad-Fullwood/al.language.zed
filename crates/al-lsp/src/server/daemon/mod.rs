@@ -2298,12 +2298,12 @@ pub(crate) fn persist_dependency_source_summaries(workspace: &Workspace, project
         Some(cache) => {
             tracing::info!(
                 dir = %cache.dir().display(),
-                "daemon: dependency source summaries persist here"
+                "dependency source summaries persist here"
             );
             workspace.enable_source_summary_cache(cache);
         }
         None => tracing::info!(
-            "daemon: no per-user data directory, dependency source summaries are not persisted"
+            "no per-user data directory, dependency source summaries are not persisted"
         ),
     }
 }
