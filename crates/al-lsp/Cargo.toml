@@ -71,6 +71,7 @@ bin = ["dep:tracing-subscriber"]
 semantic = ["al-semantic/semantic"]
 
 [dev-dependencies]
+al-bc = { path = "../al-bc", version = "0.1.0", features = ["test-support"] }
 serial_test = "3"
 # The `Service` trait that `LspService` implements, so a unit test can answer
 # `initialize` and the in-process client then sends notifications.

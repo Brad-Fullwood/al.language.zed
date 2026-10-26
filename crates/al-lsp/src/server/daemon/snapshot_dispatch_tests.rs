@@ -15,7 +15,8 @@ use super::{dispatch_snapshot, TEST_AUTOMATION_BASE, TEST_STORE};
 
 const TOKEN: &str = "FAKE-TEST-TOKEN-0123456789";
 const COOKIE: &str = "abcdefghij0123456789AB%3D%3D";
-const SYNTHETIC_ZIP: &[u8] = include_bytes!("testdata/synthetic-snapshot.zip");
+static SYNTHETIC_ZIP: std::sync::LazyLock<Vec<u8>> =
+    std::sync::LazyLock::new(al_bc::snapshot::archive::test_support::synthetic_zip);
 
 struct Env {
     _dir: tempfile::TempDir,
@@ -303,7 +304,7 @@ async fn finish_writes_into_the_snapshots_folder_and_updates_the_record() {
         zip,
         env.root.join(".snapshots").join(format!("{context}.zip"))
     );
-    assert_eq!(std::fs::read(&zip).unwrap(), SYNTHETIC_ZIP);
+    assert_eq!(std::fs::read(&zip).unwrap(), *SYNTHETIC_ZIP);
     let record = SessionStore::at(&env.store)
         .load(&context)
         .unwrap()
@@ -437,7 +438,7 @@ async fn list_answers_the_records_without_cookies() {
 
 fn project_zip(env: &Env) -> PathBuf {
     let path = env.root.join("sample.zip");
-    std::fs::write(&path, SYNTHETIC_ZIP).unwrap();
+    std::fs::write(&path, SYNTHETIC_ZIP.as_slice()).unwrap();
     path
 }
 
