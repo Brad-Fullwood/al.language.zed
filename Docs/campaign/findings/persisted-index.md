@@ -131,8 +131,8 @@ Per package, one file:
 repeats all of these plus the app id, name, version and byte length, and a load checks every one.
 A summary schema change bumps the constant. A grammar change changes the fingerprint.
 
-The daemon sets the directory after it finds the project. A workspace without one (the LSP
-path, unit tests, no data directory) builds without persistence, exactly as today.
+The daemon, the MCP server and the editor (LSP) path set the directory after they find the project.
+A workspace without one (unit tests, no data directory) builds without persistence.
 
 ### Invalidation and garbage collection
 
