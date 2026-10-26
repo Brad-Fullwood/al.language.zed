@@ -138,6 +138,10 @@ pub enum SnapshotCommands {
         /// Debugging context (GUID). Default: the latest session.
         #[arg(long)]
         context: Option<String>,
+
+        /// Allow a Production environment
+        #[arg(long = "allow-production")]
+        allow_production: bool,
     },
     /// Finish a snapshot session and save the snapshot zip
     Finish {
@@ -147,6 +151,10 @@ pub enum SnapshotCommands {
         /// Folder for the zip, inside the project. Default: `.snapshots`.
         #[arg(long)]
         out: Option<String>,
+
+        /// Allow a Production environment
+        #[arg(long = "allow-production")]
+        allow_production: bool,
     },
     /// List the snapshot sessions started from this machine
     List,

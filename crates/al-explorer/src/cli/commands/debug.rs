@@ -446,11 +446,24 @@ fn snapshot_request(subcmd: &SnapshotCommands) -> Result<Value, String> {
                 ),
             ],
         ),
-        SnapshotCommands::Status { context } => snapshot_params(
+        SnapshotCommands::Status {
+            context,
+            allow_production,
+        } => snapshot_params(
             "status",
-            vec![("context", context.as_ref().map(|c| serde_json::json!(c)))],
+            vec![
+                ("context", context.as_ref().map(|c| serde_json::json!(c))),
+                (
+                    "allowProduction",
+                    allow_production.then(|| serde_json::json!(true)),
+                ),
+            ],
         ),
-        SnapshotCommands::Finish { context, out } => {
+        SnapshotCommands::Finish {
+            context,
+            out,
+            allow_production,
+        } => {
             let out_dir = match out {
                 Some(dir) => Some(serde_json::json!(absolutize_path(dir)?)),
                 None => None,
@@ -460,6 +473,10 @@ fn snapshot_request(subcmd: &SnapshotCommands) -> Result<Value, String> {
                 vec![
                     ("context", context.as_ref().map(|c| serde_json::json!(c))),
                     ("outputDir", out_dir),
+                    (
+                        "allowProduction",
+                        allow_production.then(|| serde_json::json!(true)),
+                    ),
                 ],
             )
         }

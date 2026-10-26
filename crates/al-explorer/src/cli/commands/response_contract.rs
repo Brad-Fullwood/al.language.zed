@@ -810,10 +810,11 @@ fn validate_snapshot(params: Option<&Value>, result: &Value) -> Result<(), Strin
                 &[
                     ("debuggingContext", Kind::String),
                     ("status", Kind::String),
-                    ("secondsSinceStarted", Kind::Unsigned),
                     ("warnings", Kind::Array),
                 ],
             )?;
+            // Null until the server attaches a client session (status Initialized).
+            optional_kind(result, "secondsSinceStarted", Kind::Unsigned, true)?;
             string_array_field(result, "warnings")
         }
         "finish" => {
