@@ -8,6 +8,7 @@
 //! Snapshots are stored locally in the output directory for offline analysis.
 
 pub mod archive;
+pub mod state;
 
 use std::path::PathBuf;
 
