@@ -65,6 +65,7 @@ pub(super) fn test_state() -> TestState {
         acquire_token: Arc::new(no_token),
         resolve_object: |_, _| None,
         resolve_path: |_, _| None,
+        package_source: std::sync::Arc::new(|_, _| None),
         compile: no_compile,
         find_app: |_| Ok(None),
         replay: Default::default(),

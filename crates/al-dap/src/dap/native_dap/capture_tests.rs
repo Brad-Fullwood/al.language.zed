@@ -89,6 +89,7 @@ fn build_state(
         }),
         resolve_object: |_: &str, _: i64| None,
         resolve_path: |_: i32, _: i32| None,
+        package_source: std::sync::Arc::new(|_, _| None),
         compile: no_compile,
         find_app: |_: &Path| Ok(None),
         replay: Default::default(),

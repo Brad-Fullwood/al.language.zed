@@ -514,7 +514,8 @@ async fn sources_are_written_read_only_and_a_planted_link_is_not_followed() {
     std::fs::create_dir_all(&snap).unwrap();
     #[cfg(unix)]
     std::os::unix::fs::symlink(&victim, snap.join("CodeUnit%50000.al")).unwrap();
-    let files = sources::write_sources(&snap, &archive()).await.unwrap();
+    let (files, warnings) = sources::write_sources(&snap, &archive()).await.unwrap();
+    assert!(warnings.is_empty(), "{warnings:?}");
     let path = &files[&(ObjectType::CodeUnit, 50000)];
     assert_eq!(std::fs::read_to_string(path).unwrap(), "// source\n");
     assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep");
@@ -936,4 +937,191 @@ async fn replay_parity_env_zip() {
         }
     }
     assert!(failed.is_empty(), "modes with differences: {failed:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Which file a frame shows
+// ---------------------------------------------------------------------------
+
+/// Four objects: Codeunit 50000 and Page 50001 ship source in the zip,
+/// Table 27 and Codeunit 60000 do not.
+fn sources_archive(codeunit_text: &str) -> SnapshotArchive {
+    let mut contexts = Vec::new();
+    for (i, (t, n)) in [
+        (ObjectType::CodeUnit, 50000),
+        (ObjectType::Page, 50001),
+        (ObjectType::Table, 27),
+        (ObjectType::CodeUnit, 60000),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut c = ctx(i, "Main", &[], &[10, 11], &[10]);
+        c.id = ObjectId {
+            object_type: t,
+            number: n,
+        };
+        c.frames[0].id = c.id;
+        contexts.push(c);
+    }
+    let mut sources = HashMap::new();
+    sources.insert((ObjectType::CodeUnit, 50000), codeunit_text.to_string());
+    sources.insert((ObjectType::Page, 50001), "page\n".to_string());
+    SnapshotArchive::from_parts(
+        FormatVersion {
+            major: 3,
+            minor: 0,
+            build: 0,
+            revision: 0,
+        },
+        contexts,
+        sources,
+    )
+}
+
+fn extracted() -> HashMap<(ObjectType, i32), PathBuf> {
+    let mut m = HashMap::new();
+    m.insert(
+        (ObjectType::CodeUnit, 50000),
+        PathBuf::from("/cache/z/CodeUnit%50000.al"),
+    );
+    m.insert(
+        (ObjectType::Page, 50001),
+        PathBuf::from("/cache/z/Page%50001.al"),
+    );
+    m
+}
+
+fn pick(
+    a: &SnapshotArchive,
+    workspace: &[((i32, i32), &str)],
+    package: &[((i32, i32), &str)],
+    workspace_text: &str,
+) -> frame_sources::FrameSources {
+    let find = |list: &[((i32, i32), &str)], t: i32, n: i32| {
+        list.iter()
+            .find(|(k, _)| *k == (t, n))
+            .map(|(_, p)| PathBuf::from(p))
+    };
+    frame_sources::choose(
+        a,
+        &extracted(),
+        &|t, n| find(workspace, t, n),
+        &|t, n| find(package, t, n),
+        &|_| Some(workspace_text.to_string()),
+    )
+}
+
+#[test]
+fn a_workspace_object_wins_over_the_zip_source() {
+    let a = sources_archive("same\n");
+    let r = pick(&a, &[((5, 50000), "/ws/Probe.al")], &[], "same\r\n");
+    assert_eq!(
+        r.files[&(ObjectType::CodeUnit, 50000)],
+        PathBuf::from("/ws/Probe.al")
+    );
+    // The Page has only the zip source.
+    assert_eq!(
+        r.files[&(ObjectType::Page, 50001)],
+        PathBuf::from("/cache/z/Page%50001.al")
+    );
+    // Same text apart from line endings: no warning for the codeunit.
+    assert!(
+        r.notices.iter().all(|n| !n.contains("differs")),
+        "{:?}",
+        r.notices
+    );
+}
+
+#[test]
+fn a_workspace_file_that_differs_from_the_zip_source_warns_once() {
+    let a = sources_archive("ran this\n");
+    let r = pick(&a, &[((5, 50000), "/ws/Probe.al")], &[], "edited since\n");
+    let warnings: Vec<_> = r.notices.iter().filter(|n| n.contains("differs")).collect();
+    assert_eq!(warnings.len(), 1, "{:?}", r.notices);
+    assert!(warnings[0].contains("/ws/Probe.al"));
+    assert!(warnings[0].contains("CodeUnit 50000"));
+    assert!(warnings[0].contains("line numbers can be off"));
+}
+
+#[test]
+fn a_package_source_is_used_when_workspace_and_zip_have_none() {
+    let a = sources_archive("x\n");
+    let r = pick(&a, &[], &[((1, 27), "/pkg/Table27.al")], "");
+    assert_eq!(
+        r.files[&(ObjectType::Table, 27)],
+        PathBuf::from("/pkg/Table27.al")
+    );
+    // The zip source still beats the package for objects that have one.
+    assert_eq!(
+        r.files[&(ObjectType::CodeUnit, 50000)],
+        PathBuf::from("/cache/z/CodeUnit%50000.al")
+    );
+}
+
+#[test]
+fn an_object_without_any_source_has_no_file_and_one_notice() {
+    let a = sources_archive("x\n");
+    let r = pick(&a, &[], &[], "");
+    assert!(!r.files.contains_key(&(ObjectType::Table, 27)));
+    assert!(!r.files.contains_key(&(ObjectType::CodeUnit, 60000)));
+    let table: Vec<_> = r
+        .notices
+        .iter()
+        .filter(|n| n.contains("Table 27"))
+        .collect();
+    let unit: Vec<_> = r
+        .notices
+        .iter()
+        .filter(|n| n.contains("CodeUnit 60000"))
+        .collect();
+    assert_eq!((table.len(), unit.len()), (1, 1), "{:?}", r.notices);
+    assert!(table[0].contains("No source is available"));
+    assert_eq!(r.notices.len(), 2);
+}
+
+#[test]
+fn stack_frames_and_snappoints_use_the_chosen_file() {
+    let a = sources_archive("x\n");
+    let r = pick(
+        &a,
+        &[((5, 50000), "/ws/Probe.al")],
+        &[((1, 27), "/pkg/Table27.al")],
+        "x\n",
+    );
+    let mut s = ReplaySession::new(a, r.files, PathBuf::from("/cache"));
+    let seq = AtomicU64::new(1);
+    let event = s.snappoints_event(&seq);
+    let paths: Vec<_> = event["body"]["breakpoints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["source"]["path"].as_str().unwrap().to_string())
+        .collect();
+    assert!(paths.contains(&"/ws/Probe.al".to_string()), "{paths:?}");
+    let mut seen = Vec::new();
+    for command in ["configurationDone", "continue", "continue", "continue"] {
+        let msgs = s
+            .handle(&seq, 1, command, &json!({}), &no_resolve)
+            .unwrap()
+            .messages;
+        if !msgs.iter().any(|m| m["event"] == "stopped") {
+            continue;
+        }
+        let st = s
+            .handle(&seq, 2, "stackTrace", &json!({}), &no_resolve)
+            .unwrap()
+            .messages;
+        let frame = &st[0]["body"]["stackFrames"][0];
+        seen.push(frame["source"]["path"].as_str().map(str::to_string));
+    }
+    assert_eq!(
+        seen,
+        vec![
+            Some("/ws/Probe.al".to_string()),
+            Some("/cache/z/Page%50001.al".to_string()),
+            Some("/pkg/Table27.al".to_string()),
+            None,
+        ]
+    );
 }

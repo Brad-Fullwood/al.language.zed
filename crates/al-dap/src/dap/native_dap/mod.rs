@@ -34,6 +34,7 @@ mod test_support;
 
 pub use browser::build_debug_browser_url;
 pub use capture::{CaptureSnappoint, SnappointResolver};
+pub use replay::PackageSourceResolver;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -222,6 +223,8 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     acquire_token: Arc<F>,
     resolve_object: R,
     resolve_path: P,
+    /// Source of a dependency package object for a replay frame.
+    package_source: PackageSourceResolver,
     /// Compile the project; `Ok(build log)` on success, `Err(log)` on failure.
     /// Injected by the caller (al-lsp) so this crate never names the build /
     /// emit pipeline.
@@ -243,6 +246,7 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
 /// `resolve_object` maps a file path and a 1-based line to the type and ID of
 /// the AL object around that line, using the workspace index.
 /// `resolve_path` is the reverse: given a BC (ObjectType, ObjectNumber) returns the source file.
+/// `package_source` gives a replay frame the virtual source file of a dependency package object.
 /// Both are provided by the caller (al-lsp binary) since they depend on `crate::symbols`.
 /// `snapshot_sources_dir` is the cache folder the sources of replayed snapshots are written to.
 /// `snappoint_resolver` turns a `setBreakpoints` line into a snappoint for a snapshot capture.
@@ -253,6 +257,7 @@ pub async fn run_native_dap<F, Fut, R, P, C, CompileFut, A>(
     acquire_token: F,
     resolve_object: R,
     resolve_path: P,
+    package_source: PackageSourceResolver,
     compile: C,
     find_app: A,
     snapshot_sources_dir: PathBuf,
@@ -286,6 +291,7 @@ where
         acquire_token: Arc::new(acquire_token),
         resolve_object,
         resolve_path,
+        package_source,
         compile,
         find_app,
         replay: replay::ReplayState::new(snapshot_sources_dir),

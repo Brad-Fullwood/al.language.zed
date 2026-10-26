@@ -25,7 +25,10 @@
 //! - Timestamps are not added to `output` text.
 
 pub mod engine;
+mod frame_sources;
 mod sources;
+
+pub use self::frame_sources::PackageSourceResolver;
 #[cfg(test)]
 mod tests;
 
@@ -196,8 +199,13 @@ impl ReplaySession {
             let (t, n) = sources::object_of_file_name(&p.file_name()?.to_string_lossy())?;
             return Some((t.as_i8(), n));
         }
-        let r = resolve(path, line)?;
-        Some((i8::try_from(r.object_type).ok()?, r.object_id))
+        if let Some(r) = resolve(path, line) {
+            return Some((i8::try_from(r.object_type).ok()?, r.object_id));
+        }
+        // A frame file that the workspace index does not know, such as a
+        // dependency package's source.
+        let (t, n) = self.files.iter().find(|(_, f)| f.as_path() == p)?.0;
+        Some((t.as_i8(), *n))
     }
 
     /// Apply a `setBreakpoints` request and build its response body.
@@ -660,7 +668,7 @@ where
             }
         };
         let dir = self.replay.sources_dir.join(sources::folder_name(&zip));
-        let files = match sources::write_sources(&dir, &archive).await {
+        let (extracted, mut notices) = match sources::write_sources(&dir, &archive).await {
             Ok(f) => f,
             Err(e) => {
                 return self
@@ -673,7 +681,17 @@ where
                     .await;
             }
         };
-        let mut session = ReplaySession::new(archive, files, dir);
+        // Frame order of Microsoft's host: workspace file, the zip's source,
+        // a dependency package's source, none.
+        let chosen = frame_sources::choose(
+            &archive,
+            &extracted,
+            &|t, n| (self.resolve_path)(t, n),
+            &*self.package_source,
+            &|p| std::fs::read_to_string(p).ok(),
+        );
+        notices.extend(chosen.notices);
+        let mut session = ReplaySession::new(archive, chosen.files, dir);
         // Breakpoints sent before the launch wait in the shared pending map.
         let pending = std::mem::take(&mut *self.pending_breakpoints.lock().await);
         for (path, requests) in pending {
@@ -688,6 +706,9 @@ where
         )
         .await?;
         write_dap(out, &event).await?;
+        for text in &notices {
+            write_dap(out, &text_event(&self.seq, text)).await?;
+        }
         Ok(())
     }
 }

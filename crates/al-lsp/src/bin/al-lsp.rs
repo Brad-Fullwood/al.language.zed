@@ -444,6 +444,7 @@ async fn run() {
             move |object_type, object_id| {
                 al_lsp::server::dap_mode::native_dap_object_path(&fi2, object_type, object_id)
             },
+            al_lsp::server::dap_mode::package_source::resolver(&snap_root),
             |project_root: PathBuf| async move {
                 // Native DAP is a separate process, so it cannot borrow the
                 // LSP workspace lock.  Load the persisted project policy here

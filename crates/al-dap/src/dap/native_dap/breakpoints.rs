@@ -377,6 +377,7 @@ mod tests {
             acquire_token: Arc::new(no_token),
             resolve_object: resolve_foo_al,
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            package_source: std::sync::Arc::new(|_, _| None),
             compile: no_compile,
             find_app: |_| Ok(None),
             replay: Default::default(),

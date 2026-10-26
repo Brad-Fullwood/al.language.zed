@@ -15,6 +15,7 @@
 //! Merged from the standalone `al-dap` crate.
 
 mod editor_services;
+pub mod package_source;
 pub mod snappoints;
 
 use std::path::Path;

@@ -655,6 +655,7 @@ mod tests {
             }),
             resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            package_source: std::sync::Arc::new(|_, _| None),
             compile: move |_: PathBuf| {
                 compiled_by_hook.store(true, Ordering::SeqCst);
                 std::future::ready(Ok(String::new()))
@@ -744,6 +745,7 @@ mod tests {
             acquire_token: Arc::new(|_: String| std::future::ready(Ok("test-token".to_string()))),
             resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
             resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            package_source: std::sync::Arc::new(|_, _| None),
             compile: move |_: PathBuf| {
                 compiled_by_hook.store(true, std::sync::atomic::Ordering::SeqCst);
                 std::future::ready(Ok("shared build completed".to_string()))

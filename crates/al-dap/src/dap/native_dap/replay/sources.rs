@@ -42,7 +42,8 @@ pub(super) fn object_of_file_name(name: &str) -> Option<(ObjectType, i32)> {
 }
 
 /// Write every source of the archive into `dir`, read-only on Unix, and
-/// return where each object's file is.
+/// return where each object's file is, with one warning text per file that
+/// could not be made read-only.
 ///
 /// The write refuses a symbolic link at the destination (al_bc's no follow
 /// write). Files from an earlier replay are removed first because they are
@@ -50,9 +51,10 @@ pub(super) fn object_of_file_name(name: &str) -> Option<(ObjectType, i32)> {
 pub(super) async fn write_sources(
     dir: &Path,
     archive: &SnapshotArchive,
-) -> std::io::Result<HashMap<(ObjectType, i32), PathBuf>> {
+) -> std::io::Result<(HashMap<(ObjectType, i32), PathBuf>, Vec<String>)> {
     tokio::fs::create_dir_all(dir).await?;
     let mut files = HashMap::new();
+    let mut warnings = Vec::new();
     for (object_type, number) in archive.source_ids() {
         let Some(text) = archive.source(object_type, number) else {
             continue;
@@ -64,29 +66,30 @@ pub(super) async fn write_sources(
             Err(e) => return Err(e),
         }
         al_bc::output_file::write_no_follow(&path, text.as_bytes().to_vec()).await?;
-        make_read_only(&path).await;
+        if let Err(e) = make_read_only(&path).await {
+            warnings.push(format!(
+                "Could not make {} read-only: {e}\n",
+                path.display()
+            ));
+        }
         files.insert((object_type, number), path);
     }
-    Ok(files)
+    Ok((files, warnings))
 }
 
 #[cfg(unix)]
-async fn make_read_only(path: &Path) {
+async fn make_read_only(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     // Only a regular file we just wrote: a link that appeared since is left alone.
-    if tokio::fs::symlink_metadata(path)
-        .await
-        .is_ok_and(|m| m.is_file())
-    {
-        let _ = tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).await;
+    if tokio::fs::symlink_metadata(path).await?.is_file() {
+        tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).await?;
     }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-async fn make_read_only(path: &Path) {
-    if let Ok(meta) = tokio::fs::metadata(path).await {
-        let mut perms = meta.permissions();
-        perms.set_readonly(true);
-        let _ = tokio::fs::set_permissions(path, perms).await;
-    }
+async fn make_read_only(path: &Path) -> std::io::Result<()> {
+    let mut perms = tokio::fs::metadata(path).await?.permissions();
+    perms.set_readonly(true);
+    tokio::fs::set_permissions(path, perms).await
 }
