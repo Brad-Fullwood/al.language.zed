@@ -16,13 +16,12 @@
 use std::path::{Path, PathBuf};
 
 use al_bc::snapshot::archive::{render_stops, RenderOptions, SnapshotArchive};
-use al_bc::snapshot::state::{now_secs, SessionRecord, SessionStore, SnappointRecord};
-use al_dap::dap::bc_debug::automation;
-use al_dap::dap::bc_debug::snapshot_debugger::{
-    guard_production, new_debugging_context, snapshot_attach, snapshot_finish, snapshot_status,
-    SnapshotAttachKind, SnapshotAttachRequest, SnapshotBreakpointLocation, SnapshotClientType,
-    SnapshotDebuggerError, SnapshotLine, SnapshotObjectType, SnapshotVerbosity,
+use al_bc::snapshot::state::{SessionRecord, SessionStore, SnappointRecord};
+use al_dap::dap::bc_debug::snapshot_capture::{
+    self, environment_version_warnings, parse_client_type, parse_verbosity, CaptureError,
+    FinishResult, StartRequest, VersionInfo,
 };
+use al_dap::dap::bc_debug::snapshot_debugger::{guard_production, SnapshotDebuggerError};
 use al_dap::dap::bc_debug::BcDebugConfig;
 use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
@@ -31,14 +30,8 @@ use serde_json::{json, Value};
 use super::containment::{resolve_param_within_project, resolve_write_param_within_project};
 use super::debug_dispatch::{acquire_bc_token, debug_config_from_server_config, pick_named_config};
 use crate::server::dap_mode::snappoints::{
-    alpackages_app_version, group_snappoints, parse_snap_spec, resolve_snappoint, version_warning,
-    ResolvedSnappoint, SnapSource,
+    alpackages_app_version, parse_snap_spec, resolve_snappoint, ResolvedSnappoint, SnapSource,
 };
-
-/// The server drops a started session that is not finished after this long.
-const START_TIMEOUT_SECS: u64 = 600;
-/// Warn from this long after the session started.
-const START_WARN_SECS: u64 = 480;
 
 type Failure = (i32, String);
 
@@ -61,6 +54,14 @@ fn snapshot_failure(error: SnapshotDebuggerError) -> Failure {
     match error {
         SnapshotDebuggerError::Production => invalid(error.to_string()),
         other => internal(other.to_string()),
+    }
+}
+
+fn capture_failure(error: CaptureError) -> Failure {
+    match error {
+        CaptureError::Invalid(message) => invalid(message),
+        CaptureError::Internal(message) => internal(message),
+        CaptureError::Snapshot(error) => snapshot_failure(error),
     }
 }
 
@@ -140,41 +141,6 @@ fn opt_list(params: &Value, key: &str) -> Result<Option<Vec<String>>, Failure> {
             "'{key}' must be a list of strings or one comma separated string"
         ))),
     }
-}
-
-fn client_type(text: &str) -> Result<(SnapshotClientType, &'static str), Failure> {
-    let normalised = text.replace([' ', '-', '_'], "").to_ascii_lowercase();
-    match normalised.as_str() {
-        "webclient" => Ok((SnapshotClientType::WebClient, "WebClient")),
-        "webserviceclient" => Ok((SnapshotClientType::WebServiceClient, "WebServiceClient")),
-        "background" => Ok((SnapshotClientType::Background, "Background")),
-        "clientservice" => Ok((SnapshotClientType::ClientService, "ClientService")),
-        _ => Err(invalid(format!(
-            "breakOnNext must be one of WebClient, WebServiceClient, Background, ClientService; got `{text}`"
-        ))),
-    }
-}
-
-fn object_type(number: i32) -> Result<SnapshotObjectType, Failure> {
-    Ok(match number {
-        1 => SnapshotObjectType::Table,
-        3 => SnapshotObjectType::Report,
-        5 => SnapshotObjectType::CodeUnit,
-        6 => SnapshotObjectType::XmlPort,
-        8 => SnapshotObjectType::Page,
-        9 => SnapshotObjectType::Query,
-        14 => SnapshotObjectType::PageExtension,
-        15 => SnapshotObjectType::TableExtension,
-        16 => SnapshotObjectType::Enum,
-        17 => SnapshotObjectType::EnumExtension,
-        22 => SnapshotObjectType::ReportExtension,
-        28 => SnapshotObjectType::Interface,
-        other => {
-            return Err(invalid(format!(
-                "object type {other} cannot take a snappoint"
-            )))
-        }
-    })
 }
 
 fn object_type_name(number: i32) -> String {
@@ -264,72 +230,17 @@ fn snappoints_json(points: &[ResolvedSnappoint]) -> Value {
     )
 }
 
-/// The Base Application version of the environment, as a warning text list
-/// entry when it differs from where the snappoints were set. A failed lookup
-/// is a warning, not an error.
-async fn version_warnings(
-    http: &reqwest::Client,
-    config: &BcDebugConfig,
-    token: &str,
-    root: &Path,
-    points: &[ResolvedSnappoint],
-) -> Vec<String> {
-    let lookup = match automation_base_override() {
-        Some(base) => automation::base_app_version_at(http, &base, token).await,
-        None => automation::base_application_version(http, config, token).await,
-    };
-    match lookup {
-        Ok(environment) => {
-            let package_version = points.iter().find_map(|point| match &point.source {
-                SnapSource::PackageSource { version, .. } => version.clone(),
-                _ => None,
-            });
-            let alpackages = alpackages_app_version(root, "Microsoft", "Base Application");
-            version_warning(
-                &environment,
-                package_version.as_deref(),
-                alpackages.as_deref(),
-            )
-            .into_iter()
-            .collect()
-        }
-        Err(error) => vec![format!("Base Application version not checked: {error}")],
-    }
-}
-
-async fn resolve_user(
-    http: &reqwest::Client,
-    config: &BcDebugConfig,
-    token: &str,
-    user: &str,
-) -> Result<String, Failure> {
-    if al_bc::bc_client::is_guid(user) {
-        return Ok(user.to_string());
-    }
-    let resolved = match automation_base_override() {
-        Some(base) => automation::resolve_user_at(http, &base, token, user).await,
-        None => automation::resolve_user_security_id(http, config, token, user).await,
-    };
-    resolved.map_err(|error| invalid(format!("userId `{user}`: {error}")))
-}
-
 async fn start(workspace: &Workspace, params: &Value) -> Result<Value, Failure> {
     let root = project_root(workspace)?;
     let allow_production = opt_bool(params, "allowProduction")?;
-    let (client, client_name) = client_type(opt_str(params, "breakOnNext")?.ok_or_else(|| {
+    let client_text = opt_str(params, "breakOnNext")?.ok_or_else(|| {
         invalid("Missing 'breakOnNext' (WebClient, WebServiceClient, Background or ClientService)")
-    })?)?;
-    let verbosity = match opt_str(params, "verbosity")?
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        None | Some("full") => (SnapshotVerbosity::Full, "Full"),
-        Some("snappoint") => (SnapshotVerbosity::SnapPoint, "SnapPoint"),
-        Some(other) => {
-            return Err(invalid(format!(
-                "verbosity must be snappoint or full; got `{other}`"
-            )))
-        }
+    })?;
+    let (_, client_name) = parse_client_type(client_text).map_err(invalid)?;
+    // SnapPoint is the default, as in Microsoft's snapshot debugging.
+    let verbosity_name = match opt_str(params, "verbosity")? {
+        None => "SnapPoint",
+        Some(text) => parse_verbosity(text).map_err(invalid)?.1,
     };
     let session_id = match params.get("sessionId") {
         None | Some(Value::Null) => -1,
@@ -338,17 +249,18 @@ async fn start(workspace: &Workspace, params: &Value) -> Result<Value, Failure> 
             .filter(|n| *n >= 0)
             .ok_or_else(|| invalid("'sessionId' must be a non negative integer"))?,
     };
+    // Snappoints are optional: SnapPoint verbosity also records a method
+    // context that holds an exception.
     let specs = match params.get("snaps") {
-        Some(Value::Array(items)) if !items.is_empty() => items
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
             .iter()
             .map(|item| {
                 item.as_str()
                     .ok_or_else(|| invalid("'snaps' must hold strings"))
             })
             .collect::<Result<Vec<_>, _>>()?,
-        _ => return Err(invalid(
-            "Missing 'snaps': a list of snappoints such as `codeunit:22:176?cond` or `file.al:120`",
-        )),
+        Some(_) => return Err(invalid("'snaps' must be a list of strings")),
     };
     let user = opt_str(params, "userId")?;
 
@@ -364,103 +276,79 @@ async fn start(workspace: &Workspace, params: &Value) -> Result<Value, Failure> 
                 .map_err(|error| invalid(format!("snap `{text}`: {error}")))?,
         );
     }
-    let groups = group_snappoints(&points);
-    let locations = groups
+    let snappoints = points
         .iter()
-        .map(|group| {
-            Ok(SnapshotBreakpointLocation {
-                object_type: object_type(group.object_type)?,
-                object_number: u32::try_from(group.object_id).map_err(|_| {
-                    invalid(format!("object id {} is out of range", group.object_id))
-                })?,
-                lines: group
-                    .lines
-                    .iter()
-                    .map(|line| SnapshotLine {
-                        line: line.line0,
-                        condition: line.condition.clone().unwrap_or_default(),
-                    })
-                    .collect(),
-            })
+        .map(|point| SnappointRecord {
+            object_type: point.object_type,
+            object_id: point.object_id,
+            line0: point.line0,
+            condition: point.condition.clone(),
         })
-        .collect::<Result<Vec<_>, Failure>>()?;
+        .collect::<Vec<_>>();
 
+    let store = session_store()?;
     let token = token_for(workspace, &config, params).await?;
     let http = http_client(&config)?;
     let user_id = match user {
-        Some(user) => Some(resolve_user(&http, &config, &token, user).await?),
+        Some(user) => Some(
+            snapshot_capture::resolve_user(
+                &http,
+                &config,
+                &token,
+                automation_base_override().as_deref(),
+                user,
+            )
+            .await
+            .map_err(capture_failure)?,
+        ),
         None => None,
     };
 
-    let debugging_context = new_debugging_context();
-    let mut request = SnapshotAttachRequest::new(debugging_context.clone());
-    request.client_type = client;
-    request.user_id = user_id.clone();
-    request.locations = locations;
-    request.verbosity = verbosity.0;
-    request.session_id = session_id;
-    let attached = snapshot_attach(&http, &config, &token, allow_production, &request)
-        .await
-        .map_err(snapshot_failure)?;
-    let attach_kind = match attached.kind {
-        SnapshotAttachKind::Undefined => "Undefined",
-        SnapshotAttachKind::UserSession => "UserSession",
-        SnapshotAttachKind::NextSessionForUserOnTenant => "NextSessionForUserOnTenant",
-        SnapshotAttachKind::NextSessionOnTenant => "NextSessionOnTenant",
-    };
+    let started = snapshot_capture::start(
+        &http,
+        &token,
+        &store,
+        StartRequest {
+            config: &config,
+            configuration_name: Some(config_name),
+            project_root: &root,
+            client_type: client_name,
+            verbosity: verbosity_name,
+            session_id,
+            user_id,
+            snappoints,
+            allow_production,
+        },
+    )
+    .await
+    .map_err(capture_failure)?;
 
-    let record = SessionRecord {
-        debugging_context: debugging_context.clone(),
-        affinity_cookie: attached.affinity_cookie,
-        attach_kind: attach_kind.to_string(),
-        created_at: now_secs(),
-        project_root: root.clone(),
-        configuration_name: Some(config_name),
-        tenant: config.tenant.clone(),
-        environment_type: config.environment_type.clone(),
-        environment_name: config.environment_name.clone(),
-        server: config.server.clone(),
-        server_instance: config.server_instance.clone(),
-        snapshot_port: config.snapshot_port,
-        client_type: client_name.to_string(),
-        user_id,
-        session_id,
-        verbosity: verbosity.1.to_string(),
-        snappoints: points
-            .iter()
-            .map(|point| SnappointRecord {
-                object_type: point.object_type,
-                object_id: point.object_id,
-                line0: point.line0,
-                condition: point.condition.clone(),
-            })
-            .collect(),
-        last_status: None,
-        last_status_at: None,
-        started_at: None,
-        zip_path: None,
-        finished_at: None,
-    };
     let mut warnings = Vec::new();
-    if let Err(error) = session_store()?.save(&record) {
-        warnings.push(format!(
-            "The session could not be saved, so status and finish need the context passed explicitly and will not find it: {error}"
-        ));
-    }
-    if config.environment_type.eq_ignore_ascii_case("OnPrem")
-        && automation_base_override().is_none()
-    {
-        warnings.push(
-            "Base Application version not checked: the lookup needs a SaaS environment".to_string(),
+    warnings.extend(started.save_error);
+    if !points.is_empty() {
+        let info = VersionInfo {
+            package_version: points.iter().find_map(|point| match &point.source {
+                SnapSource::PackageSource { version, .. } => version.clone(),
+                _ => None,
+            }),
+            alpackages_base_app: alpackages_app_version(&root, "Microsoft", "Base Application"),
+        };
+        warnings.extend(
+            environment_version_warnings(
+                &http,
+                &config,
+                &token,
+                automation_base_override().as_deref(),
+                &info,
+            )
+            .await,
         );
-    } else {
-        warnings.extend(version_warnings(&http, &config, &token, &root, &points).await);
     }
 
     Ok(json!({
         "cmd": "start",
-        "debuggingContext": debugging_context,
-        "attachKind": attach_kind,
+        "debuggingContext": started.record.debugging_context,
+        "attachKind": started.attach_kind,
         "snappoints": snappoints_json(&points),
         "warnings": warnings,
     }))
@@ -523,45 +411,34 @@ async fn status(workspace: &Workspace, params: &Value) -> Result<Value, Failure>
     let mut record = pick_record(params)?;
     let (_, config) = config_for_record(workspace, &record)?;
     guard_production(&config, allow_production).map_err(snapshot_failure)?;
+    let store = session_store()?;
     let token = token_for(workspace, &config, params).await?;
     let http = http_client(&config)?;
-    let result = snapshot_status(
+    let outcome = snapshot_capture::status(
         &http,
-        &config,
         &token,
+        &store,
+        &config,
         allow_production,
-        &record.debugging_context,
-        record.affinity_cookie.as_deref(),
+        &mut record,
     )
     .await
-    .map_err(snapshot_failure)?;
-    let now = now_secs();
-    let status = result.status.to_string();
-    record.note_status(&status, now);
+    .map_err(capture_failure)?;
     let mut warnings = Vec::new();
-    if let Err(error) = session_store()?.save(&record) {
-        warnings.push(format!("The session could not be updated: {error}"));
-    }
-    let elapsed = record.seconds_since_started(now);
-    if let Some(seconds) = elapsed {
-        if status == "Started" && seconds >= START_WARN_SECS {
-            let left = START_TIMEOUT_SECS.saturating_sub(seconds);
-            warnings.push(format!(
-                "The session started {seconds} seconds ago. The server drops a started session after 10 minutes ({left} seconds left), so finish it now."
-            ));
-        }
-    }
+    warnings.extend(outcome.save_error);
+    warnings.extend(outcome.warning);
     Ok(json!({
         "cmd": "status",
         "debuggingContext": record.debugging_context,
-        "status": status,
-        "secondsSinceStarted": elapsed,
+        "status": outcome.status,
+        "secondsSinceStarted": outcome.seconds_since_started,
         "warnings": warnings,
     }))
 }
 
-/// `outputDir` resolved inside the project, or `<project>/.snapshots`.
-fn output_dir(workspace: &Workspace, params: &Value) -> Result<PathBuf, Failure> {
+/// An explicit `outputDir` resolved inside the project. `None` means the
+/// default `<project>/.snapshots`, which the shared finish contains the same way.
+fn output_dir(workspace: &Workspace, params: &Value) -> Result<Option<PathBuf>, Failure> {
     match opt_str(params, "outputDir")? {
         Some(dir) => {
             let dir = PathBuf::from(dir);
@@ -569,9 +446,10 @@ fn output_dir(workspace: &Workspace, params: &Value) -> Result<PathBuf, Failure>
                 return Err(invalid("'outputDir' must be an absolute path"));
             }
             resolve_write_param_within_project(workspace, "outputDir", &dir)
+                .map(Some)
                 .map_err(|rejection| (rejection.code, rejection.message))
         }
-        None => Ok(project_root(workspace)?.join(".snapshots")),
+        None => Ok(None),
     }
 }
 
@@ -581,25 +459,24 @@ async fn finish(workspace: &Workspace, params: &Value) -> Result<Value, Failure>
     let mut record = pick_record(params)?;
     let (_, config) = config_for_record(workspace, &record)?;
     guard_production(&config, allow_production).map_err(snapshot_failure)?;
+    let store = session_store()?;
     let token = token_for(workspace, &config, params).await?;
     let http = http_client(&config)?;
-    let finished = snapshot_finish(
+    let outcome = snapshot_capture::finish(
         &http,
-        &config,
         &token,
+        &store,
+        &config,
         allow_production,
-        &record.debugging_context,
-        record.affinity_cookie.as_deref(),
+        &mut record,
+        dir.as_deref(),
     )
     .await
-    .map_err(snapshot_failure)?;
-    let now = now_secs();
-    record.finished_at = Some(now);
-    let Some(zip) = finished.zip else {
-        record.last_status = Some("Finished".to_string());
-        record.last_status_at = Some(now);
-        let _ = session_store()?.save(&record);
-        return Ok(json!({
+    .map_err(capture_failure)?;
+    let mut warnings = Vec::new();
+    warnings.extend(outcome.save_error);
+    Ok(match outcome.result {
+        FinishResult::Empty => json!({
             "cmd": "finish",
             "debuggingContext": record.debugging_context,
             "zipPath": null,
@@ -607,36 +484,21 @@ async fn finish(workspace: &Workspace, params: &Value) -> Result<Value, Failure>
             "cpuProfilePath": null,
             "empty": true,
             "message": "The server returned no snapshot: nothing hit a snappoint, or no matching session ran.",
-        }));
-    };
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|error| internal(format!("cannot create {}: {error}", dir.display())))?;
-    let bytes = zip.len();
-    let saved = al_bc::snapshot::save_finished_snapshot(
-        &dir,
-        &record.debugging_context,
-        zip,
-        finished.sampling,
-    )
-    .await
-    .map_err(|error| internal(format!("cannot save the snapshot: {error}")))?;
-    record.zip_path = Some(saved.zip.clone());
-    record.last_status = Some("Finished".to_string());
-    record.last_status_at = Some(now);
-    let mut warnings = Vec::new();
-    if let Err(error) = session_store()?.save(&record) {
-        warnings.push(format!("The session could not be updated: {error}"));
-    }
-    Ok(json!({
-        "cmd": "finish",
-        "debuggingContext": record.debugging_context,
-        "zipPath": saved.zip.display().to_string(),
-        "bytes": bytes,
-        "cpuProfilePath": saved.cpu_profile.map(|p| p.display().to_string()),
-        "empty": false,
-        "warnings": warnings,
-    }))
+        }),
+        FinishResult::Saved {
+            zip,
+            bytes,
+            cpu_profile,
+        } => json!({
+            "cmd": "finish",
+            "debuggingContext": record.debugging_context,
+            "zipPath": zip.display().to_string(),
+            "bytes": bytes,
+            "cpuProfilePath": cpu_profile.map(|p| p.display().to_string()),
+            "empty": false,
+            "warnings": warnings,
+        }),
+    })
 }
 
 fn list() -> Result<Value, Failure> {

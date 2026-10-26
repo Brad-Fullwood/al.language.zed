@@ -112,8 +112,9 @@ pub enum SnapshotCommands {
         #[arg(long)]
         config: String,
         /// Snappoint: `<type>:<id|name>:<line>[?condition]` or `<file>:<line>[?condition]`.
-        /// Repeat for several snappoints.
-        #[arg(long = "snap", required = true)]
+        /// Repeat for several snappoints. Optional: the default SnapPoint
+        /// verbosity also records a method context that holds an exception.
+        #[arg(long = "snap")]
         snap: Vec<String>,
         /// Client type whose next session is captured
         #[arg(long = "break-on-next", required = true,
@@ -125,7 +126,7 @@ pub enum SnapshotCommands {
         /// Capture one session by its session id
         #[arg(long = "session-id")]
         session_id: Option<i64>,
-        /// How much the snapshot records
+        /// How much the snapshot records (default snappoint)
         #[arg(long, value_parser = ["snappoint", "full"])]
         verbosity: Option<String>,
         /// Allow a Production environment

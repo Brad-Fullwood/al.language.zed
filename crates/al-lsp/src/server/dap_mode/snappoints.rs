@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 use al_dap::dap::native_dap::{bc_object_type, kind_to_object_type};
 use al_source::file_index::FileIndex;
 
+use al_dap::dap::bc_debug::snapshot_capture::version_key;
+
 use super::native_dap_object_at_line;
 
 /// The highest 1-based line a snappoint can carry (a `u16` 0-based line).
@@ -92,19 +94,6 @@ pub struct ResolvedSnappoint {
     pub line0: u16,
     pub condition: Option<String>,
     pub source: SnapSource,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SnappointLine {
-    pub line0: u16,
-    pub condition: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SnappointGroup {
-    pub object_type: i32,
-    pub object_id: i32,
-    pub lines: Vec<SnappointLine>,
 }
 
 fn parse_line(text: &str) -> Result<u32, SnapError> {
@@ -322,34 +311,6 @@ fn object_in_text(
     native_dap_object_at_line(&index, path, i64::from(line1))
 }
 
-/// Group by `(object type, object id)` in first-seen order, lines in
-/// first-seen order, identical `(line, condition)` pairs once.
-pub fn group_snappoints(points: &[ResolvedSnappoint]) -> Vec<SnappointGroup> {
-    let mut groups: Vec<SnappointGroup> = Vec::new();
-    for point in points {
-        let line = SnappointLine {
-            line0: point.line0,
-            condition: point.condition.clone(),
-        };
-        match groups
-            .iter_mut()
-            .find(|g| g.object_type == point.object_type && g.object_id == point.object_id)
-        {
-            Some(group) => {
-                if !group.lines.contains(&line) {
-                    group.lines.push(line);
-                }
-            }
-            None => groups.push(SnappointGroup {
-                object_type: point.object_type,
-                object_id: point.object_id,
-                lines: vec![line],
-            }),
-        }
-    }
-    groups
-}
-
 /// Manifests of the `.app` files directly under `<project_root>/.alpackages`.
 fn alpackages_manifests(project_root: &Path) -> Vec<al_symbols::manifest::NavxManifest> {
     let Ok(entries) = std::fs::read_dir(project_root.join(".alpackages")) else {
@@ -361,24 +322,6 @@ fn alpackages_manifests(project_root: &Path) -> Vec<al_symbols::manifest::NavxMa
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("app")))
         .filter_map(|p| al_symbols::app_reader::read_app_manifest_file(&p).ok())
         .collect()
-}
-
-fn version_key(version: &str) -> Vec<u64> {
-    version
-        .split('.')
-        .map(|part| part.trim().parse().unwrap_or(0))
-        .collect()
-}
-
-/// Equal after dropping trailing zero components, so `27.1` equals `27.1.0.0`.
-fn same_version(a: &str, b: &str) -> bool {
-    let trim = |mut v: Vec<u64>| {
-        while v.last() == Some(&0) {
-            v.pop();
-        }
-        v
-    };
-    trim(version_key(a)) == trim(version_key(b))
 }
 
 /// The manifest of the cache directory `dir_name`, matched by the sanitised
@@ -403,36 +346,6 @@ pub fn alpackages_app_version(project_root: &Path, publisher: &str, name: &str) 
         })
         .max_by_key(|m| version_key(&m.version))
         .map(|m| m.version)
-}
-
-/// A warning when a version the snappoints were set against differs from the
-/// environment's BaseApp version. `package_version` is the version of the
-/// package a snappoint's source came from. `alpackages_base_app` is the
-/// BaseApp version in `.alpackages`. Either may be absent.
-pub fn version_warning(
-    environment_base_app: &str,
-    package_version: Option<&str>,
-    alpackages_base_app: Option<&str>,
-) -> Option<String> {
-    let environment = environment_base_app.trim();
-    let mut notes = Vec::new();
-    for (label, version) in [
-        ("the package the snappoint came from", package_version),
-        ("the .alpackages BaseApp", alpackages_base_app),
-    ] {
-        if let Some(version) = version.map(str::trim) {
-            if !same_version(version, environment) {
-                notes.push(format!("{label} is {version}"));
-            }
-        }
-    }
-    if notes.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "The environment runs BaseApp {environment} but {}. Line numbers can differ from the code the server runs, so a snappoint may land on the wrong line.",
-        notes.join(" and ")
-    ))
 }
 
 #[cfg(test)]
@@ -711,53 +624,6 @@ mod tests {
         std::fs::write(&file, TWO_OBJECTS).unwrap();
         let err = resolve_file_line(&FileIndex::new(), project.path(), &file, 2, None).unwrap_err();
         assert!(matches!(err, SnapError::OutsideRoots(_)), "{err}");
-    }
-
-    fn point(t: i32, id: i32, line0: u16, cond: Option<&str>) -> ResolvedSnappoint {
-        ResolvedSnappoint {
-            object_type: t,
-            object_id: id,
-            line0,
-            condition: cond.map(str::to_string),
-            source: SnapSource::ObjectId,
-        }
-    }
-
-    #[test]
-    fn grouping_keeps_first_seen_order_and_dedupes() {
-        let groups = group_snappoints(&[
-            point(PAGE, 42, 10, None),
-            point(CODEUNIT, 80, 5, None),
-            point(PAGE, 42, 3, None),
-            point(PAGE, 42, 10, None),
-            point(PAGE, 42, 10, Some("x")),
-            point(CODEUNIT, 80, 5, None),
-            point(TABLE, 42, 1, None),
-        ]);
-        assert_eq!(groups.len(), 3);
-        assert_eq!((groups[0].object_type, groups[0].object_id), (PAGE, 42));
-        let lines: Vec<_> = groups[0]
-            .lines
-            .iter()
-            .map(|l| (l.line0, l.condition.as_deref()))
-            .collect();
-        assert_eq!(lines, vec![(10, None), (3, None), (10, Some("x"))]);
-        assert_eq!(groups[1].lines.len(), 1);
-        assert_eq!(groups[2].object_type, TABLE);
-    }
-
-    #[test]
-    fn version_warning_compares_environment_to_sources() {
-        assert_eq!(
-            version_warning("27.1.0.0", Some("27.1.0.0"), Some("27.1")),
-            None
-        );
-        assert_eq!(version_warning("27.1.0.0", None, None), None);
-        let w = version_warning("27.1.0.0", Some("26.5.0.0"), Some("27.1.0.0")).unwrap();
-        assert!(w.contains("27.1.0.0") && w.contains("26.5.0.0"), "{w}");
-        assert!(!w.contains(".alpackages"), "{w}");
-        let w = version_warning("27.1.0.0", None, Some("25.0.0.0")).unwrap();
-        assert!(w.contains(".alpackages BaseApp is 25.0.0.0"), "{w}");
     }
 
     /// Runs only with AL_SNAPSHOT_FIXTURE_DIR set to a folder holding

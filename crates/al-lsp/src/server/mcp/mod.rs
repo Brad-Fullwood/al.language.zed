@@ -785,8 +785,7 @@ fn tools() -> &'static [ToolDef] {
             method: "snapshot",
             description: "Use for snapshot debugging of a Business Central environment: capture what \
                           happens at snappoints in the next matching session, then read the call \
-                          stack and variables afterwards. Use action=start with snaps and \
-                          breakOnNext to begin, status to watch it (a started session is cut off \
+                          stack and variables afterwards. Use action=start with breakOnNext (and optional snaps) to begin, status to watch it (a started session is cut off \
                           after 10 minutes), finish to save the snapshot zip under .snapshots, \
                           list for the sessions started from this machine, and show to print the \
                           stops of a zip. A Production environment is refused unless \
@@ -825,7 +824,7 @@ fn tools() -> &'static [ToolDef] {
                         "verbosity": {
                             "type": "string",
                             "enum": ["snappoint", "full"],
-                            "description": "For start: how much the snapshot records. Default full."
+                            "description": "For start: how much the snapshot records. Default snappoint."
                         },
                         "allowProduction": {
                             "type": "boolean",

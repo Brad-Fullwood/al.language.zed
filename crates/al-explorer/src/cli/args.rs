@@ -961,7 +961,9 @@ mod clap_wiring_tests {
     }
 
     #[test]
-    fn snapshot_start_requires_snaps_and_break_on_next_and_download_is_gone() {
+    fn snapshot_start_requires_break_on_next_and_snaps_are_optional_and_download_is_gone() {
+        assert!(parse(&["snapshot", "start", "--config", "L", "--snap", "a.al:1"]).is_err());
+        // Snappoints are optional: SnapPoint also records an exception.
         assert!(
             parse(&[
                 "snapshot",
@@ -971,9 +973,8 @@ mod clap_wiring_tests {
                 "--break-on-next",
                 "WebClient"
             ])
-            .is_err()
+            .is_ok()
         );
-        assert!(parse(&["snapshot", "start", "--config", "L", "--snap", "a.al:1"]).is_err());
         assert!(
             parse(&[
                 "snapshot",

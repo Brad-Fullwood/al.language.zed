@@ -218,8 +218,8 @@ Common parameter shapes: position queries accept `uri` plus `{line, character}`.
 `upgrade` accept `baselineSymbols`. `tests.snapshot_validate` accepts `snapshotPath`.
 `tests.snapshot_replay` accepts `snapshotPath`, `bcVersion`, and optional `config`/`timeoutMs`, and
 `tests.snapshot_diff` accepts `pathA` and `pathB`. `snapshot` takes `cmd` `start`, `status`, `finish`,
-`list` or `show`. `start` requires `config`, `snaps` and `breakOnNext` and accepts `userId`, `sessionId`,
-`verbosity`, `allowProduction` and `accessToken`. `status` and `finish` accept `context` (default: the
+`list` or `show`. `start` requires `config` and `breakOnNext` and accepts `snaps` (optional: SnapPoint also records an
+exception), `userId`, `sessionId`, `verbosity` (`snappoint` by default, or `full`), `allowProduction` and `accessToken`. `status` and `finish` accept `context` (default: the
 latest session), `finish` also `outputDir` (inside the project, default `.snapshots`). `show` requires
 `path` and accepts `vars`, `fields`, `stop` and `json`. A Production environment is refused without
 `allowProduction`. `source` requires `name` and accepts the

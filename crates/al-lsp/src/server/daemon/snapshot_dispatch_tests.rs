@@ -182,7 +182,6 @@ async fn start_validates_its_parameters() {
     for (patch, needle) in [
         (json!({ "breakOnNext": null }), "breakOnNext"),
         (json!({ "breakOnNext": "Sometimes" }), "breakOnNext"),
-        (json!({ "snaps": [] }), "snaps"),
         (json!({ "snaps": ["codeunit:22"] }), "line"),
         (json!({ "verbosity": "loud" }), "verbosity"),
         (json!({ "sessionId": -3 }), "sessionId"),
@@ -583,4 +582,71 @@ async fn a_failed_version_lookup_is_a_warning_and_an_unknown_user_is_an_error() 
     let (code, message) = err(&env, params).await;
     assert_eq!(code, error_codes::INVALID_PARAMS);
     assert!(message.contains("BOB"), "{message}");
+}
+
+#[tokio::test]
+async fn start_defaults_to_snappoint_verbosity_and_needs_no_snappoints() {
+    let env = env().await;
+    mock_attach(&env, "NextSessionOnTenant").await;
+    let mut params = start_params();
+    params.as_object_mut().unwrap().remove("snaps");
+    let result = ok(&env, params).await;
+    assert_eq!(result["snappoints"], json!([]));
+    let sent = requests(&env).await;
+    let body = String::from_utf8_lossy(&sent[0].body).to_string();
+    // SnapPoint is 0, so the field is omitted. No recording covers an empty
+    // list, so it is sent as [].
+    assert!(!body.contains("SnapshotVerbosity"), "{body}");
+    assert!(body.contains("\"SourceBreakpointLocations\":[]"), "{body}");
+    let context = result["debuggingContext"].as_str().unwrap();
+    let saved = SessionStore::at(&env.store).load(context).unwrap().unwrap();
+    assert_eq!(saved.verbosity, "SnapPoint");
+}
+
+#[tokio::test]
+async fn full_verbosity_is_sent_when_asked_for() {
+    let env = env().await;
+    mock_attach(&env, "NextSessionOnTenant").await;
+    let mut params = start_params();
+    params["verbosity"] = json!("full");
+    ok(&env, params).await;
+    let body = String::from_utf8_lossy(&requests(&env).await[0].body).to_string();
+    assert!(body.contains("\"SnapshotVerbosity\":1"), "{body}");
+}
+
+#[tokio::test]
+async fn finish_writes_a_gitignore_into_the_default_dir_it_creates() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    ok(&env, start_params()).await;
+    mock_op(
+        &env,
+        "finish",
+        ResponseTemplate::new(200).set_body_bytes(SYNTHETIC_ZIP.to_vec()),
+    )
+    .await;
+    ok(&env, json!({ "cmd": "finish", "accessToken": TOKEN })).await;
+    let ignore = env.root.join(".snapshots/.gitignore");
+    assert_eq!(std::fs::read_to_string(ignore).unwrap(), "*\n");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_default_snapshots_dir_that_links_out_of_the_project_is_refused() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    ok(&env, start_params()).await;
+    mock_op(
+        &env,
+        "finish",
+        ResponseTemplate::new(200).set_body_bytes(SYNTHETIC_ZIP.to_vec()),
+    )
+    .await;
+    let outside = env.root.parent().unwrap().join("elsewhere");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, env.root.join(".snapshots")).unwrap();
+    let (_, message) = err(&env, json!({ "cmd": "finish", "accessToken": TOKEN })).await;
+    assert!(message.contains("outside the project"), "{message}");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
+    assert_eq!(requests(&env).await.len(), 1, "no finish request was sent");
 }
