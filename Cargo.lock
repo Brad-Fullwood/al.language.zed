@@ -157,6 +157,7 @@ dependencies = [
 name = "al-explorer"
 version = "0.4.0"
 dependencies = [
+ "al-bc",
  "al-compile",
  "al-emit",
  "al-project",

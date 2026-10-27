@@ -88,7 +88,7 @@ impl TestRunnerClient {
             .timeout(Duration::from_secs(300))
             .build()?;
 
-        let base_url = build_base_url(config);
+        let base_url = build_base_url(config).map_err(TestRunnerError::Config)?;
 
         Ok(Self {
             client,
@@ -336,9 +336,9 @@ fn map_dev_result(r: DevTestResult) -> Result<TestMethodResult, TestRunnerError>
     })
 }
 
-fn build_base_url(config: &BcServerConfig) -> String {
+fn build_base_url(config: &BcServerConfig) -> Result<String, String> {
     match config.environment_type {
-        EnvironmentType::OnPrem => {
+        EnvironmentType::OnPrem => Ok({
             let server = config.server.as_deref().unwrap_or("localhost");
             let instance = config.server_instance.as_deref().unwrap_or("BC");
             let server_trimmed = server.trim_end_matches('/');
@@ -352,16 +352,8 @@ fn build_base_url(config: &BcServerConfig) -> String {
             } else {
                 format!("{}/{}", server_with_scheme, instance)
             }
-        }
-        EnvironmentType::Sandbox | EnvironmentType::Production => {
-            let tenant = config.tenant.as_deref().unwrap_or("common");
-            let env_name = config.environment_name.as_deref().unwrap_or("Sandbox");
-            format!(
-                "https://api.businesscentral.dynamics.com/v2.0/{}/{}",
-                urlencoding::encode(tenant),
-                urlencoding::encode(env_name)
-            )
-        }
+        }),
+        EnvironmentType::Sandbox | EnvironmentType::Production => config.cloud_base_url(),
     }
 }
 
@@ -394,7 +386,7 @@ mod tests {
     #[test]
     fn on_prem_base_url_has_port_and_instance() {
         let config = on_prem_config();
-        let url = build_base_url(&config);
+        let url = build_base_url(&config).unwrap();
         assert!(url.contains("7049"), "URL should contain port: {url}");
         assert!(url.contains("/BC"), "URL should contain instance: {url}");
     }
@@ -413,7 +405,7 @@ mod tests {
             accept_invalid_certs: false,
             debug_args: serde_json::json!({}),
         };
-        let url = build_base_url(&config);
+        let url = build_base_url(&config).unwrap();
         assert!(url.contains("MySandbox"), "URL should contain env: {url}");
     }
 
@@ -580,7 +572,7 @@ mod url_tests {
             accept_invalid_certs: false,
             debug_args: serde_json::json!({}),
         };
-        let url = build_base_url(&config);
+        let url = build_base_url(&config).unwrap();
         assert_eq!(url, "https://myserver.company.com:7049/BC");
         assert!(url.contains("/BC"), "URL should contain instance: {url}");
     }
@@ -600,7 +592,7 @@ mod url_tests {
             accept_invalid_certs: false,
             debug_args: serde_json::json!({}),
         };
-        let url = build_base_url(&config);
+        let url = build_base_url(&config).unwrap();
         assert!(
             !url.contains("http://http://"),
             "Scheme must not be doubled: {url}"

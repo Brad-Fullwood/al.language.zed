@@ -95,7 +95,11 @@ impl BcServerConfig {
                 ))
             }
             EnvironmentType::Sandbox | EnvironmentType::Production => {
-                let tenant = self.tenant.as_deref()?;
+                let tenant = self
+                    .tenant
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case("default"))?;
                 let env_name = self.environment_name.as_deref()?;
                 Some(format!(
                     "https://api.businesscentral.dynamics.com/v2.0/{}/{}/dev/packages?{}",
@@ -105,6 +109,34 @@ impl BcServerConfig {
                 ))
             }
         }
+    }
+
+    /// `https://api.businesscentral.dynamics.com/v2.0/{tenant}/{environment}`,
+    /// the base of every cloud request.
+    ///
+    /// Standard route checked: Microsoft's `CloudHttpClientFactory` builds this
+    /// from the environment name and the token's tenant, and never sends a
+    /// literal `default` or `common`. This URL has no token to read the tenant
+    /// from, so a missing tenant is an error that names `tenant`
+    /// (publish-symbols-02).
+    pub fn cloud_base_url(&self) -> Result<String, String> {
+        let tenant = self
+            .tenant
+            .as_deref()
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && !t.eq_ignore_ascii_case("default"))
+            .ok_or_else(|| {
+                crate::tenant_guard::missing_tenant_message(&format!(
+                    "the launch configuration '{}'",
+                    self.name
+                ))
+            })?;
+        let env_name = self.environment_name.as_deref().unwrap_or("Sandbox");
+        Ok(format!(
+            "https://api.businesscentral.dynamics.com/v2.0/{}/{}",
+            urlencoding::encode(tenant),
+            urlencoding::encode(env_name)
+        ))
     }
 
     pub fn display_name(&self) -> String {
@@ -524,6 +556,22 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn cloud_base_url_needs_the_tenant_and_never_defaults_it() {
+        for tenant in [None, Some(""), Some("default")] {
+            let mut config = named_config("Sbx");
+            config.tenant = tenant.map(str::to_string);
+            let error = config.cloud_base_url().unwrap_err();
+            assert!(error.contains("`tenant`"), "{error}");
+        }
+        let mut config = named_config("Sbx");
+        config.tenant = Some("1b7a9471-d313-4aa4-99e8-7a6c762c8e7d".to_string());
+        assert_eq!(
+            config.cloud_base_url().unwrap(),
+            "https://api.businesscentral.dynamics.com/v2.0/1b7a9471-d313-4aa4-99e8-7a6c762c8e7d/Sbx"
+        );
     }
 
     fn named_config(name: &str) -> BcServerConfig {

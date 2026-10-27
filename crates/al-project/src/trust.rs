@@ -1934,6 +1934,12 @@ pub struct BcTarget {
     pub on_prem: bool,
     pub server: Option<String>,
     pub port: Option<u16>,
+    /// Tenant of a cloud target, from the launch configuration. The tenant
+    /// guard checks it against the registry before a cloud request is allowed.
+    pub tenant: Option<String>,
+    /// `tenantPurpose` of the launch configuration (a customer tenant needs it
+    /// when the caller typed no `--purpose`).
+    pub tenant_purpose: Option<String>,
 }
 
 impl BcTarget {
@@ -1946,7 +1952,21 @@ impl BcTarget {
             ),
             server: config.server.clone(),
             port: config.port,
+            tenant: config.tenant.clone(),
+            tenant_purpose: config
+                .debug_args
+                .get("tenantPurpose")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
         }
+    }
+
+    /// The same target with the tenant and purpose a cloud connection names.
+    #[must_use]
+    pub fn with_tenant(mut self, tenant: Option<&str>, purpose: Option<&str>) -> Self {
+        self.tenant = tenant.map(str::to_string);
+        self.tenant_purpose = purpose.map(str::to_string);
+        self
     }
 
     /// An on-premises server named by a bare URL, with the port read from the
@@ -1967,6 +1987,8 @@ impl BcTarget {
             on_prem: true,
             server: Some(server_url.to_string()),
             port,
+            tenant: None,
+            tenant_purpose: None,
         }
     }
 
@@ -1978,6 +2000,8 @@ impl BcTarget {
             on_prem: environment_type.eq_ignore_ascii_case("OnPrem"),
             server: server.map(str::to_string),
             port: Some(port),
+            tenant: None,
+            tenant_purpose: None,
         }
     }
 
@@ -2051,6 +2075,14 @@ pub fn authorize_cached_credential(
     source: TargetSource,
 ) -> Result<CredentialAuthorization, String> {
     if !target.on_prem {
+        // Standard route checked: the launch.json `tenant` field. It names a
+        // tenant but never confirms it is the one meant, so every cloud
+        // connection also passes the tenant guard (process-02).
+        al_bc::tenant_guard::guard_cloud_connection(
+            target.tenant.as_deref(),
+            target.tenant_purpose.as_deref(),
+        )
+        .map_err(|refusal| refusal.0)?;
         // Microsoft's own host. TLS verification is never negotiable against
         // it.
         return Ok(CredentialAuthorization {

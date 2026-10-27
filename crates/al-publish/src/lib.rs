@@ -162,7 +162,7 @@ pub async fn publish(
 
     let app_path = app_path.ok_or(PublishError::NoAppFile)?;
 
-    let bc_client = BcClient::new(&server_config);
+    let bc_client = BcClient::new(&server_config).map_err(PublishError::Unauthorized)?;
 
     let (app_id, app_version, upload_success) = if config.incremental {
         let app_id = extract_app_id_from_manifest(&config.project_root)?;
@@ -635,12 +635,13 @@ mod tests {
             dir.path(),
             r#"[
                 {"label":"Alpha","adapter":"al","environmentType":"Sandbox",
-                 "environmentName":"MySandbox","tenant":"t.onmicrosoft.com"},
+                 "environmentName":"MySandbox","tenant":"1b7a9471-d313-4aa4-99e8-7a6c762c8e7d"},
                 {"label":"Beta","adapter":"al","environmentType":"OnPrem",
                  "server":"http://beta.example.com","serverInstance":"BC"}
             ]"#,
         );
 
+        al_bc::tenant_guard::install_test_registry();
         let cfg = resolve_server_config(dir.path(), None).unwrap();
         assert_eq!(cfg.name, "Alpha");
         assert_eq!(cfg.display_name(), "BC Cloud (MySandbox)");
@@ -760,7 +761,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri()));
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
         let (app_id, version, success) = do_standard_publish(&client, &app, &mut steps).await;
@@ -790,7 +791,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri()));
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
         let (app_id, version, success) = do_standard_publish(&client, &app, &mut steps).await;
@@ -823,7 +824,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri()));
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
         let (app_id, _version, success) = do_standard_publish(&client, &app, &mut steps).await;
@@ -854,7 +855,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri()));
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
         let (_, _, success) = do_standard_publish(&client, &app, &mut steps).await;
@@ -880,7 +881,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri()));
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
         let (app_id, version, success) = do_standard_publish(&client, &app, &mut steps).await;
@@ -922,7 +923,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri()));
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
         let (app_id, version, success) = do_rad_publish(
@@ -964,7 +965,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri()));
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
         let (_, _, success) = do_rad_publish(
@@ -999,7 +1000,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri()));
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
         let (app_id, version, success) = do_rad_publish(

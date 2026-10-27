@@ -23,6 +23,7 @@ futures-util = "0.3"
 uuid = { workspace = true }
 
 [dev-dependencies]
+al-bc = { path = "../al-bc", version = "0.1.0", features = ["test-support"] }
 # al-syntax is referenced only by a #[cfg(test)] assertion in native_dap.rs
 # (language_data::object_type_by_keyword); keep it out of the prod graph.
 al-syntax = { path = "../al-syntax", version = "0.1.0" }

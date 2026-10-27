@@ -324,7 +324,8 @@ pub struct BcClient {
 }
 
 impl BcClient {
-    pub fn new(config: &BcServerConfig) -> Self {
+    pub fn new(config: &BcServerConfig) -> Result<Self, String> {
+        let base_url = build_base_url(config)?;
         if config.accept_invalid_certs {
             crate::http_auth::warn_insecure_tls("BcClient");
         }
@@ -334,14 +335,12 @@ impl BcClient {
             .build()
             .expect("reqwest client must support the configured TLS backend");
 
-        let base_url = build_base_url(config);
-
-        BcClient {
+        Ok(BcClient {
             client,
             base_url,
             auth: config.authentication.clone(),
             tenant: config.tenant.clone(),
-        }
+        })
     }
 
     /// Returns the publish response (may be async — check `status`).
@@ -537,9 +536,9 @@ fn host_has_explicit_port(host: &str) -> bool {
 ///
 /// On-prem:  `https://{server}:{port}/{serverInstance}`, or the scheme `server` names
 /// Cloud:    `https://api.businesscentral.dynamics.com/v2.0/{tenant}/{envName}`
-fn build_base_url(config: &BcServerConfig) -> String {
+fn build_base_url(config: &BcServerConfig) -> Result<String, String> {
     match config.environment_type {
-        EnvironmentType::OnPrem => {
+        EnvironmentType::OnPrem => Ok({
             let server = config.server.as_deref().unwrap_or("localhost");
             let instance = config.server_instance.as_deref().unwrap_or("BC");
 
@@ -548,7 +547,7 @@ fn build_base_url(config: &BcServerConfig) -> String {
             // refuse to build a request URL from a `file://`/`gopher://`/etc.
             // server value instead of silently embedding it.
             let Some(with_scheme) = crate::launch::server_with_scheme(server) else {
-                return REJECTED_SERVER_BASE_URL.to_string();
+                return Ok(REJECTED_SERVER_BASE_URL.to_string());
             };
             let server_trimmed = with_scheme.trim_end_matches('/');
             let host = server_trimmed
@@ -571,16 +570,8 @@ fn build_base_url(config: &BcServerConfig) -> String {
                     server_trimmed, DEFAULT_ONPREM_DEV_PORT, instance
                 ),
             }
-        }
-        EnvironmentType::Sandbox | EnvironmentType::Production => {
-            let tenant = config.tenant.as_deref().unwrap_or("common");
-            let env_name = config.environment_name.as_deref().unwrap_or("Sandbox");
-            format!(
-                "https://api.businesscentral.dynamics.com/v2.0/{}/{}",
-                urlencoding::encode(tenant),
-                urlencoding::encode(env_name)
-            )
-        }
+        }),
+        EnvironmentType::Sandbox | EnvironmentType::Production => config.cloud_base_url(),
     }
 }
 
@@ -621,7 +612,7 @@ mod tests {
 
     #[test]
     fn on_prem_url_has_port_and_instance() {
-        let url = build_base_url(&on_prem_config());
+        let url = build_base_url(&on_prem_config()).unwrap();
         assert!(url.contains("7049"), "URL should contain port: {}", url);
         assert!(url.contains("/BC"), "URL should contain instance: {}", url);
     }
@@ -630,7 +621,7 @@ mod tests {
     fn on_prem_url_always_has_scheme() {
         let mut config = on_prem_config();
         config.server = Some("localhost".to_string());
-        let url = build_base_url(&config);
+        let url = build_base_url(&config).unwrap();
         assert!(
             url.starts_with("http://") || url.starts_with("https://"),
             "URL must have a scheme: {url}"
@@ -645,7 +636,7 @@ mod tests {
         let mut config = on_prem_config();
         config.server = Some("bc.example.com".to_string());
         config.port = None;
-        let url = build_base_url(&config);
+        let url = build_base_url(&config).unwrap();
         assert_eq!(url, "https://bc.example.com:7049/BC");
     }
 
@@ -656,7 +647,7 @@ mod tests {
         let mut config = on_prem_config();
         config.server = Some("http://bc.example.com:8080".to_string());
         config.port = None;
-        let url = build_base_url(&config);
+        let url = build_base_url(&config).unwrap();
         assert_eq!(url, "http://bc.example.com:8080/BC");
     }
 
@@ -667,13 +658,13 @@ mod tests {
         // server value must never be embedded in the request URL.
         let mut config = on_prem_config();
         config.server = Some("file:///etc/passwd".to_string());
-        let url = build_base_url(&config);
+        let url = build_base_url(&config).unwrap();
         assert_eq!(url, REJECTED_SERVER_BASE_URL);
     }
 
     #[test]
     fn cloud_url_contains_tenant_and_env() {
-        let url = build_base_url(&cloud_config());
+        let url = build_base_url(&cloud_config()).unwrap();
         assert!(
             url.contains("mycompany.onmicrosoft.com") || url.contains("mycompany"),
             "URL should contain tenant: {}",
@@ -689,7 +680,7 @@ mod tests {
     #[test]
     fn bc_client_constructs_from_config() {
         let config = on_prem_config();
-        let _client = BcClient::new(&config);
+        let _client = BcClient::new(&config).unwrap();
     }
 
     #[test]
@@ -1075,6 +1066,7 @@ mod tests {
             accept_invalid_certs: false,
             debug_args: serde_json::json!({}),
         })
+        .unwrap()
     }
 
     #[tokio::test]
@@ -1206,7 +1198,7 @@ mod tests {
             accept_invalid_certs: false,
             debug_args: serde_json::json!({}),
         };
-        let client = BcClient::new(&config);
+        let client = BcClient::new(&config).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let app = dir.path().join("ext.app");
         tokio::fs::write(&app, b"app-bytes").await.unwrap();
@@ -1249,7 +1241,7 @@ mod tests {
                 accept_invalid_certs: false,
                 debug_args: serde_json::json!({}),
             };
-            let client = BcClient::new(&config);
+            let client = BcClient::new(&config).unwrap();
             let dir = tempfile::tempdir().unwrap();
             let app = dir.path().join("ext.app");
             tokio::fs::write(&app, b"app-bytes").await.unwrap();
@@ -1435,7 +1427,7 @@ mod tests {
             accept_invalid_certs: false,
             debug_args: serde_json::json!({}),
         };
-        let client = BcClient::new(&config);
+        let client = BcClient::new(&config).unwrap();
         let dir = tempfile::tempdir().unwrap();
         let app = dir.path().join("ext.app");
         tokio::fs::write(&app, b"app-bytes").await.unwrap();

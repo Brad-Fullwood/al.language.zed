@@ -211,7 +211,11 @@
     "tenant": {
       "type": "string",
       "default": "default",
-      "description": "The tenant to connect to.\nFor an on-premise server, this parameter must contain a tenant name, for example: MyTenant.\nFor a cloud server, this parameter must contain the Microsoft Entra tenant ID or Primary Domain associated with the Microsoft Entra tenant, for example: bf4ab6d6-cd93-424e-91fa-afe03fa286ac or mycustomer.onmicrosoft.com"
+      "description": "The tenant to connect to.\nFor an on-premise server, this parameter must contain a tenant name, for example: MyTenant.\nFor a cloud server, this parameter must contain the Microsoft Entra tenant ID (GUID), for example: bf4ab6d6-cd93-424e-91fa-afe03fa286ac. A domain name or \"default\" is refused, and the tenant must be listed in ~/.config/bc-tenants.json (path from BC_TENANTS_FILE)."
+    },
+    "tenantPurpose": {
+      "type": "string",
+      "description": "Cloud only. The customer issue this work is for. A tenant of kind \"customer\" in ~/.config/bc-tenants.json is refused without it. A demo tenant needs none."
     },
     "validateServerCertificate": {
       "type": "boolean",

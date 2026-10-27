@@ -16,6 +16,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+al-bc = { path = "../al-bc", version = "0.1.0", features = ["test-support"] }
 tempfile = { workspace = true }
 wiremock = "0.6"
 tokio = { workspace = true }

@@ -20,6 +20,8 @@ pub enum TestRunnerError {
     CredentialConfiguration(#[from] al_bc::http_auth::AccessTokenEnvError),
     #[error("JSON parse error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("{0}")]
+    Config(String),
     #[error("test event channel closed: receiver dropped")]
     ChannelClosed,
     #[error("test worker failed: {0}")]

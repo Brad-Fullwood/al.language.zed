@@ -985,13 +985,46 @@ fn loopback_http_is_allowed() {
 }
 
 #[test]
+fn a_cloud_target_without_a_registered_tenant_is_refused() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings("{}");
+    let tenant = al_bc::tenant_guard::install_test_registry();
+    let cloud = BcTarget::from_debug("Sandbox", None, 7049);
+    for target in [
+        cloud.clone(),
+        cloud.clone().with_tenant(Some("default"), None),
+        cloud
+            .clone()
+            .with_tenant(Some("5c823c3b-d5c9-4853-b74c-d59b81265f78"), None),
+    ] {
+        let error = authorize_cached_credential(
+            project.path(),
+            &target,
+            CredentialKind::Bearer,
+            TargetSource::Inline,
+        )
+        .unwrap_err();
+        assert!(error.starts_with("tenant guard refused:"), "{error}");
+    }
+    let allowed = cloud.with_tenant(Some(tenant), None);
+    assert!(authorize_cached_credential(
+        project.path(),
+        &allowed,
+        CredentialKind::Bearer,
+        TargetSource::Inline,
+    )
+    .is_ok());
+}
+
+#[test]
 fn business_central_online_is_always_allowed() {
     let _config = ScratchConfig::new();
     let project = project_with_settings("{}");
 
+    let tenant = al_bc::tenant_guard::install_test_registry();
     let authorization = authorize_cached_credential(
         project.path(),
-        &BcTarget::from_debug("Sandbox", None, 7049),
+        &BcTarget::from_debug("Sandbox", None, 7049).with_tenant(Some(tenant), None),
         CredentialKind::Bearer,
         TargetSource::Inline,
     )

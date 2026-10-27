@@ -158,6 +158,8 @@ pub struct BcDebugConfig {
     /// Microsoft's snapshot services port 7083. Unused for SaaS.
     pub snapshot_port: Option<u16>,
     pub tenant: String,
+    /// `tenantPurpose`: the customer issue, which a customer tenant needs.
+    pub tenant_purpose: Option<String>,
     pub environment_type: String,
     pub environment_name: Option<String>,
     pub authentication: String,
@@ -192,6 +194,7 @@ impl Default for BcDebugConfig {
             port: 7049,
             snapshot_port: None,
             tenant: "default".to_string(),
+            tenant_purpose: None,
             environment_type: "Sandbox".to_string(),
             environment_name: None,
             authentication: "MicrosoftEntraID".to_string(),
@@ -247,6 +250,9 @@ impl BcDebugConfig {
         }
         if let Some(value) = optional_string(args, "tenant", &mut cfg.validation_errors) {
             cfg.tenant = value;
+        }
+        if let Some(value) = optional_string(args, "tenantPurpose", &mut cfg.validation_errors) {
+            cfg.tenant_purpose = Some(value);
         }
         if let Some(value) = optional_string(args, "environmentType", &mut cfg.validation_errors) {
             cfg.environment_type = value;
@@ -430,6 +436,18 @@ impl BcDebugConfig {
             return Err(format!(
                 "dependencyPublishingOption must be Default, Ignore, or Strict; got `{}`",
                 self.dependency_publishing_option
+            ));
+        }
+        // A cloud connection never defaults the tenant: the default "default"
+        // is for an on-premises server only (process-02, publish-symbols-02).
+        // Checked here and not in from_dap_args because the EditorServices
+        // proxy decides on-premises from the server and authentication after
+        // parsing, and an on-premises scenario keeps the default.
+        if !self.environment_type.eq_ignore_ascii_case("OnPrem")
+            && self.tenant.eq_ignore_ascii_case("default")
+        {
+            return Err(al_bc::tenant_guard::missing_tenant_message(
+                "the cloud debug configuration",
             ));
         }
         Ok(())
@@ -793,11 +811,14 @@ mod tests {
             .contains("inverse"));
     }
 
+    const CDX_TENANT: &str = "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d";
+
     #[test]
     fn native_authentication_accepts_oauth_and_rejects_legacy_modes_before_network_io() {
         for mode in ["MicrosoftEntraID", "AAD"] {
             let config = BcDebugConfig::from_dap_args(&serde_json::json!({
-                "authentication": mode
+                "authentication": mode,
+                "tenant": CDX_TENANT,
             }));
             assert!(config.validate_native().is_ok(), "{mode}");
         }
@@ -855,7 +876,10 @@ mod tests {
             ("schemaUpdateMode", "Merge"),
             ("dependencyPublishingOption", "Lenient"),
         ] {
-            let config = BcDebugConfig::from_dap_args(&serde_json::json!({ (field): value }));
+            let config = BcDebugConfig::from_dap_args(&serde_json::json!({
+                (field): value,
+                "tenant": CDX_TENANT,
+            }));
             let error = config
                 .validate_native()
                 .expect_err("unknown enum must fail");
@@ -913,6 +937,7 @@ mod tests {
             "startupObjectId",
             "startupObjectType",
             "tenant",
+            "tenantPurpose",
             "userId",
             "validateServerCertificate",
         ];

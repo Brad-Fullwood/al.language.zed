@@ -425,7 +425,11 @@ async fn production_is_refused_before_any_token_is_read() {
     );
     let args = attach_args(
         &rig,
-        json!({ "environmentType": "Production", "environmentName": "Live" }),
+        json!({
+            "environmentType": "Production",
+            "environmentName": "Live",
+            "tenant": "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d",
+        }),
     );
     let (_, frames) = send(&state, "attach", args).await;
     assert_eq!(response(&frames)["success"], false, "{frames:?}");
