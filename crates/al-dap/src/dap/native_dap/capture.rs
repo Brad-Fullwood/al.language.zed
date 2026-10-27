@@ -160,7 +160,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<super::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,

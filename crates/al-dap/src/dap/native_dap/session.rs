@@ -23,7 +23,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<crate::dap::native_dap::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -657,7 +657,9 @@ mod tests {
                 std::future::ready(Ok("test-token".to_string()))
             }),
             resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
-            resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            resolve_path: |_: i32, _: i32| -> Option<crate::dap::native_dap::ResolvedSource> {
+                None
+            },
             package_source: std::sync::Arc::new(|_, _| None),
             compile: move |_: PathBuf| {
                 compiled_by_hook.store(true, Ordering::SeqCst);
@@ -748,7 +750,9 @@ mod tests {
             authorize_target: allow_every_target(),
             acquire_token: Arc::new(|_: String| std::future::ready(Ok("test-token".to_string()))),
             resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
-            resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            resolve_path: |_: i32, _: i32| -> Option<crate::dap::native_dap::ResolvedSource> {
+                None
+            },
             package_source: std::sync::Arc::new(|_, _| None),
             compile: move |_: PathBuf| {
                 compiled_by_hook.store(true, std::sync::atomic::Ordering::SeqCst);

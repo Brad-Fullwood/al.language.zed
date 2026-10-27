@@ -78,9 +78,61 @@ pub(crate) fn client_line_to_debugger(line: i64, lines_start_at_1: bool) -> i64 
     }
 }
 
+/// How many lines BC's line for an object differs from the file's line, for
+/// the object at `index` of a file that declares several. BC compiles each
+/// object as its own compilation unit, the file's `using` and `namespace`
+/// header followed by that object with its leading trivia, and counts
+/// debugger lines in that unit. Microsoft's `GetDebuggerLineOffsetForNode`
+/// (CodeAnalysis `SyntaxNodeExtensions`, decompiled from
+/// Microsoft.Dynamics.Nav.CodeAnalysis.dll) returns `None` for a file with
+/// fewer than two objects, otherwise the object's own start line plus the line
+/// at which the first object's trivia starts. `DocumentHelper.cs:25-66` applies
+/// it to breakpoint lines and `DebugAdapterStackTraceHandler.cs:80-101` takes
+/// it off again. Both reduce to `debugger line = file line + shift`, in
+/// zero-based lines, with
+/// `shift = trivia start of the first object - trivia start of this object`.
+/// An object's leading trivia starts on the line after the previous object's
+/// closing line. The first object's starts after the last `using` or
+/// `namespace` line before it, or at line 0.
+///
+/// `objects` holds the first and last zero-based line of each object in file
+/// order. A file with one object has shift 0.
+pub fn object_line_shift(source: &str, objects: &[(usize, usize)], index: usize) -> i64 {
+    if objects.len() < 2 || index == 0 || index >= objects.len() {
+        return 0;
+    }
+    let first_start = source
+        .lines()
+        .take(objects[0].0)
+        .enumerate()
+        .filter(|(_, text)| {
+            let text = text.trim_start();
+            text.starts_with("using ") || text.starts_with("namespace ")
+        })
+        .map(|(row, _)| row + 1)
+        .last()
+        .unwrap_or(0);
+    let this_start = objects[index - 1].1 + 1;
+    i64::try_from(first_start).unwrap_or(0) - i64::try_from(this_start).unwrap_or(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn second_object_lines_are_relative_to_its_own_unit() {
+        // Rows: 0 using, 1 blank, 2 table, 3 {, 4 }, 5 blank, 6 codeunit, 7 {, 8 trigger line, 9 }.
+        let source = "using System;\n\ntable 50200 T\n{\n}\n\ncodeunit 50100 C\n{\n    x;\n}\n";
+        let objects = [(2, 4), (6, 9)];
+        assert_eq!(object_line_shift(source, &objects, 0), 0);
+        // BC sees `using`, the blank line after the table, then the codeunit:
+        // the statement on file row 8 is row 4 of that unit.
+        let shift = object_line_shift(source, &objects, 1);
+        assert_eq!(shift, 1 - 5);
+        assert_eq!(8 + shift, 4);
+        assert_eq!(object_line_shift(source, &objects[1..], 0), 0);
+    }
 
     #[test]
     fn stack_lines_follow_convert_client_line_to_debugger_line() {

@@ -135,7 +135,9 @@ impl SnapshotDebugger for NativeDebugSession {
         object_type: i32,
         object_id: i32,
     ) -> al_dap::dap::Result<Vec<BreakpointInfo>> {
-        NativeDebugSession::set_breakpoints(self, file, lines, object_type, object_id).await
+        // The harness names the object itself and has no file index, so no
+        // line shift is known (see `object_line_shift`).
+        NativeDebugSession::set_breakpoints(self, file, lines, object_type, object_id, 0).await
     }
 
     async fn state_and_object(&mut self) -> al_dap::dap::Result<(DebugState, Option<(i32, i32)>)> {

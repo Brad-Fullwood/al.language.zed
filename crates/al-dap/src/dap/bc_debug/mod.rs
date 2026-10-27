@@ -33,6 +33,7 @@ mod version;
 mod wire;
 
 pub use events::{BcEvent, BreakLocation};
+pub use position::object_line_shift;
 pub use rest::{get_metadata, get_web_endpoint, publish_app};
 pub use session::BcDebugSession;
 pub use session_config::{BcDebugConfig, BreakOnError, BreakOnRecordWrite};

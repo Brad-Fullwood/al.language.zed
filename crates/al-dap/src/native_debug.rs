@@ -92,13 +92,15 @@ impl NativeDebugSession {
     /// Set breakpoints for a file. Removes old breakpoints for the same file first.
     ///
     /// `object_type` and `object_id` come from the workspace file index — the caller
-    /// resolves the AL file path to its BC object type + ID.
+    /// resolves the AL file path to its BC object type + ID. `line_shift` is the
+    /// object's [`crate::dap::bc_debug::object_line_shift`], 0 for a file with one object.
     pub async fn set_breakpoints(
         &mut self,
         file: &str,
         lines: &[(u32, Option<&str>)],
         object_type: i32,
         object_id: i32,
+        line_shift: i64,
     ) -> Result<Vec<BreakpointInfo>> {
         if let Some(old_ids) = self.breakpoints.remove(file) {
             for bp_id in &old_ids {
@@ -115,35 +117,29 @@ impl NativeDebugSession {
         for &(line, condition) in lines {
             let cond = condition.unwrap_or("");
             // MCP/CLI source lines are one-based, like DAP clients.
-            let server_line = client_line_to_debugger(i64::from(line), true);
+            // DocumentHelper.cs:25-66: BC counts lines inside the object's own
+            // compilation unit, see `object_line_shift`.
+            let server_line = (client_line_to_debugger(i64::from(line), true) + line_shift).max(0);
             match self
                 .session
                 .add_breakpoint(object_type, object_id, server_line, 0, cond)
                 .await
             {
                 Ok(resp) => {
+                    // AddBreakpoint returns a BreakpointDefinition
+                    // (BreakpointDefinition.cs:9-27): `BreakpointId` and `ObjectId`
+                    // are its only fields this client reads, there is no `Id`
+                    // or `Verified`. A breakpoint BC placed has a non-zero id.
                     let bp_id = resp
                         .get("BreakpointId")
-                        .or_else(|| resp.get("breakpointId"))
-                        .or_else(|| resp.get("Id"))
-                        .or_else(|| resp.get("id"))
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
-                    let verified = resp
-                        .get("Verified")
-                        .or_else(|| resp.get("verified"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(bp_id != 0);
-                    let echoed_object = resp.get("ObjectId").or_else(|| resp.get("objectId"));
+                    let verified = bp_id != 0;
+                    let echoed_object = resp.get("ObjectId");
                     let object_matches = echoed_object.is_none_or(|echoed| {
-                        let echoed_type = echoed
-                            .get("ObjectType")
-                            .or_else(|| echoed.get("objectType"))
-                            .and_then(|value| value.as_i64());
-                        let echoed_number = echoed
-                            .get("ObjectNumber")
-                            .or_else(|| echoed.get("objectNumber"))
-                            .and_then(|value| value.as_i64());
+                        let echoed_type = echoed.get("ObjectType").and_then(|value| value.as_i64());
+                        let echoed_number =
+                            echoed.get("ObjectNumber").and_then(|value| value.as_i64());
                         echoed_type == Some(i64::from(object_type))
                             && echoed_number == Some(i64::from(object_id))
                     });
@@ -1044,7 +1040,7 @@ mod native_session_tests {
         fake.reply_ok("AddBreakpoint", breakpoint_definition(77));
 
         let infos = nds
-            .set_breakpoints("src/Foo.al", &[(10, None)], 5, 50100)
+            .set_breakpoints("src/Foo.al", &[(10, None)], 5, 50100, 0)
             .await
             .unwrap();
 
@@ -1064,13 +1060,25 @@ mod native_session_tests {
     }
 
     #[tokio::test]
+    async fn set_breakpoints_sends_the_line_inside_the_object() {
+        // DocumentHelper.cs:25-66: file line 10 (row 9) of an object whose
+        // unit starts 4 rows up is row 5.
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(77));
+        nds.set_breakpoints("src/Foo.al", &[(10, None)], 5, 50100, -4)
+            .await
+            .unwrap();
+        assert_eq!(fake.sent_frames()[0]["arguments"][1]["Line"], 5);
+    }
+
+    #[tokio::test]
     async fn set_breakpoints_reports_unverified_when_bc_returns_no_breakpoint_id() {
         // BreakpointDefinition.cs:9: BreakpointId 0 is not a usable handle.
         let (mut nds, fake) = session("c1");
         fake.reply_ok("AddBreakpoint", breakpoint_definition(0));
 
         let infos = nds
-            .set_breakpoints("src/A.al", &[(3, None)], 1, 18)
+            .set_breakpoints("src/A.al", &[(3, None)], 1, 18, 0)
             .await
             .unwrap();
 
@@ -1091,7 +1099,7 @@ mod native_session_tests {
         fake.reply_ok("RemoveBreakpoint", json!(null));
 
         let infos = nds
-            .set_breakpoints("src/A.al", &[(3, None)], 8, 70200)
+            .set_breakpoints("src/A.al", &[(3, None)], 8, 70200, 0)
             .await
             .unwrap();
 
@@ -1116,7 +1124,7 @@ mod native_session_tests {
     async fn break_history_names_the_breakpoint_it_came_from() {
         let (mut nds, fake) = session("c1");
         fake.reply_ok("AddBreakpoint", breakpoint_definition(91));
-        nds.set_breakpoints("src/Foo.al", &[(42, None)], 5, 50100)
+        nds.set_breakpoints("src/Foo.al", &[(42, None)], 5, 50100, 0)
             .await
             .unwrap();
 
@@ -1139,7 +1147,13 @@ mod native_session_tests {
         fake.reply_ok("AddBreakpoint", breakpoint_definition(2));
 
         let infos = nds
-            .set_breakpoints("src/B.al", &[(1, Some("x > 5")), (2, Some(""))], 5, 50100)
+            .set_breakpoints(
+                "src/B.al",
+                &[(1, Some("x > 5")), (2, Some(""))],
+                5,
+                50100,
+                0,
+            )
             .await
             .unwrap();
 
@@ -1156,14 +1170,14 @@ mod native_session_tests {
         let (mut nds, fake) = session("c1");
         fake.reply_ok("AddBreakpoint", breakpoint_definition(100));
         fake.reply_ok("AddBreakpoint", breakpoint_definition(101));
-        nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50100)
+        nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50100, 0)
             .await
             .unwrap();
 
         fake.reply_ok("RemoveBreakpoint", json!(null));
         fake.reply_ok("RemoveBreakpoint", json!(null));
         fake.reply_ok("AddBreakpoint", breakpoint_definition(200));
-        nds.set_breakpoints("src/C.al", &[(9, None)], 5, 50100)
+        nds.set_breakpoints("src/C.al", &[(9, None)], 5, 50100, 0)
             .await
             .unwrap();
 
@@ -1187,7 +1201,7 @@ mod native_session_tests {
         fake.reply_err("AddBreakpoint", "compilation error");
 
         let infos = nds
-            .set_breakpoints("src/D.al", &[(1, None), (2, None)], 5, 50100)
+            .set_breakpoints("src/D.al", &[(1, None), (2, None)], 5, 50100, 0)
             .await
             .unwrap();
 

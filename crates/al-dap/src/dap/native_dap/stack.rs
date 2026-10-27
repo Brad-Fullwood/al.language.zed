@@ -11,14 +11,14 @@ use crate::dap::bc_debug::position::{
 };
 use crate::dap::Result;
 
-use super::{NativeDapState, ResolvedObject};
+use super::{NativeDapState, ResolvedObject, ResolvedSource};
 
 impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -93,7 +93,7 @@ fn bc_stack_to_dap<P>(
     base: &ClientBase,
 ) -> Vec<serde_json::Value>
 where
-    P: Fn(i32, i32) -> Option<PathBuf>,
+    P: Fn(i32, i32) -> Option<ResolvedSource>,
 {
     let arr = match frames.as_array() {
         Some(a) => a,
@@ -119,21 +119,26 @@ where
             let to = span.and_then(|s| s.get("To"));
 
             let object_id = frame.get("ObjectId");
-            let source = match (
+            let resolved = match (
                 number(object_id, "ObjectType"),
                 number(object_id, "ObjectNumber"),
             ) {
-                (Some(ot), Some(on)) => resolve_path(ot as i32, on as i32)
-                    .map(|p| serde_json::json!({ "path": p.to_string_lossy() })),
+                (Some(ot), Some(on)) => resolve_path(ot as i32, on as i32),
                 _ => None,
             };
+            // DebugAdapterStackTraceHandler.cs:80-101 takes the object's offset
+            // off the frame line when the file holds more than one object.
+            let shift = resolved.as_ref().map_or(0, |r| r.line_shift);
+            let source = resolved
+                .as_ref()
+                .map(|r| serde_json::json!({ "path": r.path.to_string_lossy() }));
 
             let mut val = serde_json::json!({
                 "id": i as i64,
                 "name": name,
-                "line": debugger_line_to_client(number(from, "Line").unwrap_or(0), lines_one),
+                "line": debugger_line_to_client(number(from, "Line").unwrap_or(0), lines_one) - shift,
                 "column": debugger_column_to_client(number(from, "Column").unwrap_or(0), columns_one),
-                "endLine": debugger_line_to_client(number(to, "Line").unwrap_or(0), lines_one),
+                "endLine": debugger_line_to_client(number(to, "Line").unwrap_or(0), lines_one) - shift,
                 "endColumn": debugger_column_to_client(number(to, "Column").unwrap_or(0), columns_one),
             });
             if let Some(src) = source {
@@ -154,7 +159,25 @@ mod tests {
 
     use crate::dap::bc_debug::test_fixtures::stack_frame;
 
-    fn no_path(_: i32, _: i32) -> Option<PathBuf> {
+    fn source(path: &str, line_shift: i64) -> ResolvedSource {
+        ResolvedSource {
+            path: PathBuf::from(path),
+            line_shift,
+        }
+    }
+
+    // DebugAdapterStackTraceHandler.cs:80-101: a file with two objects gets the
+    // object's offset taken off BC's line. BC's row 4 is file row 8 (shift -4).
+    #[test]
+    fn bc_stack_to_dap_takes_the_object_line_shift_off() {
+        let frames = serde_json::json!([stack_frame("Post", (4, 8), (4, 20))]);
+        let resolve = |_: i32, _: i32| Some(source("/ws/Two.al", -4));
+        let result = bc_stack_to_dap(frames, &resolve, &ClientBase::default());
+        assert_eq!(result[0]["line"], 9);
+        assert_eq!(result[0]["endLine"], 9);
+    }
+
+    fn no_path(_: i32, _: i32) -> Option<ResolvedSource> {
         None
     }
 
@@ -162,9 +185,9 @@ mod tests {
     #[test]
     fn bc_stack_to_dap_includes_source_when_path_resolves() {
         let frames = serde_json::json!([stack_frame("OnRun", (41, 8), (43, 30))]);
-        let resolve = |ot: i32, on: i32| -> Option<PathBuf> {
+        let resolve = |ot: i32, on: i32| -> Option<ResolvedSource> {
             if ot == bc_object_type::CODEUNIT && on == 50100 {
-                Some(PathBuf::from("/workspace/src/MyCodeunit.al"))
+                Some(source("/workspace/src/MyCodeunit.al", 0))
             } else {
                 None
             }
@@ -196,8 +219,8 @@ mod tests {
             ],
             "",
         );
-        let resolve = |ot: i32, on: i32| -> Option<PathBuf> {
-            (ot == bc_object_type::CODEUNIT && on == 50100).then(|| PathBuf::from("/ws/Probe.al"))
+        let resolve = |ot: i32, on: i32| -> Option<ResolvedSource> {
+            (ot == bc_object_type::CODEUNIT && on == 50100).then(|| source("/ws/Probe.al", 0))
         };
         let result = bc_stack_to_dap(args[1].clone(), &resolve, &ClientBase::default());
         assert_eq!(result.len(), 2);
@@ -237,7 +260,7 @@ mod tests {
             "SourcePosition": { "Line": 9, "Column": 9 },
             "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
         }]);
-        let resolve = |_: i32, _: i32| Some(PathBuf::from("/x.al"));
+        let resolve = |_: i32, _: i32| Some(source("/x.al", 0));
         let result = bc_stack_to_dap(frames, &resolve, &ClientBase::default());
         assert_eq!(result[0]["name"], "(unknown)");
         assert_eq!(result[0]["line"], 0);
@@ -367,7 +390,7 @@ mod tests {
         // resolve_path is only consulted when both ObjectType and ObjectNumber are present.
         let mut frame = stack_frame("Partial", (1, 0), (1, 1));
         frame["ObjectId"] = serde_json::json!({ "ObjectType": 5 });
-        let resolve = |_: i32, _: i32| Some(PathBuf::from("/x.al"));
+        let resolve = |_: i32, _: i32| Some(source("/x.al", 0));
         let result = bc_stack_to_dap(serde_json::json!([frame]), &resolve, &ClientBase::default());
         assert!(
             result[0].get("source").is_none(),

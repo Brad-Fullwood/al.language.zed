@@ -97,6 +97,17 @@ pub struct ResolvedObject {
     /// BC ObjectTypeWrapper value — use `bc_object_type` constants.
     pub object_type: i32,
     pub object_id: i32,
+    /// Added to the zero-based file line to get BC's line, see
+    /// [`crate::dap::bc_debug::object_line_shift`]. 0 for a file with one object.
+    pub line_shift: i64,
+}
+
+/// The source file of a BC object and the line shift of the object inside it.
+#[derive(Debug, Clone)]
+pub struct ResolvedSource {
+    pub path: PathBuf,
+    /// See [`ResolvedObject::line_shift`].
+    pub line_shift: i64,
 }
 
 const VARIABLE_HANDLE_BASE: i64 = 1 << 18;
@@ -269,7 +280,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,

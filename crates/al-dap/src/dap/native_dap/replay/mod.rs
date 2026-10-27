@@ -577,7 +577,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<crate::dap::native_dap::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -675,7 +675,7 @@ where
         let chosen = frame_sources::choose(
             &archive,
             &extracted,
-            &|t, n| (self.resolve_path)(t, n),
+            &|t, n| (self.resolve_path)(t, n).map(|source| source.path),
             &*self.package_source,
             &|p| std::fs::read_to_string(p).ok(),
         );

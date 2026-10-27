@@ -128,7 +128,12 @@ method. A `StackFrame` has `MethodName`, `ObjectId` (`ObjectType`, `ObjectNumber
 `StatementSpan` (`From`, `To`, each with `Line` and `Column`) and nothing else, and only those are
 read. Lines and columns follow Microsoft's `ConvertClientLineToDebuggerLine` (DebugHelper.cs:105-112):
 add 1 when the client sent `linesStartAt1` (or `columnsStartAt1`) and the value is above 0. Breakpoint
-lines go the other way with `Position.Create` (subtract 1). The MCP path treats its clients as
+lines go the other way with `Position.Create` (subtract 1). In a file that declares two or more objects BC counts
+lines inside each object's own compilation unit (the `using`/`namespace` header, then the object with its leading
+comments), so the line also moves by an object offset: `DocumentHelper.cs:25-66` adds it to breakpoint lines
+and `DebugAdapterStackTraceHandler.cs:80-101` takes it off stack frame lines. The offset is computed by
+`object_line_shift` from `GetDebuggerLineOffsetForNode` (CodeAnalysis `SyntaxNodeExtensions`). A one-object file
+has offset 0. Live check on CDX pending in the lead's contract run: break on a line in the second object. The MCP path treats its clients as
 one-based.
 
 **Debugger version.** `connect` reads `debuggerVersion` from `GET dev/metadata` (`ServerInfo.cs:11-12`,

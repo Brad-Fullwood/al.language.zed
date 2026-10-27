@@ -18,7 +18,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<crate::dap::native_dap::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -134,7 +134,11 @@ where
             };
             // Position.Create (Position.cs:92-100): subtract 1 only for a
             // one-based client.
-            let server_line = client_line_to_debugger(*line, self.client_base.lines_start_at_1());
+            // DocumentHelper.cs:25-66: BC counts lines inside the object's own
+            // compilation unit, see `object_line_shift`.
+            let server_line = (client_line_to_debugger(*line, self.client_base.lines_start_at_1())
+                + object.line_shift)
+                .max(0);
 
             match session
                 .add_breakpoint(
@@ -242,11 +246,10 @@ where
 /// could neither later remove it nor truthfully report `verified: true` — so a
 /// missing or zero id maps to `None`.
 fn extract_breakpoint_id(result: &serde_json::Value) -> Option<i64> {
+    // BreakpointDefinition.BreakpointId (BreakpointDefinition.cs:9-11) is the
+    // only id field of the AddBreakpoint reply.
     result
         .get("BreakpointId")
-        .or_else(|| result.get("breakpointId"))
-        .or_else(|| result.get("Id"))
-        .or_else(|| result.get("id"))
         .and_then(|v| v.as_i64())
         .filter(|&id| id != 0)
 }
@@ -320,7 +323,11 @@ mod tests {
             )),
             None
         );
-        assert_eq!(extract_breakpoint_id(&serde_json::json!({ "id": 0 })), None);
+        assert_eq!(
+            extract_breakpoint_id(&serde_json::json!({ "id": 7, "Id": 7, "breakpointId": 7 })),
+            None,
+            "only BreakpointId is a field of BreakpointDefinition"
+        );
     }
 
     #[tokio::test]
@@ -376,7 +383,9 @@ mod tests {
             authorize_target: allow_every_target(),
             acquire_token: Arc::new(no_token),
             resolve_object: resolve_foo_al,
-            resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            resolve_path: |_: i32, _: i32| -> Option<crate::dap::native_dap::ResolvedSource> {
+                None
+            },
             package_source: std::sync::Arc::new(|_, _| None),
             compile: no_compile,
             find_app: |_| Ok(None),
@@ -470,7 +479,8 @@ mod tests {
     }
 
     /// `/proj/src/Posting.al` declares a table on lines 1 to 3 and a
-    /// codeunit from line 5.
+    /// codeunit from line 5. BC counts the codeunit's lines from its own
+    /// compilation unit, 4 lines up (`object_line_shift`).
     fn resolve_posting_al(path: &str, line: i64) -> Option<ResolvedObject> {
         if path != "/proj/src/Posting.al" {
             return None;
@@ -479,11 +489,13 @@ mod tests {
             ResolvedObject {
                 object_type: bc_object_type::TABLE,
                 object_id: 50200,
+                line_shift: 0,
             }
         } else {
             ResolvedObject {
                 object_type: bc_object_type::CODEUNIT,
                 object_id: 50100,
+                line_shift: -4,
             }
         })
     }
@@ -534,7 +546,7 @@ mod tests {
             objects,
             [
                 (i64::from(bc_object_type::TABLE), 50200, 1),
-                (i64::from(bc_object_type::CODEUNIT), 50100, 7),
+                (i64::from(bc_object_type::CODEUNIT), 50100, 3),
             ]
         );
         assert_eq!(

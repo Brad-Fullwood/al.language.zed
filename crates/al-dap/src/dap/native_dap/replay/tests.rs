@@ -435,6 +435,7 @@ fn breakpoints_elsewhere_go_through_the_workspace_resolver() {
         (path == "/ws/Probe.al").then_some(ResolvedObject {
             object_type: 5,
             object_id: 50000,
+            line_shift: 0,
         })
     };
     let r =

@@ -23,7 +23,7 @@ pub(super) type CompileFut = std::future::Ready<std::result::Result<String, Stri
 pub(super) type TestState = NativeDapState<
     fn(String) -> TokenFut,
     fn(&str, i64) -> Option<ResolvedObject>,
-    fn(i32, i32) -> Option<PathBuf>,
+    fn(i32, i32) -> Option<super::ResolvedSource>,
     fn(PathBuf) -> CompileFut,
     fn(&Path) -> std::result::Result<Option<PathBuf>, String>,
 >;
@@ -109,6 +109,7 @@ pub(super) fn resolve_foo_al(path: &str, _line: i64) -> Option<ResolvedObject> {
         Some(ResolvedObject {
             object_type: bc_object_type::CODEUNIT,
             object_id: 50100,
+            line_shift: 0,
         })
     } else {
         None

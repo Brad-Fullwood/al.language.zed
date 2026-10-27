@@ -107,7 +107,11 @@ pub(in crate::server::daemon) fn object_at_line(
 /// correct BC object instead of `(0, 0)`. Returns `None` when the file isn't
 /// indexed yet — the caller must then either supply the metadata explicitly
 /// or surface an error.
-fn resolve_object_metadata(workspace: &Workspace, file: &str, line: u32) -> Option<(i32, i32)> {
+fn resolve_object_metadata(
+    workspace: &Workspace,
+    file: &str,
+    line: u32,
+) -> Option<(i32, i32, i64)> {
     use al_dap::dap::native_dap::kind_to_object_type;
     // The CLI sends `file` as a `file://` URI (via `file_to_uri`); internal
     // callers may pass a plain filesystem path. The file index is keyed by
@@ -122,7 +126,9 @@ fn resolve_object_metadata(workspace: &Workspace, file: &str, line: u32) -> Opti
     // BC object IDs are i32; reject (return None) rather than silently wrap an
     // out-of-range cached i64 so breakpoints never land on the wrong object.
     let id = i32::try_from(info.id?).ok()?;
-    Some((kind_to_object_type(&info.kind), id))
+    let line_shift =
+        crate::server::dap_mode::debugger_line_shift(&workspace.file_index, &path, &info);
+    Some((kind_to_object_type(&info.kind), id, line_shift))
 }
 
 pub(super) use al_bc::launch::pick_config as pick_named_config;
@@ -569,9 +575,16 @@ async fn debug_breakpoint(workspace: &Workspace, id: u64, params: &serde_json::V
             "'objectType' and 'objectId' must be supplied together",
         );
     }
-    let obj_type = explicit_type.or(resolved.map(|(object_type, _)| object_type));
-    let obj_id = explicit_id.or(resolved.map(|(_, object_id)| object_id));
+    let obj_type = explicit_type.or(resolved.map(|(object_type, _, _)| object_type));
+    let obj_id = explicit_id.or(resolved.map(|(_, object_id, _)| object_id));
 
+    // An explicit objectType/objectId names an object the index did not look up,
+    // so no shift is known for it.
+    let line_shift = if explicit_type.is_some() {
+        0
+    } else {
+        resolved.map_or(0, |(_, _, shift)| shift)
+    };
     let (obj_type, obj_id) = match (obj_type, obj_id) {
         (Some(t), Some(i)) => (t, i),
         _ => {
@@ -596,7 +609,10 @@ async fn debug_breakpoint(workspace: &Workspace, id: u64, params: &serde_json::V
         None => no_session(id),
         Some(session) => {
             let bps: Vec<(u32, Option<&str>)> = vec![(line, condition.as_deref())];
-            match session.set_breakpoints(&file, &bps, obj_type, obj_id).await {
+            match session
+                .set_breakpoints(&file, &bps, obj_type, obj_id, line_shift)
+                .await
+            {
                 Ok(verified) => match serialize_each(id, verified, "breakpoint") {
                     Ok(bp_json) => Response {
                         id,
@@ -1302,7 +1318,7 @@ mod resolve_object_metadata_tests {
         let src = "codeunit 50100 \"Some Codeunit\"\n{\n}\n".to_string();
         ws.file_index.add_file(path.clone(), src);
 
-        let (obj_type, obj_id) = resolve_object_metadata(&ws, "/tmp/SomeCodeunit.al", 1)
+        let (obj_type, obj_id, _) = resolve_object_metadata(&ws, "/tmp/SomeCodeunit.al", 1)
             .expect("indexed file should resolve");
         // codeunit kind → bc_object_type::CODEUNIT (don't pin the exact int —
         // assert it's non-zero, which is the invariant).
@@ -1322,10 +1338,10 @@ mod resolve_object_metadata_tests {
         let src = "table 50200 \"Posting Buffer\"\n{\n}\n\ncodeunit 50100 \"Posting Mgt\"\n{\n    procedure Post()\n    begin\n    end;\n}\n";
         ws.file_index.add_file(path, src.to_string());
 
-        let (table_type, table_id) =
+        let (table_type, table_id, _) =
             resolve_object_metadata(&ws, "/tmp/Posting.al", 2).expect("the table resolves");
         assert_eq!(table_id, 50200);
-        let (codeunit_type, codeunit_id) =
+        let (codeunit_type, codeunit_id, _) =
             resolve_object_metadata(&ws, "/tmp/Posting.al", 8).expect("the codeunit resolves");
         assert_eq!(codeunit_id, 50100, "line 8 is inside the codeunit");
         assert_ne!(codeunit_type, table_type);
