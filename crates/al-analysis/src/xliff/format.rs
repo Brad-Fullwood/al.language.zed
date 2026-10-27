@@ -28,11 +28,17 @@ pub fn generate_xliff(
     ));
     xml.push_str(&format!("original=\"{}\">\n", xml_escape(app_name)));
     xml.push_str("    <body>\n");
-    xml.push_str(&format!("      <group id=\"{}\">\n", xml_escape(app_name)));
+    // alc names the group `body`, the app name is in `original`.
+    xml.push_str("      <group id=\"body\">\n");
 
     for unit in units {
+        let object_target = unit
+            .object_target
+            .as_ref()
+            .map(|target| format!(" al-object-target=\"{}\"", xml_escape(target)))
+            .unwrap_or_default();
         xml.push_str(&format!(
-            "        <trans-unit id=\"{}\" size-unit=\"char\" translate=\"yes\" xml:space=\"preserve\">\n",
+            "        <trans-unit id=\"{}\" size-unit=\"char\" translate=\"yes\" xml:space=\"preserve\"{object_target}>\n",
             xml_escape(&unit.id)
         ));
         xml.push_str(&format!(
@@ -53,7 +59,9 @@ pub fn generate_xliff(
         }
         // alc's two notes, which translation tools key on: the developer's
         // `Comment`, then the generator's object path.
-        if let Some(note) = &unit.developer_note {
+        // alc writes the Developer note on every generated unit, empty when
+        // the text has no `Comment`.
+        if let Some(note) = unit.developer_note.as_deref().or(generated.then_some("")) {
             xml.push_str(&format!(
                 "          <note from=\"Developer\" annotates=\"general\" priority=\"2\">{}</note>\n",
                 xml_escape(note)
@@ -103,6 +111,7 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
     let mut current_state = TranslationState::New;
     let mut current_note: Option<String> = None;
     let mut current_developer_note: Option<String> = None;
+    let mut current_object_target: Option<String> = None;
 
     /// Per-tag state for multi-line accumulation. When `accumulator` is
     /// `Some(buf)` the next line(s) are body content of the named tag and
@@ -181,6 +190,7 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
 
         if trimmed.starts_with("<trans-unit ") {
             current_id = extract_xml_attr(trimmed, "id");
+            current_object_target = extract_xml_attr(trimmed, "al-object-target");
             current_source = None;
             current_target = None;
             current_state = TranslationState::New;
@@ -242,6 +252,7 @@ pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
                     state: current_state.clone(),
                     note,
                     developer_note: current_developer_note.take(),
+                    object_target: current_object_target.take(),
                 };
                 // Duplicate ids are malformed input. Keep the *first*
                 // occurrence (deterministic and document-order) rather than

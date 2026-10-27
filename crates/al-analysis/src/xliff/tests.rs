@@ -77,6 +77,7 @@ fn test_generate_xliff_roundtrip() {
             state: TranslationState::New,
             note: None,
             developer_note: None,
+            object_target: None,
         },
         TranslationUnit {
             id: "Table 50100 MyTable - ToolTip 10 Name".to_string(),
@@ -88,6 +89,7 @@ fn test_generate_xliff_roundtrip() {
             state: TranslationState::Translated,
             note: Some("ToolTip for Name".to_string()),
             developer_note: None,
+            object_target: None,
         },
     ];
 
@@ -133,6 +135,7 @@ fn test_generate_xliff_roundtrip_escaped_chars() {
             state: TranslationState::Translated,
             note: Some((*source).to_string()),
             developer_note: None,
+            object_target: None,
         }];
 
         let xml = generate_xliff("MyApp", "en-US", "de-DE", &units);
@@ -174,6 +177,7 @@ fn test_generate_xliff_roundtrip_quoted_id_attribute() {
         state: TranslationState::Translated,
         note: None,
         developer_note: None,
+        object_target: None,
     }];
 
     let xml = generate_xliff("MyApp", "en-US", "de-DE", &units);
@@ -204,6 +208,7 @@ fn test_refresh_xliff_adds_new_removes_old() {
             state: TranslationState::New,
             note: None,
             developer_note: None,
+            object_target: None,
         },
         TranslationUnit {
             id: "T2".to_string(),
@@ -215,6 +220,7 @@ fn test_refresh_xliff_adds_new_removes_old() {
             state: TranslationState::New,
             note: None,
             developer_note: None,
+            object_target: None,
         },
     ];
 
@@ -231,6 +237,7 @@ fn test_refresh_xliff_adds_new_removes_old() {
             state: TranslationState::Translated,
             note: None,
             developer_note: None,
+            object_target: None,
         },
     );
     existing.insert(
@@ -245,6 +252,7 @@ fn test_refresh_xliff_adds_new_removes_old() {
             state: TranslationState::Translated,
             note: None,
             developer_note: None,
+            object_target: None,
         },
     );
 
@@ -271,6 +279,7 @@ fn test_find_untranslated() {
             object_name: "T".to_string(),
             note: None,
             developer_note: None,
+            object_target: None,
         },
         TranslationUnit {
             id: "T2".to_string(),
@@ -282,6 +291,7 @@ fn test_find_untranslated() {
             object_name: "T".to_string(),
             note: None,
             developer_note: None,
+            object_target: None,
         },
         TranslationUnit {
             id: "T3".to_string(),
@@ -293,6 +303,7 @@ fn test_find_untranslated() {
             object_name: "T".to_string(),
             note: None,
             developer_note: None,
+            object_target: None,
         },
     ];
 
@@ -632,6 +643,7 @@ fn make_test_unit(source: &str) -> TranslationUnit {
         state: TranslationState::New,
         note: None,
         developer_note: None,
+        object_target: None,
     }
 }
 
@@ -682,6 +694,7 @@ fn translated_unit(source: &str, target: &str) -> TranslationUnit {
         state: TranslationState::Translated,
         note: None,
         developer_note: None,
+        object_target: None,
     }
 }
 
@@ -929,9 +942,9 @@ fn app_name_is_a_single_safe_filename_component() {
     )
     .unwrap();
 
-    let name = read_app_name(project.path()).unwrap();
+    let name = generated_xlf_file_name(&read_app_name(project.path()).unwrap());
 
-    assert_eq!(name, ".._.._DangerousApp");
+    assert_eq!(name, "....Dangerous App.g.xlf");
     assert_eq!(
         std::path::Path::new(&name).components().count(),
         1,
@@ -1207,6 +1220,7 @@ fn untranslated_units_come_back_in_id_order() {
         state: TranslationState::New,
         note: None,
         developer_note: None,
+        object_target: None,
     };
     let units = vec![unit("Table 3 - Property 1"), unit("Table 1 - Property 1")];
     let ids: Vec<&str> = find_untranslated(&units)
@@ -1303,6 +1317,7 @@ fn refresh_appends_obsolete_units_in_a_stable_order() {
                 state: TranslationState::Translated,
                 note: None,
                 developer_note: None,
+                object_target: None,
             },
         );
     }
@@ -1360,6 +1375,7 @@ fn refresh_brings_the_developer_comment_into_existing_units() {
         state,
         note: Some("Codeunit Hello - NamedType GreetingMsg".to_string()),
         developer_note: developer_note.map(str::to_string),
+        object_target: None,
     };
     let generated = vec![unit(Some("Shown on run"), None, TranslationState::New)];
     let mut language = HashMap::new();
@@ -1444,4 +1460,41 @@ fn build_xliff_replaces_a_planted_link_instead_of_following_it() {
     assert!(!target.exists(), "the write followed the planted link");
     let written = std::fs::symlink_metadata(&path).unwrap();
     assert!(written.file_type().is_file(), "{path:?} is still a link");
+}
+
+#[test]
+fn refresh_keeps_the_al_object_target_of_the_generated_unit() {
+    let mut generated = make_test_unit("Customer");
+    generated.object_target = Some("Table 1234".to_string());
+    let mut language = generated.clone();
+    language.object_target = None;
+    language.target = Some("Kunde".to_string());
+
+    let (units, _) = refresh_xliff(
+        &[generated],
+        &HashMap::from([(language.id.clone(), language)]),
+    );
+
+    assert_eq!(units[0].object_target.as_deref(), Some("Table 1234"));
+    let xml = generate_xliff("App", "en-US", "de-DE", &units);
+    assert!(xml.contains("al-object-target=\"Table 1234\""));
+    let reread = parse_xliff(&xml);
+    assert_eq!(
+        reread["test-id"].object_target.as_deref(),
+        Some("Table 1234")
+    );
+}
+
+#[test]
+fn generated_file_follows_alc_naming_and_layout() {
+    assert_eq!(
+        generated_xlf_file_name("Advania UK_DMS Customisation"),
+        "Advania UK_DMS Customisation.g.xlf"
+    );
+    assert_eq!(generated_xlf_file_name("A/B:C"), "ABC.g.xlf");
+    assert_eq!(generated_xlf_file_name(""), "default.g.xlf");
+    let xml = generate_xliff("My App", "en-US", "en-US", &[make_test_unit("Customer")]);
+    assert!(xml.contains("original=\"My App\""));
+    assert!(xml.contains("<group id=\"body\">"));
+    assert!(xml.contains("<note from=\"Developer\" annotates=\"general\" priority=\"2\"></note>"));
 }
