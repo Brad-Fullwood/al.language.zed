@@ -193,6 +193,7 @@ graph TD
   al_explorer --> al_protocol
   al_explorer --> al_types
   al_explorer --> al_emit
+  al_explorer --> al_bc
   al_explorer --> al_project
   al_explorer --> al_compile
   al_explorer --> al_symbols
