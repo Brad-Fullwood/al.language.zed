@@ -1,7 +1,7 @@
 # Zed AL Extension — Build System
 #
 # Usage:
-#   make install   — first-time setup: build everything + symlink into PATH + Zed
+#   make install   — build everything, copy al-lsp to the extension's work dir (dev/), verify, print status
 #   make build     — rebuild everything (all Rust crates + WASM extension + .NET bridges)
 #   make rust      — rebuild all Rust crates (native, excludes zed-al)
 #   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip2)
@@ -19,23 +19,31 @@
 
 SHELL := /bin/bash
 ROOT := $(shell pwd)
-LSP_BIN := $(ROOT)/target/debug/al-lsp
-EXPLORER_BIN := $(ROOT)/target/debug/al-explorer
+# CARGO_TARGET_DIR moves cargo's output, so the install reads from it too.
+TARGET_DIR := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),$(ROOT)/target)
+LSP_BIN := $(TARGET_DIR)/debug/al-lsp
+EXPLORER_BIN := $(TARGET_DIR)/debug/al-explorer
+# al-explorer and the `al` alias for the terminal. al-lsp is copied here too
+# for terminal use, but the extension does not look here.
 INSTALL_DIR := $(HOME)/.local/bin
 UNAME_S := $(shell uname -s)
 # Zed's dev-extension directory is platform-specific: XDG data dir on Linux,
 # Application Support on macOS (a supported dev platform per CI/README).
 ifeq ($(UNAME_S),Darwin)
 ZED_EXT_DIR := $(HOME)/Library/Application Support/Zed/extensions/installed
+ZED_WORK_DIR ?= $(HOME)/Library/Application Support/Zed/extensions/work/al
 else
 ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
+# The extension's work directory: the extension resolves al-lsp from
+# $(ZED_WORK_DIR)/dev first (see Docs/features/language-server.md).
+ZED_WORK_DIR ?= $(HOME)/.local/share/zed/extensions/work/al
 endif
 
 # .NET bridge projects (quoted for paths with spaces)
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 WASM_BIN := $(ROOT)/target/wasm32-wasip2/release/zed_al.wasm
 
-.PHONY: build install install-lsp dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate plugin-evals clean
+.PHONY: build install install-lsp install-files install-status dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate plugin-evals clean
 
 # Crates that are NOT published to crates.io (publish = false): the root wasm
 # extension plus the binary/harness crates. Everything else under crates/* is a
@@ -47,63 +55,75 @@ build: rust wasm bridges
 	@echo ""
 	@echo "Build complete. Restart the LSP in Zed to pick up changes."
 
-# ── First-time install ───────────────────────────────────────────
-install: build
-	@mkdir -p $(INSTALL_DIR)
-	@# al-lsp is COPIED, not symlinked — see the install-lsp target for why a
-	@# symlink into target/debug/ silently breaks semantic analysis. `build` ran
-	@# `rust`, whose last step produced the --features semantic binary.
-	@rm -f "$(INSTALL_DIR)/al-lsp"
-	@cp -f "$(LSP_BIN)" "$(INSTALL_DIR)/al-lsp"
-	@bdir=$$(ls -dt target/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1); \
-	 if [ -n "$$bdir" ]; then rm -rf "$(INSTALL_DIR)/bridge"; cp -r "$$bdir" "$(INSTALL_DIR)/bridge"; fi
-	@echo "Installed al-lsp (semantic, copied) -> $(INSTALL_DIR)/al-lsp"
-	@if [ ! -L "$(INSTALL_DIR)/al-explorer" ] && [ ! -f "$(INSTALL_DIR)/al-explorer" ]; then \
-		ln -sf "$(EXPLORER_BIN)" "$(INSTALL_DIR)/al-explorer"; \
-		echo "Symlinked al-explorer -> $(INSTALL_DIR)/al-explorer"; \
-	else \
-		echo "al-explorer already in $(INSTALL_DIR) (OK)"; \
-	fi
-	@# `al` back-compat alias: ONLY create/claim it when the name is free or
-	@# already ours. On machines with Microsoft's AL dotnet tool installed
-	@# (a prerequisite for the toolchain!), `al` is Microsoft's altool
-	@# wrapper — clobbering it would break alc discovery, and the previous
-	@# blanket "(OK)" message claimed a foreign binary as our alias
-	@# Use `al-explorer` in scripts; the `al` alias is best-effort.
-	@if [ -L "$(INSTALL_DIR)/al" ] && [ "$$(readlink "$(INSTALL_DIR)/al")" = "$(EXPLORER_BIN)" ]; then \
-		echo "al alias -> al-explorer already installed (OK)"; \
-	elif [ ! -e "$(INSTALL_DIR)/al" ]; then \
-		ln -sf "$(EXPLORER_BIN)" "$(INSTALL_DIR)/al"; \
-		echo "Symlinked al -> $(INSTALL_DIR)/al (alias for al-explorer)"; \
-	else \
-		echo "NOTE: $(INSTALL_DIR)/al exists and is NOT our alias (likely Microsoft's AL dotnet tool)."; \
-		echo "      Leaving it untouched — use 'al-explorer' for this project's CLI."; \
-	fi
-	@mkdir -p "$(ZED_EXT_DIR)"
-	@if [ ! -L "$(ZED_EXT_DIR)/al" ] && [ ! -d "$(ZED_EXT_DIR)/al" ]; then \
-		ln -sf "$(ROOT)" "$(ZED_EXT_DIR)/al"; \
-		echo "Dev extension symlinked into Zed."; \
-		echo "NOTE: Run 'zed: install dev extension' once from the command palette to activate the extension."; \
-	else \
-		echo "Dev extension already installed in Zed (OK)"; \
-	fi
-	@echo ""
-	@echo "Install complete."
+# ── Install ──────────────────────────────────────────────────────
+# `install` builds everything, copies al-lsp into the extension's managed
+# directory ($(ZED_WORK_DIR)/dev, the one place the extension looks), checks
+# what it copied against `al-lsp --version`, links the dev extension into Zed
+# and prints a status. It is idempotent.
+install: build install-files install-status
 
-# ── Fast refresh of just the semantic al-lsp ─────────────────────
-# Copy rather than symlink the feature-enabled binary: Cargo uses the same
-# target path for default and semantic builds, so a later workspace build can
-# otherwise replace the installed semantic binary with the stub build.
+# Fast refresh of just the semantic al-lsp: rebuild, copy, verify.
 install-lsp:
 	@echo "=== Rebuild + reinstall semantic al-lsp ==="
 	cargo build -p al-lsp --bin al-lsp --features semantic
-	@mkdir -p $(INSTALL_DIR)
-	@rm -f "$(INSTALL_DIR)/al-lsp"
-	@cp -f "$(LSP_BIN)" "$(INSTALL_DIR)/al-lsp"
-	@bdir=$$(ls -dt target/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1); \
-	 if [ -n "$$bdir" ]; then rm -rf "$(INSTALL_DIR)/bridge"; cp -r "$$bdir" "$(INSTALL_DIR)/bridge"; echo "  bridge: $$bdir"; fi
-	@echo "Reinstalled semantic al-lsp -> $(INSTALL_DIR)/al-lsp"
+	@$(MAKE) --no-print-directory install-files
 	@echo "Restart the AL language server in Zed (or reopen the .al file) to load it."
+
+# Copies are made with `cp -p`: for a dirty tree `al-lsp --version` hashes the
+# executable's size and mtime, so a copy must keep both to report the same
+# build. al-lsp is COPIED, not symlinked: Cargo uses one target path for the
+# default and the semantic build, so a later workspace build can replace a
+# linked binary with the stub build. The bridge directory goes next to each
+# copy, and al-explorer next to the managed al-lsp, which looks for it there.
+install-files:
+	@test -x "$(LSP_BIN)" || { echo "ERROR: $(LSP_BIN) missing, run 'make rust' first."; exit 1; }
+	@mkdir -p "$(INSTALL_DIR)" "$(ZED_WORK_DIR)/dev"
+	@bdir=$$(ls -dt "$(TARGET_DIR)"/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1); \
+	 for dest in "$(INSTALL_DIR)" "$(ZED_WORK_DIR)/dev"; do \
+	   rm -f "$$dest/al-lsp" "$$dest/al-explorer"; \
+	   cp -p "$(LSP_BIN)" "$$dest/al-lsp"; \
+	   if [ -x "$(EXPLORER_BIN)" ]; then cp -p "$(EXPLORER_BIN)" "$$dest/al-explorer"; fi; \
+	   if [ -n "$$bdir" ]; then rm -rf "$$dest/bridge"; cp -rp "$$bdir" "$$dest/bridge"; fi; \
+	 done
+	@# `al` back-compat alias, a copy of al-explorer. It is claimed only when the
+	@# name is free, is a symlink from an older install, or is already our
+	@# binary. On machines with Microsoft's AL dotnet tool, `al` is Microsoft's
+	@# altool wrapper and is left alone. Use `al-explorer` in scripts.
+	@a="$(INSTALL_DIR)/al"; \
+	 if [ ! -e "$$a" ] || [ -L "$$a" ] || cmp -s "$$a" "$(INSTALL_DIR)/al-explorer"; then \
+	   rm -f "$$a"; cp -p "$(INSTALL_DIR)/al-explorer" "$$a"; \
+	 else \
+	   echo "NOTE: $$a is not our alias (likely Microsoft's AL dotnet tool), left untouched."; \
+	 fi
+	@# Stamp = what the installed binary prints, then check both copies say it.
+	@stamp=$$("$(INSTALL_DIR)/al-lsp" --version) && [ -n "$$stamp" ] || { echo "ERROR: $(INSTALL_DIR)/al-lsp --version failed"; exit 1; }; \
+	 printf '%s\n' "$$stamp" > "$(ZED_WORK_DIR)/dev/BUILD"; \
+	 managed=$$("$(ZED_WORK_DIR)/dev/al-lsp" --version); \
+	 built=$$("$(LSP_BIN)" --version); \
+	 if [ "$$managed" != "$$stamp" ] || [ "$$(cat "$(ZED_WORK_DIR)/dev/BUILD")" != "$$managed" ]; then \
+	   echo "ERROR: installed al-lsp reports '$$managed', expected '$$stamp'"; exit 1; fi; \
+	 if [ "$$built" != "$$stamp" ]; then \
+	   echo "ERROR: $(LSP_BIN) reports '$$built' but the copy reports '$$stamp'"; exit 1; fi
+	@mkdir -p "$(ZED_EXT_DIR)"
+	@if [ ! -L "$(ZED_EXT_DIR)/al" ] && [ ! -d "$(ZED_EXT_DIR)/al" ]; then \
+		ln -sf "$(ROOT)" "$(ZED_EXT_DIR)/al"; \
+	fi
+
+# The short status `install` ends with. The dotnet check uses the rule the
+# toolchain itself applies (crates/al-project/src/toolchain.rs dotnet_program):
+# $AL_DOTNET_PATH, else `dotnet` on PATH. It is not a second lookup.
+install-status:
+	@echo ""
+	@echo "al-lsp:       $(ZED_WORK_DIR)/dev/al-lsp  [$$(cat "$(ZED_WORK_DIR)/dev/BUILD")]"
+	@echo "al-lsp (cli): $(INSTALL_DIR)/al-lsp"
+	@echo "al-explorer:  $(INSTALL_DIR)/al-explorer"
+	@echo "bridge:       $$([ -d "$(ZED_WORK_DIR)/dev/bridge" ] && echo yes || echo no)"
+	@echo "dotnet:       $$("$${AL_DOTNET_PATH:-dotnet}" --version >/dev/null 2>&1 && echo yes || echo no)"
+	@echo "wasm:         $$([ -f "$(WASM_BIN)" ] && echo built || echo missing)"
+	@echo "grammar:      $$([ -f "$(ROOT)/grammars/al.wasm" ] && echo built || echo 'not built yet, Zed builds it when the dev extension installs')"
+	@echo "dev ext link: $$([ -e "$(ZED_EXT_DIR)/al" ] && echo present || echo missing)"
+	@echo ""
+	@echo "Left to do in Zed: run 'zed: install dev extension' (first time) or 'zed: reload extensions'."
 
 # ── One-shot dev environment setup ───────────────────────────────
 # Installs prerequisites then builds + symlinks everything. Run once
