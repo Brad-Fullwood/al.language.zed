@@ -4,6 +4,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum TestRunnerError {
+    #[error("running tests on live BC needs a client for the TestRunnerHub SignalR hub, which is not implemented yet (see Docs/features/native-test-runtime.md)")]
+    LiveBcNotImplemented,
     #[error("HTTP request failed: {0}")]
     Http(#[from] reqwest::Error),
     #[error("Authentication failed (HTTP {status}): {message}")]

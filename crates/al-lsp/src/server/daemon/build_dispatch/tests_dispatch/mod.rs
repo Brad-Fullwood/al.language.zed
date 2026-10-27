@@ -473,7 +473,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    use al_bc::launch::find_launch_config;
     use al_test::backends::interp::InterpMode;
     use al_test::backends::live_bc::LiveBcMode;
     use al_test::output::{cobertura, junit};
@@ -526,10 +525,11 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         Ok(timeout) => timeout,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
     };
-    let config_name = match optional_non_empty_string(params, "config") {
-        Ok(config) => config,
-        Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
-    };
+    // `config` is still validated, but nothing reads a launch config here:
+    // tests routed to live BC are reported as skipped.
+    if let Err(message) = optional_non_empty_string(params, "config") {
+        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
+    }
     let junit_out = match optional_non_empty_string(params, "junitOut") {
         Ok(path) => path,
         Err(message) => return rpc_error(id, error_codes::INVALID_PARAMS, &message),
@@ -755,64 +755,6 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
                 .is_some_and(|(_, needs_records)| *needs_records)
         });
 
-    let server_config = if live_tests.is_empty() {
-        None
-    } else {
-        let launch_cfg = match find_launch_config(&project_root) {
-            Ok(Some(cfg)) => cfg,
-            Ok(None) => {
-                return rpc_error(
-                    id,
-                    error_codes::INTERNAL_ERROR,
-                    "No launch config found — create .vscode/launch.json or .zed/debug.json",
-                );
-            }
-            Err(error) => {
-                return rpc_error(id, error_codes::INVALID_PARAMS, &error.to_string());
-            }
-        };
-        let selected = match config_name {
-            Some(name) => launch_cfg
-                .configs
-                .iter()
-                .find(|config| config.name.eq_ignore_ascii_case(name)),
-            None => launch_cfg.configs.first(),
-        };
-        match selected {
-            Some(c) => {
-                let mut config = c.clone();
-                if let Err(message) =
-                    crate::server::daemon::authorize_live_test_target(&project_root, &mut config)
-                {
-                    return rpc_error(id, error_codes::INVALID_PARAMS, &message);
-                }
-                Some(config)
-            }
-            None => {
-                let message = match config_name {
-                    Some(name) => {
-                        let known = launch_cfg
-                            .configs
-                            .iter()
-                            .map(|config| config.name.as_str())
-                            .collect::<Vec<_>>();
-                        format!("BC server config '{name}' not found; known configs: {known:?}")
-                    }
-                    None => "No BC server config found in launch config".to_string(),
-                };
-                return rpc_error(
-                    id,
-                    if config_name.is_some() {
-                        error_codes::INVALID_PARAMS
-                    } else {
-                        error_codes::INTERNAL_ERROR
-                    },
-                    &message,
-                );
-            }
-        }
-    };
-
     let (tx, mut rx) = mpsc::channel::<TestEvent>(256);
     let mut run_handles = Vec::new();
     // When dynamic coverage is requested, hold a handle to the interp
@@ -857,11 +799,9 @@ pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
         .collect::<std::collections::BTreeSet<_>>();
     let live_codeunits = live_codeunit_ids.len();
     if !live_tests.is_empty() {
-        // Routing guarantees server_config is Some when live tests exist.
-        let Some(cfg) = server_config else {
-            return rpc_error(id, error_codes::INTERNAL_ERROR, "launch config vanished");
-        };
-        let mode = LiveBcMode::new(cfg);
+        // Tests routed to live BC are reported as skipped. No launch config is
+        // needed because nothing connects to BC (see LiveBcMode).
+        let mode = LiveBcMode::new();
         let tx_live = tx.clone();
         let opts_for_run = opts.clone();
         run_handles.push(tokio::spawn(async move {

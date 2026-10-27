@@ -64,7 +64,7 @@ feature pages for implementation details and limitations.
 | JUnit output / coverage | ✅ (static call-graph plus opt-in dynamic statement/path/MC/DC coverage) | partial (needs BC) |
 | Mutation testing | ✅ interpreter-routed, optionally parallel | ❌ |
 | Test snapshot files | live capture/replay plus BC-free validation and file diff | partial (snapshot debugging) |
-| Base-app/package DB, unsupported record, HTTP/UI/report/platform tests | 🔷 route to live BC | 🔷 live BC |
+| Base-app/package DB, unsupported record, HTTP/UI/report/platform tests | 🔷 classified `liveBc` and reported as skipped. Running them needs a TestRunnerHub client, not built yet (`testing-01-live-bc-dev-tests-endpoint-invented.md`) | 🔷 live BC |
 
 ## Debugging
 

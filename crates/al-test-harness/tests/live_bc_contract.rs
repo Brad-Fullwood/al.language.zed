@@ -502,9 +502,7 @@ async fn exercise_native_dap(contract: &LiveContract) -> AnyResult<()> {
     dap.successful_request("configurationDone", json!({}))
         .await?;
 
-    let token = al_bc::http_auth::access_token_from_env()?
-        .ok_or_else(|| failure("UNAVAILABLE: no BC bearer token"))?;
-    let runner = TestRunnerClient::with_access_token(&contract.server, Some(&token))?;
+    let runner = TestRunnerClient;
     let codeunit_name_owned = contract.codeunit_name.clone();
     let method_owned = contract.method.clone();
     let codeunit_id = contract.codeunit_id;

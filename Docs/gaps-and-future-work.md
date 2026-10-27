@@ -57,7 +57,7 @@ environment has not supplied its contract evidence.
 
 | Profile | Required evidence | State |
 |---|---|---|
-| Live Business Central | One declared tenant/environment must complete repository-fixture package upload/install, native DAP attach and control loop, an exact `liveBc`-routed test, and snapshot capture/validate/replay/diff through `make live-bc-contracts` | Blocked externally |
+| Live Business Central | One declared tenant/environment must complete repository-fixture package upload/install, native DAP attach and control loop, and (after the TestRunnerHub client exists, see `testing-01-live-bc-dev-tests-endpoint-invented.md`) an exact `liveBc`-routed test and snapshot capture/validate/replay/diff through `make live-bc-contracts` | Blocked externally |
 
 The live profile is implemented and strict. It carries a deterministic
 publishable test project and derives the exact test and breakpoint inputs from

@@ -17,7 +17,7 @@ are named aliases for common agent workflows and do not limit what `al_call` can
 | `al_downloadsymbols` | `downloadSymbols` | `source: nuget \| server = nuget`, `config: string` (launch configuration for `source=server`, first one when omitted) | downloaded package list |
 | `al_symbolsearch` | `search` | `query: string` (required), `limit: number = 50`, `summary: boolean = true` (false includes every member) | matching objects with kind, id, name and package |
 | `al_getdiagnostics` | `lint` | `file: string` or `uri: string`, plus `text: string` for a file outside the project | diagnostics for the file |
-| `al_runtests` | `tests.run_auto` | _(none)_ | test results plus per-method classified/actual backend, local/live status, and reasons. Unsupported/platform behavior needs live BC |
+| `al_runtests` | `tests.run_auto` | _(none)_ | test results plus per-method classified/actual backend, local/live status, and reasons. Unsupported/platform behavior is reported as skipped (live BC needs a TestRunnerHub client, not built yet) |
 | `al_deadcode` | `deadCode` | _(none)_ | unused procedures/fields/orphaned subscribers |
 | `al_sqlscan` | `sqlPatterns` | _(none)_ | SQL anti-pattern findings |
 | `al_entrypoints` | `entrypoints` | `scope: workspace \| packages \| all = workspace` | procedures with no incoming calls |

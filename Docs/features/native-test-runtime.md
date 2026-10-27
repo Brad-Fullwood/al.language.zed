@@ -2,10 +2,10 @@
 
 **Modules:** `crates/al-runtime/src/` (interpreter), `crates/al-test/src/` (routing/execution),
 `crates/al-snapshot/src/`. **Status:** 🟢 pure logic and the supported workspace-record subset run
-natively. Platform-dependent behavior runs on live BC.
+natively. Tests that need platform behavior are classified `liveBc` and reported as skipped.
 
 A native AL interpreter runs a supported subset of AL test codeunits with no .NET runtime and no
-live Business Central server. Tests that need platform semantics are routed to live BC.
+live Business Central server. Tests that need platform semantics are routed to `liveBc`. Tests that need live BC are classified and reported as skipped. Running them needs a client for BC's SignalR TestRunnerHub (`/dev/TestRunnerHub`), which is not built yet (see testing-01-live-bc-dev-tests-endpoint-invented.md).
 
 ## Pipeline
 
@@ -17,9 +17,14 @@ discover [Test] tests ──► router classifies each test ──► backend ex
 - **Interp** tests (pure logic) run locally on the Rust interpreter.
 - **InterpRecord** tests run locally with an isolated in-memory database when every referenced table
   is defined in the workspace and every operation is in the supported record subset.
-- **LiveBc** runs HTTP/UI/report/session/transaction/package-table and other platform tests against BC.
-- **Snapshot** records explicit breakpoint-sampled state from a live BC test run. Replay resolves
-  and re-runs the recorded indexed test method on live BC. Validation and file-to-file diff remain
+- **LiveBc** classifies HTTP/UI/report/session/transaction/package-table and other platform tests. They are reported as
+  skipped with the message `Skipped: runs on live BC, which needs the TestRunnerHub client (not implemented yet, see
+  Docs/features/native-test-runtime.md)`. Skipped tests do not fail a run. BC runs tests through the SignalR hub
+  `{base}/dev/TestRunnerHub`, and this project has no client for it yet
+  (`testing-01-live-bc-dev-tests-endpoint-invented.md`). An earlier version called a `tests/{codeunit}/run` route under `/dev` that BC does not have.
+- **Snapshot** is meant to record breakpoint-sampled state from a live BC test run. The capture and replay steps that
+  start the test run need the same missing TestRunnerHub client and return a "not implemented" error. Replay resolves
+  the recorded indexed test method. Validation and file-to-file diff remain
   available without BC.
 
 ## The interpreter (`crates/al-runtime`)
@@ -227,8 +232,8 @@ access, PureLogic fails with a capability error instead of running it against th
 - **Backends:** InterpMode executes the test bodies with per-test deadlines (30 s by default) and
   parallel codeunit support. A test body still running 5 s after its deadline fails with a message
   saying the runner stopped waiting for it, and the run goes on to the next test. The runner then
-  raises the test's cancel flag, so the body stops at its next check. LiveBcMode calls
-  `POST /dev/tests/{codeunit}/run` with basic/bearer/Windows authentication.
+  raises the test's cancel flag, so the body stops at its next check. LiveBcMode makes no
+  call to BC. It reports each test routed to it as skipped.
 - **Lifecycle/handlers:** initialize, test, and cleanup share one per-test record context. Cleanup
   always runs. MessageHandler, ConfirmHandler, StrMenuHandler, and HyperlinkHandler execute locally
   (including `var Reply`/`var Choice` write-back), while handlers requiring real page, report,
@@ -291,7 +296,8 @@ characters). Whole-codeunit targets are expanded before routing, so summaries an
 contain only selected methods and a filter that matches nothing does not contact live BC.
 
 MCP `al_runtests` maps to `tests.run_auto`: pure logic and supported workspace records run locally.
-Only the remaining tests require a launch configuration and live BC. Its result includes a
+The remaining tests are reported as skipped and need no launch configuration, so `test-run-all` runs every local test
+and exits nonzero only when a local test fails. Its result includes a
 `routing` entry per test method with the classifier decision, the actual codeunit backend,
 `runsLocally`, a short execution note, and reasons with their source locations. If live-BC configuration is
 missing, the MCP error still includes the classifications so an agent can separate runnable local
@@ -327,8 +333,7 @@ tests from blocked server tests.
 Routing to live BC is by design: the native runner does not guess platform behavior it cannot
 reproduce exactly.
 
-`make live-bc-contracts` checks that routing against a tenant and environment you supply and the
-repository's test fixture (or a complete custom project contract). It requires the CLI to report a
-`liveBc` route, runs the exact method through BC, and exercises snapshot capture, validation,
-replay, and diff. Its harness test is marked ignored, so a plain `cargo test` run does not count it
-as a pass.
+`make live-bc-contracts` checks publish and the DAP control loop against a tenant and environment you supply.
+Its test-run and snapshot steps cannot pass until the TestRunnerHub client exists, because they start the test through
+the client that is not built (`testing-01-live-bc-dev-tests-endpoint-invented.md`). Its harness test is marked ignored, so a plain `cargo test` run does not
+count it as a pass.

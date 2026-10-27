@@ -40,7 +40,7 @@ live in [ROADMAP.md](../ROADMAP.md).
   triggers and procedures, and workspace event subscribers. Transactions,
   permissions, locking, `RecordRef`/`FieldRef`, package-only table schemas, manual
   event subscriptions, UI, HTTP, reports, sessions, and other platform behavior
-  route to live Business Central.
+  route to `liveBc`, where they are reported as skipped. Tests that need live BC are classified and reported as skipped. Running them needs a client for BC's SignalR TestRunnerHub (`/dev/TestRunnerHub`), which is not built yet (see testing-01-live-bc-dev-tests-endpoint-invented.md).
 - Routing remains conservative, but production classification now walks resolved syntax bodies
   across the transitive call/event graph and includes lifecycle, configured handlers, and
   codeunit-shared state. The enforced runtime capability boundary still prevents a missed record
@@ -52,7 +52,7 @@ live in [ROADMAP.md](../ROADMAP.md).
   entry/natural-exit paths, and condition-level MC/DC for compound
   IF/WHILE/REPEAT decisions. MC/DC vectors come from the original evaluation,
   so coverage does not repeat calls or alter runtime semantics.
-- `test-snapshot capture` records explicit breakpoint samples from a live BC test. `replay`
+- `test-snapshot capture` is meant to record explicit breakpoint samples from a live BC test. Starting that test needs the missing TestRunnerHub client, so capture returns a "not implemented" error. `replay`
   re-runs that exact indexed test method against an explicitly identified current BC runtime,
   recreates its breakpoint conditions, and compares samples by stable source location. Capture and
   replay require a reachable configured BC environment. `validate` and `diff` remain BC-free.
@@ -66,8 +66,8 @@ live in [ROADMAP.md](../ROADMAP.md).
   integration profile. `make live-bc-contracts` is that strict profile:
   absent tenant/environment/version/token inputs report `UNAVAILABLE` with exit
   2, while the repository-owned fixture must pass completed publish/install,
-  the live DAP control loop, a `liveBc`-routed test, and snapshot
-  capture/replay. A complete caller-supplied project contract remains available
+  the live DAP control loop. The `liveBc`-routed test and snapshot
+  capture/replay steps wait for the TestRunnerHub client. A complete caller-supplied project contract remains available
   for app-specific validation.
 - Native `.app` output has current `alc` 17 differential coverage for the small
   through XL generated Base Application benchmark projects plus an env-gated fixture for

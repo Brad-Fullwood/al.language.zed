@@ -23,7 +23,7 @@ This project reimplements a large part of that tooling in Rust:
 - Symbol discovery reads an in-memory index instead of scanning packages on each request.
 - Native `.app` compilation is implemented in Rust: source is syntax/project/declaration/binding verified, packaged into NAVX/ZIP `.app` artifacts, reopened for integrity checks, and atomically handed off only after all blocking checks pass.
 - Business Central-specific workflows such as impact analysis, event tracing, subscriber lookup, dead-code detection, SQL anti-pattern detection, audit checks, and upgrade reports are exposed through the CLI, daemon JSON-RPC, and MCP tools.
-- Batch test execution includes native interpreter paths for pure-logic codeunits and the supported workspace-record subset, with conservative routing back to live Business Central for base-app/package records, unsupported record behavior, mixed/unknown codeunits, and platform-dependent behavior.
+- Batch test execution includes native interpreter paths for pure-logic codeunits and the supported workspace-record subset, with conservative routing to `liveBc` for base-app/package records, unsupported record behavior, mixed/unknown codeunits, and platform-dependent behavior. `liveBc` tests are reported as skipped until a client for BC's TestRunnerHub exists (finding testing-01-live-bc-dev-tests-endpoint-invented.md).
 - Zed talks to the same engine through LSP, DAP, and the `al-tools` MCP context server. The language package also ships an AL task list and inline test/event runnables that drive `al-explorer`, and repository contributors have extra CLI tasks in `.zed/tasks.json`.
 
 The goal is full native implementation where that is realistic, with Microsoft compatibility and fallback where exact compiler or runtime behavior still belongs to Microsoft.
@@ -42,7 +42,7 @@ The table shows what is native and what still uses Microsoft components.
 | `.app` inspection and emit fidelity | Native NAVX/ZIP inspection, manifest parsing, generated `SymbolReference.json`, profile symbol references, supported-subset XLIFF/navigation/resources, control-add-in bundles, entitlements, permissions, and ALC golden tests | Broader real-world resource shapes still require `pack-native --validate` or official `alc`. Business Central publish/runtime behavior is the final compatibility validator |
 | Symbols | Native `.app` reader, symbol model, package cache, source map, composed objects, NuGet/server download orchestration | Symbol package contents and compiler output formats come from the Business Central ecosystem |
 | Analysis | Native impact, event, call graph, dead code, SQL scan, duplicates, architecture lint, breaking/upgrade/obsolete/audit reports | Package-only call-site bodies cannot be recovered when Microsoft `.app` symbols do not contain source bodies |
-| Tests | Native discovery, resolved transitive per-codeunit routing, pure-logic and supported workspace-record interpreters, local initialize/cleanup plus deterministic Message/Confirm/StrMenu/Hyperlink handlers, live breakpoint-snapshot capture/replay, JUnit output, static call-graph and opt-in dynamic statement/path/MC/DC Cobertura coverage, and scoped mutation testing for interpreter-routed tests | Base-app/package record schemas, unsupported record/platform behavior, HTTP, UI, report, XmlPort, session, transaction, and mixed/unknown codeunits use live BC |
+| Tests | Native discovery, resolved transitive per-codeunit routing, pure-logic and supported workspace-record interpreters, local initialize/cleanup plus deterministic Message/Confirm/StrMenu/Hyperlink handlers, breakpoint-snapshot validate/diff (capture and replay wait for the TestRunnerHub client), JUnit output, static call-graph and opt-in dynamic statement/path/MC/DC Cobertura coverage, and scoped mutation testing for interpreter-routed tests | Base-app/package record schemas, unsupported record/platform behavior, HTTP, UI, report, XmlPort, session, transaction, and mixed/unknown codeunits route to `liveBc` and are reported as skipped (no TestRunnerHub client yet) |
 | Debugging | Native Zed DAP adapter mode, config conversion, compile/publish/deploy plumbing, SignalR and BC debug data mapping, snapshot capture and replay ([docs](Docs/features/snapshot-debugging.md)) | Business Central runtime/debug service remains the execution backend |
 | Automation | `al-explorer`, daemon JSON-RPC, MCP server, contributor-only `.zed` tasks | None required for pure analysis. BC credentials/runtime required for publish/debug/live-test workflows |
 
@@ -122,7 +122,7 @@ Current MCP tools:
 - `al_downloadsymbols` - download dependency symbol packages into `.alpackages`.
 - `al_symbolsearch` - fuzzy-search symbols across workspace and packages.
 - `al_getdiagnostics` - run diagnostics for an AL file.
-- `al_runtests` - discover tests and delegate to batch routing: `Interp` and supported `InterpRecord` codeunits run locally. Unsupported or platform-dependent codeunits require live BC configuration. Results include each method's classified/actual backend, local/live status, and routing reasons.
+- `al_runtests` - discover tests and delegate to batch routing: `Interp` and supported `InterpRecord` codeunits run locally. Unsupported or platform-dependent codeunits are reported as skipped (live BC needs a TestRunnerHub client, not built yet). Results include each method's classified/actual backend, local/live status, and routing reasons.
 - `al_deadcode` - find unused procedures, fields, and orphaned subscribers.
 - `al_sqlscan` - detect SQL anti-patterns.
 - `al_entrypoints` - list procedures with no incoming calls.
@@ -235,15 +235,15 @@ The conservative router classifies resolved syntax bodies across the transitive 
 graph, including test initialize/cleanup procedures, configured handlers, and codeunit-wide shared
 state. `Interp` and supported `InterpRecord` codeunits run locally from `test-run`, `test-run-all`,
 the TUI, and MCP `al_runtests`. Codeunits that need base-app/package tables, unsupported record
-behavior, HTTP, UI, reports, sessions, or transactions route to live BC.
+behavior, HTTP, UI, reports, sessions, or transactions route to `liveBc` and are reported as skipped until a TestRunnerHub client exists.
 
 The record runtime reads workspace table definitions and provides isolated in-memory data, keys, BC-style filters, common CRUD/navigation methods, and CalcFormula-backed FlowFields. It does not emulate platform triggers, transactions, permissions, RecordRef/FieldRef, or package-only table schemas.
 
 `test-run-all --filter` applies a case-insensitive method glob, where `*` matches any run of
 characters, before backend routing, including when the initial request targets a whole codeunit.
 
-`test-snapshot capture` runs one exact test method on live Business Central and writes breakpoint
-samples to a snapshot file. `replay` resolves and re-runs that recorded method, recreates its
+`test-snapshot capture` is meant to run one exact test method on live Business Central and write breakpoint
+samples to a snapshot file. It needs the TestRunnerHub client that is not built yet and returns a "not implemented" error. `replay` resolves and re-runs that recorded method, recreates its
 breakpoints, and compares the live samples with the baseline. `validate` checks an existing file
 and `diff` compares two files. Each runs only when asked for.
 
