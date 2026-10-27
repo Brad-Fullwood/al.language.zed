@@ -233,7 +233,7 @@ access, PureLogic fails with a capability error instead of running it against th
   always runs. MessageHandler, ConfirmHandler, StrMenuHandler, and HyperlinkHandler execute locally
   (including `var Reply`/`var Choice` write-back), while handlers requiring real page, report,
   notification, request-page, or client state route to live BC.
-- **Results:** Pass/Fail/Skip, JUnit XML, Cobertura, and append-only NDJSON history capped at 1000
+- **Results:** Pass/Fail/Skip, JUnit XML (validates against the Jenkins xunit plugin `junit-10.xsd`, fixture in `crates/al-test/tests/fixtures`: assertion failures are `<failure>`, timeouts and infrastructure failures are `<error>`), Cobertura, and append-only NDJSON history capped at 1000
   records per codeunit/method. The dynamic Cobertura document reports `lines-covered` but no
   `line-rate` (it carries `line-coverage="unavailable"`), because the interpreter records the lines
   that ran and not the lines that could have run. Branch and MC/DC rates have real denominators.

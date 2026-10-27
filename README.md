@@ -228,7 +228,7 @@ The local runner interprets a supported subset of AL test bodies directly from t
 - A defined subset of expression evaluation for literals, identifiers, unary and binary operators, arithmetic, comparisons, boolean logic, string concatenation, and parenthesized expressions.
 - A listed set of built-ins (`Error`, `Message`, `StrSubstNo`, `Format`, string, math and date functions including `CalcDate` and `Evaluate`), `Text`, `List`, `Dictionary` and enum methods, arrays, and the `Library Assert`, `Library - Variable Storage`, `Library Random` and `Any` test libraries. [Native test runtime](Docs/features/native-test-runtime.md) has the full list.
 - Static, BC-free test discovery. Codeunits are discovered by `Subtype = Test` or contained `[Test]` procedures, but only `[Test]` methods are returned as executable tests. Lifecycle methods are not listed as tests.
-- JUnit XML, default static-call-graph Cobertura, and opt-in dynamic executed-line/decision coverage from interpreter runs.
+- JUnit XML (validates against the Jenkins xunit plugin `junit-10.xsd`, fixture in `crates/al-test/tests/fixtures`), default static-call-graph Cobertura, and opt-in dynamic executed-line/decision coverage from interpreter runs.
 - Interpreter-backed mutation testing over both local tiers, including stable parallel mutant execution. Mutants without interpreter-runnable coverage are reported as survived.
 
 The conservative router classifies resolved syntax bodies across the transitive workspace call/event
