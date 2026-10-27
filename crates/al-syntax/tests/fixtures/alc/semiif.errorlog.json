@@ -1,0 +1,38 @@
+{
+  "version": "0.2",
+  "toolInfo": {
+    "toolName": "Microsoft (R) AL Compiler",
+    "productVersion": "18.1.43",
+    "fileVersion": "18.1.43"
+  },
+  "issues": [
+    {
+      "ruleId": "AL0111",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "/proj/src/JourneyMgt.Codeunit.al",
+              "region": {
+                "startLine": 13,
+                "startColumn": 9,
+                "endLine": 13,
+                "endColumn": 11
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "Semicolon expected. Add a semicolon (;) to terminate the statement.",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al111?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    }
+  ]
+}

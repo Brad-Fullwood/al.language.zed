@@ -37,7 +37,8 @@ pub use navigation::{
 };
 pub use parser::{
     grammar_fingerprint, missing_semicolon_insert_byte, missing_semicolon_insert_byte_at, AlParser,
-    ParseResult, SyntaxError, ALC_MISSING_SEMICOLON_CODE, ALC_MISSING_SEMICOLON_MESSAGE,
+    ParseResult, SyntaxError, ALC_EXPECTED_TOKEN_CODE, ALC_MISSING_SEMICOLON_CODE,
+    ALC_MISSING_SEMICOLON_MESSAGE,
 };
 pub use sort::sort_members;
 pub use source_lines::{get_source_line, SourceLines};
