@@ -290,7 +290,7 @@ where
         self.emit_output(out, "console", "Connecting to debug hub...\r\n")
             .await?;
 
-        match BcDebugSession::connect(&config, &token).await {
+        match BcDebugSession::connect(&config, &token, true).await {
             Ok(debug_session) => {
                 if let Err(e) = debug_session.attach(&config).await {
                     self.reply_failure(out, request_seq, command, format!("Attach failed: {e}"))

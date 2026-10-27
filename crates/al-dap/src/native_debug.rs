@@ -65,7 +65,7 @@ impl NativeDebugSession {
     /// `config` — BC server connection config (built from launch.json / debug.json).
     /// `access_token` — OAuth Bearer token for the BC tenant.
     pub async fn start(config: BcDebugConfig, access_token: &str) -> Result<Self> {
-        let session = BcDebugSession::connect(&config, access_token).await?;
+        let session = BcDebugSession::connect(&config, access_token, true).await?;
 
         session.attach(&config).await?;
 

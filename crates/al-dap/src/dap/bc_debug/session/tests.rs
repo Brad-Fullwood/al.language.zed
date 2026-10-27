@@ -1036,3 +1036,88 @@ async fn hub_requests_serialise_to_the_decompiled_pascal_case_frames() {
         )
     );
 }
+
+/// dap-11: negotiate and the WebSocket both carry the query Microsoft builds
+/// (HubBasedDebuggerService.cs:171-193) and the WebSocket gets the cookie
+/// negotiate set (HubBasedService.cs:57-58).
+#[tokio::test]
+async fn connect_sends_the_hub_query_on_both_requests_and_forwards_the_cookie() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let server = tokio::spawn(async move {
+        // 1. negotiate: plain HTTP POST.
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 8192];
+        let n = stream.read(&mut buf).await.unwrap();
+        let negotiate_request = String::from_utf8_lossy(&buf[..n]).to_string();
+        // fixture source: shape of the ASP.NET Core negotiate v1 reply that
+        // wire.rs resolve_negotiate_connection reads (connectionId, connectionToken, negotiateVersion).
+        let body = r#"{"negotiateVersion":1,"connectionId":"cid","connectionToken":"ctok","availableTransports":[]}"#;
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: ApplicationGatewayAffinity=abc123; Path=/; HttpOnly\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(reply.as_bytes()).await.unwrap();
+        drop(stream);
+
+        // 2. WebSocket upgrade.
+        let (stream, _) = listener.accept().await.unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new((String::new(), String::new())));
+        let seen_in_cb = seen.clone();
+        let mut ws = tokio_tungstenite::accept_hdr_async(
+            stream,
+            move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                  resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                let cookie = req
+                    .headers()
+                    .get("cookie")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                *seen_in_cb.lock().unwrap() = (req.uri().to_string(), cookie);
+                Ok(resp)
+            },
+        )
+        .await
+        .unwrap();
+        // SignalR handshake: read the client's, answer with an empty record.
+        let _ = ws.next().await;
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            "{}\x1e".into(),
+        ))
+        .await
+        .unwrap();
+        let ws_seen = seen.lock().unwrap().clone();
+        (negotiate_request, ws_seen, ws)
+    });
+
+    let cfg = BcDebugConfig {
+        environment_type: "OnPrem".to_string(),
+        server: Some("http://127.0.0.1".to_string()),
+        server_instance: Some("BC".to_string()),
+        port,
+        tenant: "default".to_string(),
+        session_id: Some(12),
+        user_id: Some("BRAD".to_string()),
+        ..BcDebugConfig::default()
+    };
+    let session = BcDebugSession::connect(&cfg, "tok", true)
+        .await
+        .expect("connect succeeds against the local hub");
+    assert_eq!(session.connection_id, "cid");
+
+    let (negotiate_request, (ws_uri, ws_cookie), _ws) = server.await.unwrap();
+    let request_line = negotiate_request.lines().next().unwrap();
+    assert_eq!(
+        request_line,
+        "POST /BC/dev/DebuggerHub/negotiate?tenant=default&sessionId=12&userid=BRAD&Authentication=Bearer%20tok&negotiateVersion=1 HTTP/1.1"
+    );
+    assert_eq!(
+        ws_uri,
+        "/BC/dev/DebuggerHub?tenant=default&sessionId=12&userid=BRAD&Authentication=Bearer%20tok&id=ctok"
+    );
+    assert_eq!(ws_cookie, "ApplicationGatewayAffinity=abc123");
+}

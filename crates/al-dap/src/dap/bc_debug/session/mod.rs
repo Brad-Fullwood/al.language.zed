@@ -148,7 +148,14 @@ pub struct BcDebugSession {
 }
 
 impl BcDebugSession {
-    pub async fn connect(config: &BcDebugConfig, access_token: &str) -> Result<Self> {
+    /// `attaching` is true when the session will send `Attach`: Microsoft puts
+    /// `sessionId` and `userid` on the hub URL only then (their source is
+    /// `AttachOptions`, DebugAdapterStartRequestHandler.cs:58-65).
+    pub async fn connect(
+        config: &BcDebugConfig,
+        access_token: &str,
+        attaching: bool,
+    ) -> Result<Self> {
         if config.accept_invalid_certs {
             // Match the warn-on-construction parity from BcClient::new at
             // bc_client.rs:99. Without this the DAP path silently
@@ -158,13 +165,23 @@ impl BcDebugSession {
         }
         let hub_url = config.debug_hub_url();
 
-        let negotiate_url = format!("{hub_url}/negotiate?negotiateVersion=1");
+        // Microsoft puts the query parameters on the hub URL, so negotiate and the
+        // WebSocket both carry them (HubBasedDebuggerService.cs:171-193). The
+        // SignalR client appends `negotiateVersion` and `id` after them.
+        let query = config
+            .debug_hub_query(access_token, attaching)
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let negotiate_url = format!("{hub_url}/negotiate?{query}&negotiateVersion=1");
         let http = reqwest::Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .build()
             .map_err(|e| DapError::ConnectionFailed(format!("HTTP client error: {e}")))?;
 
-        info!("SignalR negotiate: {negotiate_url}");
+        // The query holds the bearer token, so only the path is logged.
+        info!("SignalR negotiate: {hub_url}/negotiate");
         let negotiate_resp = http
             .post(&negotiate_url)
             .header(AUTHORIZATION, format!("Bearer {access_token}"))
@@ -172,9 +189,26 @@ impl BcDebugSession {
             .body("")
             .send()
             .await
-            .map_err(|e| DapError::ConnectionFailed(format!("SignalR negotiate failed: {e}")))?;
+            .map_err(|e| {
+                // reqwest errors print the URL, which carries the bearer token.
+                DapError::ConnectionFailed(format!("SignalR negotiate failed: {}", e.without_url()))
+            })?;
 
         let status = negotiate_resp.status();
+        // Microsoft's connection keeps a CookieContainer (HubBasedService.cs:57-58),
+        // so the Application Gateway affinity cookie set by negotiate reaches the
+        // WebSocket. reqwest's cookie store is not enabled here, so the name=value
+        // pairs are forwarded by hand.
+        let cookie_header = negotiate_resp
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .filter_map(|value| value.split(';').next())
+            .map(str::trim)
+            .filter(|pair| pair.contains('='))
+            .collect::<Vec<_>>()
+            .join("; ");
         let resp_text = negotiate_resp.text().await.map_err(|e| {
             DapError::ConnectionFailed(format!("Failed to read negotiate response: {e}"))
         })?;
@@ -213,13 +247,16 @@ impl BcDebugSession {
         let ws_url = hub_url
             .replace("https://", "wss://")
             .replace("http://", "ws://");
-        let ws_url = format!("{ws_url}?id={}", percent_encode_url(&resolved.ws_id));
+        let ws_url = format!(
+            "{ws_url}?{query}&id={}",
+            percent_encode_url(&resolved.ws_id)
+        );
         // Redact the connection_token from the log line — it grants access to
         // the active debug session and must not appear in plaintext logs.
         let log_url = ws_url.split('?').next().unwrap_or(&ws_url);
-        info!("SignalR WebSocket: {log_url}?id=<redacted>");
+        info!("SignalR WebSocket: {log_url}?<redacted>");
 
-        let request = tokio_tungstenite::tungstenite::http::Request::builder()
+        let mut request = tokio_tungstenite::tungstenite::http::Request::builder()
             .uri(&ws_url)
             .header("Authorization", format!("Bearer {access_token}"))
             .header("Connection", "Upgrade")
@@ -229,7 +266,11 @@ impl BcDebugSession {
                 "Sec-WebSocket-Key",
                 tokio_tungstenite::tungstenite::handshake::client::generate_key(),
             )
-            .header("Host", websocket_host_header(&ws_url)?)
+            .header("Host", websocket_host_header(&ws_url)?);
+        if !cookie_header.is_empty() {
+            request = request.header("Cookie", cookie_header);
+        }
+        let request = request
             .body(())
             .map_err(|e| DapError::ConnectionFailed(format!("WS request build error: {e}")))?;
 

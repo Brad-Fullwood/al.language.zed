@@ -95,6 +95,16 @@ either feature until it can provide the full behavior itself.
 
 ## BC SignalR integration (`bc_debug/`)
 
+The hub URL follows Microsoft's adapter. In the cloud it is
+`https://api.businesscentral.dynamics.com/v2.0/{environment}/dev/DebuggerHub` with no tenant segment
+(`CloudHttpClientFactory.cs:137-158`, `DebugAdapterStartRequestHandler.cs:133-137`), on premises
+`{server}:{port}/{instance}/dev/DebuggerHub`. The query parameters are those of
+`HubBasedDebuggerService.OpenConnectionAsync` (`HubBasedDebuggerService.cs:171-193`): `tenant` (on premises
+only), `sessionId` (when set and not -1) and `userid` (both only for an attach, they come from the attach options),
+and `Authentication=Bearer <token>`. Negotiate and the WebSocket both carry them, and the affinity cookie
+that negotiate sets is sent on the WebSocket (`HubBasedService.cs:57-58`). Not sent: `deploymentId` (no
+configuration field), application family and sovereign cloud hosts. Live check on CDX pending in the lead's contract run.
+
 A from-scratch SignalR (protocol v1) client: negotiates (`/negotiate?negotiateVersion=1`, validating
 the negotiated version and `connectionToken`), opens a WebSocket with the record-separator handshake,
 and runs reader/writer tasks. Every hub request uses the C# property names (PascalCase, for example

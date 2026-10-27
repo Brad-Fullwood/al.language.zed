@@ -509,15 +509,55 @@ impl BcDebugConfig {
         }
     }
 
+    /// Hub URL without query, as Microsoft's adapter builds it.
+    /// Cloud: `CloudHttpClientFactory.ResolveServerAddress` (CloudHttpClientFactory.cs:137-158)
+    /// gives `https://api.businesscentral.dynamics.com/v2.0/{env}/` with no tenant
+    /// segment, `DebugAdapterStartRequestHandler.FindCloudConfig` appends `dev`
+    /// (DebugAdapterStartRequestHandler.cs:133-137) and
+    /// `HubBasedDebuggerService.OpenConnectionAsync` appends `/DebuggerHub`
+    /// (HubBasedDebuggerService.cs:197). On premises it is
+    /// `{server}:{port}/{instance}/dev/DebuggerHub` (`:127-131`).
+    /// Not modelled: application family and sovereign cloud suffixes, which
+    /// `BcDebugConfig` has no fields for.
     pub fn debug_hub_url(&self) -> String {
         if self.environment_type.eq_ignore_ascii_case("OnPrem") {
             format!("{}/dev/DebuggerHub", self.onprem_base())
         } else {
-            // URL-encode tenant and environment name (same reason as base_url).
-            let tenant = percent_encode_url(&self.tenant);
             let env = percent_encode_url(self.environment_name.as_deref().unwrap_or("sandbox"));
-            format!("https://api.businesscentral.dynamics.com/v2.0/{tenant}/{env}/dev/DebuggerHub")
+            format!("https://api.businesscentral.dynamics.com/v2.0/{env}/dev/DebuggerHub")
         }
+    }
+
+    /// Query parameters of the hub URL, in the order and under the conditions of
+    /// `HubBasedDebuggerService.OpenConnectionAsync` (HubBasedDebuggerService.cs:171-193):
+    /// `tenant` (on premises only, `FindOnPremiseConfig`, DebugAdapterStartRequestHandler.cs:130),
+    /// `sessionId` when set and not -1, `userid` when non-empty (both come from
+    /// the attach options, so only an attach sends them), and `Authentication=<value>`
+    /// for a bearer credential (`:190-191`). `deploymentId` (cloud only, `:136`)
+    /// is not sent: `BcDebugConfig` has no deployment id. Values are percent
+    /// encoded. `negotiate` and the WebSocket both carry them (`HubConnectionOptions.FullUrl`).
+    pub fn debug_hub_query(
+        &self,
+        access_token: &str,
+        attaching: bool,
+    ) -> Vec<(&'static str, String)> {
+        let mut query = Vec::new();
+        if self.environment_type.eq_ignore_ascii_case("OnPrem") && !self.tenant.is_empty() {
+            query.push(("tenant", percent_encode_url(&self.tenant)));
+        }
+        if attaching {
+            if let Some(session_id) = self.session_id.filter(|id| *id != -1) {
+                query.push(("sessionId", session_id.to_string()));
+            }
+            if let Some(user_id) = self.user_id.as_deref().filter(|id| !id.is_empty()) {
+                query.push(("userid", percent_encode_url(user_id)));
+            }
+        }
+        query.push((
+            "Authentication",
+            percent_encode_url(&format!("Bearer {access_token}")),
+        ));
+        query
     }
 }
 
@@ -565,13 +605,48 @@ mod tests {
     }
 
     #[test]
-    fn cloud_hub_url_includes_tenant() {
+    fn cloud_hub_url_has_no_tenant_segment() {
+        // CloudHttpClientFactory.cs:137-158 builds `.../v2.0/{env}/` and
+        // DebugAdapterStartRequestHandler.cs:133-137 appends `dev`.
         let cfg = cloud_config("contoso.com", "Production");
         let url = cfg.debug_hub_url();
         assert_eq!(
             url,
-            "https://api.businesscentral.dynamics.com/v2.0/contoso.com/Production/dev/DebuggerHub"
+            "https://api.businesscentral.dynamics.com/v2.0/Production/dev/DebuggerHub"
         );
+    }
+
+    #[test]
+    fn hub_query_follows_open_connection_async() {
+        // HubBasedDebuggerService.cs:171-193: cloud sends no tenant, sessionId
+        // and userid only on attach, Authentication last.
+        let mut cfg = cloud_config("contoso.com", "Production");
+        cfg.session_id = Some(12);
+        cfg.user_id = Some("BRAD".to_string());
+        let pairs = |cfg: &BcDebugConfig, attaching| {
+            cfg.debug_hub_query("tok", attaching)
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            pairs(&cfg, true),
+            ["sessionId=12", "userid=BRAD", "Authentication=Bearer%20tok"]
+        );
+        assert_eq!(pairs(&cfg, false), ["Authentication=Bearer%20tok"]);
+        cfg.session_id = Some(-1);
+        assert_eq!(
+            pairs(&cfg, true),
+            ["userid=BRAD", "Authentication=Bearer%20tok"],
+            "sessionId -1 is not sent"
+        );
+    }
+
+    #[test]
+    fn hub_query_sends_tenant_on_premises_only() {
+        let cfg = onprem_config("http://erp.example.com", "BC240", 7050);
+        let query = cfg.debug_hub_query("tok", false);
+        assert_eq!(query[0], ("tenant", "default".to_string()));
     }
 
     #[test]
