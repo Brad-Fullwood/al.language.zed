@@ -131,7 +131,17 @@ pub(crate) async fn native_lint_config(
         && config.background_code_analysis
         && workspace.toolchain.read().await.is_some();
     if compiler_pass_runs {
-        for rule in native_rules_covered_by(&config.code_analyzers) {
+        let project_root = workspace
+            .project
+            .read()
+            .await
+            .as_ref()
+            .map(|p| p.root.clone());
+        let analyzers = match project_root {
+            Some(root) => config.effective_code_analyzers(&root),
+            None => config.code_analyzers.clone(),
+        };
+        for rule in native_rules_covered_by(&analyzers) {
             config
                 .native_lint_rules
                 .entry(rule.to_string())
@@ -791,7 +801,7 @@ async fn run_semantic_analysis(
     let (
         enable_analysis,
         bg_analysis,
-        configured_analyzers,
+        analyzer_config,
         assembly_probing_paths,
         configured_package_cache,
     ) = {
@@ -799,7 +809,7 @@ async fn run_semantic_analysis(
         (
             cfg.enable_code_analysis,
             cfg.background_code_analysis,
-            cfg.code_analyzers.clone(),
+            cfg.clone(),
             cfg.assembly_probing_paths.clone(),
             cfg.package_cache_path.clone(),
         )
@@ -834,6 +844,7 @@ async fn run_semantic_analysis(
     let package_cache = configured_package_cache
         .or_else(|| project.as_ref().map(|project| project.packages_dir.clone()))
         .unwrap_or_else(|| project_root.join(".alpackages"));
+    let configured_analyzers = analyzer_config.effective_code_analyzers(&project_root);
 
     // The bridge starts from this toolchain, so without one there is no pass.
     let toolchain = server.workspace.toolchain.read().await.clone()?;
@@ -1044,12 +1055,12 @@ impl ProjectProgress {
 /// changed after the pass read it keeps its own newer findings.
 pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
     server.refresh_trust().await;
-    let (scope, enabled, configured_analyzers, assembly_probing_paths, configured_package_cache) = {
+    let (scope, enabled, analyzer_config, assembly_probing_paths, configured_package_cache) = {
         let cfg = server.workspace.config.read().await;
         (
             cfg.diagnostics_scope,
             cfg.enable_code_analysis && cfg.background_code_analysis,
-            cfg.code_analyzers.clone(),
+            cfg.clone(),
             cfg.assembly_probing_paths.clone(),
             cfg.package_cache_path.clone(),
         )
@@ -1067,6 +1078,7 @@ pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
         return;
     };
     let root = project.root.clone();
+    let configured_analyzers = analyzer_config.effective_code_analyzers(&root);
     let package_cache = configured_package_cache.unwrap_or_else(|| project.packages_dir.clone());
     let analyzer_root = root.clone();
     let analyzers = match tokio::task::spawn_blocking(move || {

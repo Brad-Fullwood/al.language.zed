@@ -23,7 +23,7 @@ without trust. Written in the clone it is dropped, with one message naming it, u
 | `al.backgroundCodeAnalysis` | boolean | `true` | ✅ |
 | `al.diagnosticsScope` | `project`\|`openFiles` | `project` | ✅ |
 | `al.diagnosticsTrigger` | `continuous`\|`onSave` | `continuous` | ✅ |
-| `al.codeAnalyzers` | string[] | `["CodeCop","AppSourceCop","UICop","PerTenantCop"]` | ✅ (incl. 3rd-party DLL paths), 🔒 entries that are not built-in tokens |
+| `al.codeAnalyzers` | string[] | unset: `["CodeCop","PerTenantExtensionCop","UICop"]`, or `["CodeCop","AppSourceCop","UICop"]` for an AppSource project (`AppSourceCop.json` in the project root, or every `app.json` ID range inside 1,000,000 to 74,999,999) | ✅ (incl. 3rd-party DLL paths), 🔒 entries that are not built-in tokens. A list you set always wins, `[]` runs none. Microsoft's VS Code extension has no default and runs no analyzer unless you list it |
 | `al.enableExternalRulesets` | boolean | `false` | ✅ official `alc` backend only |
 | `al.ruleSetPath` | string\|null | `null` | ✅ official `alc` backend only, 🔒 outside the project |
 | `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend, and the custom analyzer search for both backends, 🔒 |

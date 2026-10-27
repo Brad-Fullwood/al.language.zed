@@ -31,8 +31,7 @@
       "items": {
         "type": "string"
       },
-      "default": ["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"],
-      "description": "Which code analyzers to run. Standard: CodeCop, AppSourceCop, UICop, PerTenantCop. Add custom DLL paths for third-party analyzers like BusinessCentral.LinterCop.",
+      "description": "Which code analyzers to run. Standard: CodeCop, AppSourceCop, UICop, PerTenantExtensionCop. Add custom DLL paths for third-party analyzers like BusinessCentral.LinterCop. When unset, an AppSource project (AppSourceCop.json in the project root, or every app.json ID range inside 1,000,000 to 74,999,999) runs CodeCop, AppSourceCop and UICop, and any other project runs CodeCop, PerTenantExtensionCop and UICop. An empty list runs none. Microsoft's VS Code extension has no default and runs no analyzer unless listed.",
       "examples": [
         ["CodeCop", "UICop"],
         ["CodeCop", "AppSourceCop", "UICop", "PerTenantCop", "/usr/local/share/al/BusinessCentral.LinterCop.dll"]

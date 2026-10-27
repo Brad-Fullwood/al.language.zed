@@ -421,7 +421,7 @@ fn validation_analyzer_entries(
 ) -> Result<Vec<String>, String> {
     let search =
         al_project::analyzers::CustomAnalyzerSearch::new(dir, &config.assembly_probing_paths);
-    validation_analyzers(requested, &config.code_analyzers)
+    validation_analyzers(requested, &config.effective_code_analyzers(dir))
         .into_iter()
         .map(|entry| {
             if al_project::analyzers::is_builtin_analyzer(&entry) {

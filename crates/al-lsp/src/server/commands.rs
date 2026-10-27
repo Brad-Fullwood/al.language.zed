@@ -297,17 +297,14 @@ pub(super) async fn compile(server: &AlServer) {
             timings: None,
         }
     } else {
+        let analyzers = config.effective_code_analyzers(&root);
         match al_compile::build(al_compile::BuildRequest {
             project_root: &root,
             backend,
             toolchain: toolchain.as_ref(),
             dependency_packages: Some(dependency_packages.as_slice()),
             package_cache: Some(&package_cache),
-            analyzers: if config.code_analyzers.is_empty() {
-                None
-            } else {
-                Some(config.code_analyzers.as_slice())
-            },
+            analyzers: Some(analyzers.as_slice()),
             config: al_compile::CompilationConfigOptions::from(&config),
         })
         .await
