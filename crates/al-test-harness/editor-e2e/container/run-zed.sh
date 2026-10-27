@@ -11,6 +11,9 @@
 #   KEYS         extra shell run after trust (e.g. 'wtype -M ctrl -k p -m ctrl')
 #   ZED_SETTINGS_JSON  a Zed settings.json to use (theme, LSP settings)
 #   EXT_PROJ     absolute project dir mounted from outside the repo (overrides PROJ_SUBDIR)
+#   AL_SOURCE_INDEX  container path of a mounted source-index store, copied into al-lsp's data dir
+#   AL_SETTINGS_SENTINEL  1 pre-creates al-lsp's .settings-prompt-shown file so the "Apply recommended AL
+#                development settings?" notification does not cover the shots
 #   ZED_SHELL    login shell Zed starts servers through, `fish` or `bash`
 set -uo pipefail
 REPO=${REPO:-/repo}
@@ -49,15 +52,38 @@ if [ -n "${ZED_SETTINGS_JSON:-}" ] && [ -f "$ZED_SETTINGS_JSON" ]; then
   echo "  settings.json: provided"
 fi
 
-echo "=== al-lsp on PATH (host-built binary, runs in this container) ==="
-mkdir -p "$HOME/.local/bin"
-ln -sf "$REPO/target/debug/al-lsp" "$HOME/.local/bin/al-lsp"
-export PATH="$HOME/.local/bin:$PATH"
+if [ -n "${AL_SOURCE_INDEX:-}" ]; then
+  # al-lsp refuses a store that is a symbolic link or owned by another user (source_cache.rs
+  # private_to_this_user), and mounting onto ~/.local/share/al-lsp/source-index makes podman create
+  # ~/.local/share root-owned. So the read-only mount at $AL_SOURCE_INDEX is copied into a private dir.
+  store="${XDG_DATA_HOME:-$HOME/.local/share}/al-lsp/source-index"
+  mkdir -p -m 700 "$store"
+  cp -f "$AL_SOURCE_INDEX"/*.summary "$store"/ && chmod 600 "$store"/*.summary
+  echo "  source index store: $(ls "$store" | wc -l) entries copied"
+fi
+if [ "${AL_SETTINGS_SENTINEL:-}" = 1 ]; then
+  # Same path al-lsp checks: <user data dir>/al-lsp/.settings-prompt-shown
+  mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/al-lsp"
+  : > "${XDG_DATA_HOME:-$HOME/.local/share}/al-lsp/.settings-prompt-shown"
+  echo "  settings prompt sentinel: created"
+fi
+
+echo "=== managed al-lsp in the extension work dir (what make install writes) ==="
+# The extension resolves dev/al-lsp in its work dir first and does not look at
+# PATH. cp -p keeps size and mtime, which a dirty build's --version hashes.
+DEV="$HOME/.local/share/zed/extensions/work/al/dev"
+rm -rf "$HOME/.local/share/zed/extensions/work/al"; mkdir -p "$DEV"
+cp -p "$REPO/target/debug/al-lsp" "$DEV/al-lsp"
+[ -x "$REPO/target/debug/al-explorer" ] && cp -p "$REPO/target/debug/al-explorer" "$DEV/al-explorer"
+bridge=$(ls -dt "$REPO"/target/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1)
+[ -n "$bridge" ] && cp -rp "$bridge" "$DEV/bridge"
+"$DEV/al-lsp" --version > "$DEV/BUILD" 2>/dev/null || true
+echo "  dev/BUILD: $(cat "$DEV/BUILD")"
 if [ "${ZED_SHELL:-}" = fish ]; then
   export SHELL=/usr/bin/fish
   echo "  login shell: $SHELL"
 fi
-al-lsp --help >/dev/null 2>&1 && echo "  al-lsp OK" || echo "  al-lsp NOT runnable"
+"$DEV/al-lsp" --help >/dev/null 2>&1 && echo "  al-lsp OK" || echo "  al-lsp NOT runnable"
 
 echo "=== writable copy of project under test ==="
 rm -rf /tmp/proj; cp -r "${EXT_PROJ:-$REPO/$PROJ_SUBDIR}" /tmp/proj
@@ -101,6 +127,9 @@ sleep "$POST"
 grim "$OUT" 2>&1 && echo "SHOT: $OUT ($(stat -c%s "$OUT") bytes)" || echo "GRIM FAILED"
 lsp_count=$(pgrep -af 'al-lsp' | grep -c -- --stdio)
 echo "AL_LSP_PROCS: $lsp_count stdio server(s) running"
+# The server must be the managed copy, not a downloaded release.
+dev_count=$(pgrep -af 'extensions/work/al/dev/al-lsp' | grep -c -- --stdio)
+echo "AL_LSP_DEV: $dev_count stdio server(s) from dev/"
 echo "=== al-lsp processes and how Zed started them ==="
 lsp_pids=$(pgrep -d, -f 'al-lsp' || true)
 if [ -n "$lsp_pids" ]; then ps -o pid,ppid,args -p "$lsp_pids"; fi

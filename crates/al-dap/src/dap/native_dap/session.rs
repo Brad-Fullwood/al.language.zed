@@ -160,9 +160,9 @@ where
         if command == "launch" {
             self.emit_output(out, "console", "Compiling AL project...\r\n")
                 .await?;
-            // Native-first: build the deploy `.app` with the shared build
-            // service. The native emitter needs neither `alc` nor a configured
-            // Microsoft toolchain, so launch must never skip compilation merely
+            // Build the deploy `.app` with the shared build service (alc when
+            // found, else the native emitter, which needs neither `alc` nor a
+            // Microsoft toolchain), so launch must never skip compilation merely
             // because those optional components are absent.
             let compile_outcome = (self.compile)(PathBuf::from(&self.project_root)).await;
             match compile_outcome {

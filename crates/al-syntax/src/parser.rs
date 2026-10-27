@@ -50,7 +50,18 @@ pub struct ParseResult {
 pub struct SyntaxError {
     pub message: String,
     pub range: tree_sitter::Range,
+    /// The alc (Microsoft AL compiler) code when the condition matches one
+    /// alc reports for the same source, see [`ALC_MISSING_SEMICOLON_CODE`].
+    /// `None` means no alc equivalent is mapped, callers use their own code.
+    pub code: Option<&'static str>,
 }
+
+/// alc code and message for a statement that is not terminated by `;`.
+/// Both strings and the range rule below come from alc 18.1.43 errorlogs of
+/// real mutated projects (journey-15), not from the documentation.
+pub const ALC_MISSING_SEMICOLON_CODE: &str = "AL0111";
+pub const ALC_MISSING_SEMICOLON_MESSAGE: &str =
+    "Semicolon expected. Add a semicolon (;) to terminate the statement.";
 
 impl AlParser {
     pub fn new() -> Self {
@@ -108,6 +119,14 @@ fn collect_errors(tree: &Tree) -> Vec<SyntaxError> {
     let mut errors = Vec::new();
     walk_tree(tree.root_node(), &mut |node| {
         if node.is_error() || node.is_missing() {
+            if missing_semicolon_insert_byte(node).is_some() {
+                errors.push(SyntaxError {
+                    message: ALC_MISSING_SEMICOLON_MESSAGE.to_string(),
+                    range: node.range(),
+                    code: Some(ALC_MISSING_SEMICOLON_CODE),
+                });
+                return;
+            }
             errors.push(SyntaxError {
                 message: if node.is_missing() {
                     format!("Missing {}", node.kind())
@@ -115,10 +134,91 @@ fn collect_errors(tree: &Tree) -> Vec<SyntaxError> {
                     "Syntax error".to_string()
                 },
                 range: node.range(),
+                code: None,
             });
         }
     });
     errors
+}
+
+/// Recognise the shape tree-sitter produces for a statement that lacks its
+/// `;` and is followed by another statement: an ERROR node holding exactly the
+/// first token of the next statement, inside a `statement_list`, directly after
+/// a token that can end an expression. alc reports AL0111 on that same token
+/// (checked on a statement start, an `exit`, and a second statement on the same
+/// line). Returns the byte offset where the `;` belongs, the end of the token
+/// before the error. Errors that span more than one token (for example a
+/// following `if` with its condition) are not matched and stay generic.
+pub fn missing_semicolon_insert_byte(error: tree_sitter::Node) -> Option<usize> {
+    if !error.is_error() || error.child_count() != 1 || error.child(0)?.child_count() != 0 {
+        return None;
+    }
+    let mut ancestor = error.parent();
+    while let Some(node) = ancestor {
+        if node.kind() == "statement_list" {
+            break;
+        }
+        // An error inside another error is part of a recovery cascade (a missing
+        // `end`), where alc reports other codes.
+        if node.is_error() {
+            return None;
+        }
+        ancestor = node.parent();
+    }
+    ancestor?;
+    let mut root = error;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    let previous = last_token_before(root, error.start_byte())?;
+    matches!(
+        previous.kind(),
+        ")" | "]" | "identifier" | "quoted_identifier" | "integer" | "decimal" | "string"
+    )
+    .then(|| previous.end_byte())
+}
+
+/// Same check for a diagnostic range: find the ERROR node that starts at
+/// `error_start_byte` and return where its `;` belongs.
+pub fn missing_semicolon_insert_byte_at(tree: &Tree, error_start_byte: usize) -> Option<usize> {
+    let mut node = tree
+        .root_node()
+        .descendant_for_byte_range(error_start_byte, error_start_byte)?;
+    while !node.is_error() {
+        node = node.parent()?;
+    }
+    if node.start_byte() != error_start_byte {
+        return None;
+    }
+    missing_semicolon_insert_byte(node)
+}
+
+fn last_token_before(node: tree_sitter::Node, byte: usize) -> Option<tree_sitter::Node> {
+    let mut children: Vec<_> = {
+        let mut cursor = node.walk();
+        node.children(&mut cursor).collect()
+    };
+    children.reverse();
+    for child in children {
+        // A child that ends after `byte` can still hold earlier tokens (an ancestor
+        // of the error), so only children that start at or after `byte` are skipped.
+        if child.start_byte() >= byte || child.start_byte() == child.end_byte() {
+            continue;
+        }
+        if child.kind().contains("comment") {
+            continue;
+        }
+        if child.child_count() == 0 {
+            if child.end_byte() <= byte {
+                return Some(child);
+            }
+            continue;
+        }
+        if let Some(found) = last_token_before(child, byte) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 #[cfg(test)]

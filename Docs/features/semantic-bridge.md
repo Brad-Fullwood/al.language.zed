@@ -107,6 +107,11 @@ navigation, and verified `.app` emission all operate without a CLR. When a
 native query has a sound result it wins. The bridge is consulted only for
 additional Microsoft type/completion detail or exact CodeAnalysis diagnostics.
 
+Native workspace diagnostics include `AL0118` (undeclared name) and `AL0132` (unknown Record
+member) from a tree-based binding pass in `crates/al-emit`, using the codes and messages `alc`
+prints. The pass reports only what declarations prove. Type checking, overload resolution and
+undeclared procedure calls still need `alc` or the bridge.
+
 Version-specific Microsoft error-code descriptions and the complete built-in
 type/member catalog are cached from the installed toolchain. Without that
 toolchain, diagnostics still carry their native code and message and generated

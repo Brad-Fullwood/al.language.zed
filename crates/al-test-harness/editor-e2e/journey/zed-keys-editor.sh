@@ -22,7 +22,7 @@ snap before
 shot highlight 0
 
 # Wait for al-lsp to finish its project scan before any editor request. With the Base Application
-# symbols in .alpackages the container builds the dependency source index from nothing (about 60 s,
+# symbols in .alpackages the container builds the dependency source index from nothing (about 60 s unless drive.sh --source-index primes the store,
 # the host keeps a cache), and requests sent meanwhile are cancelled: F2 opened no rename box and
 # the ctrl-a plus typed text then replaced the whole buffer. Capped at 240 s.
 ready=0
@@ -63,7 +63,10 @@ sleep 5
 shot diagnostics-error 1
 # project diagnostics while the error exists
 cchord m
+sleep 4
 shot project-diagnostics 3
+# second shot a few seconds later: the first can be taken before the tab has opened
+shot project-diagnostics-late 6
 chord w           # close the diagnostics tab
 sleep 1
 # code action menu on the error

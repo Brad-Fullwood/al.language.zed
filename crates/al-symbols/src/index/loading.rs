@@ -128,10 +128,12 @@ pub(super) fn load_package_batch_via_cache(
 ) -> Vec<CachedPackageLoad> {
     use rayon::prelude::*;
 
-    paths
-        .par_iter()
-        .map(|path| load_package_via_cache(path.as_ref(), cache))
-        .collect()
+    crate::index_pool::index_pool().install(|| {
+        paths
+            .par_iter()
+            .map(|path| load_package_via_cache(path.as_ref(), cache))
+            .collect()
+    })
 }
 
 pub(super) fn prewarm_source_index(path: &Path) {
@@ -182,16 +184,12 @@ impl SymbolIndex {
         self.app_paths.clear();
         self.source_path_cache.clear();
         self.composed_cache.clear();
-        write_derived_cache(&self.default_completions, "default_completions")
-            .0
-            .clear();
 
         let arcs: Vec<Arc<SymbolEntry>> = entries
             .into_iter()
             .map(|(_, entry)| self.add_arc(entry.arc, entry.package_key))
             .collect();
         self.update_sorted_names_after_add(&arcs, false);
-        self.update_default_completions(&arcs);
         for (key, value) in app_paths {
             self.app_paths.insert(key, value);
         }
@@ -216,22 +214,24 @@ impl SymbolIndex {
         // so duplicate versions of one package could interleave and leave both
         // copies indexed. Keeping the expensive ZIP/JSON work parallel while
         // applying results in input order is deterministic and idempotent.
-        let parsed: Vec<_> = paths
-            .par_iter()
-            .map(|path| {
-                let path = path.as_ref();
-                match app_reader::read_app_file(path) {
-                    Ok(pkg) => {
-                        prewarm_source_index(path);
-                        Ok((path.to_path_buf(), pkg))
+        let parsed: Vec<_> = crate::index_pool::index_pool().install(|| {
+            paths
+                .par_iter()
+                .map(|path| {
+                    let path = path.as_ref();
+                    match app_reader::read_app_file(path) {
+                        Ok(pkg) => {
+                            prewarm_source_index(path);
+                            Ok((path.to_path_buf(), pkg))
+                        }
+                        Err(error) => Err(PackageLoadFailure {
+                            path: path.to_path_buf(),
+                            message: error.to_string(),
+                        }),
                     }
-                    Err(error) => Err(PackageLoadFailure {
-                        path: path.to_path_buf(),
-                        message: error.to_string(),
-                    }),
-                }
-            })
-            .collect();
+                })
+                .collect()
+        });
         let parsed = newest_per_identity(complete_package_batch(parsed)?, |(_, pkg)| pkg);
 
         let mut results = Vec::with_capacity(parsed.len());
@@ -587,7 +587,6 @@ mod tests {
     fn replace_with_rebuilds_every_lookup_and_completion_index() {
         let active = SymbolIndex::new();
         active.add_entries(&[make_entry(ObjectKind::Table, 50_100, "Old")]);
-        assert_eq!(active.default_completions_snapshot().len(), 1);
         let _ = active.search("Old", 10);
 
         let staged = SymbolIndex::new();
@@ -611,7 +610,6 @@ mod tests {
             "New"
         );
         assert_eq!(active.get_extensions_of("New").len(), 1);
-        assert_eq!(active.default_completions_snapshot().len(), 2);
         assert_eq!(active.len(), 2);
     }
 

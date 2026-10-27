@@ -19,9 +19,9 @@ cli.deps-graph	cli	deps-graph	cli-commands.md:71; analysis-and-insight.md:142; R
 cli.events	cli	events	cli-commands.md:72; cli-and-tui.md:21; symbol-and-package-engine.md:146-150; README.md:363	events OnAfterPostSalesDoc	rc=0,1	n
 cli.subscribers	cli	subscribers	cli-commands.md:73; analysis-and-insight.md:133; symbol-and-package-engine.md:146-150; README.md:363	subscribers OnAfterPostSalesDoc	rc=0,1	n
 cli.event-source	cli	event-source	cli-commands.md:74; cli-and-tui.md:21; README.md:363	event-source --file $F_CU --line $LN	rc=0,1	n
-cli.builtins	cli	builtins	cli-commands.md:75; cli-and-tui.md:21; README.md:362	builtins	hasre=Record|Codeunit	n
+cli.builtins	cli	builtins	cli-commands.md:75; cli-and-tui.md:21; README.md:362	builtins	hasre=[0-9]+ builtin types	n
 cli.rules	cli	rules	cli-commands.md:76; cli-and-tui.md:21; README.md:362	rules	out	n
-cli.error-codes	cli	error-codes	cli-commands.md:77; cli-and-tui.md:21; README.md:362	error-codes	has=AL0	n
+cli.error-codes	cli	error-codes	cli-commands.md:77; cli-and-tui.md:21; README.md:362	error-codes	has=AL0;hasre=[0-9]+ error codes	n
 cli.generate-completions	cli	generate-completions	cli-commands.md:78; cli-and-tui.md:22; scaffolding-and-codegen.md:58; README.md:362	generate-completions bash	has=al-explorer	n
 cli.hover	cli	hover	cli-commands.md:84; cli-and-tui.md:23; README.md:361	hover $F_CU $LN $COL	out	n
 cli.definition	cli	definition	cli-commands.md:85; cli-and-tui.md:23; README.md:361	definition $F_CU $LN $COL	out	n
@@ -61,7 +61,7 @@ cli.graph	cli	graph	cli-commands.md:130; analysis-and-insight.md:135; README.md:
 cli.insight-stats	cli	insight-stats	cli-commands.md:131; cli-and-tui.md:27; README.md:363	insight-stats	out	n
 cli.impact	cli	impact	cli-commands.md:132; analysis-and-insight.md:132; README.md:363	impact "$TBL" --table	rc=0,1;out	n
 cli.suggest-event	cli	suggest-event	cli-commands.md:133; analysis-and-insight.md:134; README.md:363	suggest-event --table "$TBL"	rc=0,1;out	n
-cli.metrics	cli	metrics	cli-commands.md:134; analysis-and-insight.md:142; parsing-and-syntax.md:135; README.md:364	metrics	rc=0,1;noerr;out	n
+cli.metrics	cli	metrics	cli-commands.md:134; analysis-and-insight.md:142; parsing-and-syntax.md:135; README.md:364	metrics --all	rc=0,1;noerr;out	n
 cli.dead-code	cli	dead-code	cli-commands.md:135; analysis-and-insight.md:132; README.md:364	dead-code	rc=0,1;noerr;out	n
 cli.sql-scan	cli	sql-scan	cli-commands.md:136; analysis-and-insight.md:136; README.md:364	sql-scan	rc=0,1;noerr;out	n
 cli.duplicates	cli	duplicates	cli-commands.md:137; analysis-and-insight.md:136; README.md:364	duplicates --min-tokens 20 --min-similarity 0.8	rc=0,1;noerr;out	n
@@ -122,7 +122,7 @@ lsp-command.al.getStatus	lsp-command	al.getStatus	lsp-commands.md:50; language-s
 lsp-command.al.reindex	lsp-command	al.reindex	lsp-commands.md:51; language-server.md:115; README.md:327	al.reindex []	strict	n
 lsp-command.al.compile	lsp-command	al.compile	lsp-commands.md:52; daemon-protocol.md:207; language-server.md:116; README.md:328	al.compile []	loose	n
 lsp-command.al.applyRecommendedSettings	lsp-command	al.applyRecommendedSettings	lsp-commands.md:53; language-server.md:117; README.md:329	al.applyRecommendedSettings []	loose	n
-lsp-command.al.findReferences	lsp-command	al.findReferences	lsp-commands.md:57; language-server.md:121; README.md:335	al.findReferences ["file://$F_CU"]	loose	n
+lsp-command.al.findReferences	lsp-command	al.findReferences	lsp-commands.md:57; language-server.md:121; README.md:335	al.findReferences [{"uri":"file://$F_CU","position":{"line":$LN0,"character":$CH0}}]	loose	n
 lsp-command.al.showProfiler	lsp-command	al.showProfiler	lsp-commands.md:57; language-server.md:121; README.md:336	al.showProfiler ["file://$F_CU"]	loose	y
 lsp-command.al.runTest	lsp-command	al.runTest	lsp-commands.md:57; language-server.md:121; README.md:337	al.runTest ["file://$F_CU"]	loose	y
 cli.--timeout-ms	cli	--timeout-ms	settings.md:101	version --timeout-ms 20000	out	n
@@ -142,7 +142,7 @@ mcp-tool.al_sqlscan	mcp-tool	al_sqlscan	mcp-tools.md:22; ai-mcp.md:51; README.md
 mcp-tool.al_entrypoints	mcp-tool	al_entrypoints	mcp-tools.md:23; ai-mcp.md:52; README.md:127	al_entrypoints {"scope":"workspace"}	strict	n
 mcp-tool.al_trace_event	mcp-tool	al_trace_event	mcp-tools.md:24; ai-mcp.md:53; README.md:128	al_trace_event {"event":"OnAfterPostSalesDoc","depth":10}	strict	n
 mcp-tool.al_impact	mcp-tool	al_impact	mcp-tools.md:25; ai-mcp.md:54; README.md:129	al_impact {"symbol":"$TBL","scope":"workspace"}	strict	n
-mcp-tool.al_suggestevent	mcp-tool	al_suggestevent	mcp-tools.md:26; ai-mcp.md:55; README.md:130	al_suggestevent {"query":{"table":"$TBL"}}	loose	n
+mcp-tool.al_suggestevent	mcp-tool	al_suggestevent	mcp-tools.md:26; ai-mcp.md:55; README.md:130	al_suggestevent {"query":{"source":{"type":"table","table":"$TBL"}}}	loose	n
 mcp-tool.al_testclassify	mcp-tool	al_testclassify	mcp-tools.md:27; ai-mcp.md:56; README.md:131	al_testclassify {}	strict	n
 mcp-tool.al_testcoverage	mcp-tool	al_testcoverage	mcp-tools.md:28; ai-mcp.md:57; README.md:132	al_testcoverage {}	strict	n
 mcp-tool.al_testsnapshot	mcp-tool	al_testsnapshot	mcp-tools.md:29; ai-mcp.md:58; README.md:133	al_testsnapshot {}	covered by stage 9	y
@@ -153,7 +153,7 @@ daemon-method.ping	daemon-method	ping	daemon-methods.md:140; daemon-protocol.md:
 daemon-method.status	daemon-method	status	daemon-methods.md:140; daemon-protocol.md:132	status {}	strict;has=callGraph	n
 daemon-method.shutdown	daemon-method	shutdown	daemon-methods.md:141; daemon-protocol.md:132	shutdown {}	strict;last	n
 daemon-method.handshake	daemon-method	handshake	daemon-methods.md:141-142; daemon-protocol.md:132	handshake {"nonce":"journey10"}	strict;has=proof	n
-daemon-method.diag/summary	daemon-method	diag/summary	daemon-methods.md:155; daemon-protocol.md:89	diag/summary {}	strict;has=process	n
+daemon-method.diag/summary	daemon-method	diag/summary	daemon-methods.md:155; daemon-protocol.md:89	diag {"cmd":"summary"}	strict;has=process	n
 daemon-method.diag	daemon-method	diag	daemon-methods.md:22; daemon-protocol.md:132	diag {}	strict;has=sourceIndex	n
 daemon-method.hover	daemon-method	hover	daemon-methods.md:10, 203-205; daemon-protocol.md:124	hover {"uri":"file://$F_CU","line":$LN0,"character":$CH0}	strict	n
 daemon-method.definition	daemon-method	definition	daemon-methods.md:10, 203-205; daemon-protocol.md:124	definition {"uri":"file://$F_CU","line":$LN0,"character":$CH0}	strict	n
@@ -210,10 +210,10 @@ daemon-method.packageDiff	daemon-method	packageDiff	daemon-methods.md:20, 38-41,
 daemon-method.audit.dataClassification	daemon-method	audit.dataClassification	daemon-methods.md:21, 96	audit.dataClassification {}	strict	n
 daemon-method.permissions.audit	daemon-method	permissions.audit	daemon-methods.md:21, 103	permissions.audit {}	strict	n
 daemon-method.deps.graph	daemon-method	deps.graph	daemon-methods.md:21, 238-240; ai-mcp.md:60	deps.graph {}	strict	n
-daemon-method.breaking	daemon-method	breaking	daemon-methods.md:21, 96, 217	breaking {"baselineSymbols":"$APP"}	loose	n
+daemon-method.breaking	daemon-method	breaking	daemon-methods.md:21, 96, 217	breaking {"baselineSymbols":[{"kind":"Codeunit","id":50100,"name":"JourneyBaseline"}]}	loose	n
 daemon-method.arch.lint	daemon-method	arch.lint	daemon-methods.md:21, 96	arch.lint {}	strict	n
 daemon-method.duplicates	daemon-method	duplicates	daemon-methods.md:21, 96, 176; analysis-and-insight.md:62	duplicates {}	strict	n
-daemon-method.upgrade	daemon-method	upgrade	daemon-methods.md:22, 96, 217	upgrade {"baselineSymbols":"$APP"}	loose	n
+daemon-method.upgrade	daemon-method	upgrade	daemon-methods.md:22, 96, 217	upgrade {"baselineSymbols":[{"kind":"Codeunit","id":50100,"name":"JourneyBaseline"}]}	loose	n
 daemon-method.profiler.hints	daemon-method	profiler.hints	daemon-methods.md:22, 96	profiler.hints {"hotspots":[]}	loose	n
 daemon-method.freeIds	daemon-method	freeIds	daemon-methods.md:22, 50-58; ai-mcp.md:61	freeIds {"kind":"table","count":3}	strict	n
 daemon-method.xlf.generate	daemon-method	xlf.generate	daemon-methods.md:24, 196	xlf.generate {}	covered by stage 7	n
@@ -226,7 +226,7 @@ daemon-method.tests.coverage	daemon-method	tests.coverage	daemon-methods.md:67; 
 daemon-method.tests.run_batch	daemon-method	tests.run_batch	daemon-methods.md:67; project-trust.md:336	tests.run_batch {}	covered by stage 6	y
 daemon-method.tests.run_auto	daemon-method	tests.run_auto	daemon-methods.md:67; ai-mcp.md:49; project-trust.md:336	tests.run_auto {}	covered by stage 6	y
 daemon-method.tests.last_results	daemon-method	tests.last_results	daemon-methods.md:68	tests.last_results {}	strict	n
-daemon-method.tests.affected	daemon-method	tests.affected	daemon-methods.md:68, 103	tests.affected {"files":["$F_CU"]}	loose	n
+daemon-method.tests.affected	daemon-method	tests.affected	daemon-methods.md:68, 103	tests.affected {"changedFiles":["$F_CU"]}	loose	n
 daemon-method.tests.classify	daemon-method	tests.classify	daemon-methods.md:68; ai-mcp.md:56	tests.classify {}	strict	n
 daemon-method.tests.snapshot_validate	daemon-method	tests.snapshot_validate	daemon-methods.md:68, 218	tests.snapshot_validate {"snapshotPath":"$SNAP"}	loose	n
 daemon-method.tests.snapshot_capture	daemon-method	tests.snapshot_capture	daemon-methods.md:69; ai-mcp.md:58; project-trust.md:337	tests.snapshot_capture {}	covered by stage 9	y
@@ -242,7 +242,7 @@ daemon-method.deadCode	daemon-method	deadCode	daemon-methods.md:73, 96; daemon-p
 daemon-method.nativeCheck	daemon-method	nativeCheck	daemon-methods.md:73, 96; daemon-protocol.md:131	nativeCheck {}	strict	n
 daemon-method.impact	daemon-method	impact	daemon-methods.md:74, 101, 128; daemon-protocol.md:131	impact {"symbol":"$TBL","scope":"workspace"}	strict	n
 daemon-method.tableImpact	daemon-method	tableImpact	daemon-methods.md:74, 101, 128; daemon-protocol.md:131	tableImpact {"table":"$TBL","scope":"workspace"}	loose	n
-daemon-method.suggestEvent	daemon-method	suggestEvent	daemon-methods.md:74, 102; daemon-protocol.md:131	suggestEvent {"table":"$TBL"}	loose	n
+daemon-method.suggestEvent	daemon-method	suggestEvent	daemon-methods.md:74, 102; daemon-protocol.md:131	suggestEvent {"query":{"source":{"type":"table","table":"$TBL"}}}	loose	n
 daemon-method.eventMap	daemon-method	eventMap	daemon-methods.md:74, 101, 128; daemon-protocol.md:131	eventMap {"scope":"workspace"}	strict	n
 daemon-method.debug	daemon-method	debug	daemon-methods.md:78-82; daemon-protocol.md:138; project-trust.md:335	debug {"cmd":"state"}	loose;nosession	y
 cli.--json	cli	--json	cli-and-tui.md:41	search "$TBL" --json	json	n
@@ -276,6 +276,6 @@ cli.make record-methods	cli	make record-methods	parsing-and-syntax.md:109	NONE	s
 cli.make microsoft-contracts	cli	make microsoft-contracts	native-app-emitter.md:67	NONE	skip=contributor make target that needs the Microsoft toolchain and a checkout	n
 cli.make live-bc-contracts	cli	make live-bc-contracts	native-test-runtime.md:330	NONE	skip=contributor make target that runs the live contract tests, needs a checkout	y
 cli.release hygiene check	cli	release hygiene check	language-assets.md:112	NONE	skip=contributor script in a checkout (scripts/check-release-hygiene.sh)	n
-lsp-command.al.showSubscribers	lsp-command	al.showSubscribers	catalog-00-summary.md:43	al.showSubscribers ["file://$F_CU"]	loose	n
-lsp-command.al.showEventSource	lsp-command	al.showEventSource	catalog-00-summary.md:44	al.showEventSource ["file://$F_SUB"]	loose	n
-lsp-command.al.showReport	lsp-command	al.showReport	catalog-00-summary.md:45	al.showReport ["file://$F_CU"]	loose	n
+lsp-command.al.showSubscribers	lsp-command	al.showSubscribers	catalog-00-summary.md:43	al.showSubscribers [{"uri":"file://$F_PUB","position":{"line":$PUBLN0,"character":10}}]	loose	n
+lsp-command.al.showEventSource	lsp-command	al.showEventSource	catalog-00-summary.md:44	al.showEventSource [{"uri":"file://$F_SUB","position":{"line":$SUBLN0,"character":0}}]	loose	n
+lsp-command.al.showReport	lsp-command	al.showReport	catalog-00-summary.md:45	al.showReport [{"report":"metrics","object":"$CU","uri":"file://$F_CU"}]	loose	n

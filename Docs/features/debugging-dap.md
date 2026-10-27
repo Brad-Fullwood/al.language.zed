@@ -10,7 +10,7 @@ consumed by Zed or the native adapter (Microsoft launch keys outside the schema 
 The debugger is a **native Rust Debug Adapter Protocol (DAP) server** that talks directly to a
 Business Central server over SignalR + REST, with no Microsoft `EditorServices.Host` (it remains
 available as a legacy fallback that needs a manual wrapper on Linux, see Limitations). Zed launches `al-lsp --dap`. The adapter selects the shared verified
-native build by default (or the explicit persisted `al.useOfficialCompiler` backend), publishes the
+build (`alc` when the toolchain is found, else native, or the persisted `al.useOfficialCompiler` choice), publishes the
 manifest-selected `.app`, connects to BC's debug hub, and drives breakpoints/stepping/inspection.
 
 The `al-lsp mcp` server exposes the debugger through the stateful `al_debug` tool. An MCP client can
@@ -81,8 +81,8 @@ either feature until it can provide the full behavior itself.
 ## How launch/attach works
 
 **Launch** (`native_dap/`):
-1. **Compile** through the shared build service: verified native by default, or `alc` only when
-   `al.useOfficialCompiler` is explicitly enabled in persisted project settings.
+1. **Compile** through the shared build service: `alc` when the toolchain is found, else verified native.
+   `al.useOfficialCompiler` in persisted project settings forces either.
 2. **Authenticate** (OAuth callback / env token).
 3. **Publish** the `.app` to BC (`POST …/dev/apps`). A missing `.app` fails the launch with a clear
    error rather than silently debugging a stale build.

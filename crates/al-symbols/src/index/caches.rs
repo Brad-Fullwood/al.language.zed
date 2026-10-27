@@ -222,14 +222,11 @@ mod tests {
             make_entry(ObjectKind::Page, 2, "Beta"),
         ]);
         assert_eq!(index.search("alpha", 10).len(), 1);
-        assert_eq!(index.default_completions_snapshot().len(), 2);
 
         let poison_target = Arc::clone(&index);
         let _ = std::thread::spawn(move || {
             let mut names = poison_target.sorted_names.write().unwrap();
-            let mut completions = poison_target.default_completions.write().unwrap();
             *names = Some(Arc::new(vec!["corrupt".to_string()]));
-            completions.clear();
             panic!("poison derived symbol caches for test");
         })
         .join();
@@ -238,12 +235,7 @@ mod tests {
         assert_eq!(search.len(), 1);
         assert_eq!(search[0].name, "Alpha");
 
-        let completions = index.default_completions_snapshot();
-        assert_eq!(completions.len(), 2);
-        assert!(completions.iter().any(|entry| entry.name == "Alpha"));
-        assert!(completions.iter().any(|entry| entry.name == "Beta"));
         assert!(!index.sorted_names.is_poisoned());
-        assert!(!index.default_completions.is_poisoned());
     }
 
     #[test]

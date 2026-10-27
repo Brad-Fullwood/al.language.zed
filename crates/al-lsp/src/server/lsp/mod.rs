@@ -313,6 +313,13 @@ pub struct AlServer {
     /// these without repeating multi-second bridge calls.
     pub(crate) semantic_diagnostic_cache:
         Arc<Mutex<std::collections::HashMap<Url, diagnostics::CachedSemanticDiagnostics>>>,
+    /// Last `AL-NL003/4` findings per document, shown by the first publish of
+    /// the next edit while the call graph pass recomputes them (journey-20).
+    pub(crate) transaction_diagnostic_cache:
+        Arc<Mutex<std::collections::HashMap<Url, Vec<Diagnostic>>>>,
+    /// The pending debounced call graph pass per document.
+    pub(crate) transaction_tasks:
+        Arc<Mutex<std::collections::HashMap<Url, tokio::task::JoinHandle<()>>>>,
 }
 
 impl AlServer {
@@ -365,6 +372,8 @@ impl AlServer {
             work_done_progress: AtomicBool::new(false),
             workspace_diagnostic_uris: Arc::new(Mutex::new(std::collections::HashSet::new())),
             semantic_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            transaction_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            transaction_tasks: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -923,6 +932,7 @@ impl AlServer {
             advisory
         };
         self.semantic_diagnostic_cache.lock().await.clear();
+        self.transaction_diagnostic_cache.lock().await.clear();
         if let Some(advisory) = advisory {
             self.client
                 .show_message(MessageType::WARNING, advisory)
@@ -1035,6 +1045,7 @@ impl LanguageServer for AlLsp {
                     );
                 }
                 let advisory = gate_repository_settings(root_uri.as_ref(), &mut config);
+                al_symbols::index_pool::set_index_threads(config.index_threads);
                 (config.max_document_size_bytes, advisory)
             };
             if let Some(advisory) = advisory {
@@ -1149,6 +1160,12 @@ impl LanguageServer for AlLsp {
         self.client
             .log_message(MessageType::INFO, "AL Language Server initialized")
             .await;
+
+        if let Some(warning) = crate::extension_build::startup_warning() {
+            self.client
+                .show_message(MessageType::WARNING, warning)
+                .await;
+        }
 
         let root_uri = self.root_uri.read().await.clone();
         tracing::info!(root_uri = ?root_uri, "initialized: spawning workspace init in background");
@@ -1566,6 +1583,10 @@ impl LanguageServer for AlLsp {
         {
             self.semantic_diagnostic_cache.lock().await.remove(&uri);
         }
+        self.transaction_diagnostic_cache.lock().await.remove(&uri);
+        if let Some(task) = self.transaction_tasks.lock().await.remove(&uri) {
+            task.abort();
+        }
 
         // Cancel this document's pending debounced diagnostics task. Without
         // this, a task armed by the last keystroke can wake after the close and
@@ -1770,6 +1791,7 @@ impl LanguageServer for AlLsp {
                 self.workspace
                     .documents
                     .set_max_doc_bytes(staged_config.max_document_size_bytes);
+                al_symbols::index_pool::set_index_threads(staged_config.index_threads);
                 self.semantic_diagnostic_cache.lock().await.clear();
                 self.workspace.mark_generation_changed();
                 drop(publication);
@@ -1812,6 +1834,7 @@ impl LanguageServer for AlLsp {
                 self.workspace
                     .documents
                     .set_max_doc_bytes(staged_config.max_document_size_bytes);
+                al_symbols::index_pool::set_index_threads(staged_config.index_threads);
                 tracing::info!("Configuration updated (no active AL project)");
                 self.refresh_diagnostics_after_configuration().await;
                 self.schedule_project_semantic(PROJECT_SEMANTIC_DEBOUNCE)

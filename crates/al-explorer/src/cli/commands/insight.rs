@@ -80,20 +80,50 @@ fn entrypoints_text(result: &serde_json::Value) -> String {
     out
 }
 
+/// The size and cap in the daemon's "Graph too large to export" error.
+fn graph_cap_counts(message: &str) -> Option<(u64, u64)> {
+    let rest = message
+        .split("Graph too large to export in one response: ")
+        .nth(1)?;
+    let (size, rest) = rest.split_once(" nodes+edges")?;
+    let cap = rest.split("exceeds cap of ").nth(1)?;
+    let cap = cap.split(|c: char| !c.is_ascii_digit()).next()?;
+    Some((size.trim().parse().ok()?, cap.parse().ok()?))
+}
+
 pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
 
-    let params = serde_json::json!({ "format": format });
-    match request_checked(&mut client, "graphExport", Some(params)) {
+    // "summary" is the CLI's own counts view, the daemon is asked for json.
+    let wire_format = if format == "dot" { "dot" } else { "json" };
+    let params = serde_json::json!({ "format": wire_format });
+    let mut outcome = request_checked(&mut client, "graphExport", Some(params));
+    // Without --scope the daemon exports every loaded package, which is over its
+    // cap for a project with Base Application. Fall back to the workspace part
+    // and say so. An explicit --scope keeps the daemon's error. The daemon stays
+    // strict because MCP callers get the error text that names the cap.
+    if !super::scope_requested()
+        && let Err(message) = &outcome
+        && let Some(counts) = graph_cap_counts(message)
+    {
+        let (size, cap): (u64, u64) = counts;
+        eprintln!(
+            "graph: the full graph has {size} nodes+edges, over the cap of {cap}. \
+             Exporting scope workspace instead (use --scope packages to choose another scope)."
+        );
+        let params = serde_json::json!({ "format": wire_format, "scope": "workspace" });
+        outcome = request_checked(&mut client, "graphExport", Some(params));
+    }
+    match outcome {
         Ok(result) => {
             if format == "dot" {
                 if let Some(content) = result.get("content").and_then(|v| v.as_str()) {
                     println!("{}", terminal_lines(content));
                 }
-            } else if json {
+            } else if json || format == "json" {
                 print_json(&result);
             } else {
                 let node_count = result
@@ -159,18 +189,23 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
                     // group by confidence so provably-dead findings
                     // are not mixed with "no references found, but could be
                     // used through channels static analysis can't see".
-                    let (high, medium): (Vec<_>, Vec<_>) = unused.iter().partition(|item| {
+                    let level = |item: &&serde_json::Value| {
                         item.get("confidence")
                             .and_then(|v| v.as_str())
-                            .map(|c| c.eq_ignore_ascii_case("high"))
-                            .unwrap_or(true)
-                    });
-                    print!("{}", dead_code_text(&high, &medium));
+                            .unwrap_or("high")
+                            .to_ascii_lowercase()
+                    };
+                    let (high, rest): (Vec<_>, Vec<_>) =
+                        unused.iter().partition(|item| level(item) == "high");
+                    let (low, medium): (Vec<_>, Vec<_>) =
+                        rest.into_iter().partition(|item| level(item) == "low");
+                    print!("{}", dead_code_text(&high, &medium, &low));
                     eprintln!(
-                        "\n{} findings ({} high, {} possibly-unused)",
+                        "\n{} findings ({} high, {} possibly-unused, {} reflective access)",
                         unused.len(),
                         high.len(),
-                        medium.len()
+                        medium.len(),
+                        low.len()
                     );
                 }
             }
@@ -181,7 +216,11 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
 }
 
 /// The tables `dead-code` prints, high confidence findings first.
-fn dead_code_text(high: &[&serde_json::Value], medium: &[&serde_json::Value]) -> String {
+fn dead_code_text(
+    high: &[&serde_json::Value],
+    medium: &[&serde_json::Value],
+    low: &[&serde_json::Value],
+) -> String {
     let mut out = String::new();
     if !high.is_empty() {
         let _ = writeln!(
@@ -207,6 +246,22 @@ fn dead_code_text(high: &[&serde_json::Value], medium: &[&serde_json::Value]) ->
              extensions, or the platform.\nVerify before removing.\n"
         );
         dead_code_table(&mut out, medium);
+    }
+    if !low.is_empty() {
+        if !high.is_empty() || !medium.is_empty() {
+            let _ = writeln!(out);
+        }
+        let _ = writeln!(
+            out,
+            "REFLECTIVE ACCESS — low confidence ({} findings):",
+            low.len()
+        );
+        let _ = writeln!(
+            out,
+            "These fields have no name references, but their table is opened through\n\
+             RecordRef/FieldRef in the workspace, which reaches fields by number.\n"
+        );
+        dead_code_table(&mut out, low);
     }
     out
 }
@@ -725,7 +780,7 @@ mod terminal_text_tests {
         let finding = |name: &str, obj: &str| serde_json::json!({"k": "procedure", "n": name, "obj": obj, "f": "src/A.al", "l": 3});
         let high = finding("CallIt", TITLE);
         let medium = finding(COLOURED, CLEAR);
-        let text = dead_code_text(&[&high], &[&medium]);
+        let text = dead_code_text(&[&high], &[&medium], &[]);
         assert_escaped(&text);
         assert!(text.contains("src/A.al:3"), "got: {text}");
 
@@ -743,5 +798,19 @@ mod terminal_text_tests {
             [serde_json::json!({"k": "Codeunit", "n": TITLE, "type": "call", "proc": CLEAR})];
         let text = impact_text(COLOURED, &serde_json::json!({}), &impacted);
         assert_escaped(&text);
+    }
+}
+
+#[cfg(test)]
+mod graph_cap_tests {
+    use super::graph_cap_counts;
+
+    #[test]
+    fn reads_the_size_and_cap_from_the_daemon_error() {
+        // Text as built in al-lsp insight_dispatch.rs for graphExport.
+        let message = "Graph too large to export in one response: 123456 nodes+edges \
+                       exceeds cap of 50000. Export the workspace part with scope 'workspace'.";
+        assert_eq!(graph_cap_counts(message), Some((123_456, 50_000)));
+        assert_eq!(graph_cap_counts("some other error"), None);
     }
 }

@@ -6,6 +6,7 @@
 //! `--dap-legacy`.
 
 mod dap;
+mod dev_binary;
 mod settings;
 
 #[cfg(test)]
@@ -20,7 +21,6 @@ mod settings_test;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::time::SystemTime;
 use zed_extension_api::{
     self as zed,
     settings::{ContextServerSettings, LspSettings},
@@ -61,29 +61,16 @@ fn is_safe_version(v: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
 }
 
-fn manual_install_hint(_os: zed::Os) -> String {
+/// The one error for a release that cannot be used. Two routes fix it: install
+/// from the repository, or publish a release that matches this extension.
+fn release_unavailable_message(tag: &str, underlying: &str) -> String {
     format!(
-        "Download a build manually from https://github.com/{GITHUB_REPO}/releases and put \
-         al-lsp on your PATH, or install it there (e.g. `cargo install`). PATH is how a \
-         specific build is chosen: the extension ignores \
-         `lsp.\"al-lsp\".binary.path` and `binary.arguments`, because Zed hands them over \
-         merged with a worktree's own settings and they name a program to run."
-    )
-}
-
-fn spawn_failure_message(os: zed::Os, asset_name: &str) -> String {
-    format!(
-        "Could not find an al-lsp release asset named '{asset_name}' for this platform. {}",
-        manual_install_hint(os)
-    )
-}
-
-fn release_lookup_failure_message(os: zed::Os, underlying: &str) -> String {
-    format!(
-        "Could not fetch an al-lsp release from https://github.com/{GITHUB_REPO}/releases \
-         ({underlying}). If no release has been published yet, or your network blocks \
-         GitHub, the language server cannot be downloaded automatically. {}",
-        manual_install_hint(os)
+        "No usable al-lsp release {tag} for this extension ({underlying}). Either run \
+         `make install` in the extension repo, which installs the matching al-lsp, or \
+         use a release tagged {tag} from https://github.com/{GITHUB_REPO}/releases. \
+         The extension ignores `lsp.\"al-lsp\".binary.path` and `binary.arguments`, \
+         because Zed hands them over merged with a worktree's own settings and they \
+         name a program to run."
     )
 }
 
@@ -120,155 +107,15 @@ fn merge_json_inner(base: &Value, overrides: &Value, depth: u32) -> Value {
     }
 }
 
-/// A complete `al-lsp-<version>` directory already in the extension work
-/// directory: both `al-lsp` and its `al-explorer` sidecar present as regular
-/// files.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CachedRelease {
-    /// Version parsed out of the `al-lsp-<version>` directory name.
-    pub version: String,
-    /// Path to the `al-lsp` binary inside the directory.
-    pub binary_path: String,
-    /// Directory modification time. Decides which cached release to fall back
-    /// to when the latest-release lookup fails and several are present.
-    pub modified: SystemTime,
-}
+/// The file an earlier extension version wrote to record the `al-lsp` it
+/// found on PATH. PATH is no longer consulted, so the file is only removed.
+const LEGACY_PATH_RECORD: &str = "al-lsp-on-path";
 
-/// What to do once the extension knows what is cached on disk and what the
-/// latest-release lookup returned.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ReleaseChoice {
-    /// Start this already-downloaded binary. `prune_others` is true only when
-    /// the lookup succeeded and named this exact version, which is the only
-    /// case where the other cached directories are known to be stale.
-    UseCached {
-        binary_path: String,
-        prune_others: bool,
-    },
-    /// Download this version, then remove the other cached directories.
-    Download { version: String },
-    /// Nothing usable on disk and no release to download.
-    Fail { message: String },
-}
-
-/// Pick an `al-lsp` that needs no release lookup: `al-lsp` on the worktree's
-/// PATH, then the binary this session already resolved. `None` sends the
-/// caller to the release lookup.
-///
-/// PATH comes before the session cache because the AL Tools context server
-/// resolves with no worktree, so it can only reach a release. When it started
-/// first, its release sat in the cache and the language server never asked
-/// PATH.
-pub fn known_binary(on_path: Option<String>, cached: Option<String>) -> Option<String> {
-    on_path.or(cached)
-}
-
-/// The file in the extension's work directory that names the `al-lsp` the
-/// language server last found on PATH.
-const PATH_BINARY_RECORD: &str = "al-lsp-on-path";
-
-/// The `al-lsp` the AL Tools context server runs when the language server has
-/// recorded one on PATH. The context server has no worktree to ask PATH, so
-/// without the record it ran the downloaded release while the language server
-/// ran a developer build. `None` sends it to the release.
-pub fn recorded_path_binary(record: Option<String>) -> Option<String> {
-    record
-        .map(|path| path.trim().to_string())
-        .filter(|path| !path.is_empty())
-}
-
-/// The shell script the context server starts through on Linux and macOS: the
-/// `al-lsp` on PATH when there is one, else the release named by `$0`.
-const CONTEXT_SERVER_SCRIPT: &str = "command -v al-lsp >/dev/null 2>&1 && exec al-lsp mcp; \
-     [ -n \"$0\" ] && exec \"$0\" mcp; \
-     echo 'al-lsp is not on PATH and no release could be downloaded' >&2; exit 1";
-
-/// The program and arguments that start the AL Tools context server.
-///
-/// Zed can start it before any language server, and a `Project` cannot ask
-/// PATH, so it used to run the downloaded release while the language server
-/// ran the `al-lsp` on PATH. In order: the binary the language server recorded
-/// on PATH; on Linux and macOS a `/bin/sh` script that asks PATH itself and
-/// falls back to `release`; elsewhere `release`. `release` is absolute, since
-/// Zed resolves only the program against the extension's directory.
-pub fn context_server_launch(
-    recorded: Option<String>,
-    release: Option<String>,
-    posix_shell: bool,
-) -> Option<(String, Vec<String>)> {
-    if let Some(path) = recorded {
-        return Some((path, vec!["mcp".to_string()]));
-    }
-    if posix_shell {
-        return Some((
-            "/bin/sh".to_string(),
-            vec![
-                "-c".to_string(),
-                CONTEXT_SERVER_SCRIPT.to_string(),
-                release.unwrap_or_default(),
-            ],
-        ));
-    }
-    release.map(|path| (path, vec!["mcp".to_string()]))
-}
-
-/// Pick a binary from what is cached and what the release lookup said.
-///
-/// The lookup runs first so a published upgrade is picked up: an earlier
-/// version of this resolver returned any cached directory before it ever
-/// called `latest_github_release`, which pinned an installation to the first
-/// release it downloaded and left the stale-directory cleanup unreachable.
-///
-/// `latest` is `Ok(version)` from the lookup, or `Err(message)` with the
-/// message to report when nothing is cached. A lookup failure is the offline
-/// case: keep running from disk rather than failing to start.
-///
-/// A version string that is not safe to use as a path component is treated as
-/// a failed lookup, because it cannot name a directory. Cached binaries still
-/// start; with nothing cached the rejection is reported.
-pub fn choose_release(cached: &[CachedRelease], latest: Result<&str, &str>) -> ReleaseChoice {
-    let newest_cached = || {
-        cached
-            .iter()
-            .max_by_key(|release| release.modified)
-            .map(|release| release.binary_path.clone())
-    };
-
-    let version = match latest {
-        Ok(version) if is_safe_version(version) => version,
-        Ok(version) => {
-            let message =
-                format!("Rejected release version '{version}': contains path-unsafe characters");
-            return match newest_cached() {
-                Some(binary_path) => ReleaseChoice::UseCached {
-                    binary_path,
-                    prune_others: false,
-                },
-                None => ReleaseChoice::Fail { message },
-            };
-        }
-        Err(message) => {
-            return match newest_cached() {
-                Some(binary_path) => ReleaseChoice::UseCached {
-                    binary_path,
-                    prune_others: false,
-                },
-                None => ReleaseChoice::Fail {
-                    message: message.to_string(),
-                },
-            }
-        }
-    };
-
-    match cached.iter().find(|release| release.version == version) {
-        Some(release) => ReleaseChoice::UseCached {
-            binary_path: release.binary_path.clone(),
-            prune_others: cached.len() > 1,
-        },
-        None => ReleaseChoice::Download {
-            version: version.to_string(),
-        },
-    }
+/// The tag of the release that belongs to this extension build: `v` plus the
+/// cargo version before the `+git.` part of the build stamp.
+pub fn release_tag(extension_build: &str) -> String {
+    let version = extension_build.split('+').next().unwrap_or(extension_build);
+    format!("v{version}")
 }
 
 /// Look up one file's expected digest in a `sha256sum`-style listing. Accepts
@@ -391,49 +238,22 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 impl AlExtension {
-    /// Scan the extension work directory for complete, previously downloaded
-    /// releases, without touching the network. A machine that downloaded a
-    /// release in an earlier session can then start `al-lsp` fully offline (no
-    /// PATH install, no `binary.path`, no reachable GitHub).
-    fn cached_releases(os: zed::Os) -> Vec<CachedRelease> {
+    /// The already downloaded binary of release directory `version_dir`, if
+    /// both sidecars are on disk. No network.
+    fn downloaded_release(version_dir: &str, os: zed::Os) -> Option<String> {
         let (binary_name, explorer_name) = match os {
             zed::Os::Windows => ("al-lsp.exe", "al-explorer.exe"),
             _ => ("al-lsp", "al-explorer"),
         };
-
-        let Ok(entries) = fs::read_dir(".") else {
-            return Vec::new();
-        };
-        let mut releases = Vec::new();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let Some(version) = name.strip_prefix(RELEASE_DIR_PREFIX) else {
-                continue;
-            };
-            let dir_path = entry.path();
-            let binary_path = dir_path.join(binary_name);
-            let explorer_path = dir_path.join(explorer_name);
-            if !fs::metadata(&binary_path).is_ok_and(|m| m.is_file())
-                || !fs::metadata(&explorer_path).is_ok_and(|m| m.is_file())
-            {
-                continue;
-            }
-            releases.push(CachedRelease {
-                version: version.to_string(),
-                binary_path: binary_path.to_string_lossy().into_owned(),
-                modified: fs::metadata(&dir_path)
-                    .and_then(|m| m.modified())
-                    .unwrap_or(SystemTime::UNIX_EPOCH),
-            });
-        }
-        releases
+        let binary_path = format!("{version_dir}/{binary_name}");
+        let explorer_path = format!("{version_dir}/{explorer_name}");
+        (fs::metadata(&binary_path).is_ok_and(|m| m.is_file())
+            && fs::metadata(&explorer_path).is_ok_and(|m| m.is_file()))
+        .then_some(binary_path)
     }
 
-    /// Remove every cached release directory other than `keep`. Only called
-    /// once the latest-release lookup has confirmed which version is current,
-    /// so an unreachable GitHub never deletes the binary the user is running
-    /// from. A failure here only leaves an obsolete directory behind.
+    /// Remove every release directory other than `keep`, the one for this
+    /// extension's version. A failure here only leaves an obsolete directory.
     fn prune_release_dirs(keep: &str) {
         let Ok(entries) = fs::read_dir(".") else {
             return;
@@ -521,7 +341,6 @@ impl AlExtension {
     fn find_or_download_binary(
         &mut self,
         status_id: Option<&zed::LanguageServerId>,
-        worktree: Option<&zed::Worktree>,
         user_configured_path: Option<&str>,
     ) -> Result<String> {
         // Deliberately NOT cached into `self.cached_binary_path`: this path is
@@ -541,19 +360,60 @@ impl AlExtension {
             self.cached_binary_path = None;
         }
 
-        let on_path = worktree.and_then(|worktree| worktree.which("al-lsp"));
-        if worktree.is_some() {
-            let _ = match &on_path {
-                Some(path) => fs::write(PATH_BINARY_RECORD, path),
-                None => fs::remove_file(PATH_BINARY_RECORD),
-            };
+        let _ = fs::remove_file(LEGACY_PATH_RECORD);
+
+        // Order: the managed copy `make install` writes to dev/, then the
+        // session cache, then the GitHub release. PATH is not consulted: a
+        // stale al-lsp there ran silently against a newer extension. Standard
+        // route checked: Zed's `worktree.which` is what that lookup used, and
+        // it cannot say which build it found, so it is dropped.
+        let (os, arch) = zed::current_platform();
+        let dev =
+            dev_binary::find_dev_binary(std::path::Path::new(""), matches!(os, zed::Os::Windows));
+        if let Some(note) = dev
+            .as_ref()
+            .and_then(|dev| dev.stale_note(dev_binary::EXTENSION_BUILD))
+        {
+            eprintln!("{note}");
         }
-        if let Some(path) = known_binary(on_path, self.cached_binary_path.clone()) {
+        if let Some(path) = dev_binary::known_binary(dev.as_ref(), self.cached_binary_path.clone())
+        {
             self.cached_binary_path = Some(path.clone());
             return Ok(path);
         }
 
-        let (os, arch) = zed::current_platform();
+        self.download_matching_release(status_id, os, arch)
+    }
+
+    /// The release route, kept apart so it can be removed on its own: the
+    /// release tagged with this extension's own version (never "latest"), as
+    /// installed from Zed's extension UI. A copy already on disk is used
+    /// without a network call. Any other version's directory is deleted. When
+    /// the release is missing or the download fails, one error names the
+    /// version and both routes (see `release_unavailable_message`).
+    fn download_matching_release(
+        &mut self,
+        status_id: Option<&zed::LanguageServerId>,
+        os: zed::Os,
+        arch: zed::Architecture,
+    ) -> Result<String> {
+        let tag = release_tag(dev_binary::EXTENSION_BUILD);
+        if !is_safe_version(&tag) {
+            return Err(release_unavailable_message(
+                &tag,
+                "the version is not a valid tag",
+            ));
+        }
+        let version = tag.clone();
+        let unavailable = |why: &str| release_unavailable_message(&tag, why);
+
+        if let Some(binary_path) =
+            Self::downloaded_release(&format!("{RELEASE_DIR_PREFIX}{version}"), os)
+        {
+            Self::prune_release_dirs(&format!("{RELEASE_DIR_PREFIX}{version}"));
+            self.cached_binary_path = Some(binary_path.clone());
+            return Ok(binary_path);
+        }
 
         if let Some(id) = status_id {
             zed::set_language_server_installation_status(
@@ -561,47 +421,8 @@ impl AlExtension {
                 &zed::LanguageServerInstallationStatus::CheckingForUpdate,
             );
         }
-
-        // Ask for the latest release first, so an extension update that
-        // publishes a new al-lsp is actually picked up. A lookup failure is the
-        // offline case and falls back to a cached release below; only an empty
-        // cache turns it into an error.
-        let release = zed::latest_github_release(
-            GITHUB_REPO,
-            zed::GithubReleaseOptions {
-                require_assets: true,
-                pre_release: false,
-            },
-        );
-        let lookup_error = release
-            .as_ref()
-            .err()
-            .map(|e| release_lookup_failure_message(os, e));
-
-        let cached = Self::cached_releases(os);
-        let latest = match (&release, &lookup_error) {
-            (Ok(release), _) => Ok(release.version.as_str()),
-            (_, Some(message)) => Err(message.as_str()),
-            (Err(_), None) => unreachable!("a failed lookup always produces a message"),
-        };
-
-        let version = match choose_release(&cached, latest) {
-            ReleaseChoice::UseCached {
-                binary_path,
-                prune_others,
-            } => {
-                if prune_others {
-                    if let Some(dir) = binary_path.split(['/', '\\']).next() {
-                        Self::prune_release_dirs(dir);
-                    }
-                }
-                self.cached_binary_path = Some(binary_path.clone());
-                return Ok(binary_path);
-            }
-            ReleaseChoice::Fail { message } => return Err(message),
-            ReleaseChoice::Download { version } => version,
-        };
-        let release = release.expect("a Download choice only follows a successful lookup");
+        let release = zed::github_release_by_tag_name(GITHUB_REPO, &tag)
+            .map_err(|error| unavailable(&error))?;
 
         let arch_name = match arch {
             zed::Architecture::Aarch64 => "aarch64",
@@ -628,10 +449,9 @@ impl AlExtension {
             .assets
             .iter()
             .find(|a| a.name == asset_name)
-            .ok_or_else(|| spawn_failure_message(os, &asset_name))?;
+            .ok_or_else(|| unavailable(&format!("the release has no asset {asset_name}")))?;
 
-        // `choose_release` already rejected a version that cannot name a
-        // directory, so `version` is safe to interpolate here.
+        // `is_safe_version` accepted the tag, so it is safe to interpolate here.
         let version_dir = format!("{RELEASE_DIR_PREFIX}{version}");
         let (binary_name, explorer_name) = match os {
             zed::Os::Windows => ("al-lsp.exe", "al-explorer.exe"),
@@ -648,7 +468,7 @@ impl AlExtension {
         }
 
         zed::download_file(&asset.download_url, &version_dir, archive_type)
-            .map_err(|e| format!("Failed to download al-lsp: {e}"))?;
+            .map_err(|e| unavailable(&format!("download failed: {e}")))?;
 
         for (tool, path) in [("al-lsp", &binary_path), ("al-explorer", &explorer_path)] {
             if !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
@@ -719,15 +539,12 @@ impl zed::Extension for AlExtension {
             .filter(|path| !settings::is_worktree_resident_program(path, &worktree_root));
         self.cached_dotnet_path = dotnet_path.clone();
 
-        let binary_path = self.find_or_download_binary(
-            Some(language_server_id),
-            Some(worktree),
-            launch.program.as_deref(),
-        )?;
+        let binary_path =
+            self.find_or_download_binary(Some(language_server_id), launch.program.as_deref())?;
 
         Ok(zed::Command {
             command: binary_path,
-            args: launch.args,
+            args: dev_binary::with_extension_build(launch.args, dev_binary::EXTENSION_BUILD),
             env: dotnet_path
                 .map(|path| vec![("AL_DOTNET_PATH".to_string(), path)])
                 .unwrap_or_default(),
@@ -819,30 +636,15 @@ impl zed::Extension for AlExtension {
         context_server_id: &zed::ContextServerId,
         project: &zed::Project,
     ) -> Result<zed::Command> {
-        // See `context_server_launch`. The release cache/download part of the
-        // resolver needs no worktree and keeps a fresh gallery install
-        // self-contained. Through the shell its failure only removes the
-        // fallback, since `al-lsp` may be on PATH.
-        let recorded = recorded_path_binary(fs::read_to_string(PATH_BINARY_RECORD).ok());
-        let posix_shell = !matches!(zed::current_platform().0, zed::Os::Windows);
-        let release = if recorded.is_some() {
-            None
-        } else {
-            match self.find_or_download_binary(None, None, None) {
-                Ok(path) => Some(
-                    std::env::current_dir()
-                        .map(|dir| dir.join(&path).to_string_lossy().into_owned())
-                        .unwrap_or(path),
-                ),
-                Err(error) if posix_shell => {
-                    eprintln!("al-lsp release unavailable for the context server: {error}");
-                    None
-                }
-                Err(error) => return Err(error),
-            }
-        };
-        let (command, args) = context_server_launch(recorded, release, posix_shell)
-            .ok_or_else(|| "al-lsp is not available".to_string())?;
+        // Same resolver as the language server: the managed dev/ copy, else
+        // the release. It needs no worktree. The path is made absolute because
+        // Zed resolves only the program against the extension's directory.
+        let path = self.find_or_download_binary(None, None)?;
+        let command = std::env::current_dir()
+            .map(|dir| dir.join(&path).to_string_lossy().into_owned())
+            .unwrap_or(path);
+        let args =
+            dev_binary::with_extension_build(vec!["mcp".to_string()], dev_binary::EXTENSION_BUILD);
 
         // `cached_dotnet_path` is only populated once an LSP session has
         // started (`language_server_command`). A `Project` cannot resolve
@@ -873,9 +675,9 @@ impl zed::Extension for AlExtension {
         _user_provided_debug_adapter_path: Option<String>,
         worktree: &zed::Worktree,
     ) -> Result<zed::DebugAdapterBinary> {
-        // Resolve al-lsp via the same chain used for LSP: in-memory session
-        // cache → PATH → on-disk cached download (offline) → GitHub release
-        // download. No LanguageServerId exists on the DAP path (and the
+        // Resolve al-lsp via the same chain used for LSP: managed dev/ copy →
+        // in-memory session cache → on-disk cached download (offline) → GitHub
+        // release download. No LanguageServerId exists on the DAP path (and the
         // released API has no way to construct one), so download progress is
         // not surfaced in the status UI — see find_or_download_binary's
         // status_id doc.
@@ -884,7 +686,7 @@ impl zed::Extension for AlExtension {
         // `.zed/debug.json` writes, and it names the program to run. Same rule
         // as `binary.path`: ignored. See `settings::resolve_server_launch`.
         let al_lsp_path = dap::absolute_adapter_path(
-            self.find_or_download_binary(None, Some(worktree), None)?,
+            self.find_or_download_binary(None, None)?,
             std::env::current_dir().ok().as_deref(),
         );
 

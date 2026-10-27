@@ -103,10 +103,6 @@ impl SymbolIndex {
                 + names.iter().map(String::capacity).sum::<usize>();
         }
         drop(sorted_names);
-        lookup_index_bytes += read_derived_cache(&self.default_completions, "default_completions")
-            .0
-            .capacity()
-            * arc_bytes;
 
         let path_cache_bytes = self
             .app_paths

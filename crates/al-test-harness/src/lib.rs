@@ -1130,6 +1130,59 @@ impl LspClient {
         self.request(method, params).await
     }
 
+    /// `workspace/executeCommand` for a command that asks the editor to do
+    /// something (`window/showDocument`, `window/showMessageRequest`) and waits
+    /// for the answer. Each such server request is answered with a null result,
+    /// as an editor that shows the document would, so the command completes.
+    pub async fn execute_command_answering_requests(
+        &mut self,
+        command: &str,
+        arguments: Value,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let msg = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "workspace/executeCommand",
+            "params": { "command": command, "arguments": arguments },
+        });
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        self.pending.lock().await.insert(id, tx);
+        let cleanup = scopeguard_remove(self.pending.clone(), id);
+        let writer = self.writer.as_mut().ok_or("writer closed")?;
+        send_message(writer, &msg).await?;
+
+        let deadline = tokio::time::Instant::now() + request_timeout();
+        let response = loop {
+            tokio::select! {
+                answer = &mut rx => break answer.map_err(|_| "channel closed")?,
+                Some((_, params)) = self.notifications.recv() => {
+                    if let Some(req_id) = params.get("__server_req_id__") {
+                        let reply = serde_json::json!({
+                            "jsonrpc": "2.0",
+                            "id": req_id,
+                            "result": Value::Null,
+                        });
+                        let writer = self.writer.as_mut().ok_or("writer closed")?;
+                        send_message(writer, &reply).await?;
+                    }
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    return Err(format!(
+                        "timeout waiting for response to {command} (id={id}); \
+                         set AL_TEST_REQUEST_TIMEOUT_MS to extend"
+                    )
+                    .into());
+                }
+            }
+        };
+        drop(cleanup);
+        if let Some(error) = response.get("error") {
+            return Err(format!("LSP error: {}", error).into());
+        }
+        Ok(response.get("result").cloned().unwrap_or(Value::Null))
+    }
+
     /// Build a file:// URI from a relative path. Public for test assertions.
     pub fn file_uri(&self, relative_path: &str) -> String {
         let full_path = self.root_path.join(relative_path);

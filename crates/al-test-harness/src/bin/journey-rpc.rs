@@ -9,7 +9,8 @@
 //!   `tools/list` lists the tools instead.
 //! - `lsp`: starts al-lsp on DIR through `LspClient`. A NAME with a `/` is sent as that
 //!   LSP request with JSON as its params. Any other NAME is a `workspace/executeCommand`
-//!   command and JSON is its `arguments` array.
+//!   command and JSON is its `arguments` array. When the first argument has a `uri` inside
+//!   DIR, that file is opened first.
 //! - `daemon`: connects to the project daemon with `DaemonClient` (starting one when none
 //!   runs) and sends NAME with JSON as params. Reached through the same protocol client
 //!   that al-explorer uses.
@@ -164,11 +165,26 @@ async fn run_lsp(args: &Args) -> Result<Outcome, String> {
         } else {
             json!([args.params])
         };
+        // The lens commands read the document the editor has open, so a call
+        // whose first argument names a project file opens that file first.
+        let opened = arguments
+            .get(0)
+            .and_then(|arg| arg.get("uri"))
+            .and_then(|uri| uri.as_str())
+            .and_then(|uri| uri.strip_prefix("file://"))
+            .and_then(|path| std::path::Path::new(path).strip_prefix(&args.project).ok())
+            .map(|relative| relative.to_string_lossy().into_owned());
+        if let Some(relative) = opened {
+            if let Ok(text) =
+                std::fs::read_to_string(std::path::Path::new(&args.project).join(&relative))
+            {
+                client
+                    .open_file_within(&relative, &text, Duration::from_secs(30))
+                    .await;
+            }
+        }
         client
-            .raw_request(
-                "workspace/executeCommand",
-                json!({"command": args.method, "arguments": arguments}),
-            )
+            .execute_command_answering_requests(&args.method, arguments)
             .await
     };
     client.shutdown().await;

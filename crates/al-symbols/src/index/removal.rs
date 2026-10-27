@@ -186,7 +186,6 @@ impl SymbolIndex {
         // relationship. Clear the small derived cache rather than serving a
         // stale view after hot symbol reload.
         self.composed_cache.clear();
-        self.rebuild_default_completions();
         self.note_mutation();
     }
 }
@@ -298,10 +297,5 @@ mod tests {
             .get_cached_source_path("Drop", ObjectKind::Table, 50_000)
             .is_none());
         assert!(index.is_composed_cache_empty());
-        assert_eq!(index.default_completions_snapshot().len(), 30);
-        assert!(index
-            .default_completions_snapshot()
-            .iter()
-            .all(|entry| entry.package == "Keep"));
     }
 }

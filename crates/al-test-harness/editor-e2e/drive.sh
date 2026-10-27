@@ -18,6 +18,8 @@
 #                                         #   wtype and `grim /out/shot-NAME.png` (copied next to --out)
 #   drive.sh --proj-rw                    # mount the --proj-dir project read-write at /extproj (default is read-only)
 #   drive.sh --mount HOST:CONT            # extra read-only mount (e.g. a dotnet runtime), repeatable
+#   drive.sh --source-index DIR           # a prebuilt al-lsp source-index store (host dir) linked as the container's <data dir>/al-lsp/source-index
+#   drive.sh --no-settings-prompt         # pre-create al-lsp's .settings-prompt-shown file in the container
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
@@ -31,6 +33,7 @@ PROJ=""   # repo-relative project subdir to open (default: the bundled fixture i
 PROJ_DIR=""      # absolute project dir outside the repo
 KEYS_FILE=""     # script mounted at /out/keys.sh and run after trust
 PROJ_MODE="ro"   # --proj-rw sets rw
+EXTRA_ENV_FLAGS=() # extra podman -e arguments
 MOUNTS=()        # extra podman -v arguments
 ZED_SETTINGS=""  # a settings.json for the Zed under test (theme, LSP settings)
 
@@ -48,6 +51,8 @@ while [[ $# -gt 0 ]]; do
     --proj-rw)     PROJ_MODE="rw"; shift ;;
     --mount)       MOUNTS+=(-v "$2:ro"); shift 2 ;;
     --zed-settings) ZED_SETTINGS="$2"; shift 2 ;;
+    --source-index) MOUNTS+=(-v "$2:/srcindex:ro"); EXTRA_ENV_FLAGS+=(-e AL_SOURCE_INDEX=/srcindex); shift 2 ;;
+    --no-settings-prompt) EXTRA_ENV_FLAGS+=(-e AL_SETTINGS_SENTINEL=1); shift ;;
     *) echo "unknown arg: $1"; exit 2 ;;
   esac
 done
@@ -112,9 +117,11 @@ if [[ "$MODE" != "vscode" ]]; then
 fi
 
 EXTRA_ENV=()
+# The image bakes run-zed.sh in at build time and the tag is shared, so mount the checked out copy over it.
+MOUNTS+=(-v "$HERE/container/run-zed.sh:/opt/al/run-zed.sh:ro")
 # `target` is often a symlink to a build cache outside the repo. Inside the
-# container that link dangles, so Zed would not find target/debug/al-lsp and
-# the extension would download a released al-lsp instead. Mount the real
+# container that link dangles, so run-zed.sh could not copy target/debug/al-lsp
+# into the extension work dir. Mount the real
 # directory at its host path so the link resolves.
 if [[ -L "$ROOT/target" ]]; then
   TARGET_REAL="$(readlink -f "$ROOT/target")"
@@ -132,7 +139,7 @@ fi
 echo "=== running headless $MODE (isolated container; your desktop is untouched) ==="
 podman run --rm --userns=keep-id \
   -v "$ROOT":/repo:ro -v "$OUTDIR":/out:rw \
-  -e OPEN_FILE="$OPEN_FILE" -e OUTD=/out "${INDEX_ENV[@]}" "${EXTRA_ENV[@]}" "${MOUNTS[@]}" ${KEYS:+-e KEYS="$KEYS"} ${PROJ:+-e PROJ_SUBDIR="$PROJ"} ${ZED_SHELL:+-e ZED_SHELL="$ZED_SHELL"} \
+  -e OPEN_FILE="$OPEN_FILE" -e OUTD=/out "${INDEX_ENV[@]}" "${EXTRA_ENV[@]}" "${EXTRA_ENV_FLAGS[@]}" "${MOUNTS[@]}" ${KEYS:+-e KEYS="$KEYS"} ${PROJ:+-e PROJ_SUBDIR="$PROJ"} ${ZED_SHELL:+-e ZED_SHELL="$ZED_SHELL"} \
   "$IMG" "$SCRIPT" 2>&1 | tee "$LOG"
 
 # 3. Collect screenshot(s).
@@ -152,7 +159,8 @@ rm -rf "$OUTDIR"
 ok=1
 [[ -f "$OUT" ]] || { echo "FAIL: screenshot not retrieved to $OUT"; ok=0; }
 case "$MODE" in
-  zed)     grep -q "AL_LSP_PROCS: 1" "$LOG" || { echo "FAIL: al-lsp did not start inside Zed"; ok=0; } ;;
+  zed)     grep -q "AL_LSP_PROCS: 1" "$LOG" || { echo "FAIL: al-lsp did not start inside Zed"; ok=0; }
+           grep -q "AL_LSP_DEV: 1" "$LOG"   || { echo "FAIL: the running al-lsp is not the managed dev/ copy"; ok=0; } ;;
   vscode)  grep -q "SHOT:" "$LOG"           || { echo "FAIL: VS Code did not render"; ok=0; } ;;
   compare) grep -q "COMPARE:" "$LOG"        || { echo "FAIL: comparison image not produced"; ok=0; } ;;
 esac

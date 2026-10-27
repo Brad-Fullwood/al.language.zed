@@ -196,7 +196,7 @@ fn socket_identity(endpoint: &Path) -> Option<(u64, u64)> {
 /// idle for longer than the idle window.
 #[test]
 fn an_idle_daemon_exits_on_its_own() {
-    let project = tempfile::tempdir().expect("create a project directory");
+    let project = project_dir();
     let mut daemon = DaemonProcess::start(
         project.path(),
         private_runtime_dir("idle"),
@@ -218,7 +218,7 @@ fn an_idle_daemon_exits_on_its_own() {
 /// hook was held back on exactly this.
 #[test]
 fn daemon_shutdown_returns_only_once_the_endpoint_is_closed() {
-    let project = tempfile::tempdir().expect("create a project directory");
+    let project = project_dir();
     let runtime_dir = private_runtime_dir("shutdown");
     let mut daemon = DaemonProcess::start(project.path(), runtime_dir.clone(), "0");
     daemon.wait_until_listening();
@@ -254,7 +254,7 @@ fn daemon_shutdown_returns_only_once_the_endpoint_is_closed() {
 /// Without it a run left a daemon behind for every project it touched.
 #[test]
 fn the_harness_stops_the_daemons_it_tracked() {
-    let project = tempfile::tempdir().expect("create a project directory");
+    let project = project_dir();
     // The idle exit is off, so nothing but the reaper can stop this one.
     let mut daemon = DaemonProcess::start_on_shared_runtime(project.path(), "0");
     daemon.wait_until_listening();
@@ -278,7 +278,7 @@ fn the_harness_stops_the_daemons_it_tracked() {
 /// however long its idle window.
 #[test]
 fn a_daemon_exits_when_its_project_is_deleted() {
-    let project = tempfile::tempdir().expect("create a project directory");
+    let project = project_dir();
     let project_path = project.path().to_path_buf();
     // The idle exit is off, so only the project-root check can end this one.
     let mut daemon = DaemonProcess::start(&project_path, private_runtime_dir("root"), "0");
@@ -298,7 +298,7 @@ fn a_daemon_exits_when_its_project_is_deleted() {
 /// reach it.
 #[test]
 fn a_second_daemon_for_the_same_project_refuses_to_start() {
-    let project = tempfile::tempdir().expect("create a project directory");
+    let project = project_dir();
     let runtime_dir = private_runtime_dir("second");
     let mut first = DaemonProcess::start(project.path(), runtime_dir.clone(), "0");
     first.wait_until_listening();
@@ -331,7 +331,7 @@ fn a_second_daemon_for_the_same_project_refuses_to_start() {
 /// reaches, and the stopping daemon must leave it alone.
 #[test]
 fn a_stopping_daemon_leaves_an_endpoint_another_socket_has_taken() {
-    let project = tempfile::tempdir().expect("create a project directory");
+    let project = project_dir();
     let mut daemon = DaemonProcess::start(project.path(), private_runtime_dir("taken"), "0");
     daemon.wait_until_listening();
 
@@ -352,4 +352,29 @@ fn a_stopping_daemon_leaves_an_endpoint_another_socket_has_taken() {
         daemon.endpoint.display()
     );
     drop(taken);
+}
+
+/// perf-01: a daemon started for a directory without app.json idled for 30 minutes.
+#[test]
+fn a_daemon_refuses_a_project_root_without_app_json() {
+    let project = tempfile::tempdir().expect("create a directory");
+    let runtime_dir = private_runtime_dir("noapp");
+    let mut daemon = DaemonProcess::start_beside(project.path(), &runtime_dir, "0");
+    assert!(
+        daemon.wait_for_exit(Duration::from_secs(20)).is_some(),
+        "a daemon without app.json in its project root must exit"
+    );
+    let stderr = daemon.stderr();
+    assert!(stderr.contains("has no app.json"), "stderr: {stderr}");
+}
+
+/// A temporary AL project: the daemon refuses a root without app.json.
+fn project_dir() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("create a project directory");
+    std::fs::write(
+        dir.path().join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"T","publisher":"T","version":"1.0.0.0"}"#,
+    )
+    .expect("write app.json");
+    dir
 }

@@ -124,7 +124,7 @@ stage_05() {
   journey_write_sources
   record "$s" sources PASS "table 50140, codeunit 50141, pageextension 50142 written"
 
-  if [[ ! -s "$PROJ/.alpackages/System.app" ]]; then record "$s" symbols NIGGLE "no symbols in .alpackages (stage 2 not run or failed), builds will fail"; fi
+  if ! compgen -G "$PROJ/.alpackages/Microsoft_System_*.app" >/dev/null; then record "$s" symbols NIGGLE "no Microsoft_System_*.app in .alpackages (stage 2 not run or failed), builds will fail"; fi
 
   # --- good build, native then alc ---
   local nat="$OUT/$s/native.app" ref="$OUT/$s/alc.app"

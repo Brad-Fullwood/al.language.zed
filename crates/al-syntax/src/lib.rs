@@ -35,7 +35,10 @@ pub use navigation::{
     find_variable_references_under, procedure_keyword_row, EventSubscriberAttribute, ObjectInfo,
     ParameterInfo, ProcedureInfo, SubscriberArgument,
 };
-pub use parser::{grammar_fingerprint, AlParser, ParseResult, SyntaxError};
+pub use parser::{
+    grammar_fingerprint, missing_semicolon_insert_byte, missing_semicolon_insert_byte_at, AlParser,
+    ParseResult, SyntaxError, ALC_MISSING_SEMICOLON_CODE, ALC_MISSING_SEMICOLON_MESSAGE,
+};
 pub use sort::sort_members;
 pub use source_lines::{get_source_line, SourceLines};
 pub use symbols::{extract_document_symbols, extract_document_symbols_under};

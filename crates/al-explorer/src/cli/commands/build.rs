@@ -13,7 +13,7 @@ use super::{
 /// Print a build/package result in human-readable form and return the exit code.
 ///
 /// Both `compile` and `package` return the same response shape:
-/// `{ success, appPath?, diagnostics?, output?, backend?, validated? }`.
+/// `{ success, appPath?, diagnostics?, output?, backend?, backendNote?, validated? }`.
 /// `backend`/`verificationLevel` distinguish verified-native builds from the
 /// Microsoft `alc` path — see `al.useOfficialCompiler`.
 fn print_build_result(result: &Value, json: bool) -> ExitCode {
@@ -25,6 +25,10 @@ fn print_build_result(result: &Value, json: bool) -> ExitCode {
     if json {
         print_json(result);
     } else {
+        // Auto mode fell back to native because the toolchain is missing.
+        if let Some(note) = result.get("backendNote").and_then(|v| v.as_str()) {
+            eprintln!("{}", terminal_text(note));
+        }
         if success {
             let label = match backend {
                 Some("native") => "Native compilation succeeded (verified)",
@@ -421,7 +425,7 @@ fn validation_analyzer_entries(
 ) -> Result<Vec<String>, String> {
     let search =
         al_project::analyzers::CustomAnalyzerSearch::new(dir, &config.assembly_probing_paths);
-    validation_analyzers(requested, &config.code_analyzers)
+    validation_analyzers(requested, &config.effective_code_analyzers(dir))
         .into_iter()
         .map(|entry| {
             if al_project::analyzers::is_builtin_analyzer(&entry) {

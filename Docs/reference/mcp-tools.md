@@ -23,7 +23,7 @@ are named aliases for common agent workflows and do not limit what `al_call` can
 | `al_entrypoints` | `entrypoints` | `scope: workspace \| packages \| all = workspace` | procedures with no incoming calls |
 | `al_trace_event` | `trace` | `event: string` (required), `depth: number = 10` (max 50) | event propagation chain |
 | `al_impact` | `impact` | `symbol: string` (required), `scope: workspace \| packages \| all = workspace` | consumers of the symbol. A name that is not loaded is an error naming the closest ones |
-| `al_suggestevent` | `suggestEvent` | `query: object` (required) | suggested integration events and paths |
+| `al_suggestevent` | `suggestEvent` | `query: object` (required), with `source` chosen by `type`: `{type:'procedure', object, procedure?}`, `{type:'table', table}` or `{type:'event', object, event}`. Optional `objectKind`, `filterTable`, `filterField` | suggested integration events and paths |
 | `al_testclassify` | `tests.classify` | _(none)_ | per-test execution routing and reasons |
 | `al_testcoverage` | `tests.coverage` | _(none)_ | qualified/transitive static coverage plus explicit unresolved overload targets |
 | `al_testsnapshot` | `tests.snapshot_capture` | `codeunitId`, `codeunitName`, `methodName`, `bcVersion`, `breakpoints`, `outputPath`. Optional `config`, `timeoutMs` | live BC breakpoint-variable capture for one exact test method |

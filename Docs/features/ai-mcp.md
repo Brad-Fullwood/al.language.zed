@@ -3,8 +3,8 @@
 **Module:** `crates/al-lsp/src/server/mcp/`. **Status:** ✅ shipped
 
 The extension registers a Zed context server named **AL Tools** that launches `al-lsp mcp` with the
-binary LSP or DAP already resolved in this Zed session (which may be the one on `PATH`), or else the
-latest release, downloaded or reused from disk. The MCP server speaks newline-delimited JSON-RPC
+binary LSP or DAP already resolved in this Zed session, or else the same resolution: the `dev/` copy
+`make install` wrote, then the release tagged with the extension version, downloaded or reused from disk. The MCP server speaks newline-delimited JSON-RPC
 2.0 over stdio (protocol version `2025-11-25`, with `2024-11-05` accepted for compatibility) and
 forwards every tool call into the **same daemon dispatcher** the CLI uses, so MCP and the CLI give
 the same answers. The `al_call` tool accepts any dispatcher method and its parameter object, so
@@ -112,5 +112,5 @@ with any MCP client.
 - `al_debug` requires a reachable, authenticated BC runtime. It controls the attached native debug
   session, while compile-and-publish remains part of Zed's DAP launch flow.
 - MCP runs over stdio on Linux, macOS, and Windows. Zed's context-server callback gets a
-  `Project` and no `Worktree`, so it cannot look up worktree settings or `PATH`. It reuses a path
-  already cached by LSP/DAP or uses the shared GitHub release download path.
+  `Project` and no `Worktree`, so it cannot look up worktree settings. It uses the same resolution as
+  LSP and DAP: the `dev/` copy, then the matching release.

@@ -109,7 +109,10 @@ AL
   # Mutation testing: first with the failing test in place (red baseline), then green.
   rc=0; journey_alx "$s" mutate-red 300 test-mutate --json || rc=$?
   local mred; mred=$(journey_body "$s" mutate-red)
-  if jq -e .mutationScore <<<"$mred" > /dev/null 2>&1; then
+  # testing-02: a failing baseline gives exit 1, "baselineFailed" naming the tests and no score.
+  if [[ "$rc" == 1 ]] && jq -e '(.baselineFailed | length) > 0 and .mutationScore == null' <<<"$mred" > /dev/null 2>&1; then
+    record "$s" mutate-red PASS "exit 1, baselineFailed: $(jq -r '[.baselineFailed[].procedure] | join(",")' <<<"$mred"), no score"
+  elif jq -e .mutationScore <<<"$mred" > /dev/null 2>&1; then
     record "$s" mutate-red NIGGLE "red baseline accepted: score $(jq -r .mutationScore <<<"$mred" | cut -c1-5), killed $(jq -r .killed <<<"$mred"), survived $(jq -r .survived <<<"$mred"), exit $rc. A failing test kills every mutant it reaches, so the score is not meaningful"
   else record "$s" mutate-red PASS "exit $rc, refused or reported no score on a red baseline: $(head -n 1 <<<"$mred" | cut -c1-120)"; fi
   mv "$PROJ/src/JourneyFailingTests.Codeunit.al" "$OUT/$s/JourneyFailingTests.Codeunit.al.off"

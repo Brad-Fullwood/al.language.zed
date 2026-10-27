@@ -7,6 +7,7 @@
 //! full layering. This crate hosts the `al-lsp` binary, while `al-explorer`
 //! communicates with it through the `al-protocol` daemon transport.
 
+pub mod extension_build;
 pub mod semantic;
 pub mod server;
 pub mod toolchain;

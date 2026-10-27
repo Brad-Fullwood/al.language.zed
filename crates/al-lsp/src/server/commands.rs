@@ -236,9 +236,9 @@ pub(super) async fn reindex(server: &AlServer) {
 /// `al.compile` — build the project and publish per-file diagnostics as
 /// publishDiagnostics when the selected compiler path produces them.
 ///
-/// The default path is the pure-Rust native `.app` emitter. Setting
-/// `al.useOfficialCompiler=true` opts into Microsoft's `dotnet alc`
-/// subprocess for compiler diagnostics and authoritative validation.
+/// The default is Microsoft's `dotnet alc` when the toolchain is found and the
+/// pure-Rust native `.app` emitter otherwise. `al.useOfficialCompiler` forces
+/// either one.
 pub(super) async fn compile(server: &AlServer) {
     let project = server.workspace.project.read().await;
     let Some((root, package_cache, dependency_packages)) = project.as_ref().map(|project| {
@@ -261,10 +261,19 @@ pub(super) async fn compile(server: &AlServer) {
     drop(project);
 
     let config = server.workspace.config.read().await.clone();
-    let backend =
-        al_compile::BuildBackend::from_use_official_compiler(config.use_official_compiler);
+    let found_toolchain = server.workspace.toolchain.read().await.clone();
+    let backend = al_compile::BuildBackend::from_use_official_compiler(
+        config.use_official_compiler,
+        found_toolchain.is_some(),
+    );
+    if al_compile::BuildBackend::is_auto_fallback(
+        config.use_official_compiler,
+        found_toolchain.is_some(),
+    ) {
+        tracing::info!("{}", al_compile::BuildBackend::NATIVE_FALLBACK_NOTE);
+    }
     let toolchain = if backend == al_compile::BuildBackend::Alc {
-        let toolchain = server.workspace.toolchain.read().await.clone();
+        let toolchain = found_toolchain;
         let Some(toolchain) = toolchain else {
             server
                 .client
@@ -297,17 +306,14 @@ pub(super) async fn compile(server: &AlServer) {
             timings: None,
         }
     } else {
+        let analyzers = config.effective_code_analyzers(&root);
         match al_compile::build(al_compile::BuildRequest {
             project_root: &root,
             backend,
             toolchain: toolchain.as_ref(),
             dependency_packages: Some(dependency_packages.as_slice()),
             package_cache: Some(&package_cache),
-            analyzers: if config.code_analyzers.is_empty() {
-                None
-            } else {
-                Some(config.code_analyzers.as_slice())
-            },
+            analyzers: Some(analyzers.as_slice()),
             config: al_compile::CompilationConfigOptions::from(&config),
         })
         .await
@@ -690,9 +696,8 @@ pub(super) async fn show_report(
     text.push_str(&String::from_utf8_lossy(&output.stdout));
     text.push_str(&String::from_utf8_lossy(&output.stderr));
 
-    let dir = dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("al-lsp")
+    let dir = al_types::cache_root()
+        .unwrap_or_else(|| std::env::temp_dir().join("al-lsp"))
         .join("reports");
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;

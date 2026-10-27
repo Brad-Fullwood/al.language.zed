@@ -14,6 +14,7 @@ zed-hover.png: a hover card above or below the AddNumbers call showing the proce
 zed-definition.png: the cursor is on the declaration line "procedure AddNumbers" (line 3) with the name selected, not on the call at line 12.
 zed-diagnostics-error.png: a red squiggle at line 13 or 14 (the statement "Total := 5" has no semicolon, the error may sit on the next line), with an error marker in the gutter or status bar and a syntax error message.
 zed-project-diagnostics.png: the Project Diagnostics tab listing the syntax error for JourneyEditor.Codeunit.al.
+zed-project-diagnostics-late.png: the same view taken a few seconds later, in case the first shot came before the tab opened.
 zed-codeaction.png: a code actions menu next to line 13 (quick fix entries for the error). An empty menu or no menu means no code action is offered.
 zed-diagnostics-clear.png: the same code as the error shot with the "Total := 5" line removed, no squiggle, no error count in the status bar.
 zed-rename-box.png: the inline rename editor (an extra row under line 3) holding SumNumbers.
@@ -56,7 +57,7 @@ s4_zed_half() {
   t1=$(grep 'Published project-scoped diagnostics generation' "$lspl" 2>/dev/null | head -n 1 | grep -oE '[0-9T:.-]+Z' | head -n 1)
   if [[ -n "$t0" && -n "$t1" ]]; then
     local secs; secs=$(( $(date -d "$t1" +%s) - $(date -d "$t0" +%s) ))
-    [[ "$secs" -gt 5 ]] && record 04 zed.al-lsp-ready NIGGLE "al-lsp inside Zed answered requests ${secs}s after initialize (first project diagnostics publish), keystrokes waited ${waited:-?}s for it. The container has no dotnet and no source index cache, so the Base Application index is built from nothing. Requests sent before that were cancelled (Zed.log / al-lsp.log in $run)"
+    [[ "$secs" -gt 5 ]] && record 04 zed.al-lsp-ready NIGGLE "al-lsp inside Zed answered requests ${secs}s after initialize (first project diagnostics publish), keystrokes waited ${waited:-?}s for it. The container has no dotnet, so the dependency source index comes from the primed store (drive.sh --source-index) or is built from nothing. Requests sent before that were cancelled (Zed.log / al-lsp.log in $run)"
   else
     record 04 zed.al-lsp-ready NIGGLE "no project diagnostics publish in al-lsp.log after ${waited:-?}s of waiting, al-lsp inside Zed never finished its project scan (see $lspl)"
   fi
@@ -79,6 +80,7 @@ s4_zed_half() {
   shotrec codeaction codeaction
   shotrec outline outline
   shotrec project-diagnostics project-diagnostics
+  shotrec project-diagnostics-late project-diagnostics-late
 
   local before="$OUT/04/JourneyEditor.original.al"
   local after="$run/artifact-after-format.al" snip="$run/artifact-after-snippet.al"
@@ -137,7 +139,11 @@ s4_lsp_half() {
   rm -rf "$lsp/proj"; cp -a "$PROJ" "$lsp/proj"
   cp "$S34_DIR/JourneyEditor.Codeunit.al" "$lsp/proj/src/JourneyEditor.Codeunit.al"
   rm -f "$lsp/lines.txt"
-  AL_LSP_BIN="$ALLSP" RUST_LOG=warn run_step 04 journey-lsp 300 "$bin" --project "$lsp/proj" --out "$lsp"
+  # al-lsp publishes diagnostics with the client version after every didChange (diagnostics.rs
+  # publish_if_current), but the debounced pass reruns the native workspace lint: 7 to 14 s per edit in
+  # a debug build, 1.7 to 2.3 s in release. The harness default wait of 5 s fails on the debug build the
+  # journey runs, so give it 60 s. The per-edit time is in the lsp.diagnostics and lsp.diagnostics-clear lines.
+  AL_TEST_DIAG_TIMEOUT_MS=60000 AL_LSP_BIN="$ALLSP" RUST_LOG=warn run_step 04 journey-lsp 300 "$bin" --project "$lsp/proj" --out "$lsp"
   local rc=$? line status item detail n=0
   while IFS= read -r line; do
     status="${line%% *}"; line="${line#* }"; item="${line%% *}"; detail="${line#* }"

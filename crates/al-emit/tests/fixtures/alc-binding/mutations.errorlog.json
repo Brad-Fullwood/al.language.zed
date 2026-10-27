@@ -1,0 +1,262 @@
+{
+  "version": "0.2",
+  "toolInfo": {
+    "toolName": "Microsoft (R) AL Compiler",
+    "productVersion": "18.1.43",
+    "fileVersion": "18.1.43"
+  },
+  "issues": [
+    {
+      "ruleId": "AL0118",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 11,
+                "startColumn": 9,
+                "endLine": 11,
+                "endColumn": 19
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "The name 'Undeclared' does not exist in the current context.",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al118?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0118",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 12,
+                "startColumn": 19,
+                "endLine": 12,
+                "endColumn": 30
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "The name 'Undeclared2' does not exist in the current context.",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al118?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0132",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 13,
+                "startColumn": 21,
+                "endLine": 13,
+                "endColumn": 32
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "'Record \"AZJ Journey Item\"' does not contain a definition for 'NoSuchField'",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al132?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0132",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 14,
+                "startColumn": 21,
+                "endLine": 14,
+                "endColumn": 36
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "'Record \"AZJ Journey Item\"' does not contain a definition for 'No Such Field'",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al132?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0132",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 15,
+                "startColumn": 31,
+                "endLine": 15,
+                "endColumn": 42
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "'Record \"AZJ Journey Item\"' does not contain a definition for 'NoReadField'",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al132?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0132",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 16,
+                "startColumn": 21,
+                "endLine": 16,
+                "endColumn": 33
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "'Record \"AZJ Journey Item\"' does not contain a definition for 'NoSuchMethod'",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al132?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0132",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 17,
+                "startColumn": 20,
+                "endLine": 17,
+                "endColumn": 37
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "'Record \"AZJ Journey Item\" temporary' does not contain a definition for 'NoSuchGlobalField'",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al132?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0118",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 18,
+                "startColumn": 9,
+                "endLine": 18,
+                "endColumn": 20
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "The name 'Undeclared3' does not exist in the current context.",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al118?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0118",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 24,
+                "startColumn": 14,
+                "endLine": 24,
+                "endColumn": 25
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "The name 'Undeclared4' does not exist in the current context.",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al118?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    }
+  ]
+}

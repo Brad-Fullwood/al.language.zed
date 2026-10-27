@@ -9,6 +9,7 @@ pub mod cache;
 pub mod composition;
 pub mod events;
 pub mod index;
+pub mod index_pool;
 pub mod manifest;
 pub mod model;
 pub mod source_availability;

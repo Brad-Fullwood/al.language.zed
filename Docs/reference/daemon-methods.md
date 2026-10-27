@@ -57,12 +57,13 @@ inside `idRanges` and avoid the base table and every other extension of it that 
 enumextension's ordinals work the same way. An exhausted range is an `INVALID_PARAMS` error naming
 the range, and an `app.json` without `idRanges` returns a `warnings` entry.
 
-`compile` is native by default. A native response includes `backend: "native"`, `validated: true`,
+`compile` uses `alc` when the toolchain is found and the native emitter otherwise. Every response has `backend` (`"alc"` or `"native"`). A native response includes `backend: "native"`, `validated: true`,
 `verificationLevel: "native-syntax-project-binding-symbol-graph"`, `appPath` (or `null` on
 rejection), and diagnostics with 1-based `line`/`column` plus exact native `endLine`/`endColumn`.
 Workspace semantic/call-graph errors gate emission. Warnings are returned with a successful build.
-Set `al.useOfficialCompiler: true` to select the Microsoft `alc` backend. There is no
-silent fallback from native to Microsoft tooling.
+When auto mode picked native because the toolchain is missing, the response also carries
+`backendNote` with the reason. `al.useOfficialCompiler: true` requires `alc` and returns an error
+without a toolchain. `false` forces native.
 
 Tests: `tests.discover`, `tests.run`, `tests.coverage`, `tests.run_batch`, `tests.run_auto`,
 `tests.last_results`, `tests.affected`, `tests.classify`, `tests.snapshot_validate`,
@@ -152,7 +153,7 @@ the code the project can change.
   minute. A daemon started by the client's own command gets the request deadline
   (`AL_REQUEST_TIMEOUT_MS`, 30 s by default) to answer its first `handshake`, a daemon that was
   already running gets 10 s.
-- `status` reports `memory` and `diag/summary` reports `process`, both
+- `status` reports `memory` and `diag` with `{"cmd":"summary"}` reports `process`, both
   `{residentBytes, peakResidentBytes}`. `residentBytes` is null off Linux. These are what the
   operating system sees, unlike the per-structure byte totals in `diag`, which count only
   allocations the workspace owns.
@@ -215,7 +216,9 @@ nothing outside the project. Every other command reports the refusal, with a hin
 the project that holds the path.
 
 Common parameter shapes: position queries accept `uri` plus `{line, character}`. `breaking` and
-`upgrade` accept `baselineSymbols`. `tests.snapshot_validate` accepts `snapshotPath`.
+`upgrade` require `baselineSymbols`, an array of symbol entries for the old version (not a path to an `.app`: the CLI reads the `.app` and sends its entries). An entry is `{"kind": "Codeunit", "id": 50100, "name": "X"}` plus optional `methods`, `fields`, `controls`, `enumValues`, `keys`, `properties`, `permissions`, `variables`, `package`, `namespace`, `extends`, `implements`. `kind` is the object kind name (`Table`, `Page`, `Codeunit`, `Enum` and so on). A string or a malformed entry answers -32602 (`'baselineSymbols' must be an array`, `baselineSymbols[i] is invalid: ...`).
+
+Required parameters that the error names only after the call: `tests.affected` needs `changedFiles`, an array of distinct non-empty path strings (`{"changedFiles":["src/Item.Codeunit.al"]}`). `suggestEvent` needs `query`, an object with a `source` chosen by `type`: `{"type":"procedure","object":"X","procedure":"P"}` (`procedure` optional), `{"type":"table","table":"T"}` or `{"type":"event","object":"X","event":"E"}`. `query` also takes optional `objectKind`, `filterTable` and `filterField`. `metrics` needs `uri` (or `file`) for one file, or `all: true`. `tests.snapshot_validate` accepts `snapshotPath`.
 `tests.snapshot_replay` accepts `snapshotPath`, `bcVersion`, and optional `config`/`timeoutMs`, and
 `tests.snapshot_diff` accepts `pathA` and `pathB`. `snapshot` takes `cmd` `start`, `status`, `finish`,
 `list` or `show`. `start` requires `breakOnNext` and accepts `config` (a launch configuration name, the first one when omitted), `snaps` (optional: SnapPoint also records an

@@ -54,14 +54,12 @@ fn sanitize_version(v: &str) -> String {
 }
 
 fn cache_dir() -> PathBuf {
-    let root = dirs::cache_dir()
-        .map(|dir| dir.join("al-lsp"))
-        .unwrap_or_else(|| {
-            // If the platform exposes no per-user cache location, use a
-            // process-private temp directory rather than a predictable shared
-            // `/tmp/al-lsp` path that another user could pre-create or symlink.
-            std::env::temp_dir().join(format!("al-lsp-{}", std::process::id()))
-        });
+    let root = al_types::cache_root().unwrap_or_else(|| {
+        // If the platform exposes no per-user cache location, use a
+        // process-private temp directory rather than a predictable shared
+        // `/tmp/al-lsp` path that another user could pre-create or symlink.
+        std::env::temp_dir().join(format!("al-lsp-{}", std::process::id()))
+    });
     root.join("semantic")
 }
 

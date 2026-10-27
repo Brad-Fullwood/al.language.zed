@@ -15,8 +15,9 @@ From `server/lsp/mod.rs` `initialize`, the server advertises: **incremental** te
 hover, completion (trigger chars `.` `:`), definition, **implementation**, references, document
 symbols, document & range formatting, folding ranges, rename (with prepare), semantic tokens
 (full + legend), CodeLens, inlay hints, signature help (trigger chars `(` `,`), workspace symbols,
-code actions, pull diagnostics (`identifier: "al-lsp"`, inter-file dependencies), and execute
-commands. Beyond the standard methods it also serves the custom `experimental/runnables` request
+code actions, and execute commands. Diagnostics are pushed, not pulled: `diagnostic_provider` is
+`None` on purpose, because Zed pulls on every edit when a server offers it and each pulled answer
+replaced the pushed set with a different subset. Beyond the standard methods it also serves the custom `experimental/runnables` request
 used by Zed's runnables UI.
 
 Text sync is `TextDocumentSyncKind::INCREMENTAL`: `did_change` applies ranged edits (with UTF-16
@@ -39,7 +40,7 @@ Each feature below names the query module that implements the (transport-agnosti
 | Feature | Query module | Notes |
 | --- | --- | --- |
 | **Hover** | `queries/hover.rs` | Resolves member access → receiver type → member. Local procedure signature. In-scope variable with scope annotation. Workspace symbol via index or bridge. Falls back to the semantic bridge (`type_at`). |
-| **Completion** | `queries/completions.rs` | Context-driven (member / enum `::` / type `:` / default). Member completion via `resolution::resolve_expression_type` + builtin methods. Type position offers builtin types + workspace tables/enums/codeunits/interfaces (capped). Has a cached "blank completion at top level" fast path. Falls back to the bridge (`completions_at`). |
+| **Completion** | `queries/completions.rs` | Context-driven (member / enum `::` / type `:` / default). Member completion via `resolution::resolve_expression_type` + builtin methods. Type position offers builtin types + workspace tables/enums/codeunits/interfaces (capped). The default (statement) context offers keywords, implicit variables, local procedures, variables in scope, builtin functions (`Message`, `Error`, `Format`) and static system objects (`Database`, `Session`, `System`), and no object or builtin type names. Has a cached "blank completion at top level" fast path. Falls back to the bridge (`completions_at`). |
 | **Go to definition** | `queries/definition.rs` | Member → receiver type → member def. Object name → workspace or package symbol. Local var. Same-file procedure. Can synthesize a **virtual file** to navigate into `.app` package symbols. |
 | **Find references** | `queries/references.rs` | Current-file variable refs + event-subscriber string-literal refs + all workspace files. Dedups exact spans. Runs on `spawn_blocking` for cancellation on large files. |
 | **Rename / prepare rename** | `queries/rename.rs` | Produces a `WorkspaceEdit`. Local variables/parameters are renamed only within their procedure to avoid clobbering same-named identifiers elsewhere. Cross-file symbols rename workspace-wide. Preserves `"quoted"` identifiers. |
@@ -69,8 +70,10 @@ With `al.diagnosticsScope: "project"`, a keystroke refreshes only the edited fil
 debounce. The whole-workspace republish runs on a longer (5 s) debounce after a typing burst and on
 every save, so typing no longer costs O(workspace) per pause.
 
-Both push (`publishDiagnostics`) and pull (`textDocument/diagnostic`) flows are supported. Pull
-computes both phases synchronously. Diagnostic messages are enriched with descriptions from the
+The server pushes diagnostics (`publishDiagnostics`). It does not advertise pull
+(`textDocument/diagnostic`) or workspace diagnostics, for the reason given in
+`server/lsp/mod.rs` at `diagnostic_provider: None`. The pull handlers remain for clients that call
+them without the capability and compute both phases synchronously. Diagnostic messages are enriched with descriptions from the
 bridge's error-code catalog. Virtual symbol-cache files are skipped.
 
 ### Document lifecycle correctness
@@ -113,7 +116,7 @@ Handled in `server/commands.rs`:
 | `al.lintFile` | Re-publish diagnostics for a file |
 | `al.getStatus` | Health snapshot JSON (version, bridge presence, toolchain, indexed counts) |
 | `al.reindex` | Re-run workspace init in the background (aborting any in-flight reindex) |
-| `al.compile` | Build the project (native emitter by default, `alc` when `al.useOfficialCompiler`) |
+| `al.compile` | Build the project (`alc` when the toolchain is found, else the native emitter, `al.useOfficialCompiler` forces either) |
 | `al.applyRecommendedSettings` | Apply recommended Zed workspace settings for AL |
 
 ### CodeLens command IDs
@@ -145,6 +148,18 @@ actions, code lens or inlay hints, and the Zed extension does not forward `al.*`
 Starting `Microsoft.Dynamics.Nav.EditorServices.Host` (the VS Code server) is queued as a
 follow-up, see finding `delegation-03-official-lsp-is-not-the-editor-server.md`.
 
+## Cache root and index threads
+
+Every on-disk cache (`index`, `symbols`, `semantic`, `oauth`, `reports`) lives under one root:
+`AL_LSP_CACHE_DIR` when set, otherwise `<user cache dir>/al-lsp` (`XDG_CACHE_HOME` is honoured on
+Linux). The daemon logs the root at start. Test binaries built by cargo use a private temp directory
+unless `AL_LSP_CACHE_DIR` is set, so `cargo test` does not touch the editor's cache.
+
+Index building runs on its own pool of `max(2, cores / 2)` threads, at most 4, at nice 10. The
+`al.indexThreads` setting overrides the count. A daemon refuses to start for a `--project`
+directory that has no `app.json`. The CLI starts the `al-lsp` that sits beside its own executable
+before it looks on `PATH`.
+
 ## Why this approach
 
 Native parsing + a cached workspace model means most language requests are answered from in-memory
@@ -152,6 +167,24 @@ indexes without a compiler round-trip, and the slow compiler-grade work (the bri
 isolated so it never blocks typing. The transport-boundary rule means the very same query code serves
 the editor, the CLI (`al-explorer hover/definition/references/...`), and MCP clients, so all three
 give the same answers.
+
+## Which al-lsp the extension runs
+
+The Zed extension resolves `al-lsp` in this order:
+
+1. `dev/al-lsp` in the extension's work directory (`~/.local/share/zed/extensions/work/al`
+   on Linux). `make install` copies `al-lsp`, `al-explorer` and the bridge there and writes
+   `dev/BUILD`, the `al-lsp --version` line of the copy, after checking that the copy reports it.
+2. The GitHub release tagged `v<extension version>`, for an extension installed from Zed's
+   extension list. It is never "latest". Directories of other versions are deleted. A missing
+   release or a failed download gives one error naming the version and both routes.
+
+`al-lsp` on `PATH` is not consulted. The extension passes `--extension-build
+<version>+git.<commit>[.dirty]` on every launch. `al-lsp` (`crates/al-lsp/src/extension_build.rs`)
+compares version and commit with its own build. On a mismatch it logs one line at start and sends
+one `window/showMessage` warning after `initialize` that names its build, its path and the
+extension build, and says to run `make install`. Same build, or no flag, is silent. Unknown flags
+are ignored by `al-lsp`, so an older binary still starts.
 
 ## How to use
 
@@ -168,7 +201,7 @@ From MCP, `al_call` exposes the daemon equivalents (`hover`, `definition`, `refe
 
 ## Compatibility boundaries
 
-- `workspace/diagnostic` reports native syntax/project/call-graph diagnostics for every indexed
+- `workspace/diagnostic` is not advertised (see above) and answers only a client that calls it anyway. It reports native syntax/project/call-graph diagnostics for every indexed
   workspace file and Microsoft bridge enrichment for open documents. This is a deliberate latency
   boundary: exact whole-project Microsoft semantics use the explicit official compile backend
   instead of issuing one serialized CLR compilation for every unopened file.

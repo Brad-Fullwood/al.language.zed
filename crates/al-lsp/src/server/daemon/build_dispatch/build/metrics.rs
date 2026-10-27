@@ -55,6 +55,14 @@ pub(in crate::server::daemon) fn dispatch_metrics(
         };
     }
 
+    if params.get("uri").is_none() && params.get("file").is_none() {
+        return rpc_error(
+            id,
+            error_codes::INVALID_PARAMS,
+            "metrics needs a 'uri' or 'file' parameter (one file), or 'all': true for the whole workspace",
+        );
+    }
+
     let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
         Ok(document) => document,
         Err(response) => return response,
