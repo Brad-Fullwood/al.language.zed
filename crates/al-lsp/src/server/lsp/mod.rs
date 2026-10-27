@@ -1151,6 +1151,12 @@ impl LanguageServer for AlLsp {
             .log_message(MessageType::INFO, "AL Language Server initialized")
             .await;
 
+        if let Some(warning) = crate::extension_build::startup_warning() {
+            self.client
+                .show_message(MessageType::WARNING, warning)
+                .await;
+        }
+
         let root_uri = self.root_uri.read().await.clone();
         tracing::info!(root_uri = ?root_uri, "initialized: spawning workspace init in background");
 

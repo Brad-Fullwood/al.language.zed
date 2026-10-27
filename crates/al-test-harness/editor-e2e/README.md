@@ -29,7 +29,10 @@ stray `pkill` can take down the developer's real editor windows.
   current checkout before every Zed run, so stale dev-extension artifacts
   cannot produce a false pass.
 - `target/debug/al-lsp` (built automatically by `drive.sh` if missing). The
-  host-built Linux binary runs as-is inside the Ubuntu container.
+  host-built Linux binary runs as-is inside the Ubuntu container. `container/run-zed.sh`
+  copies it, with `al-explorer`, the bridge and a `BUILD` stamp, into the container Zed's
+  extension work dir (`dev/`), the place `make install` writes on a host. The extension does not
+  look at `PATH`. The Zed assertion checks that the running server is that copy.
 
 ## Usage
 
@@ -51,7 +54,8 @@ runs reuse it.
 
 `drive.sh` **asserts**, not just screenshots:
 - Zed mode → fails unless the AL language server (`al-lsp`) actually spawned
-  inside Zed (proves the extension activated and the file was recognized as AL).
+  inside Zed from the work dir `dev/` copy (proves the extension activated, resolved the
+  managed binary and the file was recognized as AL).
 - VS Code mode → fails unless VS Code rendered with the AL extension present.
 - compare mode → fails unless the stitched image was produced.
 

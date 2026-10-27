@@ -165,6 +165,24 @@ isolated so it never blocks typing. The transport-boundary rule means the very s
 the editor, the CLI (`al-explorer hover/definition/references/...`), and MCP clients, so all three
 give the same answers.
 
+## Which al-lsp the extension runs
+
+The Zed extension resolves `al-lsp` in this order:
+
+1. `dev/al-lsp` in the extension's work directory (`~/.local/share/zed/extensions/work/al`
+   on Linux). `make install` copies `al-lsp`, `al-explorer` and the bridge there and writes
+   `dev/BUILD`, the `al-lsp --version` line of the copy, after checking that the copy reports it.
+2. The GitHub release tagged `v<extension version>`, for an extension installed from Zed's
+   extension list. It is never "latest". Directories of other versions are deleted. A missing
+   release or a failed download gives one error naming the version and both routes.
+
+`al-lsp` on `PATH` is not consulted. The extension passes `--extension-build
+<version>+git.<commit>[.dirty]` on every launch. `al-lsp` (`crates/al-lsp/src/extension_build.rs`)
+compares version and commit with its own build. On a mismatch it logs one line at start and sends
+one `window/showMessage` warning after `initialize` that names its build, its path and the
+extension build, and says to run `make install`. Same build, or no flag, is silent. Unknown flags
+are ignored by `al-lsp`, so an older binary still starts.
+
 ## How to use
 
 In Zed, these features work automatically once `al-lsp` is resolved. The terminal exposes the listed

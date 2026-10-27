@@ -309,6 +309,19 @@ async fn run() {
 
     let args: Vec<String> = env::args().collect();
 
+    // The extension passes its build with `--extension-build`. A mismatch is
+    // logged here and shown once to the editor from `initialized`. Other
+    // flags are found with `args.iter().any`, so this one never fails an
+    // older binary or another client.
+    {
+        let identity = al_protocol::identity::current_identity();
+        let exe = env::current_exe().unwrap_or_default();
+        if let Some(message) = al_lsp::extension_build::mismatch_message(&args, &identity, &exe) {
+            tracing::warn!("{message}");
+            al_lsp::extension_build::set_startup_warning(message);
+        }
+    }
+
     #[cfg(unix)]
     let is_daemon_mode = args.iter().any(|a| a == "daemon");
     #[cfg(unix)]
