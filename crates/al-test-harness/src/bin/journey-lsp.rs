@@ -2,7 +2,7 @@
 //! stage checks through the editor, and prints one line per feature:
 //! `PASS|FAIL|SKIP <feature> <detail>`. Raw responses go to `--out` as JSON.
 //!
-//! Usage: `journey-lsp --project DIR --out DIR`
+//! Usage: `journey-lsp --project DIR --out DIR [--prime-only]`
 //! The al-lsp binary is read from `AL_LSP_BIN` (see `al_lsp_binary`).
 //! The project must contain `src/JourneyEditor.Codeunit.al`.
 
@@ -192,6 +192,16 @@ async fn run(project: PathBuf, out: PathBuf) {
             );
             return;
         }
+    }
+    if std::env::args().any(|a| a == "--prime-only") {
+        // The dependency source index is ready before the first open is acknowledged. Stop here so
+        // the summaries it wrote under the user data dir can be mounted into the editor container.
+        r.line(
+            "PASS",
+            "lsp.prime",
+            format!("first open acknowledged after {} ms", ms(t)),
+        );
+        return;
     }
     let uri = c.file_uri(FILE);
     let opened = c.drain_diagnostics();

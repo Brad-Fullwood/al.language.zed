@@ -6,6 +6,31 @@
 S34_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 S34_EDITOR_FILE="src/JourneyEditor.Codeunit.al"
 
+# s34_prime_source_index: build the dependency source index for $PROJ on the host, once, into a store the
+# container mounts. al-lsp keys a summary entry on the package bytes, the summary schema and the grammar and
+# builder fingerprints (crates/al-workspace/src/source_cache.rs, PackageKey), never on a path or HOME, so a
+# plain mount of the store at the container's data dir is enough. Without it the container builds the Base
+# Application index from nothing, which took 345 s there. The stamp names the al-lsp build and the packages
+# the store was primed for, so a new binary or new symbols prime it again.
+JOURNEY_DATA_HOME="${JOURNEY_DATA_HOME:-/home/bradf/.cache/al-zed-fix/journey-xdg-data}"
+s34_prime_source_index() {
+  local store="$JOURNEY_DATA_HOME/al-lsp/source-index" stamp want
+  want="$(stat -c '%s-%Y' "$ALLSP" 2>/dev/null) $(cd "$PROJ/.alpackages" 2>/dev/null && stat -c '%n-%s' -- *.app 2>/dev/null | tr '\n' ' ')"
+  if [[ "$(cat "$JOURNEY_DATA_HOME/primed.stamp" 2>/dev/null)" == "$want" ]] && compgen -G "$store/*.summary" > /dev/null; then
+    echo "source index store primed already: $store" > "$OUT/04/prime-source-index.txt"; return 0
+  fi
+  mkdir -p "$OUT/04/prime"; rm -rf "$OUT/04/prime/proj" "$JOURNEY_DATA_HOME"
+  mkdir -p "$JOURNEY_DATA_HOME"
+  cp -a "$PROJ" "$OUT/04/prime/proj"
+  cp "$S34_DIR/JourneyEditor.Codeunit.al" "$OUT/04/prime/proj/src/JourneyEditor.Codeunit.al"
+  (cd "$ROOT" && CARGO_TARGET_DIR="$TARGET_DIR" cargo build -q -p al-test-harness --bin journey-lsp) || return 1
+  XDG_DATA_HOME="$JOURNEY_DATA_HOME" XDG_CACHE_HOME="${XDG_CACHE_HOME:-/home/bradf/.cache/al-zed-fix/xdg-f2}" AL_TEST_DIAG_TIMEOUT_MS=120000 AL_LSP_BIN="$ALLSP" RUST_LOG=warn \
+    run_step 04 prime-source-index 600 "$TARGET_DIR/debug/journey-lsp" --project "$OUT/04/prime/proj" --out "$OUT/04/prime" --prime-only
+  local rc=$?
+  [[ $rc == 0 ]] && compgen -G "$store/*.summary" > /dev/null && printf '%s' "$want" > "$JOURNEY_DATA_HOME/primed.stamp"
+  return $rc
+}
+
 # s34_boot: one Zed boot for stages 3 and 4. Results land in $OUT/04/zedrun.
 # Returns 0 when drive.sh passed, 1 when it failed, 2 when there is no project.
 s34_boot() {
@@ -28,6 +53,14 @@ s34_boot() {
 JSON
   # drive.sh finds al-lsp at $ROOT/target/debug/al-lsp.
   [[ -e "$ROOT/target" ]] || ln -s "$TARGET_DIR" "$ROOT/target"
+  # Mount the primed source index store read-only and link it where al-lsp reads it, and pre-create
+  # the settings prompt sentinel so the notification does not cover the shots (journey-22).
+  local -a mount_args=(--no-settings-prompt)
+  if s34_prime_source_index; then
+    mount_args+=(--source-index "$JOURNEY_DATA_HOME/al-lsp/source-index")
+  else
+    record 04 zed.source-index-prime NIGGLE "could not prime the dependency source index on the host, the container builds it from nothing (see $(step_log 04 prime-source-index))"
+  fi
   # cage (the headless compositor) sometimes segfaults on a loaded machine: retry the boot.
   local attempt rc=1
   for attempt in 1 2 3; do
@@ -36,6 +69,7 @@ JSON
       bash "$ROOT/crates/al-test-harness/editor-e2e/drive.sh" \
         --proj-dir "$PROJ" --file "$S34_EDITOR_FILE" \
         --zed-settings "$OUT/04/zed-settings.json" \
+        "${mount_args[@]}" \
         --keys-file "$S34_DIR/zed-keys-editor.sh" \
         --out "$run/zed-final.png"
     rc=$?

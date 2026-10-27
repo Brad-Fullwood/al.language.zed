@@ -11,6 +11,9 @@
 #   KEYS         extra shell run after trust (e.g. 'wtype -M ctrl -k p -m ctrl')
 #   ZED_SETTINGS_JSON  a Zed settings.json to use (theme, LSP settings)
 #   EXT_PROJ     absolute project dir mounted from outside the repo (overrides PROJ_SUBDIR)
+#   AL_SOURCE_INDEX  container path of a mounted source-index store, copied into al-lsp's data dir
+#   AL_SETTINGS_SENTINEL  1 pre-creates al-lsp's .settings-prompt-shown file so the "Apply recommended AL
+#                development settings?" notification does not cover the shots
 #   ZED_SHELL    login shell Zed starts servers through, `fish` or `bash`
 set -uo pipefail
 REPO=${REPO:-/repo}
@@ -47,6 +50,22 @@ if [ -n "${ZED_SETTINGS_JSON:-}" ] && [ -f "$ZED_SETTINGS_JSON" ]; then
   mkdir -p "$HOME/.config/zed"
   cp "$ZED_SETTINGS_JSON" "$HOME/.config/zed/settings.json"
   echo "  settings.json: provided"
+fi
+
+if [ -n "${AL_SOURCE_INDEX:-}" ]; then
+  # al-lsp refuses a store that is a symbolic link or owned by another user (source_cache.rs
+  # private_to_this_user), and mounting onto ~/.local/share/al-lsp/source-index makes podman create
+  # ~/.local/share root-owned. So the read-only mount at $AL_SOURCE_INDEX is copied into a private dir.
+  store="${XDG_DATA_HOME:-$HOME/.local/share}/al-lsp/source-index"
+  mkdir -p -m 700 "$store"
+  cp -f "$AL_SOURCE_INDEX"/*.summary "$store"/ && chmod 600 "$store"/*.summary
+  echo "  source index store: $(ls "$store" | wc -l) entries copied"
+fi
+if [ "${AL_SETTINGS_SENTINEL:-}" = 1 ]; then
+  # Same path al-lsp checks: <user data dir>/al-lsp/.settings-prompt-shown
+  mkdir -p "${XDG_DATA_HOME:-$HOME/.local/share}/al-lsp"
+  : > "${XDG_DATA_HOME:-$HOME/.local/share}/al-lsp/.settings-prompt-shown"
+  echo "  settings prompt sentinel: created"
 fi
 
 echo "=== al-lsp on PATH (host-built binary, runs in this container) ==="
