@@ -80,3 +80,19 @@ fn an_undeclared_name_fails_the_build_with_al0118() {
         "The name 'Undeclared' does not exist in the current context.",
     );
 }
+
+#[test]
+fn a_call_to_an_undeclared_procedure_fails_the_build_with_al0118() {
+    refused(
+        "call",
+        "        NoSuchProc();",
+        "AL0118",
+        "The name 'NoSuchProc' does not exist in the current context.",
+    );
+    refused(
+        "callexpr",
+        "        Item.Quantity := NoSuchFunc(1) + 1;",
+        "AL0118",
+        "The name 'NoSuchFunc' does not exist in the current context.",
+    );
+}
