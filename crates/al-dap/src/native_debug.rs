@@ -59,9 +59,10 @@ impl NativeDebugSession {
     /// `config` — BC server connection config (built from launch.json / debug.json).
     /// `access_token` — OAuth Bearer token for the BC tenant.
     pub async fn start(config: BcDebugConfig, access_token: &str) -> Result<Self> {
-        let session = BcDebugSession::connect(&config, access_token, true).await?;
-
-        session.attach(&config).await?;
+        // A launch-style start: no hub `Attach` call. Microsoft's launch passes
+        // attachOptions = null (DebugAdapterLaunchRequestHandlerBase.cs:~89),
+        // and the Web client URL's debuggingcontext and sk bind the session.
+        let session = BcDebugSession::connect(&config, access_token, false).await?;
 
         info!(connection_id = %session.connection_id, "Native debug session started");
 

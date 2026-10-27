@@ -88,7 +88,9 @@ either feature until it can provide the full behavior itself.
    error rather than silently debugging a stale build.
    The `tenant` must be the tenant GUID and listed in the tenant registry, see
    [project trust](project-trust.md#tenant-registry-and---tenant). `tenantPurpose` names the issue for a customer tenant.
-4. **Connect** SignalR to `/dev/DebuggerHub`, **Attach** (`breakOnError`, `breakOnRecordWrite`).
+4. **Connect** SignalR to `/dev/DebuggerHub`. Launch makes no `Attach` call: Microsoft's launch handler passes
+   `attachOptions = null` (`DebugAdapterLaunchRequestHandlerBase.cs:89`) and the `debuggingcontext` and `sk`
+   values of the browser URL bind the session (`HubBasedDebuggerService.cs:245-248`).
 5. Optionally **open the browser** at the debug-context URL when `launchBrowser` is set.
 6. When the hub reports `OnAttachedToConnection`, send the DAP `initialized` event
    (`DebuggerService.cs:119-122`). The client then sends its breakpoints and `configurationDone`.
@@ -213,7 +215,7 @@ one continuous debugging session rather than isolated commands.
 
 | `cmd` | Relevant parameters | Result/effect |
 | --- | --- | --- |
-| `start` | `config?`, `accessToken?`, or inline BC connection fields | Attach using the named project debug configuration (or the first AL configuration) and retain the session. Callers can instead supply `tenant`/`environmentName` for BC online or `server`/`serverInstance` for on-prem, plus authentication and attach selectors. |
+| `start` | `config?`, `accessToken?`, or inline BC connection fields | Connect using the named project debug configuration (or the first AL configuration) and retain the session. Callers can instead supply `tenant`/`environmentName` for BC online or `server`/`serverInstance` for on-prem, plus authentication and attach selectors. |
 | `breakpoint` | `file`, `line`, `condition?`, `objectType?`, `objectId?` | Replace the breakpoints for that file and return BC verification details. Object metadata is normally resolved from the workspace index. |
 | `state` | | Return running/paused status, current location, variables, session ID, and thread ID. Calling it also drains pending BC break events. |
 | `stack` | | Return the complete BC call-stack payload for the current stop, enriched with a zero-based `frameId` for follow-up inspection. |
@@ -234,7 +236,7 @@ to scrape terminal output.
 For BC online and AAD targets, `accessToken` is optional. When it is absent, `al_debug start` uses the
 same keyring-backed OAuth cache and refresh flow as `al-explorer authenticate login`. Clients do not
 need to retrieve, print, or relay a bearer token. An explicit token remains available for headless
-automation. The adapter sends
+automation. `start` is launch-style and makes no `Attach` call. The adapter sends
 `DebugAdapterConfigurationDone` once after BC reports `OnAttachedToConnection`. A rejection is
 fatal for the session: `al_debug` reports it as an error on every later command.
 

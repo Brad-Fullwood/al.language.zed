@@ -308,12 +308,24 @@ where
         self.emit_output(out, "console", "Connecting to debug hub...\r\n")
             .await?;
 
-        match BcDebugSession::connect(&config, &token, true).await {
+        match BcDebugSession::connect(&config, &token, command == "attach").await {
             Ok(debug_session) => {
-                if let Err(e) = debug_session.attach(&config).await {
-                    self.reply_failure(out, request_seq, command, format!("Attach failed: {e}"))
+                // Launch makes no Attach call: Microsoft's launch handler
+                // passes attachOptions = null (DebugAdapterLaunchRequestHandlerBase.cs:~89)
+                // and the browser URL's debuggingcontext and sk bind the
+                // session (HubBasedDebuggerService.cs:245-248). Only an attach
+                // request calls Attach (DebugAdapterAttachRequestHandler.cs).
+                if command == "attach" {
+                    if let Err(e) = debug_session.attach(&config).await {
+                        self.reply_failure(
+                            out,
+                            request_seq,
+                            command,
+                            format!("Attach failed: {e}"),
+                        )
                         .await?;
-                    return Ok(());
+                        return Ok(());
+                    }
                 }
 
                 // Capture connection ID before moving session into Arc+mutex
