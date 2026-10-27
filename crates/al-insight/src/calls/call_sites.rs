@@ -61,9 +61,70 @@ pub(super) fn collect_call_sites_from_block(
                 if let Some(site) = parse_postfix_expression(child, source) {
                     sites.push(site);
                 }
+            }
+            // Keep walking into a call: its arguments hold calls too, as in
+            // `Error(ParseErrorMsg(Response))`.
+            stack.push(child);
+        }
+    }
+}
+
+/// The calls made in the heads of an object's sections, such as the
+/// `Calc(GetCost())` of a page `field(Cost; Calc(GetCost()))` or the
+/// expression of a report `column(Name; Expr)`.
+///
+/// The grammar keeps a section head as a flat run of tokens in nested
+/// `parenthesized_block` nodes without expression nodes, so a call is an
+/// identifier directly followed by a block. A `Recv.Name(` run is a member
+/// call on `Recv`. This is the same call position rule `impact` applies to
+/// the same text, and `al_syntax::collect_call_site_names` applies it to
+/// these blocks.
+pub fn head_call_sites(object_node: tree_sitter::Node<'_>, source: &str) -> Vec<CallSite> {
+    let bytes = source.as_bytes();
+    let mut sites = Vec::new();
+    let mut stack = vec![object_node];
+    while let Some(current) = stack.pop() {
+        let mut cursor = current.walk();
+        for child in current.children(&mut cursor) {
+            if current.kind() == "object_section" && child.kind() == "parenthesized_block" {
+                collect_block_calls(child, bytes, &mut sites);
             } else {
                 stack.push(child);
             }
+        }
+    }
+    sites
+}
+
+fn collect_block_calls(block: tree_sitter::Node<'_>, source: &[u8], sites: &mut Vec<CallSite>) {
+    let mut cursor = block.walk();
+    let children: Vec<tree_sitter::Node> = block.children(&mut cursor).collect();
+    for (i, child) in children.iter().enumerate() {
+        match child.kind() {
+            "parenthesized_block" => collect_block_calls(*child, source, sites),
+            "identifier" | "quoted_identifier"
+                if children
+                    .get(i + 1)
+                    .is_some_and(|next| next.kind() == "parenthesized_block") =>
+            {
+                let Ok(text) = child.utf8_text(source) else {
+                    continue;
+                };
+                let name = text.unquote_identifier().into_owned();
+                let receiver = (i >= 2
+                    && children[i - 1].utf8_text(source) == Ok(".")
+                    && matches!(children[i - 2].kind(), "identifier" | "quoted_identifier"))
+                .then(|| children[i - 2].utf8_text(source).ok())
+                .flatten();
+                sites.push(match receiver {
+                    Some(object) => CallSite::MemberCall {
+                        object: object.unquote_identifier().into_owned(),
+                        method: name,
+                    },
+                    None => CallSite::BareCall { name },
+                });
+            }
+            _ => {}
         }
     }
 }

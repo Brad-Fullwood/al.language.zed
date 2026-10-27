@@ -39,6 +39,10 @@ pub struct ObjectSummary {
     /// Lowercase procedure name to the calls of every declaration of that
     /// name, in document order: each field's `OnValidate`, each overload.
     pub calls: BTreeMap<String, Vec<ProcedureCalls>>,
+    /// The calls in the section heads of the object (page `field(...; Expr)`,
+    /// report `column(...; Expr)`). The object is their caller.
+    #[serde(default)]
+    pub head_calls: ProcedureCalls,
     /// The effects of every procedure and trigger of this object, in the
     /// order [`node_effect_sites`] finds them. Transaction lint credits them
     /// to this object.
@@ -82,6 +86,7 @@ impl SourceFileSummary {
                     call_suffixes,
                     procedures,
                     calls,
+                    head_calls: ProcedureCalls::from_object_heads(node, source),
                     effects: node_effect_sites(node, tree, source),
                 }
             })
@@ -160,6 +165,7 @@ impl SourceFileSummary {
                                     .sum::<usize>()
                         })
                         .sum::<usize>()
+                    + object.head_calls.call_sites.iter().map(site).sum::<usize>()
                     + object.effects.iter().map(procedure_effects).sum::<usize>()
             })
             .sum();
@@ -320,6 +326,14 @@ fn resolve_summary_objects<'a>(
             call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
             resolved += 1;
         }
+        resolve_object_head_calls(
+            &object.head_calls,
+            object_kind,
+            &object.name,
+            symbols,
+            insight,
+            call_graph,
+        );
     }
     Ok(resolved)
 }
