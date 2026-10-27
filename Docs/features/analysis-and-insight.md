@@ -41,7 +41,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 | Analysis | File | Question it answers |
 | --- | --- | --- |
 | **Impact** | `queries/impact.rs` | "If I change this object/member, what breaks?": extensions, pages/reports sourced from a table, record variables/parameters, callers, TableRelation filters, event subscribers. `--table` groups all consumers of a table. |
-| **Table impact** | `insight/analysis.rs` | Record variables, parameters, relations, extensions touching a table, grouped by object. |
+| **Table impact** | `insight/analysis.rs` | Record variables, parameters, relations, FlowField `CalcFormula` sources (with their filter fields), source tables, extensions touching a table, grouped by object. |
 | **Event tracing** | `insight/search.rs` | `trace` lists all subscribers of an event and follows only the events a subscriber's body actually raises (each publisher of a same-named event is traced independently). `trace --tree` follows the full multi-hop publisher→subscriber→call chain. A node already expanded elsewhere in the traversal is marked `cycle` with its children omitted. That covers both real back-edges and diamond fan-ins, which the flag does not distinguish. |
 | **Subscriber/source resolution** | `symbols/events.rs`, `insight/discovery.rs` | Find subscribers of an event. Resolve the publisher behind an `[EventSubscriber]`. Full interception map incl. orphan subscribers. |
 | **Suggest event** | `queries/suggest_event.rs` | "What integration events can I subscribe to along this path?" with ready-to-paste `[EventSubscriber(...)]` examples. Flags `partial` when source is unindexed. |
@@ -56,7 +56,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 | **Package diff** | `queries/package_diff.rs` | `package-diff <old.app> <new.app>`: the changes between two versions of a dependency, kept to the ones the workspace's code uses (`--all` for every change), each with its consumers in `impact`'s row shape. |
 | **Free IDs** | `queries/free_ids.rs` | `free-ids`: the next free object ID, table field number or enum ordinal inside `app.json` `idRanges`, counting every workspace object and the package objects inside the same range. |
 | **Native check** | `queries/native_check.rs` | `native-check`: duplicate object IDs, IDs outside `idRanges` and duplicate object names, as `AL-NC*` diagnostics. |
-| **Data-classification audit** | `queries/audit.rs` | GDPR posture: every table field's `DataClassification` and a risk level. |
+| **Data-classification audit** | `queries/audit.rs` | GDPR posture: every table field's `DataClassification` (a field with none inherits the table's) and a risk level. CustomerContent is reported as itself, not as personal data. |
 | **Permission audit** | `queries/audit.rs` | Permission-set coverage plus unused object grants (`overBroad`) and granted I/M/D rights without a corresponding observed write (`overGrantedRights`). |
 | **Dependency graph** | `queries/deps.rs` | GUID-keyed transitive tree from the typed current `app.json` and loaded `.app` manifests. Implicit dependencies, missing packages, duplicate versions, unsatisfied minimum versions, deterministic JSON/DOT export. |
 | **Duplicates** | (daemon `duplicates`) | Repeated AL code blocks (configurable min tokens/similarity, clamped to safe bounds). |
@@ -79,7 +79,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
   loop's `end;` pops the loop and a single-statement loop body (`for … do stmt;`) is popped after
   its one statement. Both the parenthesised (`Item.FindFirst()`) and bare (`Item.FindFirst;`) call
   forms are matched. The "unfiltered" state is tracked **per record variable**, so
-  `Customer.SetRange(…)` does not suppress the warning for an unrelated `Vendor.FindSet()`.
+  `Customer.SetRange(…)` does not suppress the warning for an unrelated `Vendor.FindSet()`. A `var` Record parameter counts as filtered by the caller until it is reset, and a `CalcFields` on a record variable that already called `SetAutoCalcFields` gets no hint.
 - **Whole-workspace queries** (dead code, SQL scan, impact, duplicates, complexity, both audits) take
   a coherent snapshot of the indexed sources. A file with a syntax error or no object declaration is
   skipped individually with a warning. Only *incoherence* (an indexed path missing from the parse

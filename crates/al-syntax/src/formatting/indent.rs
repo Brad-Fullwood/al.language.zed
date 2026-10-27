@@ -2,7 +2,7 @@
 //!
 //! See the module docs of [`crate::formatting`] for the rules it applies.
 
-use super::casing::{apply_keyword_casing, apply_keyword_casing_with_state};
+use super::casing::apply_keyword_casing;
 use super::options::{BlankLinesBetweenProcedures, FormatOptions};
 use super::passes::{
     apply_brace_style, normalize_blank_lines_between_procedures, sort_object_properties,
@@ -32,11 +32,6 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // pass compute the indentation for the final line order.
     let reordered = sort_object_properties(apply_brace_style(text, options), options);
     let text: &str = &reordered;
-    let indent_str = if options.insert_spaces {
-        " ".repeat(options.tab_size)
-    } else {
-        "\t".to_string()
-    };
 
     let mut result = String::with_capacity(text.len());
     let mut indent_level: i32 = 0;
@@ -52,7 +47,10 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     );
 
     // Track how many single-statement indents are pending (if...then, for...do, while...do)
-    let mut single_stmt_depth: i32 = 0;
+    let mut slots: Vec<Slot> = Vec::new();
+    // The last statement line had no `;`: an `else` may still follow. The
+    // pending slots are released at the next code line that is not an `else`.
+    let mut deferred_stmt = false;
 
     // Whether we are inside a `var` section (between `var` and `begin`)
     let mut in_var_section = false;
@@ -84,7 +82,20 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // statement goes on with `else`.
     let mut pending_else: i32 = 0;
 
-    for line in text.lines() {
+    // Continuation lines (inside open parens, starting with `.`, after a
+    // trailing operator or inside a wrapped `if ... then` header) keep their
+    // offset from the statement's first line, as in Microsoft's formatter:
+    // the line moves by as much as the statement's first line moved. This
+    // is the `(old, new)` column of that first line.
+    let mut anchor: (usize, usize) = (0, 0);
+    // The previous code line leaves its statement open.
+    let mut prev_continues = false;
+    // A header line (`if`, `while`, `for`, `with`, `foreach`) without its
+    // `then`/`do` yet.
+    let mut wrapped_opener_open = false;
+
+    let all_lines: Vec<&str> = text.lines().collect();
+    for (line_index, line) in all_lines.iter().copied().enumerate() {
         let trimmed = line.trim();
         let started_in_block_comment = in_block_comment;
 
@@ -113,14 +124,24 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             prev_was_empty = true;
 
             // Blank lines drain single-statement stack (MS behavior)
-            if single_stmt_depth > 0 {
-                indent_level = (indent_level - single_stmt_depth).max(0);
-                single_stmt_depth = 0;
+            if !slots.is_empty() {
+                indent_level = (indent_level - slots.len() as i32).max(0);
+                slots.clear();
             }
+            deferred_stmt = false;
             result.push('\n');
             continue;
         }
         prev_was_empty = false;
+
+        // Preprocessor lines other than `#region`/`#endregion` sit at column 0
+        // in Microsoft's formatter and take no part in the statement layout:
+        // an `if C then` followed by `#pragma ...` still has its body below.
+        if !started_in_block_comment && is_column_zero_directive(trimmed) {
+            result.push_str(trimmed);
+            result.push('\n');
+            continue;
+        }
 
         // Block-transition heuristics must look at the code only: a line like
         // `x: Integer; // then begin` must not be treated as ending in
@@ -137,8 +158,24 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         };
         let code_lower = code.to_lowercase();
         let starts_else = code_lower == "else" || code_lower.starts_with("else ");
+        let continuation = !started_in_block_comment
+            && !code.is_empty()
+            && (paren_depth > 0 || code.starts_with('.') || prev_continues || wrapped_opener_open);
+        // A header's `then`/`do` on a later line closes the wrapped header
+        // and acts as the opener of the statement that follows.
+        let wrapped_close = continuation
+            && wrapped_opener_open
+            && ends_with_then_or_do(&code_lower)
+            && paren_depth == 0;
         // A block closed with `end` and no `;` that is not followed by
         // `else` ended its statement after all.
+        if deferred_stmt && !code.is_empty() && !continuation {
+            if !starts_else {
+                indent_level = (indent_level - slots.len() as i32).max(0);
+                slots.clear();
+            }
+            deferred_stmt = false;
+        }
         if pending_else > 0 && !starts_else {
             indent_level = (indent_level - pending_else).max(0);
             pending_else = 0;
@@ -183,12 +220,13 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // drains the single-stmt stack since begin starts a block. An opener
         // that ends in `begin` itself (`if B then begin`) is the statement an
         // outer pending opener is waiting for; its slot is suspended below.
-        if single_stmt_depth > 0
+        if !slots.is_empty()
             && (code_lower == "begin" || code_lower.ends_with(" begin"))
             && !opener_with_begin(&code_lower)
+            && !wrapped_close
         {
-            indent_level = (indent_level - single_stmt_depth).max(0);
-            single_stmt_depth = 0;
+            indent_level = (indent_level - slots.len() as i32).max(0);
+            slots.clear();
         }
 
         // Case label: close previous label body before this new label.
@@ -202,23 +240,13 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // like `'a;b':` is still a label because its semicolon is quoted.
         let case_frames_at_start = case_stack.len();
         let label_code = code.as_str();
-        let is_case_label = !case_stack.is_empty()
-            && label_code.ends_with(':')
-            && !label_code.ends_with("::")
-            // The colon must directly follow the last non-space character —
-            // no `;` or `=` etc. before it (outside string literals).
-            // A comma is allowed: `Level::Silver, Level::None:` lists
-            // several values for one branch.
-            && !contains_char_outside_strings(
-                label_code.trim_end_matches(':'),
-                &[';', '=', '(', ')'],
-            );
+        let is_case_label = !case_stack.is_empty() && is_case_label_code(label_code);
         if is_case_label {
             if let Some(frame) = case_stack.last_mut().filter(|frame| frame.in_body) {
                 // Drain any single-stmt from within the previous label body
-                if single_stmt_depth > 0 {
-                    indent_level = (indent_level - single_stmt_depth).max(0);
-                    single_stmt_depth = 0;
+                if !slots.is_empty() {
+                    indent_level = (indent_level - slots.len() as i32).max(0);
+                    slots.clear();
                 }
                 indent_level = (indent_level - 1).max(0);
                 frame.in_body = false;
@@ -237,9 +265,9 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             // A slot still pending here belongs to an opener that takes no
             // `else` (`for`, `while`) or to text mid-edit. The case's `else`
             // ends that statement.
-            let pending = single_stmt_depth + pending_else;
+            let pending = slots.len() as i32 + pending_else;
             indent_level = (indent_level - pending).max(0);
-            single_stmt_depth = 0;
+            slots.clear();
             pending_else = 0;
             if let Some(frame) = case_stack.last_mut().filter(|frame| frame.in_body) {
                 indent_level = (indent_level - 1).max(0);
@@ -256,9 +284,9 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // The block after a case's bare `else` closed on this line.
         let mut resume_else_body = false;
         if is_close {
-            if single_stmt_depth > 0 {
-                indent_level = (indent_level - single_stmt_depth).max(0);
-                single_stmt_depth = 0;
+            if !slots.is_empty() {
+                indent_level = (indent_level - slots.len() as i32).max(0);
+                slots.clear();
             }
             // Close var section if still open (e.g., object-level `var` closed by `}`)
             if in_var_section {
@@ -292,39 +320,116 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // `else` after single-statement if-then: drain remaining single-stmt depth
         if !is_close
             && (code_lower == "else" || code_lower.starts_with("else "))
-            && single_stmt_depth > 0
+            && !slots.is_empty()
         {
-            indent_level = (indent_level - single_stmt_depth).max(0);
-            single_stmt_depth = 0;
+            // The `else` pairs with the innermost `if` that has no `else` yet.
+            // Slots above it are finished statements. An `if` further out
+            // keeps its slot, so a nested `if A then if B then X else Y else Z`
+            // lines the second `else` up with `if A`.
+            let keep = slots
+                .iter()
+                .rposition(|slot| slot.is_if && !slot.in_else)
+                .unwrap_or(0);
+            indent_level = (indent_level - (slots.len() - keep) as i32).max(0);
+            slots.truncate(keep);
         }
 
         let is_until = code_lower.starts_with("until ") || code_lower == "until";
         if is_until {
-            if single_stmt_depth > 0 {
-                indent_level = (indent_level - single_stmt_depth).max(0);
-                single_stmt_depth = 0;
+            if !slots.is_empty() {
+                indent_level = (indent_level - slots.len() as i32).max(0);
+                slots.clear();
             }
             indent_level = (indent_level - 1).max(0);
         }
 
+        let next_is_chain = code.is_empty()
+            && !started_in_block_comment
+            && next_code_line(&all_lines, line_index)
+                .is_some_and(|next| next.trim_start().starts_with('.'));
+        // Microsoft's formatter indents a comment like the code line below it
+        // when that line is a case label or an `else`, which sit left of the
+        // statement the comment follows.
+        let comment_level: Option<i32> = if code.is_empty() && !started_in_block_comment {
+            next_code_line(&all_lines, line_index).and_then(|next| {
+                let (next_code, _) = strip_comments(next.trim(), false);
+                let next_lower = next_code.to_lowercase();
+                let in_branch_body = case_stack.last().is_some_and(|frame| frame.in_body);
+                let next_is_else = next_lower == "else" || next_lower.starts_with("else ");
+                let case_else = next_is_else
+                    && case_stack
+                        .last()
+                        .is_some_and(|frame| frame.begin_depth == 0 && frame.open_ifs == 0);
+                let case_end = (next_lower == "end" || next_lower == "end;")
+                    && case_stack
+                        .last()
+                        .is_some_and(|frame| frame.in_body && frame.begin_depth == 0);
+                if case_end {
+                    Some(indent_level - slots.len() as i32 - 2)
+                } else if in_branch_body
+                    && (case_else || (!case_stack.is_empty() && is_case_label_code(&next_code)))
+                {
+                    Some(indent_level - slots.len() as i32 - 1)
+                } else if next_is_else && !slots.is_empty() && pending_else == 0 {
+                    let keep = slots
+                        .iter()
+                        .rposition(|slot| slot.is_if && !slot.in_else)
+                        .unwrap_or(0);
+                    Some(indent_level - (slots.len() - keep) as i32)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
+        let old_cols = leading_columns(line, options.tab_size);
+        let level_cols = indent_level.max(0) as usize * options.tab_size;
+        let print_cols = if let Some(level) = comment_level {
+            level.max(0) as usize * options.tab_size
+        } else if continuation {
+            (anchor.1 as i64 + old_cols as i64 - anchor.0 as i64).max(0) as usize
+        } else if code.is_empty()
+            && !started_in_block_comment
+            && (paren_depth > 0 || prev_continues || wrapped_opener_open || next_is_chain)
+        {
+            // A comment inside a call, a wrapped header or a call chain takes
+            // the position of the code line below it.
+            let next_old = next_code_line(&all_lines, line_index)
+                .map_or(anchor.0, |next| leading_columns(next, options.tab_size));
+            (anchor.1 as i64 + next_old as i64 - anchor.0 as i64).max(0) as usize
+        } else {
+            level_cols
+        };
+        if !continuation && !code.is_empty() && !started_in_block_comment {
+            anchor = (old_cols, print_cols);
+        }
         let output_line = if started_in_block_comment {
             line.trim_end()
         } else {
-            for _ in 0..indent_level {
-                result.push_str(&indent_str);
+            if options.insert_spaces {
+                result.push_str(&" ".repeat(print_cols));
+            } else {
+                result.push_str(&"\t".repeat(print_cols / options.tab_size.max(1)));
+                result.push_str(&" ".repeat(print_cols % options.tab_size.max(1)));
             }
             trimmed
         };
-        // Apply casing only to code spans. On a carried block-comment closing
-        // line, the scanner starts in comment state so prose before `*/` stays
-        // byte-for-byte while an executable tail still receives normal casing.
-        let transformed = if started_in_block_comment {
-            apply_keyword_casing_with_state(output_line, &options.keyword_casing, true)
-        } else {
-            apply_keyword_casing(output_line, &options.keyword_casing)
-        };
-        result.push_str(&transformed);
+        result.push_str(output_line);
         result.push('\n');
+
+        if !code.is_empty() {
+            if wrapped_close {
+                wrapped_opener_open = false;
+            } else if !continuation
+                && !wrapped_opener_open
+                && starts_wrapped_opener(&code_lower)
+                && paren_depth_after(paren_depth, &code) == 0
+            {
+                wrapped_opener_open = true;
+            }
+            prev_continues = ends_with_operator(&code_lower);
+        }
 
         // Keep count of the `if` statements in the innermost case's open
         // branch that a later `else` could belong to. An `if` inside a
@@ -394,9 +499,9 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             || code_lower == "var"
             || code_lower == "repeat"
             || opens_case;
-        let is_single_stmt_opener = is_single_statement_opener(&code_lower);
+        let is_single_stmt_opener = is_single_statement_opener(&code_lower) || wrapped_close;
 
-        if single_stmt_depth > 0
+        if !slots.is_empty()
             && !is_block_opener
             && !is_close
             && !is_comment
@@ -404,10 +509,17 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             && !is_case_label
             && code_lower != "else"
             && !code_lower.starts_with("else ")
+            && !prev_continues
+            && !wrapped_opener_open
         {
-            // This line consumed one single-statement slot; drain all
-            indent_level = (indent_level - single_stmt_depth).max(0);
-            single_stmt_depth = 0;
+            // This line consumed one single-statement slot. Without a `;` an
+            // `else` can still follow, so the release waits for the next line.
+            if code.ends_with(';') {
+                indent_level = (indent_level - slots.len() as i32).max(0);
+                slots.clear();
+            } else if !continuation {
+                deferred_stmt = true;
+            }
         }
 
         // Close the innermost block and give back the slot it suspended.
@@ -440,8 +552,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             || code_lower == "repeat"
             || opens_case;
         if opens_block {
-            let mut saved = carried + single_stmt_depth;
-            single_stmt_depth = 0;
+            let mut saved = carried + slots.len() as i32;
+            slots.clear();
             if starts_else {
                 saved += pending_else;
                 pending_else = 0;
@@ -452,6 +564,27 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                 BlockKind::Begin
             };
             block_stack.push((kind, saved));
+        }
+
+        // `end else` and `end else if ... then` on one line: the statement
+        // after the `else` sits one level in, like after a bare `else`.
+        if is_close && !code_lower.ends_with(" begin") {
+            let after_end = code_lower.strip_prefix("end").map_or("", str::trim_start);
+            let bare_else = after_end == "else";
+            if bare_else || after_end.starts_with("else if ") || after_end.starts_with("else if(") {
+                indent_level += 1;
+                for _ in 0..pending_else {
+                    slots.push(Slot {
+                        is_if: true,
+                        in_else: false,
+                    });
+                }
+                slots.push(Slot {
+                    is_if: true,
+                    in_else: bare_else,
+                });
+                pending_else = 0;
+            }
         }
 
         if code.ends_with('{') {
@@ -479,7 +612,20 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
                     frame.in_body = true;
                     frame.after_bare_else = true;
                 } else {
-                    single_stmt_depth += 1 + pending_else;
+                    let else_if = code_lower.strip_prefix("else").is_some_and(|rest| {
+                        let rest = rest.trim_start();
+                        rest.starts_with("if ") || rest.starts_with("if(")
+                    });
+                    for _ in 0..pending_else {
+                        slots.push(Slot {
+                            is_if: true,
+                            in_else: false,
+                        });
+                    }
+                    slots.push(Slot {
+                        is_if: true,
+                        in_else: !else_if,
+                    });
                     pending_else = 0;
                 }
             }
@@ -501,7 +647,10 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // Only when not followed by `begin` on the same line
         if is_single_stmt_opener && !code_lower.ends_with(" begin") {
             indent_level += 1;
-            single_stmt_depth += 1;
+            slots.push(Slot {
+                is_if: code_lower.starts_with("if ") || code_lower.starts_with("if("),
+                in_else: false,
+            });
         }
 
         // A `;` outside any `begin` block of the branch ends the branch's
@@ -522,12 +671,136 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // ran ahead of the indentation pass.
     let result = normalize_blank_lines_between_procedures(result, options);
     let result = wrap_long_property_lines(result, options);
+    // Casing runs last, on the final layout, so the parse sees the real tokens.
+    let result = apply_keyword_casing(result, &options.keyword_casing);
 
     if uses_crlf {
         result.replace('\n', "\r\n")
     } else {
         result
     }
+}
+
+/// A line of the form `<label>:` as it appears in a `case` statement.
+fn is_case_label_code(label_code: &str) -> bool {
+    label_code.ends_with(':')
+        && !label_code.ends_with("::")
+        // The colon must directly follow the last non-space character, with
+        // no `;` before it (outside string literals). A comma is allowed:
+        // `Level::Silver, Level::None:` lists several values for one branch.
+        && !contains_char_outside_strings(label_code.trim_end_matches(':'), &[';'])
+        // `case true of` takes expression labels such as `(A = 1) and (B = 2):`
+        // or `Kind::Quote.AsInteger():`. A trailing `:` after an unbalanced
+        // `(` is not a label.
+        && count_net_parens(label_code.trim_end_matches(':')) == 0
+        && !label_code.contains(":=")
+}
+
+/// The next line after `index` that is neither blank nor a `//` comment.
+fn next_code_line<'a>(lines: &[&'a str], index: usize) -> Option<&'a str> {
+    lines[index + 1..].iter().copied().find(|line| {
+        let t = line.trim();
+        !t.is_empty() && !t.starts_with("//")
+    })
+}
+
+/// Leading whitespace of `line` in columns, a tab counting `tab_size`.
+fn leading_columns(line: &str, tab_size: usize) -> usize {
+    line.chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .map(|c| if c == '\t' { tab_size } else { 1 })
+        .sum()
+}
+
+fn paren_depth_after(depth: i32, code: &str) -> i32 {
+    (depth + count_net_parens(code)).max(0)
+}
+
+/// The word `then` or `do` outside string literals, last on the line or
+/// followed by `begin`.
+fn ends_with_then_or_do(code_lower: &str) -> bool {
+    let trimmed = code_lower.trim_end();
+    let trimmed = trimmed
+        .strip_suffix(" begin")
+        .map_or(trimmed, str::trim_end);
+    trimmed == "then"
+        || trimmed == "do"
+        || trimmed.ends_with(" then")
+        || trimmed.ends_with(" do")
+        || trimmed.ends_with(")then")
+        || trimmed.ends_with(")do")
+}
+
+/// A line that starts an `if`, `while`, `for`, `with` or `foreach` header and
+/// has no `then`/`do` of its own yet.
+fn starts_wrapped_opener(code_lower: &str) -> bool {
+    let starts = [
+        "if ", "if(", "while ", "while(", "for ", "with ", "foreach ",
+    ]
+    .iter()
+    .any(|p| code_lower.starts_with(p));
+    starts
+        && !contains_word_outside_strings(code_lower, "then")
+        && !contains_word_outside_strings(code_lower, "do")
+}
+
+fn contains_word_outside_strings(code_lower: &str, word: &str) -> bool {
+    let mut in_string = false;
+    let mut in_quoted_name = false;
+    let bytes = code_lower.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        match b {
+            b'\'' if !in_quoted_name => in_string = !in_string,
+            b'"' if !in_string => in_quoted_name = !in_quoted_name,
+            _ if in_string || in_quoted_name => {}
+            _ if code_lower[i..].starts_with(word) => {
+                let before_ok = i == 0 || !is_word_byte(bytes[i - 1]);
+                let after = i + word.len();
+                let after_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
+                if before_ok && after_ok {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// The line ends in a binary operator, so its statement goes on below.
+fn ends_with_operator(code_lower: &str) -> bool {
+    let t = code_lower.trim_end();
+    ["+", "-", "*", "/", "=", "<", ">", "<>", "<=", ">=", ":="]
+        .iter()
+        .any(|op| t.ends_with(op))
+        && !t.ends_with("::")
+        || ["and", "or", "xor", "not", "in", "div", "mod"]
+            .iter()
+            .any(|w| t == *w || t.ends_with(&format!(" {w}")))
+}
+
+/// `#pragma`, `#if`, `#else`, `#elif`, `#endif`, `#define` and `#undef` lines.
+/// Microsoft's formatter keeps `#region` and `#endregion` at code level.
+fn is_column_zero_directive(trimmed: &str) -> bool {
+    let Some(rest) = trimmed.strip_prefix('#') else {
+        return false;
+    };
+    let word: String = rest
+        .chars()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    matches!(
+        word.as_str(),
+        "pragma" | "if" | "else" | "elif" | "endif" | "define" | "undef"
+    )
 }
 
 /// Delegates to the crate-level `count_net_delimiters` which skips string literals.
@@ -543,6 +816,17 @@ enum BlockKind {
     Begin,
     /// `repeat ... until`.
     Repeat,
+}
+
+/// A single-statement opener (`if`, `for`, `while`, `with`, `foreach`, or an
+/// `else`) whose statement has not ended yet. Each one holds one indent level.
+#[derive(Debug, Clone, Copy)]
+struct Slot {
+    /// The opener is an `if` (or an `else` that opens an `if`), the only
+    /// kind an `else` can pair with.
+    is_if: bool,
+    /// The slot is already in its `else` branch.
+    in_else: bool,
 }
 
 /// The branch state of one open `case` statement.
@@ -631,6 +915,57 @@ mod tests {
             .map(|line| format!("{}\n", line.trim_start()))
             .collect();
         assert_eq!(fmt(&flat), formatted, "flat input formatted differently");
+    }
+
+    /// Expected outputs in `testdata/ms_*.al` are Microsoft's formatter output
+    /// (al-msfmt, `Formatter.Format`) for small synthetic inputs. The text
+    /// must come back byte for byte and a second run must not change it.
+    /// Fixtures marked `flat` also hold when every indent is removed first.
+    fn assert_matches_microsoft(expected: &str, flat_input_works: bool) {
+        assert_eq!(fmt(expected), expected, "Microsoft-formatted input changed");
+        assert_eq!(fmt(&fmt(expected)), expected, "second run changed the text");
+        if flat_input_works {
+            let flat: String = expected
+                .lines()
+                .map(|line| format!("{}\n", line.trim_start()))
+                .collect();
+            assert_eq!(fmt(&flat), expected, "flat input formatted differently");
+        }
+    }
+
+    #[test]
+    fn directives_stay_at_column_zero_except_regions() {
+        assert_matches_microsoft(include_str!("testdata/ms_directives.al"), true);
+    }
+
+    #[test]
+    fn call_chain_lines_keep_the_statement_indent() {
+        assert_matches_microsoft(include_str!("testdata/ms_call_chains.al"), false);
+    }
+
+    #[test]
+    fn continuation_lines_move_with_their_statement() {
+        assert_matches_microsoft(include_str!("testdata/ms_continuation_offsets.al"), false);
+    }
+
+    #[test]
+    fn else_bodies_sit_one_level_in() {
+        assert_matches_microsoft(include_str!("testdata/ms_else_bodies.al"), true);
+    }
+
+    #[test]
+    fn case_label_bodies_sit_one_level_in() {
+        assert_matches_microsoft(include_str!("testdata/ms_case_bodies.al"), true);
+    }
+
+    #[test]
+    fn wrapped_if_bodies_sit_one_level_in() {
+        assert_matches_microsoft(include_str!("testdata/ms_wrapped_if.al"), true);
+    }
+
+    #[test]
+    fn nested_else_case_and_wrapped_headers_match_microsoft() {
+        assert_matches_microsoft(include_str!("testdata/ms_nested_mix.al"), false);
     }
 
     #[test]

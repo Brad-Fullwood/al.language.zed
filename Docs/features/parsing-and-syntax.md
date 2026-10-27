@@ -88,7 +88,7 @@ method.
 A keyword-driven state machine (`format_al`, `format_range`) that reindents AL using `begin`/`end`,
 `var`, `if`/`then`, `repeat`/`until`, `case`/`of`, paren depth, and property-continuation tracking.
 All `FormatOptions` are honored: `tab_size`, `insert_spaces`, `keyword_casing`
-(Preserve/Lower/Upper), `blank_lines_between_procedures`, `max_line_length`, `brace_style`, and
+(Preserve/Lower/Upper, applied to keyword tokens of the parse tree only), `blank_lines_between_procedures`, `max_line_length`, `brace_style`, and
 `sort_properties`. The advanced options are available through `.alformat.json` and matching
 `al.formatting.*` editor settings. Line wrapping intentionally targets supported single-line object
 properties rather than attempting general expression reflow.

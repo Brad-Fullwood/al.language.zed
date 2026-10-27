@@ -21,9 +21,10 @@ pub enum BlankLinesBetweenProcedures {
 
 #[derive(Debug, Clone, Default)]
 pub enum BraceStyle {
-    /// `begin` on the same line as the statement.
+    /// `{` on the same line as the object, section or member header.
     SameLine,
-    /// `begin` on the next line (default AL style).
+    /// `{` on its own line below the header (default AL style). Only `{` is
+    /// affected, `begin` is never moved.
     #[default]
     NextLine,
 }
@@ -34,16 +35,17 @@ pub enum BraceStyle {
 /// `insert_spaces`, and `keyword_casing` are applied by the main
 /// indentation/casing pass; the advanced formatting fields
 /// (`sort_properties`, `blank_lines_between_procedures`, `max_line_length`,
-/// `brace_style`) are applied by dedicated post-processing passes that run
-/// after the main pass. Each pass is a strict no-op at its default value
-/// and is idempotent.
+/// `brace_style`) are applied by dedicated passes. Each pass is idempotent
+/// and a no-op at its default value, except `brace_style`, whose default
+/// `NextLine` splits a trailing `{` onto its own line.
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
     pub tab_size: usize,
     pub insert_spaces: bool,
-    /// Keyword casing to apply. `Preserve` is the no-op default; `Lower` and
-    /// `Upper` walk each non-comment, non-string token and case-fold it when
-    /// the token matches a known AL keyword.
+    /// Keyword casing to apply. `Preserve` is the no-op default. `Lower` and
+    /// `Upper` case-fold the keyword tokens of the parse tree (`kw_*` leaves
+    /// and object section keywords such as `fields` and `field`). Names and
+    /// type names that spell a keyword are left as written.
     pub keyword_casing: KeywordCasing,
     /// Blank lines between procedures. `Preserve` (default) is a no-op; `One`
     /// / `Two` normalise the gap between a procedure's closing `end;` and the
@@ -52,7 +54,8 @@ pub struct FormatOptions {
     /// Maximum line length (0 = no limit, the default no-op). When set,
     /// over-long single-line object properties are wrapped at top-level commas.
     pub max_line_length: usize,
-    /// Brace placement style. `NextLine` (default) is a no-op; `SameLine`
+    /// Brace placement style. `NextLine` (default) moves a `{` that ends a
+    /// header line onto its own line, as Microsoft's formatter does. `SameLine`
     /// merges a stand-alone `{` onto the preceding opener line.
     pub brace_style: BraceStyle,
     /// Sort object-level properties alphabetically within each contiguous run.

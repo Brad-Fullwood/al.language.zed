@@ -163,6 +163,25 @@ impl SymbolIndex {
             .unwrap_or_default()
     }
 
+    /// Lowercase names of the procedures that the interfaces `interfaces`
+    /// declare. An object that `implements` them owns these procedures
+    /// because the interface dispatches to them. Dead-code analysis and the
+    /// call graph both ask this one question.
+    pub fn interface_method_names<'a>(
+        &self,
+        interfaces: impl IntoIterator<Item = &'a str>,
+    ) -> std::collections::HashSet<String> {
+        let mut methods = std::collections::HashSet::new();
+        for name in interfaces {
+            for entry in self.get_by_name(name.trim_matches('"')) {
+                if entry.kind == ObjectKind::Interface {
+                    methods.extend(entry.methods.iter().map(|m| m.name.to_ascii_lowercase()));
+                }
+            }
+        }
+        methods
+    }
+
     pub fn get_by_kind(&self, kind: ObjectKind) -> Vec<Arc<SymbolEntry>> {
         self.by_kind
             .get(&kind)

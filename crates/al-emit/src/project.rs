@@ -177,7 +177,7 @@ fn parse_external_symbols(package_paths: &[PathBuf]) -> Result<ExternalSymbols, 
         for obj in &pkg.objects {
             ext.object_kinds.insert((obj.kind, obj.name.to_lowercase()));
             ext.resolver
-                .entry(obj.name.to_lowercase())
+                .entry((obj.kind, obj.name.to_lowercase()))
                 .or_insert_with(|| ObjectRef {
                     id: obj.id,
                     module_id: Some(pkg.app_id.clone()),

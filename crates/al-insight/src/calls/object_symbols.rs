@@ -255,8 +255,48 @@ pub(super) fn field_symbol_from_section(
         id,
         name,
         type_name,
-        properties: Vec::new(),
+        properties: field_properties(node, source),
     })
+}
+
+/// A field's own `name = value;` properties (`CalcFormula`, `TableRelation`, ...).
+///
+/// Table impact and the insight graph read `CalcFormula` and `TableRelation`
+/// off the field symbol, so a workspace field must carry them like a field from
+/// a symbol package does. The grammar's `value` is a repeated node, so the text
+/// spans the first to the last value node (`count("T" where(...))`).
+fn field_properties(section: tree_sitter::Node, source: &[u8]) -> Vec<al_symbols::PropertyValue> {
+    let Some(body) = section.child_by_field_name("body") else {
+        return Vec::new();
+    };
+    let mut properties = Vec::new();
+    let mut cursor = body.walk();
+    for property in body.children(&mut cursor) {
+        if property.kind() != "property_assignment" {
+            continue;
+        }
+        let Some(name) = property
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source).ok())
+        else {
+            continue;
+        };
+        let mut value_cursor = property.walk();
+        let values: Vec<_> = property
+            .children_by_field_name("value", &mut value_cursor)
+            .collect();
+        let (Some(first), Some(last)) = (values.first(), values.last()) else {
+            continue;
+        };
+        let Ok(value) = std::str::from_utf8(&source[first.start_byte()..last.end_byte()]) else {
+            continue;
+        };
+        properties.push(al_symbols::PropertyValue {
+            name: name.trim().to_string(),
+            value: value.trim().trim_end_matches(';').trim().to_string(),
+        });
+    }
+    properties
 }
 
 pub(super) fn extract_methods_from_tree(

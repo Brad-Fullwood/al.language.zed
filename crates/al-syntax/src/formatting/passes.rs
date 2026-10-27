@@ -340,15 +340,16 @@ fn is_mergeable_brace_target(prev: &str) -> bool {
     !has_line_comment_outside_strings(t)
 }
 
-/// PRE-PASS — `brace_style`. For `SameLine`, merge a stand-alone `{` line onto
-/// the preceding mergeable opener line. `NextLine` (default) is a no-op; this
-/// pass never moves `begin`/`end` or a closing `}`.
+/// PRE-PASS — `brace_style`. `SameLine` merges a stand-alone `{` onto the
+/// preceding mergeable opener line. `NextLine` moves a `{` that ends an object,
+/// section or member header line onto its own line, as Microsoft's formatter
+/// does. Neither value touches `begin`/`end` or a closing `}`.
 ///
 /// Runs before the indentation pass so the indentation is computed for the
 /// final line layout. See the call site in `format_al`.
 pub(super) fn apply_brace_style(text: &str, options: &FormatOptions) -> String {
-    if !matches!(options.brace_style, BraceStyle::SameLine) {
-        return text.to_string();
+    if matches!(options.brace_style, BraceStyle::NextLine) {
+        return split_trailing_braces(text);
     }
     let lines: Vec<&str> = text.lines().collect();
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
@@ -367,6 +368,68 @@ pub(super) fn apply_brace_style(text: &str, options: &FormatOptions) -> String {
         out.push(line.to_string());
     }
     join_lines(out)
+}
+
+/// Byte offset of a `{` that is the last code on `line`, with only whitespace
+/// and comments after it and other code or a quoted name before it. Braces in
+/// strings, quoted identifiers and comments are not code spans, so they never
+/// match. Also returns whether a block comment is still open at line end.
+fn trailing_brace_pos(line: &str, in_block_comment: bool) -> (Option<usize>, bool) {
+    let mut scanner = crate::lexical::LineScanner::new(line, in_block_comment);
+    // Position of the last token and how many tokens came before it.
+    let mut last: Option<(usize, bool)> = None;
+    let mut before = 0usize;
+    for span in scanner.by_ref() {
+        match span.kind {
+            crate::lexical::SpanKind::Code => {
+                for (i, c) in span.text.char_indices() {
+                    if !c.is_whitespace() {
+                        before += usize::from(last.is_some());
+                        last = Some((span.start + i, c == '{'));
+                    }
+                }
+            }
+            crate::lexical::SpanKind::String => {
+                before += usize::from(last.is_some());
+                last = Some((span.start, false));
+            }
+            _ => {}
+        }
+    }
+    let pos = match last {
+        Some((p, true)) if before > 0 => Some(p),
+        _ => None,
+    };
+    (pos, scanner.ends_in_block_comment())
+}
+
+/// `NextLine`: `table 1 T {` becomes `table 1 T` and `{` on the next line. A
+/// trailing comment travels with the brace, as in Microsoft's formatter.
+/// Standard route checked: Microsoft's formatter is a .NET assembly with no
+/// Rust binding, so the rule is reproduced from its output on probe files.
+fn split_trailing_braces(text: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_block = false;
+    let mut changed = false;
+    for line in text.lines() {
+        let started_in_block = in_block;
+        let (pos, still_open) = trailing_brace_pos(line, in_block);
+        in_block = still_open;
+        let is_directive = line.trim_start().starts_with('#');
+        match pos {
+            Some(p) if !is_directive && !started_in_block => {
+                out.push(line[..p].trim_end().to_string());
+                out.push(line[p..].to_string());
+                changed = true;
+            }
+            _ => out.push(line.to_string()),
+        }
+    }
+    if changed {
+        join_lines(out)
+    } else {
+        text.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -693,13 +756,86 @@ table 50100 Test
     }
 
     #[test]
-    fn brace_style_default_is_noop() {
+    fn brace_style_default_keeps_own_line_braces() {
         let opts = FormatOptions::default(); // NextLine
         let out = format_al(BRACE_INPUT, &opts);
         assert!(
             out.contains("table 50100 Test\n{"),
-            "NextLine default must leave braces on their own line:\n{out}"
+            "NextLine leaves own-line braces where they are:\n{out}"
         );
+    }
+
+    // Input and expected output for the NextLine tests. The expected text is
+    // the output of Microsoft's formatter (al-msfmt) on the input.
+    const NEXT_LINE_INPUT: &str = "\
+table 50100 Test {
+    fields {
+        field(1; Code; Code[20]) {
+            Caption = 'x{y'; // a { here
+        }
+        field(2; \"A{B\"; Integer) { // note
+        }
+    }
+    keys {
+        key(PK; Code) {
+            Clustered = true;
+        }
+    }
+    procedure A()
+    begin
+        /* open { */
+        Message('{');
+    end;
+}
+";
+    const NEXT_LINE_MSFMT: &str = "\
+table 50100 Test
+{
+    fields
+    {
+        field(1; Code; Code[20])
+        {
+            Caption = 'x{y'; // a { here
+        }
+        field(2; \"A{B\"; Integer)
+        { // note
+        }
+    }
+    keys
+    {
+        key(PK; Code)
+        {
+            Clustered = true;
+        }
+    }
+    procedure A()
+    begin
+        /* open { */
+        Message('{');
+    end;
+}
+";
+
+    #[test]
+    fn brace_style_next_line_matches_microsoft() {
+        let opts = FormatOptions {
+            brace_style: BraceStyle::NextLine,
+            ..Default::default()
+        };
+        assert_eq!(format_al(NEXT_LINE_INPUT, &opts), NEXT_LINE_MSFMT);
+    }
+
+    #[test]
+    fn brace_style_next_line_is_idempotent_and_same_line_round_trips() {
+        let next = FormatOptions::default();
+        assert_eq!(format_al(NEXT_LINE_MSFMT, &next), NEXT_LINE_MSFMT);
+        let same = FormatOptions {
+            brace_style: BraceStyle::SameLine,
+            ..Default::default()
+        };
+        let merged = format_al(NEXT_LINE_MSFMT, &same);
+        assert!(merged.contains("table 50100 Test {"), "got:\n{merged}");
+        assert_eq!(format_al(&merged, &same), merged);
     }
 
     #[test]

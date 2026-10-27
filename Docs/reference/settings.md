@@ -41,13 +41,17 @@ without trust. Written in the clone it is dropped, with one message naming it, u
 
 These apply to LSP document and range formatting in the editor, on top of the editor's `tabSize`
 and `insertSpaces`. `al-explorer format` reads `.alformat.json` in the project root instead, which
-takes the same four keys plus `tabSize`, `insertSpaces` and `keywordCasing`.
+takes the same four keys plus `tabSize`, `insertSpaces` and `keywordCasing` (`preserve`, `lower`, `upper`).
+`keywordCasing` folds keyword tokens chosen by syntax tree node, so identifiers and type names such as
+`Code`, `Date`, `Text` and `Record` stay as written, while `field`, `fields`, `begin` and `procedure` are
+folded (audit finding `formatting-04-keyword-casing-rewrites-identifiers.md`). The editor has no
+setting for it.
 
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
 | `al.formatting.blankLinesBetweenProcedures` | `preserve`\|`one`\|`two` | `preserve` | ✅ |
-| `al.formatting.maxLineLength` | integer | `0` (no wrapping) | ✅ |
-| `al.formatting.braceStyle` | `sameLine`\|`nextLine` | `nextLine` | ✅ |
+| `al.formatting.maxLineLength` | integer | `0` (no wrapping) | ✅ wraps long single-line object properties such as `Permissions` at top-level commas only, not code, signatures or expressions (audit finding `formatting-02-max-line-length-properties-only.md`) |
+| `al.formatting.braceStyle` | `sameLine`\|`nextLine` | `nextLine` | ✅ `nextLine` moves a `{` that ends a header line onto its own line, `sameLine` merges it up. Affects `{` only, never `begin` (audit finding `formatting-01-brace-style-nextline-is-noop.md`) |
 | `al.formatting.sortProperties` | boolean | `false` | ✅ sorts contiguous object-level property runs |
 
 ## Native lint

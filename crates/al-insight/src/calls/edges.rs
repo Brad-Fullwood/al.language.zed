@@ -89,21 +89,34 @@ pub struct ProcedureCalls {
 }
 
 impl ProcedureCalls {
+    /// The calls in the section heads of one object, which no procedure holds.
+    pub fn from_object_heads(object_node: tree_sitter::Node<'_>, source: &str) -> Self {
+        let (record_vars, object_vars) = object_global_var_types(object_node, source);
+        Self {
+            call_sites: head_call_sites(object_node, source),
+            record_vars: record_vars.into_iter().collect(),
+            object_vars: object_vars.into_iter().collect(),
+        }
+    }
+
     /// Read the calls and variable types of one declaration node.
     pub fn from_node(proc_node: tree_sitter::Node<'_>, source: &str) -> Self {
+        // Variables of the object are visible in every procedure. The
+        // procedure's own variables and parameters win on a clash.
+        let (mut record_vars, mut object_vars) = enclosing_object(proc_node)
+            .map(|object| object_global_var_types(object, source))
+            .unwrap_or_default();
+        record_vars.extend(procedure_var_types_in_node(proc_node, source));
+        // Object-typed variables (codeunit / page / report / xmlport /
+        // query / interface), not just Record. Used to resolve
+        // `MyVar.Method()` where `MyVar` is e.g. `Codeunit "Sales-Post"`:
+        // looking up `MyVar` itself in the symbol index matched only when
+        // the variable name happened to equal a real object name.
+        object_vars.extend(procedure_object_var_types_in_node(proc_node, source));
         Self {
             call_sites: call_sites_in_node(proc_node, source),
-            record_vars: procedure_var_types_in_node(proc_node, source)
-                .into_iter()
-                .collect(),
-            // Object-typed variables (codeunit / page / report / xmlport /
-            // query / interface), not just Record. Used to resolve
-            // `MyVar.Method()` where `MyVar` is e.g. `Codeunit "Sales-Post"`:
-            // looking up `MyVar` itself in the symbol index matched only when
-            // the variable name happened to equal a real object name.
-            object_vars: procedure_object_var_types_in_node(proc_node, source)
-                .into_iter()
-                .collect(),
+            record_vars: record_vars.into_iter().collect(),
+            object_vars: object_vars.into_iter().collect(),
         }
     }
 }
@@ -124,9 +137,6 @@ pub fn resolve_procedure_calls(
     insight: &InsightGraph,
     call_graph: &mut CallGraph,
 ) {
-    let var_types = &calls.record_vars;
-    let object_var_types = &calls.object_vars;
-
     // A callable workspace member can be represented by three graph node
     // variants. Event publishers and subscribers used to be registered as
     // `Event` / `Subscriber`, but this resolver looked only for `Procedure`.
@@ -138,6 +148,57 @@ pub fn resolve_procedure_calls(
         Some(id) => id,
         None => return,
     };
+    resolve_calls_from(
+        caller_id,
+        calls,
+        object_kind,
+        object_name,
+        symbols,
+        insight,
+        call_graph,
+    );
+}
+
+/// Add the edges for the calls in the section heads of an object, such as a
+/// page `field(...; Expr)` or a report `column(...; Expr)`. No procedure
+/// contains these expressions, so the object node is the caller.
+pub fn resolve_object_head_calls(
+    calls: &ProcedureCalls,
+    object_kind: ObjectKind,
+    object_name: &str,
+    symbols: &SymbolIndex,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) {
+    if calls.call_sites.is_empty() {
+        return;
+    }
+    let key = NodeKey::Object(object_kind, object_name.to_lowercase());
+    let Some(caller_id) = CallGraph::node_id_for(insight, &key) else {
+        return;
+    };
+    resolve_calls_from(
+        caller_id,
+        calls,
+        object_kind,
+        object_name,
+        symbols,
+        insight,
+        call_graph,
+    );
+}
+
+fn resolve_calls_from(
+    caller_id: NodeId,
+    calls: &ProcedureCalls,
+    object_kind: ObjectKind,
+    object_name: &str,
+    symbols: &SymbolIndex,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) {
+    let var_types = &calls.record_vars;
+    let object_var_types = &calls.object_vars;
     // Table code runs on a record of the table itself.
     let own_table = (object_kind == ObjectKind::Table).then_some(object_name);
 
@@ -166,6 +227,25 @@ pub fn resolve_procedure_calls(
                 }
             }
             CallSite::MemberCall { object, method } => {
+                // `this.Method()` and `Rec.Method()` name no variable: they
+                // call a member of this object, or of the record the page or
+                // table extension works on, and of that table's extensions.
+                if let Some(targets) = self_targets(object, object_kind, object_name, symbols) {
+                    let method_lower = method.to_lowercase();
+                    for (kind, name) in targets {
+                        let callee =
+                            NodeKey::Procedure(kind, name.to_lowercase(), method_lower.clone());
+                        if let Some(callee_id) = CallGraph::node_id_for(insight, &callee) {
+                            call_graph.add_direct_call(caller_id, callee_id);
+                        }
+                        let event = NodeKey::Event(kind, name.to_lowercase(), method_lower.clone());
+                        if let Some(event_id) = CallGraph::node_id_for(insight, &event) {
+                            call_graph.add_direct_call(caller_id, event_id);
+                            link_event_subscribers(caller_id, event_id, call_graph);
+                        }
+                    }
+                    continue;
+                }
                 // prefer the variable's declared type when known.
                 // `MyVar.Method()` where `MyVar: Codeunit "Sales-Post"` should
                 // resolve against "Sales-Post" methods, not against a hypothetical
@@ -249,6 +329,73 @@ pub fn resolve_procedure_calls(
                 }
             }
         }
+    }
+}
+
+/// The objects `this.X()` or `Rec.X()` can mean inside `object_name`, or
+/// `None` when `object` is neither.
+///
+/// `this` is the object itself. `Rec` is the table's own record in a table
+/// or table extension and the source table's record in a page or page
+/// extension. A procedure of a record can sit in the table or in any table
+/// extension of it, so the extensions are targets too.
+fn self_targets(
+    object: &str,
+    object_kind: ObjectKind,
+    object_name: &str,
+    symbols: &SymbolIndex,
+) -> Option<Vec<(ObjectKind, String)>> {
+    if object.eq_ignore_ascii_case("this") {
+        return Some(vec![(object_kind, object_name.to_string())]);
+    }
+    if !object.eq_ignore_ascii_case("rec") {
+        return None;
+    }
+    let find = |kind: ObjectKind, name: &str| {
+        symbols
+            .get_by_name(name)
+            .into_iter()
+            .find(|entry| entry.kind == kind)
+    };
+    let table = match object_kind {
+        ObjectKind::Table => object_name.to_string(),
+        ObjectKind::TableExtension => find(object_kind, object_name)?.extends.clone()?,
+        ObjectKind::Page => source_table_of_page(&*find(object_kind, object_name)?, symbols)?,
+        ObjectKind::PageExtension => {
+            let page = find(object_kind, object_name)?.extends.clone()?;
+            source_table_of_page(
+                &*find(ObjectKind::Page, page.unquote_identifier().as_ref())?,
+                symbols,
+            )?
+        }
+        _ => return None,
+    };
+    let table = table.unquote_identifier().into_owned();
+    let mut targets = vec![(ObjectKind::Table, table.clone())];
+    targets.extend(
+        symbols
+            .get_extensions_of(&table)
+            .into_iter()
+            .filter(|entry| entry.kind == ObjectKind::TableExtension)
+            .map(|entry| (ObjectKind::TableExtension, entry.name.clone())),
+    );
+    Some(targets)
+}
+
+/// A page from a dependency package stores `SourceTable` as the table's
+/// object id, a workspace page stores the name.
+fn source_table_of_page(page: &SymbolEntry, symbols: &SymbolIndex) -> Option<String> {
+    let value = &page
+        .properties
+        .iter()
+        .find(|p| p.name.eq_ignore_ascii_case("SourceTable"))?
+        .value;
+    match value.parse::<i32>() {
+        Ok(id) => symbols
+            .get_by_id(ObjectKind::Table, id)
+            .first()
+            .map(|table| table.name.clone()),
+        Err(_) => Some(value.clone()),
     }
 }
 
@@ -341,6 +488,36 @@ pub(super) fn find_interface_implementors(
                 .any(|iface| iface.unquote_identifier().eq_ignore_ascii_case(&target))
         })
         .collect()
+}
+
+/// Reach each implementer's interface procedures from the interface.
+///
+/// The interface dispatches to them, from a caller in a dependency when the
+/// interface is a dependency's, so a workspace caller need not exist.
+/// Without these edges `entrypoints` lists every implementer procedure.
+pub fn link_interface_implementers(
+    symbols: &SymbolIndex,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) {
+    for entry in symbols.get_by_kind(ObjectKind::Codeunit) {
+        for interface in &entry.implements {
+            let interface = interface.unquote_identifier();
+            let Some(from) = CallGraph::node_id_for(
+                insight,
+                &NodeKey::Object(ObjectKind::Interface, interface.to_lowercase()),
+            ) else {
+                continue;
+            };
+            for method in symbols.interface_method_names([interface.as_ref()]) {
+                let key =
+                    NodeKey::Procedure(ObjectKind::Codeunit, entry.name.to_lowercase(), method);
+                if let Some(to) = CallGraph::node_id_for(insight, &key) {
+                    call_graph.add_indirect_call(from, to);
+                }
+            }
+        }
+    }
 }
 
 /// Return the event names for a record operation.
@@ -464,6 +641,14 @@ pub fn populate_workspace_call_edges(
                 resolved += 1;
             }
         }
+        resolve_object_head_calls(
+            &ProcedureCalls::from_object_heads(node, source),
+            ok,
+            &info.name,
+            symbols,
+            insight,
+            call_graph,
+        );
     }
 
     Ok(resolved)
@@ -515,6 +700,14 @@ pub fn resolve_all_workspace_call_edges(
                 resolved += 1;
             }
         }
+        resolve_object_head_calls(
+            &ProcedureCalls::from_object_heads(node, &source),
+            ok,
+            &info.name,
+            symbols,
+            insight,
+            call_graph,
+        );
     }
 
     Ok(resolved)

@@ -167,6 +167,45 @@ fields
 }
 
 #[test]
+fn workspace_enrichment_keeps_field_calc_formula_and_table_relation() {
+    let source = r#"tableextension 50100 "Ext" extends "Header"
+{
+    fields
+    {
+        field(50100; Changes; Integer)
+        {
+            FieldClass = FlowField;
+            CalcFormula = count("Change Log" where(DocumentType = const("Sales Order"), DocumentNo = field("Document No.")));
+        }
+        field(50101; Ref; Code[20])
+        {
+            TableRelation = Customer."No.";
+        }
+    }
+}
+"#;
+    let result = al_syntax::AlParser::parse_quick(source);
+    let fields = extract_fields_from_tree(result.tree.root_node(), source.as_bytes());
+    let prop = |f: usize, n: &str| {
+        fields[f]
+            .properties
+            .iter()
+            .find(|p| p.name == n)
+            .map(|p| p.value.clone())
+    };
+    assert_eq!(
+        prop(0, "CalcFormula").as_deref(),
+        Some(
+            r#"count("Change Log" where(DocumentType = const("Sales Order"), DocumentNo = field("Document No.")))"#
+        )
+    );
+    assert_eq!(
+        prop(1, "TableRelation").as_deref(),
+        Some(r#"Customer."No.""#)
+    );
+}
+
+#[test]
 fn extends_target_extracted_from_extension_header() {
     let source = r#"tableextension 50100 "Test Customer Ext" extends "Test Customer"
 {
@@ -1477,4 +1516,258 @@ codeunit 50151 Calc
         .callees_of(add_id)
         .iter()
         .any(|edge| edge.to == helper_id));
+}
+
+// Calls that sit in a call argument, behind `this.`, in a section head, or on
+// the implicit `Rec` of a page extension.
+
+fn callers_named(cg: &CallGraph, insight: &InsightGraph, callee: NodeId) -> Vec<String> {
+    cg.callers_of(callee)
+        .iter()
+        .filter_map(|edge| {
+            match insight
+                .graph
+                .node_weight(petgraph::graph::NodeIndex::new(edge.from.0))
+            {
+                Some(InsightNode::Object { name, .. } | InsightNode::Procedure { name, .. }) => {
+                    Some(name.clone())
+                }
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+#[test]
+fn a_call_in_the_argument_of_another_call_is_an_edge() {
+    let (insight, cg) = build_resolved_call_graph(&[(
+        "/ws/Args.al",
+        r#"codeunit 50100 "Args"
+{
+    procedure Run()
+    begin
+        Error(Describe('x'));
+    end;
+
+    local procedure Describe(Text: Text): Text
+    begin
+    end;
+}
+"#,
+    )]);
+    let describe = proc_node(&insight, ObjectKind::Codeunit, "Args", "Describe");
+    assert_eq!(callers_named(&cg, &insight, describe), vec!["Run"]);
+}
+
+#[test]
+fn this_dot_call_is_an_edge_to_the_own_object() {
+    let (insight, cg) = build_resolved_call_graph(&[(
+        "/ws/This.al",
+        r#"codeunit 50100 "This CU"
+{
+    procedure Run()
+    begin
+        this.Helper();
+    end;
+
+    local procedure Helper()
+    begin
+    end;
+}
+"#,
+    )]);
+    let helper = proc_node(&insight, ObjectKind::Codeunit, "This CU", "Helper");
+    assert_eq!(callers_named(&cg, &insight, helper), vec!["Run"]);
+}
+
+#[test]
+fn rec_call_in_a_page_extension_action_reaches_the_table_extension() {
+    let (insight, cg) = build_resolved_call_graph(&[
+        (
+            "/ws/Tab.al",
+            r#"table 50100 "Parcel"
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+}
+"#,
+        ),
+        (
+            "/ws/TabExt.al",
+            r#"tableextension 50101 "Parcel Ext" extends "Parcel"
+{
+    procedure Redeliver()
+    begin
+    end;
+}
+"#,
+        ),
+        (
+            "/ws/Pg.al",
+            r#"page 50102 "Parcel Card"
+{
+    SourceTable = "Parcel";
+    layout
+    {
+    }
+}
+"#,
+        ),
+        (
+            "/ws/PgExt.al",
+            r#"pageextension 50103 "Parcel Card Ext" extends "Parcel Card"
+{
+    actions
+    {
+        addlast(Processing)
+        {
+            action(Redeliver)
+            {
+                trigger OnAction()
+                begin
+                    Rec.Redeliver();
+                end;
+            }
+        }
+    }
+}
+"#,
+        ),
+    ]);
+    let redeliver = proc_node(
+        &insight,
+        ObjectKind::TableExtension,
+        "Parcel Ext",
+        "Redeliver",
+    );
+    assert_eq!(callers_named(&cg, &insight, redeliver), vec!["OnAction"]);
+}
+
+#[test]
+fn calls_in_a_page_field_and_a_report_column_expression_have_the_object_as_caller() {
+    let (insight, cg) = build_resolved_call_graph(&[
+        (
+            "/ws/Pg.al",
+            r#"page 50100 "Cost Page"
+{
+    SourceTable = Customer;
+    layout
+    {
+        area(Content)
+        {
+            field(Cost; Format(GetCost()))
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+
+    local procedure GetCost(): Decimal
+    begin
+    end;
+}
+"#,
+        ),
+        (
+            "/ws/Rep.al",
+            r#"reportextension 50101 "Qty Rep" extends "Base Report"
+{
+    dataset
+    {
+        add(Line)
+        {
+            column(Qty; Format(GetQty(Line, 1)))
+            {
+            }
+        }
+    }
+
+    local procedure GetQty(Line: Integer; Kind: Integer): Decimal
+    begin
+    end;
+}
+"#,
+        ),
+    ]);
+    let cost = proc_node(&insight, ObjectKind::Page, "Cost Page", "GetCost");
+    assert_eq!(callers_named(&cg, &insight, cost), vec!["Cost Page"]);
+    let qty = proc_node(&insight, ObjectKind::ReportExtension, "Qty Rep", "GetQty");
+    assert_eq!(callers_named(&cg, &insight, qty), vec!["Qty Rep"]);
+}
+
+#[test]
+fn a_call_through_a_global_variable_is_an_edge() {
+    let (insight, cg) = build_resolved_call_graph(&[
+        (
+            "/ws/Lib.al",
+            r#"codeunit 50100 "Lib CU"
+{
+    procedure Calc(): Decimal
+    begin
+    end;
+}
+"#,
+        ),
+        (
+            "/ws/Pg.al",
+            r#"page 50101 "Glob Page"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(Cost; Lib.Calc())
+            {
+            }
+        }
+    }
+
+    trigger OnOpenPage()
+    begin
+        Lib.Calc();
+    end;
+
+    var
+        Lib: Codeunit "Lib CU";
+}
+"#,
+        ),
+    ]);
+    let calc = proc_node(&insight, ObjectKind::Codeunit, "Lib CU", "Calc");
+    let mut callers = callers_named(&cg, &insight, calc);
+    callers.sort();
+    assert_eq!(callers, vec!["Glob Page", "OnOpenPage"]);
+}
+
+#[test]
+fn an_interface_reaches_the_procedures_of_its_implementers() {
+    let file_index = al_source::file_index::FileIndex::new();
+    for (name, content) in [
+        (
+            "/ws/IFoo.Interface.al",
+            "interface IFoo\n{\n    procedure Bar();\n}\n",
+        ),
+        (
+            "/ws/Impl.Codeunit.al",
+            "codeunit 50101 \"Impl A\" implements IFoo\n{\n    procedure Bar()\n    begin\n    end;\n\n    procedure Other()\n    begin\n    end;\n}\n",
+        ),
+    ] {
+        file_index.add_file(std::path::PathBuf::from(name), content.to_string());
+    }
+    let symbols = SymbolIndex::new();
+    let mut insight = InsightGraph::new();
+    register_workspace_nodes(&file_index, &symbols, &mut insight).unwrap();
+    let mut cg = CallGraph::build_from_insight(&insight);
+    resolve_all_workspace_call_edges(&file_index, &symbols, &insight, &mut cg).unwrap();
+    link_interface_implementers(&symbols, &insight, &mut cg);
+
+    let bar = proc_node(&insight, ObjectKind::Codeunit, "Impl A", "Bar");
+    let other = proc_node(&insight, ObjectKind::Codeunit, "Impl A", "Other");
+    assert!(!cg.callers_of(bar).is_empty(), "Bar is reached from IFoo");
+    assert!(
+        cg.callers_of(other).is_empty(),
+        "Other is not an IFoo member"
+    );
 }

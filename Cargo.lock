@@ -54,6 +54,7 @@ dependencies = [
 name = "al-analysis"
 version = "0.1.0"
 dependencies = [
+ "al-emit",
  "al-insight",
  "al-project",
  "al-semantic",

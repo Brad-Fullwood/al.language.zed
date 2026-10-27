@@ -94,6 +94,26 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
         ));
     }
 
+    // Procedures an interface declares, by lowercase interface name. An
+    // object that `implements` the interface owns them because the interface
+    // dispatches to them, never through a direct call.
+    let mut interface_methods: std::collections::HashMap<
+        String,
+        std::collections::HashSet<String>,
+    > = std::collections::HashMap::new();
+    for source in &parsed_files {
+        for (object, node) in source.object_nodes() {
+            if object.info.kind.eq_ignore_ascii_case("interface") {
+                let mut procs = Vec::new();
+                collect_procedures(node, source.text.as_bytes(), &mut procs);
+                interface_methods
+                    .entry(object.info.name.to_ascii_lowercase())
+                    .or_default()
+                    .extend(procs.into_iter().map(|p| p.0.to_ascii_lowercase()));
+            }
+        }
+    }
+
     // Keep the query on the daemon dispatch thread. Rayon worker startup made
     // this small, latency-sensitive request hang indefinitely on Windows even
     // though the same parsed inputs complete immediately in serial. The
@@ -110,14 +130,20 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
             // unused members under the first object's name.
             for (object, node) in source.object_nodes() {
                 let obj_info = &object.info;
-                find_unused_procedures(
-                    &file_path,
-                    file_text,
-                    node,
-                    &obj_info.name,
-                    &all_call_names,
-                    &mut local,
-                );
+                let implemented =
+                    implemented_methods(node, file_text, workspace, &interface_methods);
+                // An interface declares a contract, its procedures have no body to call.
+                if !obj_info.kind.eq_ignore_ascii_case("interface") {
+                    find_unused_procedures(
+                        &file_path,
+                        file_text,
+                        node,
+                        &obj_info.name,
+                        &all_call_names,
+                        &implemented,
+                        &mut local,
+                    );
+                }
 
                 let obj_kind_lower = obj_info.kind.to_lowercase();
                 let is_table = al_syntax::language_data::object_type_by_keyword(&obj_kind_lower)
@@ -160,12 +186,14 @@ fn find_unused_procedures(
     object: tree_sitter::Node<'_>,
     object_name: &str,
     all_call_names: &std::collections::HashSet<String>,
+    implemented: &std::collections::HashSet<String>,
     results: &mut Vec<UnusedSymbol>,
 ) {
     let source = file_text.as_bytes();
     let mut procs = Vec::new();
 
     collect_procedures(object, source, &mut procs);
+    let object_call_names = al_syntax::collect_call_site_names_in(object, file_text);
 
     for (proc_name, is_event, line, is_local) in &procs {
         // Skip event publishers — they're entry points
@@ -174,7 +202,17 @@ fn find_unused_procedures(
         }
 
         let lname = proc_name.to_ascii_lowercase();
-        let referenced = all_call_names.contains(&lname);
+        // An interface implementation is called through the interface.
+        if implemented.contains(&lname) {
+            continue;
+        }
+        // A `local` procedure is callable only inside its own object, so a
+        // same-named call elsewhere does not keep it alive.
+        let referenced = if *is_local {
+            object_call_names.contains(&lname)
+        } else {
+            all_call_names.contains(&lname)
+        };
 
         if !referenced {
             // Locality decides confidence. A `local` procedure with
@@ -204,6 +242,47 @@ fn find_unused_procedures(
             });
         }
     }
+}
+
+/// Lowercase names of the procedures the interfaces named in the object's
+/// `implements` clause declare. Workspace interfaces come from
+/// `interface_methods`, interfaces from dependencies from the symbol index.
+fn implemented_methods(
+    object: tree_sitter::Node<'_>,
+    text: &str,
+    workspace: &Workspace,
+    interface_methods: &std::collections::HashMap<String, std::collections::HashSet<String>>,
+) -> std::collections::HashSet<String> {
+    let mut methods = std::collections::HashSet::new();
+    let mut cursor = object.walk();
+    for clause in object
+        .children(&mut cursor)
+        .filter(|c| c.kind() == "implements_clause")
+    {
+        // The grammar reuses this node for `extends`: only `implements` counts.
+        let is_implements = clause
+            .child(0)
+            .and_then(|k| k.utf8_text(text.as_bytes()).ok())
+            .is_some_and(|k| k.eq_ignore_ascii_case("implements"));
+        if !is_implements {
+            continue;
+        }
+        let mut names = Vec::new();
+        al_syntax::walk_tree(clause, &mut |n| {
+            if n.kind() == "name" {
+                if let Ok(t) = n.utf8_text(text.as_bytes()) {
+                    names.push(al_syntax::clean_identifier(t).to_ascii_lowercase());
+                }
+            }
+        });
+        for name in names {
+            if let Some(found) = interface_methods.get(&name) {
+                methods.extend(found.iter().cloned());
+            }
+            methods.extend(workspace.symbols.interface_method_names([name.as_str()]));
+        }
+    }
+    methods
 }
 
 fn collect_procedures(
@@ -330,11 +409,14 @@ fn find_unused_fields(
 ) {
     let fields = collect_table_fields(object, file_text);
     let local_primary_names = al_syntax::collect_primary_expression_names_under(object, file_text);
+    let key_fields = key_field_names(object, file_text);
 
     for (field_name, line) in &fields {
         let field_key = field_name.to_ascii_lowercase();
+        // A field in a `key(...)` is used by the table's sorting and filtering.
         let referenced = all_member_access_names.contains(&field_key)
-            || local_primary_names.contains(&field_key);
+            || local_primary_names.contains(&field_key)
+            || key_fields.contains(&field_key);
 
         if !referenced {
             // FieldRef/RecordRef, report layouts, and dependent extensions are
@@ -356,6 +438,26 @@ fn find_unused_fields(
             });
         }
     }
+}
+
+/// Lowercase names of the fields listed in the object's `key(...)` declarations.
+fn key_field_names(object: tree_sitter::Node<'_>, text: &str) -> std::collections::HashSet<String> {
+    let mut names = std::collections::HashSet::new();
+    al_syntax::walk_tree(object, &mut |n| {
+        if n.kind() != "key_field_list" {
+            return;
+        }
+        let mut cursor = n.walk();
+        for part in n.children(&mut cursor) {
+            if matches!(part.kind(), "comma") {
+                continue;
+            }
+            if let Ok(t) = part.utf8_text(text.as_bytes()) {
+                names.insert(al_syntax::clean_identifier(t).to_ascii_lowercase());
+            }
+        }
+    });
+    names
 }
 
 fn collect_table_fields(object: tree_sitter::Node<'_>, text: &str) -> Vec<(String, u32)> {
@@ -796,6 +898,200 @@ codeunit 50101 "Ship Helper"
             !unused.iter().any(|u| u.name == "UsedProc"),
             "UsedProc should not be flagged as unused"
         );
+    }
+
+    fn flagged(unused: &[UnusedSymbol], name: &str) -> bool {
+        unused.iter().any(|u| u.name == name)
+    }
+
+    #[test]
+    fn a_truly_unused_local_procedure_is_still_high_confidence() {
+        let ws = workspace_with_files(vec![(
+            "/src/Lib.al",
+            r#"codeunit 50100 "Lib"
+{
+    local procedure NeverCalled()
+    begin
+    end;
+}"#,
+        )]);
+        let unused = dead_code(&ws).unwrap();
+        assert!(
+            unused
+                .iter()
+                .any(|u| u.name == "NeverCalled" && u.confidence == Confidence::High),
+            "{unused:?}"
+        );
+    }
+
+    #[test]
+    fn a_call_in_a_page_field_expression_counts() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/Lib.al",
+                r#"codeunit 50100 "Lib"
+{
+    procedure CalcIt(Value: Decimal): Decimal
+    begin
+    end;
+}"#,
+            ),
+            (
+                "/src/Pg.al",
+                r#"page 50101 "Pg"
+{
+    SourceTable = Customer;
+    layout
+    {
+        area(Content)
+        {
+            field(Cost; Lib.CalcIt(GetCost()))
+            {
+                ApplicationArea = All;
+            }
+        }
+    }
+
+    local procedure GetCost(): Decimal
+    begin
+    end;
+}"#,
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        assert!(!flagged(&unused, "GetCost"), "{unused:?}");
+        assert!(!flagged(&unused, "CalcIt"), "{unused:?}");
+    }
+
+    #[test]
+    fn a_call_through_a_global_variable_in_a_page_field_expression_counts() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/a.al",
+                "codeunit 50100 \"Lib\"\n{\n    procedure GetDocumentProfit(): Decimal\n    begin\n    end;\n}\n",
+            ),
+            (
+                "/src/p.al",
+                "page 50101 \"Pg\"\n{\n    layout\n    {\n        area(Content)\n        {\n            field(\"AUK HdrProfitPct\"; ProfitCalcMngt.GetDocumentProfit())\n            {\n            }\n        }\n    }\n    var\n        ProfitCalcMngt: Codeunit Lib;\n}\n",
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        assert!(!flagged(&unused, "GetDocumentProfit"), "{unused:?}");
+    }
+
+    #[test]
+    fn a_call_in_a_report_column_expression_counts() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/Lib.al",
+                r#"codeunit 50100 "Lib"
+{
+    procedure ForLine(Value: Integer): Text
+    begin
+    end;
+}"#,
+            ),
+            (
+                "/src/Rep.al",
+                r#"reportextension 50101 "Rep Ext" extends "Some Report"
+{
+    dataset
+    {
+        add(Line)
+        {
+            column(Qty; Format(GetQty(Line, 1)) + Lib.ForLine(2))
+            {
+            }
+        }
+    }
+
+    local procedure GetQty(Value: Integer; Kind: Integer): Decimal
+    begin
+    end;
+}"#,
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        assert!(!flagged(&unused, "GetQty"), "{unused:?}");
+        assert!(!flagged(&unused, "ForLine"), "{unused:?}");
+    }
+
+    #[test]
+    fn an_interface_implementation_is_not_dead() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/IShip.al",
+                r#"interface IShip
+{
+    procedure Book(Id: Integer);
+    procedure Cancel(Id: Integer);
+}"#,
+            ),
+            (
+                "/src/Carrier.al",
+                r#"codeunit 50100 "Carrier" implements IShip
+{
+    procedure Book(Id: Integer)
+    begin
+    end;
+
+    procedure Cancel(Id: Integer)
+    begin
+    end;
+
+    procedure Unrelated()
+    begin
+    end;
+}"#,
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        assert!(!flagged(&unused, "Book"), "{unused:?}");
+        assert!(!flagged(&unused, "Cancel"), "{unused:?}");
+        assert!(flagged(&unused, "Unrelated"), "{unused:?}");
+    }
+
+    #[test]
+    fn a_local_procedure_is_not_kept_alive_by_a_call_in_another_object() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/A.al",
+                "codeunit 50100 \"A\"\n{\n    local procedure Encode(Input: Text): Text\n    begin\n    end;\n}\n",
+            ),
+            (
+                "/src/B.al",
+                "codeunit 50101 \"B\"\n{\n    procedure Run()\n    begin\n        Encode('x');\n    end;\n\n    local procedure Encode(Input: Text): Text\n    begin\n    end;\n}\n",
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        let hits: Vec<_> = unused
+            .iter()
+            .filter(|u| u.name == "Encode")
+            .map(|u| u.object.as_str())
+            .collect();
+        assert_eq!(hits, vec!["A"], "{unused:?}");
+    }
+
+    #[test]
+    fn a_field_named_in_a_key_is_not_unused() {
+        let ws = workspace_with_files(vec![(
+            "/src/Setup.al",
+            r#"table 50100 "Setup"
+{
+    fields
+    {
+        field(1; "Primary Key"; Code[10]) { }
+        field(2; Orphan; Integer) { }
+    }
+    keys
+    {
+        key(PK; "Primary Key") { Clustered = true; }
+    }
+}"#,
+        )]);
+        let unused = dead_code(&ws).unwrap();
+        assert!(!flagged(&unused, "Primary Key"), "{unused:?}");
+        assert!(flagged(&unused, "Orphan"), "{unused:?}");
     }
 
     #[test]

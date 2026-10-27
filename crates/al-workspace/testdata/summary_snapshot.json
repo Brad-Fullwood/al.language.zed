@@ -1,5 +1,5 @@
 {
-  "schema_version": 5,
+  "schema_version": 6,
   "summary": {
     "files": [
       {
@@ -26,6 +26,11 @@
                   "object_vars": {}
                 }
               ]
+            },
+            "head_calls": {
+              "call_sites": [],
+              "record_vars": {},
+              "object_vars": {}
             },
             "effects": [
               {
@@ -95,6 +100,11 @@
                   "object_vars": {}
                 }
               ]
+            },
+            "head_calls": {
+              "call_sites": [],
+              "record_vars": {},
+              "object_vars": {}
             },
             "effects": [
               {
@@ -389,6 +399,11 @@
                 }
               ]
             },
+            "head_calls": {
+              "call_sites": [],
+              "record_vars": {},
+              "object_vars": {}
+            },
             "effects": [
               {
                 "name": "Tidy",
@@ -635,6 +650,11 @@
                 }
               ]
             },
+            "head_calls": {
+              "call_sites": [],
+              "record_vars": {},
+              "object_vars": {}
+            },
             "effects": [
               {
                 "name": "OnInsert",
@@ -717,6 +737,11 @@
                   "object_vars": {}
                 }
               ]
+            },
+            "head_calls": {
+              "call_sites": [],
+              "record_vars": {},
+              "object_vars": {}
             },
             "effects": [
               {

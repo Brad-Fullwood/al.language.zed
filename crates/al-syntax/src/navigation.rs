@@ -474,7 +474,15 @@ pub fn count_call_references(tree: &Tree, text: &str, name: &str) -> usize {
 /// membership checks without per-query allocation.
 ///
 pub fn collect_call_site_names(tree: &Tree, text: &str) -> std::collections::HashSet<String> {
-    let root = tree.root_node();
+    collect_call_site_names_in(tree.root_node(), text)
+}
+
+/// [`collect_call_site_names`] for the subtree under `root`, such as one
+/// object of a file that holds several.
+pub fn collect_call_site_names_in(
+    root: tree_sitter::Node<'_>,
+    text: &str,
+) -> std::collections::HashSet<String> {
     let source = text.as_bytes();
     let mut names = std::collections::HashSet::new();
     walk_tree(root, &mut |node| {
@@ -587,9 +595,32 @@ fn is_call_reference(node: Node, _source: &[u8]) -> bool {
             let field = get_field_name_of_child(parent, name_node);
             field.as_deref() == Some("member")
         }
+        // The grammar keeps the head of a section such as `field(Name; Expr)`
+        // or `column(Name; Expr)` as a flat run of tokens in nested
+        // `parenthesized_block` nodes, with no expression nodes. A call there
+        // is an identifier directly followed by a `parenthesized_block`.
+        "parenthesized_block" => {
+            node.next_sibling()
+                .is_some_and(|next| next.kind() == "parenthesized_block")
+                && in_section_head(parent)
+        }
         "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration" => false,
         _ => false,
     }
+}
+
+/// True when `block` is the head of an `object_section` such as a page
+/// `field(...)` or a report `column(...)`, possibly through nested blocks.
+fn in_section_head(block: Node) -> bool {
+    let mut current = block;
+    while let Some(parent) = current.parent() {
+        match parent.kind() {
+            "parenthesized_block" => current = parent,
+            "object_section" => return true,
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn get_field_name_of_child(parent: Node, child: Node) -> Option<String> {
@@ -894,6 +925,27 @@ mod tests {
         let names = collect_call_site_names(&result.tree, src);
 
         assert!(names.contains(r#"do "it" now"#), "got {names:?}");
+    }
+
+    #[test]
+    fn calls_in_page_field_and_report_column_expressions_are_call_sites() {
+        let src = "page 50100 \"Pg\"\n{\n    layout\n    {\n        area(Content)\n        {\n            field(Cost; Mgt.CalcIt(GetCost(), 1))\n            {\n                ApplicationArea = All;\n            }\n        }\n    }\n}\n\
+                   reportextension 50101 \"RE\" extends \"Rep\"\n{\n    dataset\n    {\n        add(Line)\n        {\n            column(Qty; Format(GetQty(Line, 1)))\n            {\n            }\n        }\n    }\n}\n";
+        let mut parser = AlParser::new();
+        let result = parser.parse(src);
+
+        let names = collect_call_site_names(&result.tree, src);
+
+        for expected in ["calcit", "getcost", "format", "getqty"] {
+            assert!(
+                names.contains(expected),
+                "{expected} missing from {names:?}"
+            );
+        }
+        // Section names and field names in the head are not calls.
+        for absent in ["cost", "qty", "line", "content"] {
+            assert!(!names.contains(absent), "{absent} found in {names:?}");
+        }
     }
 
     #[test]

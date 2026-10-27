@@ -414,3 +414,49 @@ pub(super) fn parse_type_reference_for_record(
 
     (type_keyword, subtype)
 }
+
+/// The record and object-typed variables declared in the object-level `var`
+/// sections of `object_node`, as (record variables, object variables) keyed
+/// by lowercase name. A procedure sees them unless it declares its own.
+pub fn object_global_var_types(
+    object_node: tree_sitter::Node<'_>,
+    source: &str,
+) -> (HashMap<String, String>, HashMap<String, String>) {
+    let bytes = source.as_bytes();
+    let mut records = HashMap::new();
+    let mut objects = HashMap::new();
+    let Some(body) = object_node.child_by_field_name("body") else {
+        return (records, objects);
+    };
+    let mut cursor = body.walk();
+    for section in body
+        .children(&mut cursor)
+        .filter(|c| c.kind() == "object_var_section")
+    {
+        let mut inner = section.walk();
+        for declaration in section
+            .children(&mut inner)
+            .filter(|c| c.kind() == "object_variable_declaration")
+        {
+            collect_record_from_variable_declaration(declaration, bytes, &mut records);
+            let mut parts = declaration.walk();
+            for part in declaration.children(&mut parts) {
+                if part.kind() == "regular_variable_declaration" {
+                    collect_object_var_from_regular_decl(part, bytes, &mut objects);
+                }
+            }
+        }
+    }
+    (records, objects)
+}
+
+/// The `object_declaration` that holds `node`.
+pub(super) fn enclosing_object<'a>(node: tree_sitter::Node<'a>) -> Option<tree_sitter::Node<'a>> {
+    let mut current = node;
+    loop {
+        if current.kind() == "object_declaration" {
+            return Some(current);
+        }
+        current = current.parent()?;
+    }
+}
