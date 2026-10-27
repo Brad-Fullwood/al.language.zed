@@ -7,10 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
 
 pub fn token_cache_path(tenant: &str) -> PathBuf {
-    let cache_dir = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("al-lsp")
-        .join("oauth");
+    let cache_dir = al_types::cache_root_or_tmp().join("oauth");
     let safe: String = tenant
         .chars()
         .map(|c| {

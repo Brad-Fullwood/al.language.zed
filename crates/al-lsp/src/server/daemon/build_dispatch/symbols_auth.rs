@@ -7,9 +7,7 @@ use al_workspace::Workspace;
 use std::path::PathBuf;
 
 pub(in crate::server::daemon) async fn dispatch_clear_cache(id: u64) -> Response {
-    let cache_dir = dirs::cache_dir()
-        .map(|d| d.join("al-lsp").join("index"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/index"));
+    let cache_dir = al_types::cache_root_or_tmp().join("index");
     clear_cache_dir(id, cache_dir).await
 }
 
@@ -1005,7 +1003,10 @@ mod tests {
 
     #[tokio::test]
     async fn clear_cache_reports_shape_and_no_error() {
-        let resp = dispatch_clear_cache(7).await;
+        // Run against a temp directory: the real index belongs to the editor's al-lsp.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("index")).unwrap();
+        let resp = clear_cache_dir(7, tmp.path().join("index")).await;
         assert!(resp.error.is_none(), "transport error: {:?}", resp.error);
         let r = resp.result.expect("result");
         for key in ["deleted", "existed", "path", "error"] {

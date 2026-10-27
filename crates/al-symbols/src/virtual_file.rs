@@ -12,10 +12,7 @@ use super::source_index::{is_ident_char, is_ident_start, parse_quoted_ident};
 const VIRTUAL_FILE_CACHE_VERSION: &[u8] = b"al-virtual-source-v2";
 
 pub fn cache_dir() -> PathBuf {
-    dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("al-lsp")
-        .join("symbols")
+    al_types::cache_root_or_tmp().join("symbols")
 }
 
 /// Tries to extract source from the .app ZIP archive first.

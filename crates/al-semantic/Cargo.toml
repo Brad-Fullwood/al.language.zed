@@ -13,6 +13,7 @@ serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
+al-types = { path = "../al-types", version = "0.1.0" }
 dirs = { workspace = true }
 # In-process .NET hosting. Without this feature, bridge initialization returns
 # `SemanticError::NotInitialized`.

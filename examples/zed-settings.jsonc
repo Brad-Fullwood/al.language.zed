@@ -61,6 +61,7 @@
 
         // ── Resource limits ──
         "al.maxDocumentSizeBytes": null, // null = no cap
+        "al.indexThreads": null, // null = half the cores, between 2 and 4
 
         // ── Toolchain ──
         // Path to the dotnet host used for Microsoft ALTool, alc, the semantic

@@ -687,9 +687,8 @@ pub(super) async fn show_report(
     text.push_str(&String::from_utf8_lossy(&output.stdout));
     text.push_str(&String::from_utf8_lossy(&output.stderr));
 
-    let dir = dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("al-lsp")
+    let dir = al_types::cache_root()
+        .unwrap_or_else(|| std::env::temp_dir().join("al-lsp"))
         .join("reports");
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;
