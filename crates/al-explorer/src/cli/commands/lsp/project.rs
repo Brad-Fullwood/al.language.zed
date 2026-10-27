@@ -412,7 +412,14 @@ fn login_in_process(
         al_symbols::oauth::SignInMode::Auto
     };
     let messages = std::sync::Mutex::new(Vec::<String>::new());
-    let result = al_symbols::oauth::acquire_token_blocking(&tenant, mode, |msg| {
+    let settings = match project_root(None).and_then(|root| {
+        al_symbols::oauth::AuthSettings::for_project_root(&root, &tenant)
+            .map_err(|e| format!("Invalid entraIdAuthentication: {e}"))
+    }) {
+        Ok(s) => s,
+        Err(e) => return report_error(&e, json),
+    };
+    let result = al_symbols::oauth::acquire_token_blocking(&tenant, &settings, mode, |msg| {
         al_symbols::oauth::announce(&terminal_text(msg));
         if let Ok(mut guard) = messages.lock() {
             guard.push(msg.to_string());

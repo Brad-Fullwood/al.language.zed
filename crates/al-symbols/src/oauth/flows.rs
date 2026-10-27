@@ -1,21 +1,21 @@
 //! The OAuth flows themselves: auth code with PKCE, device code, and
 //! refresh, plus the polling rules the token endpoint drives.
 
+use super::al_cache::al_refresh_token;
 use super::cache::{load_cached_token, now_unix, save_cached_token, token_cache_path};
 use super::encoding::percent_encode;
 use super::pkce::{generate_code_verifier, generate_random_string, pkce_challenge};
 use super::redirect::{open_browser, wait_for_auth_callback};
+use super::settings::AuthSettings;
 use super::validation::{is_valid_tenant, is_well_formed_guid};
 use super::{OAuthError, TokenResponse};
 use serde::Deserialize;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, info};
 
-/// Azure CLI public client ID — first-party Microsoft app that supports
-/// auth code + PKCE with localhost redirect for any Microsoft API scope.
-pub(super) const DEFAULT_CLIENT_ID: &str = "04b07795-8ddb-461a-bbee-02f9e1bf7b46";
-
-const BC_SCOPE: &str = "https://api.businesscentral.dynamics.com/.default offline_access";
+/// The AL extension's public client, the default in Microsoft's own client
+/// (CloudHttpClientFactory.cs:228). The Azure CLI client this module used
+/// before is still reachable through `BC_CLIENT_ID`.
 
 /// Upper bound on the device-code polling interval. Each `slow_down` response
 /// from the token endpoint bumps the interval by 5s; without a cap a buggy or
@@ -64,6 +64,16 @@ pub async fn acquire_token(
     acquire_token_with_mode(client, tenant, SignInMode::Auto, on_message).await
 }
 
+/// [`acquire_token`] with an explicit sign-in mode and the default settings.
+pub async fn acquire_token_with_mode(
+    client: &reqwest::Client,
+    tenant: &str,
+    mode: SignInMode,
+    on_message: impl Fn(&str),
+) -> Result<String, OAuthError> {
+    acquire_token_with_settings(client, tenant, &AuthSettings::default(), mode, on_message).await
+}
+
 /// How an interactive sign-in is started when no cached token works.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignInMode {
@@ -79,24 +89,29 @@ pub enum SignInMode {
 /// its own HTTP client and a current-thread runtime.
 pub fn acquire_token_blocking(
     tenant: &str,
+    settings: &AuthSettings,
     mode: SignInMode,
     on_message: impl Fn(&str),
 ) -> Result<String, OAuthError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(acquire_token_with_mode(
+    runtime.block_on(acquire_token_with_settings(
         &reqwest::Client::new(),
         tenant,
+        settings,
         mode,
         on_message,
     ))
 }
 
-/// [`acquire_token`] with an explicit sign-in mode.
-pub async fn acquire_token_with_mode(
+/// [`acquire_token`] with explicit sign-in settings (launch.json
+/// `entraIdAuthentication`) and mode. `BC_CLIENT_ID` still wins over the
+/// settings' client id.
+pub async fn acquire_token_with_settings(
     client: &reqwest::Client,
     tenant: &str,
+    settings: &AuthSettings,
     mode: SignInMode,
     on_message: impl Fn(&str),
 ) -> Result<String, OAuthError> {
@@ -111,7 +126,8 @@ pub async fn acquire_token_with_mode(
              'common'/'organizations'/'consumers'"
         )));
     }
-    let client_id = configured_client_id()?;
+    let mut auth = settings.clone();
+    auth.client_id = configured_client_id(&settings.client_id)?;
     let cache_path = token_cache_path(tenant);
 
     if let Some(cached) = load_cached_token(&cache_path, tenant) {
@@ -125,7 +141,7 @@ pub async fn acquire_token_with_mode(
 
         if let Some(ref refresh) = cached.refresh_token {
             debug!(tenant, "Access token expired, refreshing");
-            match refresh_token_flow(client, tenant, &client_id, refresh).await {
+            match refresh_token_flow(client, tenant, &auth, refresh).await {
                 Ok(tok) => {
                     save_cached_token(&cache_path, tenant, &tok);
                     info!(tenant, "Refreshed BC access token");
@@ -139,14 +155,30 @@ pub async fn acquire_token_with_mode(
         }
     }
 
-    let tok = interactive_sign_in(client, tenant, &client_id, mode, &on_message).await?;
+    // The AL extension's own cache, when this process uses the same client id.
+    // Read only. A failed exchange falls through to interactive sign-in.
+    if let Some(al_refresh) = al_refresh_token(tenant, &auth.client_id) {
+        match refresh_token_flow(client, tenant, &auth, &al_refresh).await {
+            Ok(tok) => {
+                save_cached_token(&cache_path, tenant, &tok);
+                info!(
+                    tenant,
+                    "Signed in with the AL extension's cached refresh token"
+                );
+                return Ok(tok.access_token.clone());
+            }
+            Err(e) => debug!(error = %e, "AL cache refresh token not accepted"),
+        }
+    }
+
+    let tok = interactive_sign_in(client, tenant, &auth, mode, &on_message).await?;
     save_cached_token(&cache_path, tenant, &tok);
     info!(tenant, "Acquired BC access token");
     // Clone so `tok` drops intact (Drop scrubs the secrets).
     Ok(tok.access_token.clone())
 }
 
-pub(super) fn configured_client_id() -> Result<String, OAuthError> {
+pub(super) fn configured_client_id(default: &str) -> Result<String, OAuthError> {
     match std::env::var("BC_CLIENT_ID") {
         Ok(v) if !v.trim().is_empty() => {
             let trimmed = v.trim();
@@ -161,7 +193,7 @@ pub(super) fn configured_client_id() -> Result<String, OAuthError> {
             }
         }
         Ok(_) => Err(OAuthError::Other("BC_CLIENT_ID is blank".to_string())),
-        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_CLIENT_ID.into()),
+        Err(std::env::VarError::NotPresent) => Ok(default.into()),
         Err(std::env::VarError::NotUnicode(_)) => Err(OAuthError::Other(
             "BC_CLIENT_ID contains non-UTF-8 bytes".to_string(),
         )),
@@ -171,14 +203,14 @@ pub(super) fn configured_client_id() -> Result<String, OAuthError> {
 pub(super) async fn interactive_sign_in(
     client: &reqwest::Client,
     tenant: &str,
-    client_id: &str,
+    auth: &AuthSettings,
     mode: SignInMode,
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
     if mode == SignInMode::DeviceCode {
-        return device_code_flow(client, tenant, client_id, false, on_message).await;
+        return device_code_flow(client, tenant, auth, false, on_message).await;
     }
-    match browser_auth_flow(client, tenant, client_id, on_message).await {
+    match browser_auth_flow(client, tenant, auth, on_message).await {
         Ok(tok) => return Ok(tok),
         Err(e) => {
             debug!(error = %e, "Browser auth flow failed, trying device code");
@@ -186,31 +218,31 @@ pub(super) async fn interactive_sign_in(
         }
     }
 
-    device_code_flow(client, tenant, client_id, true, on_message).await
+    device_code_flow(client, tenant, auth, true, on_message).await
 }
 
 pub(super) async fn browser_auth_flow(
     client: &reqwest::Client,
     tenant: &str,
-    client_id: &str,
+    auth: &AuthSettings,
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
     let verifier = generate_code_verifier()?;
     let challenge = pkce_challenge(&verifier);
     let state = generate_random_string(16)?;
+    let scope = auth.scope_string();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();
     let redirect_uri = format!("http://localhost:{port}");
 
     let auth_url = format!(
-        "https://login.microsoftonline.com/{}/oauth2/v2.0/authorize?\
-         client_id={}&response_type=code&redirect_uri={}&scope={}&\
+        "{}?client_id={}&response_type=code&redirect_uri={}&scope={}&\
          code_challenge={}&code_challenge_method=S256&state={}&prompt=select_account",
-        tenant,
-        client_id,
+        auth.url(tenant, "authorize"),
+        auth.client_id,
         percent_encode(&redirect_uri),
-        percent_encode(BC_SCOPE),
+        percent_encode(&scope),
         challenge,
         state,
     );
@@ -230,17 +262,17 @@ pub(super) async fn browser_auth_flow(
     .await
     .map_err(|_| OAuthError::Expired)??;
 
-    let token_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token");
+    let token_url = auth.url(tenant, "token");
 
     let resp = client
         .post(&token_url)
         .form(&[
             ("grant_type", "authorization_code"),
-            ("client_id", client_id),
+            ("client_id", auth.client_id.as_str()),
             ("code", &code),
             ("redirect_uri", &redirect_uri),
             ("code_verifier", &verifier),
-            ("scope", BC_SCOPE),
+            ("scope", scope.as_str()),
         ])
         .send()
         .await?;
@@ -301,16 +333,20 @@ fn device_code_prompt(dc: &DeviceCodeResponse, open_window: bool) -> String {
 pub(super) async fn device_code_flow(
     client: &reqwest::Client,
     tenant: &str,
-    client_id: &str,
+    auth: &AuthSettings,
     open_window: bool,
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
-    let device_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/devicecode");
-    let token_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token");
+    let device_url = auth.url(tenant, "devicecode");
+    let token_url = auth.url(tenant, "token");
+    let scope = auth.scope_string();
 
     let dc: DeviceCodeResponse = client
         .post(&device_url)
-        .form(&[("client_id", client_id), ("scope", BC_SCOPE)])
+        .form(&[
+            ("client_id", auth.client_id.as_str()),
+            ("scope", scope.as_str()),
+        ])
         .send()
         .await?
         .json()
@@ -349,7 +385,7 @@ pub(super) async fn device_code_flow(
             .post(&token_url)
             .form(&[
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                ("client_id", client_id),
+                ("client_id", auth.client_id.as_str()),
                 ("device_code", &dc.device_code),
             ])
             .send()
@@ -401,18 +437,19 @@ pub(super) async fn device_code_flow(
 pub(super) async fn refresh_token_flow(
     client: &reqwest::Client,
     tenant: &str,
-    client_id: &str,
+    auth: &AuthSettings,
     refresh: &str,
 ) -> Result<TokenResponse, OAuthError> {
-    let token_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token");
+    let token_url = auth.url(tenant, "token");
+    let scope = auth.scope_string();
 
     let resp = client
         .post(&token_url)
         .form(&[
             ("grant_type", "refresh_token"),
-            ("client_id", client_id),
+            ("client_id", auth.client_id.as_str()),
             ("refresh_token", refresh),
-            ("scope", BC_SCOPE),
+            ("scope", scope.as_str()),
         ])
         .send()
         .await?;

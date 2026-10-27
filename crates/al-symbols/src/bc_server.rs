@@ -56,6 +56,7 @@ pub struct BcServerClient {
     client: reqwest::Client,
     auth: AuthMethod,
     tenant: Option<String>,
+    auth_settings: oauth::AuthSettings,
     message_sink: MessageSink,
     /// Cached access token for the session (avoids re-auth per package).
     ///
@@ -108,12 +109,20 @@ impl BcServerClient {
             client,
             auth,
             tenant,
+            auth_settings: oauth::AuthSettings::default(),
             message_sink,
             cached_token: tokio::sync::RwLock::new(None),
             stale_env_token: std::sync::atomic::AtomicBool::new(false),
             package_locks: std::sync::Mutex::new(HashMap::new()),
             completed_downloads: std::sync::Mutex::new(HashMap::new()),
         })
+    }
+
+    /// Use the launch configuration's `entraIdAuthentication` for sign-in.
+    #[must_use]
+    pub fn with_auth_settings(mut self, settings: oauth::AuthSettings) -> Self {
+        self.auth_settings = settings;
+        self
     }
 
     fn lock_for(&self, output_path: &Path) -> Result<Arc<tokio::sync::Mutex<()>>, BcServerError> {
@@ -405,9 +414,15 @@ impl BcServerClient {
                 let mut guard = self.cached_token.write().await;
                 if guard.is_none() {
                     let sink = self.message_sink.clone();
-                    let token = oauth::acquire_token(&self.client, tenant, &*sink)
-                        .await
-                        .map_err(BcServerError::OAuth)?;
+                    let token = oauth::acquire_token_with_settings(
+                        &self.client,
+                        tenant,
+                        &self.auth_settings,
+                        oauth::SignInMode::Auto,
+                        &*sink,
+                    )
+                    .await
+                    .map_err(BcServerError::OAuth)?;
                     *guard = Some(token);
                 }
                 let token = guard.as_ref().expect("token populated above");

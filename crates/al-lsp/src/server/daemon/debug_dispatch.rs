@@ -350,10 +350,34 @@ pub(super) async fn acquire_bc_token(
         Ok(Some(token)) => Ok(token),
         Ok(None) => {
             let client = reqwest::Client::new();
-            al_symbols::oauth::acquire_token(&client, &config.tenant, |message| {
-                tracing::info!("Business Central authentication: {message}");
-                al_symbols::oauth::announce(message);
-            })
+            let settings = match workspace.project.try_read() {
+                Ok(guard) => guard.as_ref().map_or_else(
+                    || Ok(Default::default()),
+                    |p| {
+                        al_symbols::oauth::AuthSettings::for_tenant(
+                            &p.server_configs,
+                            &config.tenant,
+                        )
+                    },
+                ),
+                Err(_) => Ok(Default::default()),
+            }
+            .map_err(|error| {
+                (
+                    error_codes::INVALID_PARAMS,
+                    format!("Invalid entraIdAuthentication: {error}"),
+                )
+            })?;
+            al_symbols::oauth::acquire_token_with_settings(
+                &client,
+                &config.tenant,
+                &settings,
+                al_symbols::oauth::SignInMode::Auto,
+                |message| {
+                    tracing::info!("Business Central authentication: {message}");
+                    al_symbols::oauth::announce(message);
+                },
+            )
             .await
             .map_err(|error| {
                 (

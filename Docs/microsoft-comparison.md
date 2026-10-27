@@ -33,7 +33,7 @@ feature pages for implementation details and limitations.
 | Compile-time validation | ✅ native syntax/project/declaration/declared-binding/integrity checks, optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
 | Symbol download | ✅ NuGet or BC server (one per run, chosen with `--source`), concurrent, deduped, no restart. Per-tenant apps need `--source server` | ✅ download-symbols |
-| OAuth (Entra) | ✅ PKCE + device code, token zeroization | ✅ |
+| OAuth (Entra) | ✅ PKCE + device code (`authenticate login --device-code` prints the code to stderr). Uses the AL extension client id, honours launch.json `entraIdAuthentication`, and exchanges the AL extension's cached refresh token. Token zeroization. | ✅ |
 | Force Microsoft compiler | ✅ `al.useOfficialCompiler` | n/a |
 
 ## Analysis (largely unique to this project)

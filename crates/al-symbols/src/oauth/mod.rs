@@ -7,15 +7,21 @@
 //!
 //! Tokens are cached to disk with refresh token support.
 
+mod al_cache;
 mod cache;
 mod encoding;
 mod flows;
 mod pkce;
 mod redirect;
+mod settings;
 mod validation;
 
 pub use cache::{cached_token_expiry, invalidate_cached_token, token_cache_path};
-pub use flows::{acquire_token, acquire_token_blocking, acquire_token_with_mode, SignInMode};
+pub use flows::{
+    acquire_token, acquire_token_blocking, acquire_token_with_mode, acquire_token_with_settings,
+    SignInMode,
+};
+pub use settings::{AuthSettings, AL_CLIENT_ID};
 
 use serde::{Deserialize, Serialize};
 use std::io::Write;

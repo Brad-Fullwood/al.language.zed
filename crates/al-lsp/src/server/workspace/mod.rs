@@ -1045,7 +1045,12 @@ async fn download_symbols_from_server(
         config.tenant.clone(),
         message_sink,
         insecure_tls,
-    ) {
+    )
+    .and_then(|c| {
+        let settings = al_symbols::oauth::AuthSettings::from_launch_value(&config.debug_args)
+            .map_err(al_symbols::bc_server::BcServerError::OAuth)?;
+        Ok(c.with_auth_settings(settings))
+    }) {
         Ok(c) => c,
         Err(e) => {
             return DownloadBatch {

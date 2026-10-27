@@ -415,24 +415,38 @@ async fn run() {
         let fi3 = file_index.clone();
         let snap_root = PathBuf::from(&project_root);
         let authorize_root = PathBuf::from(&project_root);
+        let auth_root = PathBuf::from(&project_root);
 
         if let Err(e) = al_dap::dap::native_dap::run_native_dap(
             &project_root,
             std::sync::Arc::new(move |config: &al_dap::dap::bc_debug::BcDebugConfig| {
                 al_lsp::server::dap_mode::authorize_debug_scenario(&authorize_root, config)
             }),
-            |tenant| async move {
-                match al_bc::http_auth::access_token_from_env().map_err(|e| e.to_string())? {
-                    Some(token) => Ok(token),
-                    None => {
-                        let client = reqwest::Client::new();
-                        al_symbols::oauth::acquire_token(&client, &tenant, |msg| {
-                            // stderr, so the device code shows in the editor's
-                            // adapter log (stdout carries the DAP stream).
-                            al_symbols::oauth::announce(msg);
-                        })
-                        .await
-                        .map_err(|e| e.to_string())
+            move |tenant| {
+                let auth_root = auth_root.clone();
+                async move {
+                    match al_bc::http_auth::access_token_from_env().map_err(|e| e.to_string())? {
+                        Some(token) => Ok(token),
+                        None => {
+                            let client = reqwest::Client::new();
+                            let settings = al_symbols::oauth::AuthSettings::for_project_root(
+                                &auth_root, &tenant,
+                            )
+                            .map_err(|e| format!("Invalid entraIdAuthentication: {e}"))?;
+                            al_symbols::oauth::acquire_token_with_settings(
+                                &client,
+                                &tenant,
+                                &settings,
+                                al_symbols::oauth::SignInMode::Auto,
+                                |msg| {
+                                    // stderr, so the device code shows in the editor's
+                                    // adapter log (stdout carries the DAP stream).
+                                    al_symbols::oauth::announce(msg);
+                                },
+                            )
+                            .await
+                            .map_err(|e| e.to_string())
+                        }
                     }
                 }
             },

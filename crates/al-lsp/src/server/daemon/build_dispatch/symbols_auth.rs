@@ -176,13 +176,43 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
             let messages = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
             let msgs_clone = messages.clone();
 
-            match al_symbols::oauth::acquire_token(&client, &tenant, move |msg| {
-                if let Ok(mut guard) = msgs_clone.lock() {
-                    guard.push(msg.to_string());
+            let settings = match workspace.project.try_read() {
+                Ok(guard) => guard
+                    .as_ref()
+                    .map(|p| {
+                        al_symbols::oauth::AuthSettings::for_tenant(&p.server_configs, &tenant)
+                    })
+                    .unwrap_or_else(|| Ok(Default::default())),
+                Err(_) => Ok(Default::default()),
+            };
+            let settings = match settings {
+                Ok(s) => s,
+                Err(e) => {
+                    return Response {
+                        id,
+                        result: None,
+                        error: Some(RpcError {
+                            code: error_codes::INVALID_PARAMS,
+                            message: format!("Invalid entraIdAuthentication: {e}"),
+                        }),
+                        ..Default::default()
+                    };
                 }
-                tracing::info!("{msg}");
-                al_symbols::oauth::announce(msg);
-            })
+            };
+
+            match al_symbols::oauth::acquire_token_with_settings(
+                &client,
+                &tenant,
+                &settings,
+                al_symbols::oauth::SignInMode::Auto,
+                move |msg| {
+                    if let Ok(mut guard) = msgs_clone.lock() {
+                        guard.push(msg.to_string());
+                    }
+                    tracing::info!("{msg}");
+                    al_symbols::oauth::announce(msg);
+                },
+            )
             .await
             {
                 Ok(_token) => {
@@ -298,6 +328,10 @@ async fn download_dependency_wave(
             cfg.accept_invalid_certs,
         ) {
             Ok(c) => c,
+            Err(e) => return vec![server_failure(e.to_string())],
+        };
+        let client = match al_symbols::oauth::AuthSettings::from_launch_value(&cfg.debug_args) {
+            Ok(settings) => client.with_auth_settings(settings),
             Err(e) => return vec![server_failure(e.to_string())],
         };
         // A dependency with no dev-packages URL is a failure, not a skip:

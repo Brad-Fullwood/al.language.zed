@@ -49,7 +49,8 @@ pub(super) fn is_well_formed_guid(s: &str) -> bool {
 #[cfg(test)]
 mod guid_tests {
     use super::is_well_formed_guid;
-    use crate::oauth::flows::{configured_client_id, DEFAULT_CLIENT_ID};
+    use crate::oauth::flows::configured_client_id;
+    use crate::oauth::settings::AL_CLIENT_ID as DEFAULT_CLIENT_ID;
     use serial_test::serial;
     #[test]
     fn accepts_canonical_aad_app_id() {
@@ -80,7 +81,10 @@ mod guid_tests {
     fn missing_client_id_uses_default() {
         let previous = std::env::var_os("BC_CLIENT_ID");
         std::env::remove_var("BC_CLIENT_ID");
-        assert_eq!(configured_client_id().unwrap(), DEFAULT_CLIENT_ID);
+        assert_eq!(
+            configured_client_id(DEFAULT_CLIENT_ID).unwrap(),
+            DEFAULT_CLIENT_ID
+        );
         if let Some(value) = previous {
             std::env::set_var("BC_CLIENT_ID", value);
         }
@@ -91,7 +95,7 @@ mod guid_tests {
     fn invalid_client_id_is_rejected() {
         let previous = std::env::var_os("BC_CLIENT_ID");
         std::env::set_var("BC_CLIENT_ID", "not-a-guid");
-        assert!(configured_client_id().is_err());
+        assert!(configured_client_id(DEFAULT_CLIENT_ID).is_err());
         match previous {
             Some(value) => std::env::set_var("BC_CLIENT_ID", value),
             None => std::env::remove_var("BC_CLIENT_ID"),
