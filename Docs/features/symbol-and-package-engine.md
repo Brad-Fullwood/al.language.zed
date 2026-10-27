@@ -139,7 +139,7 @@ Freshly downloaded symbols are loaded into the workspace **without a daemon rest
 | Caching | disk cache validated by mtime/size/schema. Warm starts skip re-parse | server-side compile of system apps |
 | Composition | explicit composed-object view (base + extensions) | resolved internally by the compiler |
 | Download | native NuGet **and** BC-server backends, concurrent, deduped, no restart | extension's download-symbols command |
-| Auth | native Entra PKCE + device code, token zeroization | extension/VS Code auth |
+| Auth | native Entra PKCE + device code, token fields zeroized on drop | extension/VS Code auth |
 | Source-free/symbol-only packages | renders a public-API outline or identity-only target for navigation | navigates compiler symbols |
 
 ## Why this approach
