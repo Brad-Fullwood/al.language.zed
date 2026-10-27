@@ -11,7 +11,7 @@ and Business Central behavior.
 | Diagnostics | Native syntax/project/transaction checks plus optional CodeAnalysis bridge | Microsoft CodeAnalysis |
 | Completion and hover | Native resolution with optional CodeAnalysis fallback | Microsoft language server |
 | Build | Verified native emitter by default, explicit `alc` compatibility backend | `alc` |
-| Tests | Local pure-logic/workspace-record subset plus live BC routing | Live Business Central test runtime |
+| Tests | Local pure-logic/workspace-record subset plus `liveBc` classification (those tests are reported as skipped) | Live Business Central test runtime |
 | Debugging | Native Zed DAP adapter backed by Business Central services | Microsoft VS Code debug adapter |
 | Project analysis | Impact, call/event graph, dead code, SQL patterns, architecture rules, upgrade and permission audits | Primarily compiler/analyzer workflows |
 | Automation | CLI/TUI, local daemon, MCP, editor commands, and contributor tasks share core services | VS Code commands, tasks, and AL tooling |

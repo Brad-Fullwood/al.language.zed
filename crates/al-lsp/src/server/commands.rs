@@ -945,7 +945,7 @@ pub(super) async fn run_test(
     let session = server.session.clone();
     let target_for_task = target.clone();
     tokio::spawn(async move {
-        run_test_background(workspace, client, session, config, target_for_task).await;
+        run_test_background(workspace, client, session, target_for_task).await;
     });
 
     serde_json::json!({ "status": "started", "target": target, "config": config_name })
@@ -958,27 +958,13 @@ async fn run_test_background(
     workspace: Arc<al_workspace::Workspace>,
     client: tower_lsp::Client,
     session: LspSessionState,
-    config: al_bc::launch::BcServerConfig,
     target: al_analysis::queries::code_lens::TestTarget,
 ) {
     if session.is_cancelled() {
         return;
     }
     let codeunit_name = format!("Codeunit {}", target.codeunit_id);
-    let runner = match al_test::test_runner::TestRunnerClient::new(&config) {
-        Ok(runner) => runner,
-        Err(error) => {
-            if !session.is_cancelled() {
-                client
-                    .show_message(
-                        MessageType::ERROR,
-                        format!("Could not construct the Business Central test client: {error}"),
-                    )
-                    .await;
-            }
-            return;
-        }
-    };
+    let runner = al_test::test_runner::TestRunnerClient;
     let result = runner
         .run_codeunit(
             target.codeunit_id,

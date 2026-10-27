@@ -614,6 +614,96 @@ fn test_run_by_id_alone_resolves_a_sibling_call() {
     );
 }
 
+/// A project with a local test and a test that routes to live BC, and no
+/// launch config. `test-run-all` used to abort with "No launch config found"
+/// before running anything. Now the local test runs, the live test is reported
+/// as skipped and the exit code stays zero (testing-01).
+#[test]
+fn test_run_all_runs_local_tests_and_skips_live_bc_tests_without_a_launch_config() {
+    let project = isolated_test_project();
+    let src = project.path().join("src");
+    std::fs::write(
+        src.join("LocalPass.Codeunit.al"),
+        r#"codeunit 50151 "Local Pass Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestLocalPasses()
+    begin
+        if 1 + 1 <> 2 then
+            Error('arithmetic broke');
+    end;
+}
+"#,
+    )
+    .expect("write the local fixture");
+    std::fs::write(
+        src.join("LiveOnly.Codeunit.al"),
+        r#"codeunit 50152 "Live Only Test"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure TestOpensAPage()
+    begin
+        Page.Run(Page::"Customer List");
+    end;
+}
+"#,
+    )
+    .expect("write the live fixture");
+    assert!(
+        !project.path().join(".vscode").exists() && !project.path().join(".zed").exists(),
+        "the fixture must have no launch config"
+    );
+
+    let output = run_al_in(
+        project.path(),
+        &["--json", "test-run-all", "--filter", "Test*"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let _ = run_al_in(project.path(), &["daemon-shutdown"]);
+
+    assert!(
+        !stdout.contains("No launch config found") && !stderr.contains("No launch config found"),
+        "the run aborted on the missing launch config:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        output.status.success(),
+        "skipped live tests must not fail the run (exit {:?}):\n{stdout}\n{stderr}",
+        output.status.code()
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("test-run-all --json is not JSON ({error}):\n{stdout}"));
+    let methods: Vec<&serde_json::Value> = json
+        .pointer("/summaries")
+        .and_then(|results| results.as_array())
+        .map(|results| {
+            results
+                .iter()
+                .flat_map(|codeunit| codeunit["methods"].as_array().into_iter().flatten())
+                .collect()
+        })
+        .unwrap_or_default();
+    let status_of = |name: &str| {
+        methods
+            .iter()
+            .find(|method| method["name"] == name)
+            .unwrap_or_else(|| panic!("{name} missing from the results:\n{stdout}"))
+    };
+    assert_eq!(status_of("TestLocalPasses")["status"], "pass", "{stdout}");
+    let live = status_of("TestOpensAPage");
+    assert_eq!(live["status"], "skip", "{stdout}");
+    assert!(
+        live["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("needs the TestRunnerHub client")),
+        "{stdout}"
+    );
+}
+
 /// `collect_permissions` stopped failing on the first unparseable `.al` and
 /// started skipping it, but the CLI read only `content` and `objectCount`, so
 /// a project with one work-in-progress file got a permission set that omits

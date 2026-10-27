@@ -86,7 +86,7 @@ asynchronous, cancellable, timeout-aware (`AL_COMPILE_TIMEOUT_SECS`, default 600
 `kill_on_drop`. Compiler
 output is normalized into structured diagnostics. `toolchain.rs` discovers ALTool/`alc.dll`,
 CodeAnalysis, the analyzer DLLs, and `.NET`, sets `DOTNET_ROLL_FORWARD=Major` so net8.0 tools run on
-newer runtimes, and locates `altool` for official-LSP delegation.
+newer runtimes, and locates `altool` for `al.useOfficialLsp` (altool `launchlspserver`).
 
 ## Native verification gate (`verification.rs`)
 

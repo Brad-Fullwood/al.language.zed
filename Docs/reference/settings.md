@@ -27,7 +27,7 @@ without trust. Written in the clone it is dropped, with one message naming it, u
 | `al.enableExternalRulesets` | boolean | `false` | ✅ official `alc` backend only |
 | `al.ruleSetPath` | string\|null | `null` | ✅ official `alc` backend only, 🔒 outside the project |
 | `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend, and the custom analyzer search for both backends, 🔒 |
-| `al.outputAnalyzerStatistics` | boolean | `false` | ✅ official `alc` backend only |
+| `al.outputAnalyzerStatistics` | boolean | `false` | ⛔ read so a shared `.vscode/settings.json` still loads. A VS Code language server option, `alc` has no switch for it (it answers AL1009), so it changes nothing here |
 
 ## Editor features
 
@@ -76,7 +76,7 @@ setting for it.
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
 | `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only, 🔒. A repository entry that names a file alc loads from (`/analyzer:`, `/assemblyprobingpaths:`, `/ruleset:`, `/packagecachepath:`, an `@` response file) keeps the project from being trusted |
-| `al.incrementalBuild` | boolean | `false` | ✅ official `alc` backend only |
+| `al.incrementalBuild` | boolean | `false` | ⛔ read so a shared `.vscode/settings.json` still loads. A VS Code language server option, `alc` has no incremental switch (it answers AL1009), so it changes nothing here |
 | `al.useOfficialCompiler` | boolean | `false` | ✅ builds with Microsoft's `dotnet alc` |
 | `al.dotnetPath` | string\|null | `null` | ✅ the `dotnet` executable for every .NET and `alc` process the toolchain spawns, the setting form of `AL_DOTNET_PATH`, 🔒. A program inside the project, or reached through a link written inside it, is checked again before each spawn |
 
@@ -85,7 +85,7 @@ setting for it.
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
 | `al.maxDocumentSizeBytes` | integer\|null | `null` | ✅ |
-| `al.useOfficialLsp` | boolean | `false` | ✅ delegate to Microsoft AL LSP (ALTool v17+) |
+| `al.useOfficialLsp` | boolean | `false` | 🟡 run altool `launchlspserver` instead of al-lsp (ALTool v17+). Hover, definition, references, rename, formatting and completion only. See [language-server](../features/language-server.md#microsoft-comparison) |
 | `al.useOfficialDap` | boolean | `false` | ✅ use Microsoft `EditorServices.Host` (extension-side toggle) |
 
 > `al.useOfficialLsp` / `al.useOfficialDap` are extension-side launch toggles (resolved in

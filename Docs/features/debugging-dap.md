@@ -223,7 +223,7 @@ protocol handling to enforce
 can't. AL still *executes* on the BC runtime. The adapter controls and inspects that runtime and does
 not reimplement it.
 
-The service-backed contract is `make live-bc-contracts`. It drives the real
+The service-backed contract is `make live-bc-contracts`. Its step that starts the test needs the TestRunnerHub client that is not built yet (`testing-01-live-bc-dev-tests-endpoint-invented.md`). It drives the real
 DAP framing and BC service through launch compilation, publication, attach,
 breakpoint verification, stack/scopes/locals, evaluation, step, continue, and
 disconnect. The profile requires explicit AAD configuration, test identity,

@@ -80,7 +80,8 @@ pub struct CompilationConfigOptions {
     /// (e.g. `/nowarn:AL0432`, `/target:Cloud`). Passed through unmodified so
     /// users can reach any alc switch we don't model explicitly.
     pub compilation_options: Vec<String>,
-    /// `al.incrementalBuild` — emits `/incrementalbuild`.
+    /// `al.incrementalBuild`: a VS Code language server option. `alc /help`
+    /// (18.1) has no incremental switch, so nothing is emitted.
     pub incremental_build: bool,
     /// `al.enableExternalRulesets` — master gate for [`Self::rule_set_path`].
     /// The ruleset is only forwarded to `alc` when this is `true`, mirroring
@@ -93,7 +94,8 @@ pub struct CompilationConfigOptions {
     /// `al.assemblyProbingPaths` — emits one `/assemblyprobingpaths:<path>`
     /// per entry.
     pub assembly_probing_paths: Vec<PathBuf>,
-    /// `al.outputAnalyzerStatistics` — emits `/outputanalyzerstatistics`.
+    /// `al.outputAnalyzerStatistics`: a VS Code language server option. `alc /help`
+    /// (18.1) has no such switch, so nothing is emitted.
     pub output_analyzer_statistics: bool,
 }
 
@@ -104,8 +106,16 @@ impl CompilationConfigOptions {
         for opt in &self.compilation_options {
             args.push(opt.clone());
         }
-        if self.incremental_build {
-            args.push("/incrementalbuild".to_string());
+        // al.incrementalBuild and al.outputAnalyzerStatistics are read by the
+        // Microsoft language server, not by alc (AL1009 "Unrecognized option").
+        // Checked `alc /help`: no equivalent switch, so they are accepted from the
+        // shared .vscode/settings.json and not forwarded.
+        if self.incremental_build || self.output_analyzer_statistics {
+            tracing::debug!(
+                incremental_build = self.incremental_build,
+                output_analyzer_statistics = self.output_analyzer_statistics,
+                "alc has no switch for al.incrementalBuild or al.outputAnalyzerStatistics, not forwarded"
+            );
         }
         if self.enable_external_rulesets {
             if let Some(path) = &self.rule_set_path {
@@ -114,9 +124,6 @@ impl CompilationConfigOptions {
         }
         for path in &self.assembly_probing_paths {
             args.push(format!("/assemblyprobingpaths:{}", path.display()));
-        }
-        if self.output_analyzer_statistics {
-            args.push("/outputanalyzerstatistics".to_string());
         }
         args
     }
@@ -1447,18 +1454,13 @@ Build failed.";
     }
 
     #[test]
-    fn config_options_incremental_build_flag() {
-        // al.incrementalBuild emits /incrementalbuild only when enabled.
+    fn config_options_incremental_build_is_not_an_alc_switch() {
+        // alc rejects /incrementalbuild with AL1009, so it must never be emitted.
         let on = CompilationConfigOptions {
             incremental_build: true,
             ..Default::default()
         };
-        assert!(on.to_alc_args().iter().any(|a| a == "/incrementalbuild"));
-        let off = CompilationConfigOptions {
-            incremental_build: false,
-            ..Default::default()
-        };
-        assert!(!off.to_alc_args().iter().any(|a| a == "/incrementalbuild"));
+        assert!(on.to_alc_args().is_empty());
     }
 
     #[test]
@@ -1502,23 +1504,20 @@ Build failed.";
     }
 
     #[test]
-    fn config_options_output_analyzer_statistics_flag() {
-        // al.outputAnalyzerStatistics emits /outputanalyzerstatistics.
+    fn config_options_output_analyzer_statistics_is_not_an_alc_switch() {
+        // alc rejects /outputanalyzerstatistics with AL1009, so it must never be emitted.
         let opts = CompilationConfigOptions {
             output_analyzer_statistics: true,
             ..Default::default()
         };
-        assert!(opts
-            .to_alc_args()
-            .iter()
-            .any(|a| a == "/outputanalyzerstatistics"));
+        assert!(opts.to_alc_args().is_empty());
     }
 
     #[test]
     fn config_options_combined_emit_in_stable_order() {
         // All settings together: verify ordering is deterministic so the alc
-        // command line is reproducible (raw opts, incremental, ruleset,
-        // assembly paths, analyzer stats).
+        // command line is reproducible (raw opts, ruleset, assembly paths).
+        // The two language server options add nothing.
         let opts = CompilationConfigOptions {
             compilation_options: vec!["/nowarn:AL0001".to_string()],
             incremental_build: true,
@@ -1531,10 +1530,8 @@ Build failed.";
             opts.to_alc_args(),
             vec![
                 "/nowarn:AL0001".to_string(),
-                "/incrementalbuild".to_string(),
                 "/ruleset:/r.json".to_string(),
                 "/assemblyprobingpaths:/a".to_string(),
-                "/outputanalyzerstatistics".to_string(),
             ]
         );
     }

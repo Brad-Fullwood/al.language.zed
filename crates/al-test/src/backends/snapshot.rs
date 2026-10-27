@@ -179,7 +179,7 @@ pub async fn capture_live_snapshot(
     capture(
         &request,
         NativeDebugSession::start(request.debug.clone(), &request.access_token),
-        || TestRunnerClient::with_access_token(&request.server, Some(&request.access_token)),
+        || Ok(TestRunnerClient),
     )
     .await
 }
