@@ -54,7 +54,8 @@ fi
 # built last. Checked with mtimes: building al-explorer or the harness bins does not relink al-lsp, but the
 # last build wins if that changes.
 BUILD_TAG="no-build"
-HEAD_HASH="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null)"
+# JOURNEY_HEAD_HASH pins the build identity when HEAD moves under the run (shared worktree).
+HEAD_HASH="${JOURNEY_HEAD_HASH:-$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null)}"
 if [[ "$NO_BUILD" == 0 ]]; then
   export AL_BUILD_HASH="$HEAD_HASH" CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$TARGET_DIR"
   for b in "-p al-explorer" "-p al-test-harness --bins" "-p al-lsp --features semantic"; do
