@@ -34,7 +34,7 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 
 | Layer | File | Role |
 | --- | --- | --- |
-| Native DAP server | `dap/native_dap/` | the Zed-facing stdio DAP server. Compile→publish→attach→drive |
+| Native DAP server | `dap/native_dap/` | the Zed-facing stdio DAP server. Compile→publish→connect→drive |
 | DAP wire types & framing | `dap/protocol.rs`, `dap/framing.rs` | `Content-Length` framing (8 KiB header cap, 20 MB body cap), `seq` patching |
 | DAP subprocess client | `dap/client.rs` | (legacy path) spawn + route a DAP subprocess by `request_seq` |
 | BC debug session | `dap/bc_debug/` | SignalR (WebSocket) client to `/dev/DebuggerHub` |
@@ -90,8 +90,13 @@ either feature until it can provide the full behavior itself.
    [project trust](project-trust.md#tenant-registry-and---tenant). `tenantPurpose` names the issue for a customer tenant.
 4. **Connect** SignalR to `/dev/DebuggerHub`, **Attach** (`breakOnError`, `breakOnRecordWrite`).
 5. Optionally **open the browser** at the debug-context URL when `launchBrowser` is set.
+6. When the hub reports `OnAttachedToConnection`, send the DAP `initialized` event
+   (`DebuggerService.cs:119-122`). The client then sends its breakpoints and `configurationDone`.
+   `breakOnError` and `breakOnRecordWrite` travel in `DebugAdapterConfigurationDone`, not in an attach.
 
-**Attach** skips compile/publish and connects to an existing session.
+**Attach** skips compile/publish and connects to an existing session. It calls the hub's `Attach` with
+`breakOnNextClient`, `sessionId` and `userId`, then sends `breakOnError`/`breakOnRecordWrite` in
+`ConfigurationDone` like launch.
 
 ## BC SignalR integration (`bc_debug/`)
 
@@ -162,11 +167,12 @@ shapes with a warning. Live check on CDX pending in the lead's contract run.
 - **Bounded event channel** (4096 messages, overflow dropped with a warning) with a dedicated
   unbounded channel for `Break` events so a paused breakpoint is never dropped under back-pressure.
   Completion replies to `invoke` have their own 32-entry channel.
-- **`configurationDone` retry:** current BC online rejects `DebugAdapterConfigurationDone` until
-  `OnAttachedToConnection` fires, which for break-on-next web-client launches happens only after the
-  browser attaches, i.e. often after the client already sent `configurationDone` once. The handler
-  attempts immediately when already attached, and the background event-forwarding task retries on
-  every poll afterward until BC accepts it (mirrors the MCP path's `NativeDebugSession` retry).
+- **`configurationDone` order:** BC rejects `DebugAdapterConfigurationDone` before the hub reports
+  `OnAttachedToConnection`. The adapter therefore sends `initialized` only after that callback, as
+  Microsoft's does (`DebuggerService.cs:119-122`), and calls `configurationDone` once. It has no retry
+  and no second call without arguments. A rejection is an error response to the client's request. The
+  MCP path (`NativeDebugSession`) sends the call once after the callback and reports a rejection as an
+  error on every later command.
 - **Security:** REST size caps (500 MB upload / 16 MB JSON / 500 MB binary), error-body redaction of
   bearer tokens/passwords/secrets, and a loud warning whenever TLS cert validation is disabled.
 
@@ -228,9 +234,9 @@ to scrape terminal output.
 For BC online and AAD targets, `accessToken` is optional. When it is absent, `al_debug start` uses the
 same keyring-backed OAuth cache and refresh flow as `al-explorer authenticate login`. Clients do not
 need to retrieve, print, or relay a bearer token. An explicit token remains available for headless
-automation. Some BC online environments accept `Attach` but reject the known
-`DebugAdapterConfigurationDone` signatures. As in the editor DAP path, that compatibility call is
-warned and treated as non-fatal after a successful attach.
+automation. The adapter sends
+`DebugAdapterConfigurationDone` once after BC reports `OnAttachedToConnection`. A rejection is
+fatal for the session: `al_debug` reports it as an error on every later command.
 
 This is a structured MCP control plane, not a second wire-level DAP endpoint. Zed's `launch`
 request owns the compile-and-publish convenience flow. `al_debug start` attaches to the configured
@@ -287,7 +293,7 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
 - MCP exposes structured equivalents of the native runtime control and inspection loop rather than
   raw DAP request/event frames.
 - `sessionId`, `breakOnNext` and `userId` are forwarded to the BC `Attach` payload (`userId` as the
-  string `AttachOptions.UserId`). The `userid` hub query parameter is not sent yet. `Agent` maps to the
+  string `AttachOptions.UserId`). An attach also sends `userid` and `sessionId` on the hub URL (see above). `Agent` maps to the
   decompiled `ClientService` value (3). Fields with no native
   behavior (`useMcpServerForDebugging`, `mcpServicePort`,
   `useVsCodeAuthentication`, `primaryTenantDomain`, profiling config) were **removed** from

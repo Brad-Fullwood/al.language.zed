@@ -39,16 +39,10 @@ pub struct NativeDebugSession {
     /// the debug-context browser URL is opened, so configuration is deferred
     /// from `start` until event draining observes that callback.
     configured: bool,
-    /// configurationDone attempts spent. `DebugAdapterConfigurationDone`
-    /// carries a two-minute invoke budget and falls back to a second,
-    /// no-arguments call on failure, so a server that rejects the options by
-    /// timing out costs four minutes per retry. `drain_events` runs at the
-    /// head of every debug command, so an uncapped retry stalls each one.
-    configure_attempts: u32,
+    /// Set when the one configurationDone call was rejected. Every later
+    /// command reports it. Microsoft's adapter has no retry either.
+    configure_error: Option<String>,
 }
-
-/// configurationDone attempts before the session is declared misconfigured.
-const MAX_CONFIGURE_ATTEMPTS: u32 = 3;
 
 /// Append a Break event to history with the configured cap. Pure (no `self`
 /// dependency) so it unit-tests without standing up a `BcDebugSession`.
@@ -80,7 +74,7 @@ impl NativeDebugSession {
             last_stack: Vec::new(),
             last_object: None,
             configured: false,
-            configure_attempts: 0,
+            configure_error: None,
         })
     }
 
@@ -255,41 +249,25 @@ impl NativeDebugSession {
             }
         }
 
-        // The Attach RPC registers a break-on-next debugger but does not mean
-        // a WebClient/NST session is bound yet. Current BC online rejects
-        // configurationDone before OnAttachedToConnection, leaving accepted
-        // breakpoints inert. Complete configuration exactly once after that
-        // callback has been processed above.
-        if !self.configured
-            && self.configure_attempts < MAX_CONFIGURE_ATTEMPTS
-            && self.session.is_attached().await
-        {
-            self.configure_attempts += 1;
+        // BC binds the session when OnAttachedToConnection arrives. Send
+        // configurationDone once after that callback, as Microsoft's adapter
+        // does after its `initialized` event. A rejection is final.
+        if !self.configured && self.configure_error.is_none() && self.session.is_attached().await {
             match self.session.configuration_done(&self.config).await {
                 Ok(()) => {
                     self.configured = true;
                     info!("Native debug session configured after client attach");
                 }
-                Err(error) if self.configure_attempts < MAX_CONFIGURE_ATTEMPTS => {
-                    warn!(
-                        %error,
-                        attempt = self.configure_attempts,
-                        "configurationDone rejected after client attach; will retry"
-                    );
-                }
                 Err(error) => {
-                    warn!(
-                        %error,
-                        attempts = self.configure_attempts,
-                        "configurationDone rejected on every attempt; breakpoints stay inert"
-                    );
+                    warn!(%error, "configurationDone rejected; breakpoints stay inert");
+                    self.configure_error = Some(error.to_string());
                 }
             }
         }
 
-        if !self.configured && self.configure_attempts >= MAX_CONFIGURE_ATTEMPTS {
+        if let Some(message) = &self.configure_error {
             return Err(crate::dap::DapError::ConfigurationFailed {
-                attempts: self.configure_attempts,
+                message: message.clone(),
             });
         }
         Ok(())
@@ -487,7 +465,7 @@ impl NativeDebugSession {
             last_stack: Vec::new(),
             last_object: None,
             configured: false,
-            configure_attempts: 0,
+            configure_error: None,
         }
     }
 
@@ -1267,43 +1245,27 @@ mod native_session_tests {
         assert_eq!(configured, 1, "configurationDone is deferred and sent once");
     }
 
-    /// DebugAdapterConfigurationDone carries a two-minute invoke budget and
-    /// falls back to a no-arguments call on failure, so an uncapped retry at
-    /// the head of every command stalls each one for up to four minutes.
+    /// A rejected configurationDone is final: the error is reported, and no
+    /// further call is made.
     #[tokio::test]
-    async fn configuration_done_stops_retrying_and_reports_the_failure() {
+    async fn configuration_done_rejection_is_reported_and_not_retried() {
         let (mut nds, fake) = session("c");
         fake.push_callback("OnAttachedToConnection", json!(null));
-        for _ in 0..12 {
-            fake.reply_err("DebugAdapterConfigurationDone", "options rejected");
-        }
+        fake.reply_err("DebugAdapterConfigurationDone", "options rejected");
         fake.reply_ok("GetVariables", json!([]));
 
-        for attempt in 1..MAX_CONFIGURE_ATTEMPTS {
-            nds.state()
-                .await
-                .unwrap_or_else(|error| panic!("attempt {attempt} must still run: {error}"));
-        }
-        let error = nds
-            .state()
-            .await
-            .expect_err("the session is misconfigured once the attempts are spent");
+        let error = nds.state().await.expect_err("the rejection is reported");
         assert!(
             matches!(error, crate::dap::DapError::ConfigurationFailed { .. }),
             "got: {error}"
         );
-
-        // Further commands report the same failure without another attempt.
         assert!(nds.state().await.is_err());
         let attempts = fake
             .sent_frames()
             .into_iter()
             .filter(|frame| frame["target"] == "DebugAdapterConfigurationDone")
             .count();
-        assert!(
-            attempts <= (MAX_CONFIGURE_ATTEMPTS as usize) * 2,
-            "each attempt sends at most the options call plus its no-args fallback, got {attempts}"
-        );
+        assert_eq!(attempts, 1, "one call, no retry");
     }
 
     #[tokio::test]

@@ -241,9 +241,10 @@ async fn a_capture_arms_polls_and_finishes_into_the_project_snapshots_folder() {
     .await;
 
     let (_, frames) = send(&state, "initialize", json!({})).await;
-    assert!(frames.iter().any(|f| f["event"] == "initialized"));
+    assert!(frames.iter().all(|f| f["event"] != "initialized"));
     let (_, frames) = send(&state, "attach", attach_args(&rig, json!({}))).await;
     assert_eq!(response(&frames)["success"], true, "{frames:?}");
+    assert!(frames.iter().any(|f| f["event"] == "initialized"));
 
     let (_, frames) = send(
         &state,

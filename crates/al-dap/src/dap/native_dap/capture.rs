@@ -360,6 +360,7 @@ where
         for event in &events {
             write_dap(out, event).await?;
         }
+        self.send_initialized(out).await?;
         self.emit_output(
             out,
             "console",

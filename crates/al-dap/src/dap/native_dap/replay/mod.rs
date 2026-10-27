@@ -11,9 +11,9 @@
 //! send, so the glue in the shared files is a lock, a call and a write loop.
 //!
 //! Differences from Microsoft's adapter, on purpose:
-//! - `initialized` is sent by `initialize` in this adapter, not after
-//!   `launch`. Breakpoints that arrive before `launch` wait in the shared
-//!   pending map and are applied when the replay starts.
+//! - `initialized` follows the `launch` response, as there is no hub to wait
+//!   for. Breakpoints sent before `launch` wait in the shared pending map and
+//!   are applied when the replay starts.
 //! - Microsoft's host sends one more `stopped` after `terminated` because its
 //!   break request is still running. That is not copied.
 //! - `stopped.reason` is the DAP value `step` (the host sends `Step`).
@@ -698,6 +698,8 @@ where
         for text in &notices {
             write_dap(out, &text_event(&self.seq, text)).await?;
         }
+        // A replay has no hub, so `initialized` follows the launch response.
+        self.send_initialized(out).await?;
         Ok(())
     }
 }
