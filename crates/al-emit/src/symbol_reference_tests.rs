@@ -243,6 +243,9 @@ fn control_addin_public_key_token_is_sha256_of_app_name() {
 }
 
 const SAMPLE_AL: &str = include_str!("testdata/rich_sample.al");
+// The interface id (2128762046) was recomputed with the decompiled alc 18.0 algorithm
+// (`CalculateInterfaceId`, masked to 31 bits). The original capture held -223137433 from an
+// older alc. emit_differential confirms the same shape against alc 18.0 and 18.1.
 const ALC_GOLDEN: &str = include_str!("testdata/rich_alc_symbolreference.json");
 
 /// Drop empty arrays so "absent" and "[]" compare equal (alc always emits a

@@ -23,12 +23,11 @@
 //! verifies against `alc`, so `xlf refresh` matches IDs in an `alc`- or
 //! Microsoft-produced translation file.
 //!
-//! **Known deviation:** `alc` folds an extension object's id-root onto the base
-//! object when that base is part of the same project (emitting an
-//! `al-object-target` attribute). This extractor works one file at a time and
-//! has no project view, so it keeps the *declaring* object as the id root —
-//! which is what `alc` also does for the dominant case of extending a
-//! base-application object.
+//! **Extension objects:** `alc` roots an extension's ids on the object it
+//! extends when the project declares that object, otherwise on the extension
+//! with the lowest object id for that target, and writes an `al-object-target`
+//! attribute. `extract` reads every object header first to do the same, see its
+//! module comment for the decompiled alc methods.
 
 use al_syntax::IdentifierText;
 use std::cmp::Reverse;
@@ -79,6 +78,10 @@ pub struct TranslationUnit {
     /// `Label 'Hello %1', Comment = '%1 is the customer name'`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub developer_note: Option<String>,
+    /// alc's `al-object-target` attribute: the symbol an extension unit
+    /// belongs to. `None` for objects that are not extensions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_target: Option<String>,
 }
 
 /// Translation state following XLIFF 1.2 conventions.
@@ -138,7 +141,8 @@ pub fn build_xliff(
 ) -> std::io::Result<Option<(PathBuf, usize)>> {
     let app_name = read_app_name(project_root)?;
 
-    let units = extract_translation_units(workspace);
+    let options = XliffOptions::from_features(&read_app_features(project_root));
+    let units = extract_translation_units_with(workspace, options);
     if units.is_empty() {
         return Ok(None);
     }
@@ -146,7 +150,7 @@ pub fn build_xliff(
     let xlf_content = generate_xliff(&app_name, "en-US", "en-US", &units);
 
     let translations_dir = translations_dir_inside(project_root)?;
-    let xlf_path = translations_dir.join(format!("{}.g.xlf", app_name));
+    let xlf_path = translations_dir.join(generated_xlf_file_name(&app_name));
     // A fresh temporary file renamed over the target replaces a symlink
     // planted at `xlf_path` rather than writing through it. `std::fs::write`
     // followed the link, dangling or not, to wherever the repository aimed it.
@@ -184,11 +188,32 @@ fn translations_dir_inside(project_root: &Path) -> std::io::Result<PathBuf> {
     Ok(resolved)
 }
 
+/// The `features` array of app.json. `AppManifest` does not carry it and the
+/// array is optional, so a missing or unreadable file means no features.
+fn read_app_features(project_root: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(project_root.join("app.json")) else {
+        return Vec::new();
+    };
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
+    else {
+        return Vec::new();
+    };
+    json.get("features")
+        .and_then(|features| features.as_array())
+        .map(|features| {
+            features
+                .iter()
+                .filter_map(|feature| feature.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The application name from app.json, as it goes into `original=`.
 pub(super) fn read_app_name(project_root: &Path) -> std::io::Result<String> {
     let manifest = al_project::project::load_app_manifest(project_root)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-    let name = al_types::sanitize_filename_component(&manifest.name.replace([' ', '"', '\''], ""));
-    if name == "_" {
+    if manifest.name.trim().is_empty() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!(
@@ -197,5 +222,32 @@ pub(super) fn read_app_name(project_root: &Path) -> std::io::Result<String> {
             ),
         ));
     }
-    Ok(name)
+    Ok(manifest.name)
+}
+
+/// The file name alc gives the generated file, `<app name>.g.xlf`.
+///
+/// alc (`LanguageFileUtilities.GetTranslationFileName`) keeps the spaces and drops the
+/// characters a file name cannot hold. Removing `/` and `\` leaves one path component.
+pub fn generated_xlf_file_name(app_name: &str) -> String {
+    let cleaned: String = app_name
+        .chars()
+        .filter(|c| {
+            !matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') && !c.is_control()
+        })
+        .collect();
+    let cleaned = cleaned.trim_end_matches(['.', ' ']);
+    let stem = if cleaned.is_empty() {
+        "default"
+    } else {
+        cleaned
+    };
+    format!("{stem}.g.xlf")
+}
+
+/// The generated file name for the project in `project_root`, from its app.json.
+pub fn project_generated_xlf_name(project_root: &Path) -> Option<String> {
+    read_app_name(project_root)
+        .ok()
+        .map(|name| generated_xlf_file_name(&name))
 }

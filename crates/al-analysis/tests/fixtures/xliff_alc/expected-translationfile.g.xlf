@@ -1,0 +1,264 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<xliff version="1.2" xmlns="urn:oasis:names:tc:xliff:document:1.2" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="urn:oasis:names:tc:xliff:document:1.2 xliff-core-1.2-transitional.xsd">
+  <file datatype="xml" source-language="en-US" target-language="en-US" original="Xliff Fixture">
+    <body>
+      <group id="body">
+        <trans-unit id="Table 2902614997 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>FX Base</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Table FX Base - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Table 2902614997 - Field 496514939 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Described</source>
+          <note from="Developer" annotates="general" priority="2">Explains the field</note>
+          <note from="Xliff Generator" annotates="general" priority="3">Table FX Base - Field Described - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Table 2902614997 - Field 2882592404 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Kind</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Table FX Base - Field Kind - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Table 2902614997 - Field 2961552353 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Name</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Table FX Base - Field Name - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Table 2902614997 - Field 4200184881 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>No.</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Table FX Base - Field No. - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Table 2902614997 - Field 513339096 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Status</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Table FX Base - Field Status - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Table 2902614997 - Field 513339096 - Property 62802879" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Open,Closed</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Table FX Base - Field Status - Property OptionCaption</note>
+        </trans-unit>
+        <trans-unit id="Table 1154534088 - Field 415504711 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Id</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Table FX Plain - Field Id - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Codeunit 4100893095 - NamedType 2894774779" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Global %1</source>
+          <note from="Developer" annotates="general" priority="2">%1 is a name</note>
+          <note from="Xliff Generator" annotates="general" priority="3">Codeunit FX Codeunit - NamedType GlobalLbl</note>
+        </trans-unit>
+        <trans-unit id="Codeunit 4100893095 - NamedType 1878795882" maxwidth="10" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Max text</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Codeunit FX Codeunit - NamedType MaxLbl</note>
+        </trans-unit>
+        <trans-unit id="Codeunit 4100893095 - Method 2395157394 - NamedType 3516055481" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Local text</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Codeunit FX Codeunit - Method Foo - NamedType LocalLbl</note>
+        </trans-unit>
+        <trans-unit id="Page 803994831 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>FX Page</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Page FX Page - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Page 803994831 - Control 2961552353 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>The name</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Page FX Page - Control Name - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Page 803994831 - Control 4200184881 - Property 1295455071" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Specifies the number.</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Page FX Page - Control No. - Property ToolTip</note>
+        </trans-unit>
+        <trans-unit id="Page 803994831 - Action 3334659418 - Property 1295455071" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Does it.</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Page FX Page - Action DoIt - Property ToolTip</note>
+        </trans-unit>
+        <trans-unit id="Page 803994831 - Action 3334659418 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Do it</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Page FX Page - Action DoIt - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Page 803994831 - Action 579405999 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>More</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Page FX Page - Action More - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Report 1838929212 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>FX Report</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Report FX Report - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Report 1838929212 - ReportDataItem 296439515 - Property 1806354803" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Customer filter</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Report FX Report - ReportDataItem Cust - Property RequestFilterHeading</note>
+        </trans-unit>
+        <trans-unit id="Report 1838929212 - ReportColumn 3606806740 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Cust No</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Report FX Report - ReportColumn CustNo - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Report 1838929212 - ReportLabel 1909477236" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Label text</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Report FX Report - ReportLabel FXLabel</note>
+        </trans-unit>
+        <trans-unit id="Report 1838929212 - Control 2346885236 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Options</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Report FX Report - Control Options - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Report 1838929212 - Control 580853590 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Show all</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Report FX Report - Control ShowAll - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Query 318215080 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>FX Query</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Query FX Query - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Query 318215080 - QueryFilter 1907994163 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Query Filter</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Query FX Query - QueryFilter CustFilter - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Query 318215080 - QueryColumn 3606806740 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>Query No</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Query FX Query - QueryColumn CustNo - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="XmlPort 672480290 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>FX XmlPort</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">XmlPort FX XmlPort - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="PageExtension 3066561438 - Action 2826209259 - Property 1295455071" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Page 523354100">
+          <source>Run A.</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">PageExtension FX Cust Card A - Action FXActA - Property ToolTip</note>
+        </trans-unit>
+        <trans-unit id="PageExtension 3066561438 - Action 2826209259 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Page 523354100">
+          <source>FX A</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">PageExtension FX Cust Card A - Action FXActA - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="PageExtension 3066561438 - Control 3603131214 - Property 1295455071" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Page 523354100">
+          <source>Specifies A.</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">PageExtension FX Cust Card A - Control FX A Code - Property ToolTip</note>
+        </trans-unit>
+        <trans-unit id="PageExtension 3066561438 - Control 3603131214 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Page 523354100">
+          <source>A Code Page</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">PageExtension FX Cust Card A - Control FX A Code - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="PageExtension 3066561438 - Change 4200184881 - Property 1295455071" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Page 523354100">
+          <source>Modified tooltip</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">PageExtension FX Cust Card A - Change No. - Property ToolTip</note>
+        </trans-unit>
+        <trans-unit id="PageExtension 3066561438 - NamedType 2738952796" size-unit="char" translate="yes" xml:space="preserve" al-object-target="PageExtension 1153471587">
+          <source>Page B label</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">PageExtension FX Cust Card B - NamedType PBLbl</note>
+        </trans-unit>
+        <trans-unit id="Table 2902614997 - Field 2022205111 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Table 2902614997">
+          <source>FX Y Plain</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">TableExtension FX Base Ext Y - Field FX Y Plain - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Table 2902614997 - NamedType 3160095516" size-unit="char" translate="yes" xml:space="preserve" al-object-target="TableExtension 1208255468">
+          <source>Z label</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">TableExtension FX Base Ext Z - NamedType ZLbl</note>
+        </trans-unit>
+        <trans-unit id="Table 2902614997 - Field 3531020563 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Table 2902614997">
+          <source>Z Code</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">TableExtension FX Base Ext Z - Field FX Z Code - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="TableExtension 1256886769 - NamedType 3129299365" size-unit="char" translate="yes" xml:space="preserve" al-object-target="TableExtension 1256886769">
+          <source>A label</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">TableExtension FX Cust Ext A - NamedType ALbl</note>
+        </trans-unit>
+        <trans-unit id="TableExtension 1256886769 - Field 3603131214 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Table 1994964448">
+          <source>A Code</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">TableExtension FX Cust Ext A - Field FX A Code - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="TableExtension 1256886769 - Field 3743024768 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Table 1994964448">
+          <source>FX A Mode</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">TableExtension FX Cust Ext A - Field FX A Mode - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="TableExtension 1256886769 - NamedType 4139047172" size-unit="char" translate="yes" xml:space="preserve" al-object-target="TableExtension 619190152">
+          <source>B label</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">TableExtension FX Cust Ext B - NamedType BLbl</note>
+        </trans-unit>
+        <trans-unit id="TableExtension 1256886769 - Field 3548887083 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Table 1994964448">
+          <source>B Code</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">TableExtension FX Cust Ext B - Field FX B Code - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="TableExtension 1256886769 - Field 1806886528 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Table 1994964448">
+          <source>FX B Note</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">TableExtension FX Cust Ext B - Field FX B Note - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Enum 1669101378 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>FX Kind</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Enum FX Kind - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Enum 1669101378 - EnumValue 139100102 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>First</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Enum FX Kind - EnumValue First - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Enum 1669101378 - EnumValue 3371220206 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve">
+          <source>None</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">Enum FX Kind - EnumValue None - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="EnumExtension 1642060946 - EnumValue 3423501641 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Enum 3710813537">
+          <source>Fx A</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">EnumExtension FX Doc Ext A - EnumValue FxA - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="EnumExtension 1642060946 - EnumValue 2785805024 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Enum 3710813537">
+          <source>Fx B</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">EnumExtension FX Doc Ext B - EnumValue FxB - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Enum 1669101378 - EnumValue 1550647365 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Enum 1669101378">
+          <source>Third</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">EnumExtension FX Kind Ext A - EnumValue Third - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Enum 1669101378 - EnumValue 2266624814 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Enum 1669101378">
+          <source>Fourth</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">EnumExtension FX Kind Ext B - EnumValue Fourth - Property Caption</note>
+        </trans-unit>
+        <trans-unit id="Report 1838929212 - NamedType 1277964500" size-unit="char" translate="yes" xml:space="preserve" al-object-target="ReportExtension 1031494603">
+          <source>Report ext label</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">ReportExtension FX Report Ext - NamedType RLbl</note>
+        </trans-unit>
+        <trans-unit id="Report 1838929212 - ReportColumn 1095285418 - Property 2879900210" size-unit="char" translate="yes" xml:space="preserve" al-object-target="Report 1838929212">
+          <source>Cust City</source>
+          <note from="Developer" annotates="general" priority="2"></note>
+          <note from="Xliff Generator" annotates="general" priority="3">ReportExtension FX Report Ext - ReportColumn CustCity - Property Caption</note>
+        </trans-unit>
+      </group>
+    </body>
+  </file>
+</xliff>

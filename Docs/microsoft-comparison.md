@@ -29,8 +29,8 @@ feature pages for implementation details and limitations.
 
 | Capability | This project | Microsoft |
 | --- | --- | --- |
-| Produce `.app` | ✅ pure-Rust verified emitter for the documented subset. Real-world packages can differ in symbols, path encoding, and bundled resources | 🔷 `alc` (parse→bind→type-check→emit) |
-| Compile-time validation | ✅ native syntax/project/declaration/declared-binding/integrity checks, optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
+| Produce `.app` | 🟡 pure-Rust emitter, parity measured on fixtures only. On real projects it drops page extension variables, `ActionChanges`, `DocComments.xml`, option members, `CalcFormula` text and parameter `Temporary`, and encodes folder names with spaces differently. Use `alc` for packages that go to BC | 🔷 `alc` (parse→bind→type-check→emit) |
+| Compile-time validation | 🟡 syntax, project, declaration, declared-binding and integrity checks block the build. Body checks without a binder (ALN2202, ALN2203, ALN2208, ALN2209, ALN2402, ALN2404) only warn. Optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
 | Symbol download | ✅ NuGet + BC server, concurrent, deduped, no restart | ✅ download-symbols |
 | OAuth (Entra) | ✅ PKCE + device code, token zeroization | ✅ |
@@ -86,9 +86,9 @@ feature pages for implementation details and limitations.
 | Interactive terminal TUI | ✅ (5 views) | ❌ |
 | Shared daemon (JSON-RPC) | ✅ | ❌ |
 | MCP server | ✅ complete shared dispatcher via `al_call`, plus named aliases | ✅ AL agent tools |
-| Project/object scaffolding | ✅ (+ Copilot/Agent/API templates) | ✅ (fewer templates) |
-| Permission-set generation | ✅ (AL + XML) | ❌ |
-| XLIFF generate/refresh/untranslated/suggest | ✅ translation-memory and symbol-name suggestions | partial (3rd-party common) |
+| Project/object scaffolding | ✅ (+ Copilot and API templates, an `agent` starter without the Agent API) | ✅ (fewer templates) |
+| Permission-set generation | ✅ (AL + XML) | ✅ (`AL: Generate permission set containing current extension objects`, AL and XML) |
+| XLIFF generate/refresh/untranslated/suggest | ✅ `.g.xlf` ids and `al-object-target` match `alc` 18.1 for `TranslationFile` and `GenerateCaptions`. Translation-memory and symbol-name suggestions | partial (3rd-party common) |
 
 ## Where Microsoft is still the authority (by design)
 

@@ -34,6 +34,31 @@ pub struct ResourceExposurePolicy {
     pub apply_to_dev_extension: bool,
 }
 
+/// App features alc recognises, in the order it writes them: ascending
+/// `CompilerFeatures` enum value, because `CompilerFeaturesExtensions.GetFlags`
+/// walks `Enum.GetValues`. Names and values are from `GetCompilerFeature` and
+/// `CompilerFeatures` in Microsoft.Dynamics.Nav.CodeAnalysis.dll 18.0.43.1464.
+/// `app.json` names match case-insensitively, unknown names and repeats are
+/// dropped, and the manifest writes the upper-case name.
+const COMPILER_FEATURES: &[&str] = &[
+    "LCGTRANSLATIONFILE",            // 0x2
+    "TRANSLATIONFILE",               // 0x4
+    "PERSONALIZATION",               // 0x10
+    "GENERATECAPTIONS",              // 0x20
+    "ALLTRANSLATIONITEMS",           // 0x40
+    "EXCLUDEGENERATEDTRANSLATIONS",  // 0x80
+    "CONFIGURATION",                 // 0x100
+    "NOIMPLICITWITH",                // 0x200
+    "GENERATELOCKEDTRANSLATIONS",    // 0x400
+    "NOPROMOTEDACTIONPROPERTIES",    // 0x800
+    "EMITASYNCCODE",                 // 0x1000
+    "ENABLEINCLIENTDESIGNERPREVIEW", // 0x2000
+    "EMITINLINESCOPE",               // 0x4000
+    "SKIPNONEXECUTABLEOBJECTS",      // 0x8000
+    "FULLNAMESPACESCOPE",            // 0x10000
+    "TRANSLATIONSWITHNAMESPACES",    // 0x20000
+];
+
 /// Inputs for `NavxManifest.xml`, mostly mirroring `app.json`.
 #[derive(Debug, Clone)]
 pub struct AppManifest {
@@ -57,6 +82,8 @@ pub struct AppManifest {
     pub show_my_code: bool,
     pub id_ranges: Vec<(i64, i64)>,
     pub dependencies: Vec<Dependency>,
+    /// `<Features>` entries: upper-case names from [`COMPILER_FEATURES`], in alc's order.
+    pub features: Vec<String>,
     pub resource_exposure_policy: ResourceExposurePolicy,
     /// `<Build CompilerVersion="…">` — the producing compiler's version.
     pub compiler_version: String,
@@ -122,6 +149,21 @@ impl AppManifest {
                     .collect()
             })
             .unwrap_or_default();
+        let declared_features: Vec<String> = app
+            .get("features")
+            .and_then(|v| v.as_array())
+            .map(|list| {
+                list.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|name| name.trim().to_uppercase())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let features = COMPILER_FEATURES
+            .iter()
+            .filter(|known| declared_features.iter().any(|name| name == **known))
+            .map(|known| known.to_string())
+            .collect();
         let rep = app
             .get("resourceExposurePolicy")
             .filter(|value| value.is_object());
@@ -157,6 +199,7 @@ impl AppManifest {
                 .unwrap_or(false),
             id_ranges,
             dependencies,
+            features,
             resource_exposure_policy: ResourceExposurePolicy {
                 declared: rep.is_some(),
                 allow_debugging: rep_bool("allowDebugging"),
@@ -239,7 +282,16 @@ impl AppManifest {
         }
 
         x.push_str("  <InternalsVisibleTo />\n  <ScreenShots />\n  <SupportedLocales />\n");
-        x.push_str("  <Features />\n  <PreprocessorSymbols />\n  <SuppressWarnings />\n");
+        if self.features.is_empty() {
+            x.push_str("  <Features />\n");
+        } else {
+            x.push_str("  <Features>\n");
+            for feature in &self.features {
+                x.push_str(&format!("    <Feature>{}</Feature>\n", e(feature)));
+            }
+            x.push_str("  </Features>\n");
+        }
+        x.push_str("  <PreprocessorSymbols />\n  <SuppressWarnings />\n");
 
         let rep = &self.resource_exposure_policy;
         if rep.declared {
@@ -330,6 +382,31 @@ mod tests {
         assert_eq!(m.name, "Min App");
         assert_eq!(m.publisher, "Spike");
         assert_eq!(m.version, "1.0.0.0");
+    }
+
+    /// Input and expected list are alc 18.0.43.1464's real behaviour for this
+    /// `features` array: it wrote exactly these four `<Feature>` entries.
+    #[test]
+    fn features_follow_alcs_names_and_order() {
+        let manifest = AppManifest::from_app_json(
+            &serde_json::json!({
+                "id": "aaaaaaaa-1111-2222-3333-444444444444",
+                "name": "Min App",
+                "publisher": "Spike",
+                "version": "1.0.0.0",
+                "features": ["NoImplicitWith", "TranslationFile", "GenerateCaptions",
+                             "NoPromotedActionProperties", "bogus", "NoImplicitWith"],
+            }),
+            "1.0",
+            "2026-01-01T00:00:00",
+        );
+        let xml = manifest.to_navx_xml();
+        assert!(xml.contains(
+            "  <Features>\n    <Feature>TRANSLATIONFILE</Feature>\n    \
+             <Feature>GENERATECAPTIONS</Feature>\n    <Feature>NOIMPLICITWITH</Feature>\n    \
+             <Feature>NOPROMOTEDACTIONPROPERTIES</Feature>\n  </Features>\n"
+        ));
+        assert!(sample().to_navx_xml().contains("  <Features />\n"));
     }
 
     #[test]

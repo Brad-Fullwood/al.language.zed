@@ -1,15 +1,77 @@
 //! Translatable text from AL source: captions, tooltips, labels, with
 //! `alc`'s translation-unit IDs.
+//!
+//! The rules come from alc 18.1 (`Microsoft.Dynamics.Nav.CodeAnalysis.dll`
+//! 18.1.2842859, decompiled with ilspycmd, not from observation of its output):
+//!
+//! - `LabelWriterVisitor.VisitSymbolWithProperties` decides which units exist.
+//! - `LanguageFileUtilities.GetLanguageSymbolId` builds the id.
+//! - `ExtensionObjectFoldingUtilities.GetFoldingExtensionObject` picks the
+//!   object whose name hash opens an extension object's ids.
+//! - `LanguageFileUtilities.ObjectTargetSymbolId` writes `al-object-target`.
 
 use super::*;
+use std::collections::HashSet;
+
+/// The app.json `features` that change which units alc puts in the `.g.xlf`.
+///
+/// `TranslationFile` is not here. It makes alc write the file at all, and
+/// `xlf generate` is an explicit request for the file. `AllTranslationItems`,
+/// `GenerateLockedTranslations`, `LcgTranslationFile` and
+/// `TranslationsWithNamespaces` are not honoured, see
+/// `Docs/features/xliff-translation.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct XliffOptions {
+    /// `GenerateCaptions`: units for objects, actions and option fields that
+    /// declare no `Caption` or `OptionCaption` (alc `GenerateTranslationsMode.Captions`).
+    pub generate_captions: bool,
+}
+
+impl XliffOptions {
+    /// Read the options from the app.json `features` array. Feature names are
+    /// case-insensitive, as in alc (`CompilerFeaturesExtensions` upper-cases them).
+    pub fn from_features<S: AsRef<str>>(features: &[S]) -> Self {
+        Self {
+            generate_captions: features
+                .iter()
+                .any(|feature| feature.as_ref().eq_ignore_ascii_case("GenerateCaptions")),
+        }
+    }
+}
+
+/// The properties alc writes a unit for when they hold a literal
+/// (`PropertyKindExtensions.IsTranslatableProperty`), spelled as alc names them.
+const TRANSLATABLE_PROPERTIES: &[&str] = &[
+    "Caption",
+    "OptionCaption",
+    "InstructionalText",
+    "PromotedActionCategories",
+    "AdditionalSearchTerms",
+    "EntityCaption",
+    "EntitySetCaption",
+    "ToolTip",
+    "AboutText",
+    "AboutTitle",
+    "RequestFilterHeading",
+    "Summary",
+    "ProfileDescription",
+];
+
+/// Extract all translatable text units from the workspace AL files, for a
+/// project with only `TranslationFile` set.
+pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> {
+    extract_translation_units_with(workspace, XliffOptions::default())
+}
 
 /// Extract all translatable text units from the workspace AL files.
 ///
-/// Scans for `Caption`, `ToolTip`, and `Label` properties in all workspace .al files.
-/// Returns units in the order they appear (deterministic output).
-pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> {
-    let mut units = Vec::new();
-
+/// Two passes: the first reads every object header, because the id root of an
+/// extension depends on the other extensions of the same target. The second
+/// scans each file for the units. Returns units in a deterministic order.
+pub fn extract_translation_units_with(
+    workspace: &Workspace,
+    options: XliffOptions,
+) -> Vec<TranslationUnit> {
     let mut paths: Vec<_> = workspace
         .file_index
         .files
@@ -18,18 +80,22 @@ pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> 
         .collect();
     paths.sort();
 
-    for path in &paths {
-        let text = match workspace.file_index.files.get(path) {
-            Some(t) => t.value().clone(),
-            None => continue,
-        };
-        extract_from_file(path, &text, &mut units);
+    let texts: Vec<String> = paths
+        .iter()
+        .filter_map(|path| workspace.file_index.files.get(path))
+        .map(|text| text.value().to_string())
+        .collect();
+    let index = ProjectIndex::build(texts.iter().map(String::as_str));
+
+    let mut units = Vec::new();
+    for text in &texts {
+        scan_file(text, &index, options, &mut units);
     }
 
     // A `.g.xlf` with duplicate `trans-unit id=` values silently collapses to
     // one entry in `parse_xliff`'s map, so refresh/untranslated/suggest would
     // operate on corrupted data. Keep the first occurrence and warn.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen: HashSet<String> = HashSet::new();
     units.retain(|unit| {
         if seen.insert(unit.id.clone()) {
             return true;
@@ -45,7 +111,203 @@ pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> 
     units
 }
 
-/// Extract translation units from a single AL file.
+/// Extract translation units from a single AL file, as a project of one file.
+#[cfg(test)]
+pub(super) fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) {
+    let _ = path;
+    let index = ProjectIndex::build(std::iter::once(text));
+    scan_file(text, &index, XliffOptions::default(), units);
+}
+
+/// What the headers of the whole project say about extension objects.
+#[derive(Debug, Default)]
+pub(super) struct ProjectIndex {
+    /// Objects the project declares, keyed by (kind, lower-cased name), to the
+    /// name as declared.
+    declared: HashMap<(String, String), String>,
+    /// Extensions keyed by (extension kind, lower-cased target name) to
+    /// (object id, name).
+    extensions: HashMap<(String, String), Vec<(u32, String)>>,
+    /// The target a header names, keyed by (kind, object id). The `extends`
+    /// clause may sit on a line after the object keyword.
+    targets: HashMap<(String, u32), String>,
+}
+
+impl ProjectIndex {
+    pub(super) fn build<'a>(texts: impl Iterator<Item = &'a str>) -> Self {
+        let mut index = Self::default();
+        for text in texts {
+            for header in collect_object_headers(text) {
+                index.add(header);
+            }
+        }
+        index
+    }
+
+    fn add(&mut self, header: ObjectHeader) {
+        let kind = header.kind_display.clone();
+        if let Some(target) = &header.extends {
+            self.targets
+                .insert((kind.clone(), header.id), target.clone());
+        }
+        if is_folding_extension(&kind) {
+            if let Some(target) = &header.extends {
+                self.extensions
+                    .entry((kind, target.to_lowercase()))
+                    .or_default()
+                    .push((header.id, header.name));
+            }
+        } else {
+            self.declared
+                .insert((kind, header.name.to_lowercase()), header.name);
+        }
+    }
+
+    /// The object context for a header found while scanning.
+    ///
+    /// `GetFoldingExtensionObject` in alc, for an extension object:
+    /// 1. a customization object (`PageCustomization`) is its own root,
+    /// 2. when the target is declared in the same app, the target is the root,
+    /// 3. otherwise the extension with the lowest object id among all the app's
+    ///    extensions of that target is the root.
+    fn object_context(&self, header: ObjectHeader) -> ObjectContext {
+        let kind = header.kind_display.clone();
+        let own_hash = name_hash(&header.name);
+        let own_root = (kind.clone(), own_hash);
+        if !is_extension_or_customization(&kind) {
+            return ObjectContext {
+                header,
+                root_kind: own_root.0,
+                root_hash: own_root.1,
+                target: None,
+                own_target: None,
+            };
+        }
+        let base = base_kind(&kind);
+        let target_text = header
+            .extends
+            .clone()
+            .or_else(|| self.targets.get(&(kind.clone(), header.id)).cloned());
+        let declared_target = target_text
+            .as_ref()
+            .and_then(|text| self.declared.get(&(base.to_string(), text.to_lowercase())));
+        // alc hashes the target symbol's name, which is the declared spelling
+        // when the project holds the target. For a dependency's object only the
+        // spelling in the `extends` clause is known.
+        let target_name = declared_target.or(target_text.as_ref());
+        let target = match target_name {
+            Some(name) => format!("{base} {}", name_hash(name)),
+            None => "Unknown Target".to_string(),
+        };
+        let root = if !is_folding_extension(&kind) {
+            own_root
+        } else if let Some(declared) = declared_target {
+            (base.to_string(), name_hash(declared))
+        } else {
+            let lowest = target_text.as_ref().and_then(|text| {
+                self.extensions
+                    .get(&(kind.clone(), text.to_lowercase()))?
+                    .iter()
+                    .min_by_key(|(id, _)| *id)
+            });
+            match lowest {
+                Some((_, name)) => (kind.clone(), name_hash(name)),
+                None => own_root,
+            }
+        };
+        ObjectContext {
+            own_target: Some(format!("{kind} {own_hash}")),
+            header,
+            root_kind: root.0,
+            root_hash: root.1,
+            target: Some(target),
+        }
+    }
+}
+
+/// `TableExtension`, `PageExtension` and the like.
+fn is_folding_extension(kind: &str) -> bool {
+    kind.ends_with("Extension")
+}
+
+/// `IsExtensionOrCustomizationObject`: extensions and `PageCustomization`.
+fn is_extension_or_customization(kind: &str) -> bool {
+    is_folding_extension(kind) || kind == "PageCustomization"
+}
+
+/// The kind an extension or customization object extends.
+fn base_kind(kind: &str) -> &str {
+    kind.strip_suffix("Extension")
+        .or_else(|| kind.strip_suffix("Customization"))
+        .unwrap_or(kind)
+}
+
+/// Every object header in a file, with the target of an extension. Works on
+/// the brace depth, so a header whose `extends` clause is on the next line is
+/// read as a whole.
+fn collect_object_headers(text: &str) -> Vec<ObjectHeader> {
+    let mut headers = Vec::new();
+    let mut depth = 0usize;
+    let mut in_block_comment = false;
+    let mut pending: Option<(ObjectHeader, String)> = None;
+    for line in text.lines() {
+        let code = strip_for_structure(line, &mut in_block_comment);
+        if depth == 0 {
+            let head = code.split('{').next().unwrap_or("").trim().to_string();
+            match pending.as_mut() {
+                Some((_, collected)) => {
+                    collected.push(' ');
+                    collected.push_str(&head);
+                }
+                None => {
+                    if let Some(header) = parse_object_header_line(&head) {
+                        pending = Some((header, head));
+                    }
+                }
+            }
+            if code.contains('{') {
+                if let Some((mut header, collected)) = pending.take() {
+                    header.extends = parse_target_clause(&collected);
+                    headers.push(header);
+                }
+            }
+        }
+        for ch in code.chars() {
+            match ch {
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+    }
+    headers
+}
+
+/// The object named after `extends` or `customizes` in a header.
+fn parse_target_clause(header: &str) -> Option<String> {
+    let lower = header.to_ascii_lowercase();
+    for word in ["extends", "customizes"] {
+        let mut from = 0usize;
+        while let Some(found) = lower[from..].find(word) {
+            let at = from + found;
+            let after = &header[at + word.len()..];
+            let before_is_word = lower[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_' || c == '"');
+            if !before_is_word && after.starts_with(char::is_whitespace) {
+                let name = parse_object_name(after);
+                if !name.is_empty() {
+                    return Some(name);
+                }
+            }
+            from = at + word.len();
+        }
+    }
+    None
+}
+
+/// Scan one file for translation units.
 ///
 /// The scan is structural: brace nesting decides which member (table field,
 /// page control, page action) a `Caption`/`ToolTip` belongs to. The previous
@@ -53,118 +315,425 @@ pub fn extract_translation_units(workspace: &Workspace) -> Vec<TranslationUnit> 
 /// members never set and that was never reset when a field block ended, so
 /// every page control produced the *same* trans-unit id and object-level
 /// properties were attributed to the last field seen.
-pub(super) fn extract_from_file(path: &Path, text: &str, units: &mut Vec<TranslationUnit>) {
-    let _ = path;
-    let mut object: Option<ObjectContext> = None;
-    // One frame per open brace.
-    let mut stack: Vec<Frame> = Vec::new();
-    let mut pending: Option<MemberBlock> = None;
+fn scan_file(
+    text: &str,
+    index: &ProjectIndex,
+    options: XliffOptions,
+    units: &mut Vec<TranslationUnit>,
+) {
+    let mut scanner = Scanner {
+        index,
+        options,
+        object: None,
+        stack: Vec::new(),
+        pending: None,
+        method: None,
+        units,
+    };
     let mut in_block_comment = false;
 
     for line in text.lines() {
         let code = strip_for_structure(line, &mut in_block_comment);
         let mut segment_start = 0usize;
-        for (index, ch) in code.char_indices() {
+        for (position, ch) in code.char_indices() {
             if ch != '{' && ch != '}' {
                 continue;
             }
-            scan_segment(
-                &line[segment_start..index],
-                &code[segment_start..index],
-                &mut object,
-                &stack,
-                &mut pending,
-                units,
+            scanner.segment(
+                &line[segment_start..position],
+                &code[segment_start..position],
             );
-            match ch {
-                '{' => {
-                    // `Action` is what alc emits for a group inside `actions`,
-                    // so the flag has to reach every descendant, not just the
-                    // `actions` marker block itself.
-                    let in_actions = stack.last().is_some_and(|frame| frame.in_actions)
-                        || matches!(pending, Some(MemberBlock { actions_marker, .. }) if actions_marker);
-                    let member = pending.take().filter(|member| !member.actions_marker);
-                    stack.push(Frame { member, in_actions });
-                }
-                _ => {
-                    stack.pop();
-                    if stack.is_empty() {
-                        // The object closed: a file may hold several.
-                        object = None;
-                    }
-                }
+            if ch == '{' {
+                scanner.open_block();
+            } else {
+                scanner.close_block();
             }
-            segment_start = index + ch.len_utf8();
+            segment_start = position + ch.len_utf8();
         }
-        scan_segment(
-            &line[segment_start..],
-            &code[segment_start..],
-            &mut object,
-            &stack,
-            &mut pending,
-            units,
-        );
+        scanner.segment(&line[segment_start..], &code[segment_start..]);
     }
 }
 
 /// The object a translation unit belongs to.
 pub(super) struct ObjectContext {
     header: ObjectHeader,
-    name_hash: i64,
+    /// The kind opening every id of this object. For an extension folded onto
+    /// another object this is that object's kind.
+    root_kind: String,
+    root_hash: i64,
+    /// `al-object-target` for property units: `<TargetKind> <hash>` of the
+    /// object an extension extends. `None` outside extension objects.
+    target: Option<String>,
+    /// `al-object-target` for Label units: the extension object itself.
+    own_target: Option<String>,
 }
 
-/// One open brace: the member it declares, if any, and whether it is under an
-/// `actions` section.
+/// One open brace: the member it declares, if any, and where it sits.
 pub(super) struct Frame {
     member: Option<MemberBlock>,
+    /// Under an `actions` section.
     in_actions: bool,
+    /// A report `labels` section, whose entries are `Name = 'text';`.
+    in_labels: bool,
+    /// A `Caption` or `CaptionML` property is declared directly in this block.
+    caption_seen: bool,
+    /// An `OptionCaption` or `OptionCaptionML` property is declared here.
+    option_caption_seen: bool,
+    /// The members of an `OptionMembers` property, joined by commas.
+    option_members: Option<String>,
 }
 
-/// Process one brace-free run of a line: an object header, a member header,
-/// and every `;`-terminated statement in it.
+struct Scanner<'a> {
+    index: &'a ProjectIndex,
+    options: XliffOptions,
+    object: Option<ObjectContext>,
+    /// One frame per open brace.
+    stack: Vec<Frame>,
+    pending: Option<MemberBlock>,
+    /// The procedure or trigger whose `var` section is being read.
+    method: Option<String>,
+    units: &'a mut Vec<TranslationUnit>,
+}
+
+impl Scanner<'_> {
+    fn open_block(&mut self) {
+        // `Action` is what alc emits for a group inside `actions`,
+        // so the flag has to reach every descendant, not just the
+        // `actions` marker block itself.
+        let in_actions = self.stack.last().is_some_and(|frame| frame.in_actions)
+            || self.pending.as_ref().is_some_and(|m| m.actions_marker);
+        let in_labels = self.pending.as_ref().is_some_and(|m| m.labels_marker);
+        let member = self
+            .pending
+            .take()
+            .filter(|member| !member.actions_marker && !member.labels_marker);
+        self.stack.push(Frame {
+            member,
+            in_actions,
+            in_labels,
+            caption_seen: false,
+            option_caption_seen: false,
+            option_members: None,
+        });
+    }
+
+    fn close_block(&mut self) {
+        let Some(frame) = self.stack.pop() else {
+            return;
+        };
+        let is_object = self.stack.is_empty();
+        self.finish_frame(&frame, is_object);
+        if is_object {
+            // The object closed: a file may hold several.
+            self.object = None;
+            self.method = None;
+        }
+    }
+
+    /// Units for what a block did not declare. alc writes them from
+    /// `LabelWriterVisitor.VisitSymbolWithProperties`:
+    /// - a table or table extension field with no `Caption` gets its name as
+    ///   the caption, in every mode,
+    /// - with `GenerateCaptions` a table, page, report, query or xmlport object,
+    ///   an action, and an option field's `OptionCaption` get one as well.
+    fn finish_frame(&mut self, frame: &Frame, is_object: bool) {
+        let Some(object) = self.object.as_ref() else {
+            return;
+        };
+        let generate = self.options.generate_captions;
+        let mut found = Vec::new();
+        if is_object {
+            if generate
+                && !frame.caption_seen
+                && matches!(
+                    object.header.kind_display.as_str(),
+                    "Table" | "Page" | "Report" | "Query" | "XmlPort"
+                )
+            {
+                found.push(build_unit(
+                    object,
+                    &[("Property", "Caption")],
+                    object.header.name.clone(),
+                    false,
+                ));
+            }
+        } else if let Some(member) = &frame.member {
+            let kind = member.id_kind(&object.header, frame.in_actions);
+            let member_path = [(kind, member.name.as_str())];
+            if kind == "Field" {
+                if !frame.caption_seen {
+                    found.push(build_unit(
+                        object,
+                        &[member_path[0], ("Property", "Caption")],
+                        member.name.clone(),
+                        false,
+                    ));
+                }
+                if generate && member.is_option_type() && !frame.option_caption_seen {
+                    found.push(build_unit(
+                        object,
+                        &[member_path[0], ("Property", "OptionCaption")],
+                        frame.option_members.clone().unwrap_or_default(),
+                        false,
+                    ));
+                }
+            } else if kind == "Action"
+                && generate
+                && !frame.caption_seen
+                && matches!(member.keyword.as_str(), "action" | "group")
+            {
+                found.push(build_unit(
+                    object,
+                    &[member_path[0], ("Property", "Caption")],
+                    member.name.clone(),
+                    false,
+                ));
+            }
+        }
+        self.units.extend(found);
+    }
+
+    /// Process one brace-free run of a line: an object header, a member header,
+    /// and every `;`-terminated statement in it.
+    ///
+    /// Working in segments rather than whole lines is what makes a one-line member
+    /// (`field(1; "No."; Code[20]) { Caption = 'No.'; }`) resolve against the field
+    /// it declares: the brace between the two has already been applied to the stack
+    /// by the time the caption is read.
+    fn segment(&mut self, raw: &str, code: &str) {
+        if self.stack.is_empty() {
+            if let Some(header) = parse_object_header_line(code.trim()) {
+                self.object = Some(self.index.object_context(header));
+            }
+            return;
+        }
+        if self.object.is_none() {
+            return;
+        }
+
+        if let Some(member) = parse_member_block(code.trim()) {
+            self.pending = Some(member);
+        }
+        if let Some(name) = parse_method_header(code.trim()) {
+            self.method = Some(name);
+        }
+
+        for (statement, stripped) in statements(raw, code) {
+            self.note_declared_properties(statement);
+            if property_is_locked(stripped) {
+                continue;
+            }
+            self.emit_statement(statement);
+        }
+
+        // Labels sit in `var` sections, which end where the body begins.
+        if contains_word(code, "begin") {
+            self.method = None;
+        }
+    }
+
+    /// Record which captions a block declares, locked or not: a locked caption
+    /// still means the field has one and needs no implicit caption.
+    fn note_declared_properties(&mut self, statement: &str) {
+        let Some((name, value)) = statement.split_once('=') else {
+            return;
+        };
+        let name = name.trim();
+        let anchor = self
+            .stack
+            .iter()
+            .rposition(|frame| frame.member.is_some())
+            .unwrap_or(0);
+        let Some(frame) = self.stack.get_mut(anchor) else {
+            return;
+        };
+        if name.eq_ignore_ascii_case("Caption") || name.eq_ignore_ascii_case("CaptionML") {
+            frame.caption_seen = true;
+        } else if name.eq_ignore_ascii_case("OptionCaption")
+            || name.eq_ignore_ascii_case("OptionCaptionML")
+        {
+            frame.option_caption_seen = true;
+        } else if name.eq_ignore_ascii_case("OptionMembers") {
+            frame.option_members = Some(join_option_members(value));
+        }
+    }
+
+    fn emit_statement(&mut self, statement: &str) {
+        let Some(object) = self.object.as_ref() else {
+            return;
+        };
+        let anchor = self.stack.iter().rev().find_map(|frame| {
+            frame
+                .member
+                .as_ref()
+                .map(|member| (member, frame.in_actions))
+        });
+        let mut found = Vec::new();
+
+        // `labels { Name = 'text'; }` in a report: alc's `ReportLabel` symbols.
+        if self.stack.last().is_some_and(|frame| frame.in_labels) {
+            if let Some((name, value)) = statement.split_once('=') {
+                let name = name.trim().unquote_identifier().to_string();
+                if !name.is_empty() && value.trim_start().starts_with('\'') {
+                    if let Some(text) = extract_single_quoted(value) {
+                        let mut unit = build_unit(object, &[("ReportLabel", &name)], text, false);
+                        unit.developer_note = statement_comment(statement);
+                        found.push(unit);
+                    }
+                }
+            }
+            self.units.extend(found);
+            return;
+        }
+
+        for property in TRANSLATABLE_PROPERTIES {
+            let Some(value) = parse_property_value(statement, property) else {
+                continue;
+            };
+            let mut path: Vec<(&str, &str)> = Vec::new();
+            if let Some((member, in_actions)) = anchor {
+                path.push((member.id_kind(&object.header, in_actions), &member.name));
+            }
+            path.push(("Property", property));
+            let mut unit = build_unit(object, &path, value, false);
+            unit.developer_note = statement_comment(statement);
+            found.push(unit);
+        }
+
+        // `MyLabel: Label 'text';` — alc keys labels by the NamedType name. A
+        // label in a procedure's `var` section also carries the method, and a
+        // trigger's carries the member it sits in.
+        if let Some((label_name, label_text)) = parse_label_declaration(statement) {
+            let mut path: Vec<(&str, &str)> = Vec::new();
+            if let Some(method) = self.method.as_deref() {
+                if let Some((member, in_actions)) = anchor {
+                    path.push((member.id_kind(&object.header, in_actions), &member.name));
+                }
+                path.push(("Method", method));
+            }
+            path.push(("NamedType", &label_name));
+            let mut unit = build_unit(object, &path, label_text, true);
+            unit.developer_note = statement_comment(statement);
+            found.push(unit);
+        }
+        self.units.extend(found);
+    }
+}
+
+/// One unit. `path` is the chain after the object: an optional member, then
+/// `Property <name>`, `NamedType <label>` or `ReportLabel <name>`.
 ///
-/// Working in segments rather than whole lines is what makes a one-line member
-/// (`field(1; "No."; Code[20]) { Caption = 'No.'; }`) resolve against the field
-/// it declares: the brace between the two has already been applied to `stack`
-/// by the time the caption is read.
-pub(super) fn scan_segment(
-    raw: &str,
-    code: &str,
-    object: &mut Option<ObjectContext>,
-    stack: &[Frame],
-    pending: &mut Option<MemberBlock>,
-    units: &mut Vec<TranslationUnit>,
-) {
-    if stack.is_empty() {
-        if let Some(header) = parse_object_header_line(code.trim()) {
-            *object = Some(ObjectContext {
-                name_hash: name_hash(&header.name),
-                header,
-            });
-        }
-        return;
+/// The id is the hashed form built on the root object, the note the readable
+/// form built on the declaring object, as in alc's
+/// `GetTranslationFileId` and `GetTranslationFileNamedId`.
+fn build_unit(
+    object: &ObjectContext,
+    path: &[(&str, &str)],
+    source: String,
+    is_label: bool,
+) -> TranslationUnit {
+    let obj_type = &object.header.kind_display;
+    let obj_name = &object.header.name;
+    let mut id = format!("{} {}", object.root_kind, object.root_hash);
+    let mut note = format!("{obj_type} {obj_name}");
+    for (kind, name) in path {
+        // The property component is hashed from its property name, the
+        // others from the symbol name.
+        id.push_str(&format!(" - {kind} {}", name_hash(name)));
+        note.push_str(&format!(" - {kind} {name}"));
     }
-    let Some(object) = object.as_ref() else {
-        return;
+    let mut unit =
+        make_translation_unit(id, obj_type, object.header.id, obj_name, source, Some(note));
+    // ObjectTargetSymbolId: a Label names the extension itself, everything
+    // else the object it extends.
+    unit.object_target = if is_label {
+        object.own_target.clone()
+    } else {
+        object.target.clone()
     };
+    unit
+}
 
-    if let Some(member) = parse_member_block(code.trim()) {
-        *pending = Some(member);
-    }
-
-    let anchor = stack.iter().rev().find_map(|frame| {
-        frame
-            .member
-            .as_ref()
-            .map(|member| (member, frame.in_actions))
-    });
-
-    for (statement, stripped) in statements(raw, code) {
-        if property_is_locked(stripped) {
-            continue;
+/// `procedure Name(...)` or `trigger Name()`, with the optional modifiers.
+fn parse_method_header(trimmed: &str) -> Option<String> {
+    let lower = trimmed.to_ascii_lowercase();
+    let mut rest = lower.as_str();
+    let mut offset = 0usize;
+    for modifier in ["local ", "internal ", "protected "] {
+        if let Some(after) = rest.strip_prefix(modifier) {
+            offset += rest.len() - after.len();
+            rest = after.trim_start();
+            offset += after.len() - rest.len();
+            break;
         }
-        emit_statement_units(statement, object, anchor, units);
     }
+    let keyword_len = if rest.starts_with("procedure ") {
+        "procedure ".len()
+    } else if rest.starts_with("trigger ") {
+        "trigger ".len()
+    } else {
+        return None;
+    };
+    let after = &trimmed[offset + keyword_len..];
+    let name = after.split('(').next()?.trim().unquote_identifier();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Whether `word` appears in `code` as a whole word, ignoring case.
+fn contains_word(code: &str, word: &str) -> bool {
+    let lower = code.to_ascii_lowercase();
+    let mut from = 0usize;
+    while let Some(found) = lower[from..].find(word) {
+        let at = from + found;
+        let end = at + word.len();
+        let before = lower[..at]
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        let after = lower[end..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !before && !after {
+            return true;
+        }
+        from = end;
+    }
+    false
+}
+
+/// The text alc uses as the source of a synthesized `OptionCaption`
+/// (`OptionTypeSymbol.OptionMembers`): the members joined by commas, quotes
+/// removed, an empty first member kept.
+fn join_option_members(value: &str) -> String {
+    let mut members: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut quoted_text: Option<String> = None;
+    let mut in_quotes = false;
+    for ch in value.chars() {
+        match ch {
+            '"' => {
+                in_quotes = !in_quotes;
+                quoted_text.get_or_insert_with(String::new);
+            }
+            ',' if !in_quotes => {
+                members.push(
+                    quoted_text
+                        .take()
+                        .unwrap_or_else(|| current.trim().to_string()),
+                );
+                current.clear();
+            }
+            _ if in_quotes => quoted_text.get_or_insert_with(String::new).push(ch),
+            _ => current.push(ch),
+        }
+    }
+    members.push(
+        quoted_text
+            .take()
+            .unwrap_or_else(|| current.trim().to_string()),
+    );
+    members.join(",")
 }
 
 /// Split a segment into `;`-terminated statements, pairing each with the
@@ -181,68 +750,6 @@ pub(super) fn statements<'a>(raw: &'a str, code: &'a str) -> Vec<(&'a str, &'a s
     }
     out.push((raw[start..].trim(), code[start..].trim()));
     out.into_iter().filter(|(raw, _)| !raw.is_empty()).collect()
-}
-
-pub(super) fn emit_statement_units(
-    statement: &str,
-    object: &ObjectContext,
-    anchor: Option<(&MemberBlock, bool)>,
-    units: &mut Vec<TranslationUnit>,
-) {
-    let obj_type = &object.header.kind_display;
-    let obj_name = &object.header.name;
-    let object_hash = object.name_hash;
-
-    for property in ["Caption", "ToolTip"] {
-        let Some(value) = parse_property_value(statement, property) else {
-            continue;
-        };
-        let (id, note) = match anchor {
-            Some((member, in_actions)) => {
-                let kind = member.id_kind(&object.header, in_actions);
-                (
-                    format!(
-                        "{obj_type} {object_hash} - {kind} {} - Property {}",
-                        name_hash(&member.name),
-                        name_hash(property)
-                    ),
-                    format!(
-                        "{obj_type} {obj_name} - {kind} {} - Property {property}",
-                        member.name
-                    ),
-                )
-            }
-            None => (
-                format!(
-                    "{obj_type} {object_hash} - Property {}",
-                    name_hash(property)
-                ),
-                format!("{obj_type} {obj_name} - Property {property}"),
-            ),
-        };
-        let mut unit =
-            make_translation_unit(id, obj_type, object.header.id, obj_name, value, Some(note));
-        unit.developer_note = statement_comment(statement);
-        units.push(unit);
-    }
-
-    // `MyLabel: Label 'text';` — alc keys labels by the NamedType name.
-    if let Some((label_name, label_text)) = parse_label_declaration(statement) {
-        let id = format!(
-            "{obj_type} {object_hash} - NamedType {}",
-            name_hash(&label_name)
-        );
-        let mut unit = make_translation_unit(
-            id,
-            obj_type,
-            object.header.id,
-            obj_name,
-            label_text,
-            Some(format!("{obj_type} {obj_name} - NamedType {label_name}")),
-        );
-        unit.developer_note = statement_comment(statement);
-        units.push(unit);
-    }
 }
 
 /// The `Comment = '...'` that follows the translatable literal of a
@@ -292,22 +799,34 @@ pub(super) struct MemberBlock {
     keyword: String,
     /// Member name used in the translation id.
     name: String,
+    /// The data type of a table field, as written.
+    data_type: String,
     /// The unnamed `actions` section marker, which anchors nothing itself but
     /// makes every block inside it an action.
     actions_marker: bool,
+    /// The unnamed report `labels` section marker.
+    labels_marker: bool,
 }
 
 impl MemberBlock {
-    /// alc's id component for this member: `Field` for a table field,
-    /// `Action` for anything under `actions`, `Control` otherwise.
+    /// alc's id component for this member, the symbol kind of
+    /// `LanguageFileUtilities.GetLanguageSymbolId`.
     fn id_kind(&self, header: &ObjectHeader, in_actions: bool) -> &'static str {
-        if in_actions || self.keyword == "action" || self.keyword == "actionref" {
-            "Action"
-        } else if header.is_table_like && self.keyword == "field" {
-            "Field"
-        } else {
-            "Control"
+        match self.keyword.as_str() {
+            "dataitem" => "ReportDataItem",
+            "column" if header.kind_display.starts_with("Query") => "QueryColumn",
+            "column" => "ReportColumn",
+            "filter" => "QueryFilter",
+            "value" => "EnumValue",
+            "modify" => "Change",
+            _ if in_actions || self.keyword == "action" || self.keyword == "actionref" => "Action",
+            "field" if header.is_table_like => "Field",
+            _ => "Control",
         }
+    }
+
+    fn is_option_type(&self) -> bool {
+        self.data_type.to_ascii_lowercase().starts_with("option")
     }
 }
 
@@ -327,6 +846,9 @@ pub(super) const MEMBER_BLOCK_KEYWORDS: &[&str] = &[
     "grid",
     "dataitem",
     "column",
+    "filter",
+    "value",
+    "modify",
 ];
 
 /// Parse a `keyword(args)` member header, or the bare `actions` section.
@@ -340,7 +862,18 @@ pub(super) fn parse_member_block(trimmed: &str) -> Option<MemberBlock> {
         return Some(MemberBlock {
             keyword: "actions".to_string(),
             name: String::new(),
+            data_type: String::new(),
             actions_marker: true,
+            labels_marker: false,
+        });
+    }
+    if lower_head == "labels" {
+        return Some(MemberBlock {
+            keyword: "labels".to_string(),
+            name: String::new(),
+            data_type: String::new(),
+            actions_marker: false,
+            labels_marker: true,
         });
     }
     let open = trimmed.find('(')?;
@@ -365,10 +898,19 @@ pub(super) fn parse_member_block(trimmed: &str) -> Option<MemberBlock> {
     if name.is_empty() {
         return None;
     }
+    let data_type = if first.parse::<u32>().is_ok() {
+        args.get(2)
+            .map(|a| a.trim().to_string())
+            .unwrap_or_default()
+    } else {
+        String::new()
+    };
     Some(MemberBlock {
         keyword,
         name: name.to_string(),
+        data_type,
         actions_marker: false,
+        labels_marker: false,
     })
 }
 
@@ -499,6 +1041,7 @@ pub(super) fn make_translation_unit(
         state: TranslationState::New,
         note,
         developer_note: None,
+        object_target: None,
     }
 }
 
@@ -528,6 +1071,10 @@ pub(super) struct ObjectHeader {
     pub(super) id: u32,
     pub(super) name: String,
     is_table_like: bool,
+    /// The object an extension extends or a customization customizes, when the
+    /// header line names it. A header split over lines is read by
+    /// `collect_object_headers`.
+    pub(super) extends: Option<String>,
 }
 
 /// Parse one already-comment-free line as an object declaration.
@@ -576,11 +1123,24 @@ pub(super) fn parse_object_header_line(line: &str) -> Option<ObjectHeader> {
         return Some(ObjectHeader {
             kind_display,
             id,
+            extends: parse_target_clause(&rest2[name_end_offset(rest2)..]),
             name,
             is_table_like,
         });
     }
     None
+}
+
+/// Byte offset just after the object name in `rest` (`"Name" extends ...`).
+fn name_end_offset(rest: &str) -> usize {
+    let trimmed = rest.trim_start();
+    let lead = rest.len() - trimmed.len();
+    for quote in ['"', '\''] {
+        if let Some(inner) = trimmed.strip_prefix(quote) {
+            return lead + 1 + inner.find(quote).map_or(inner.len(), |i| i + 1);
+        }
+    }
+    lead + trimmed.find(char::is_whitespace).unwrap_or(trimmed.len())
 }
 
 /// Extract just the object NAME from the header remainder, stopping at the

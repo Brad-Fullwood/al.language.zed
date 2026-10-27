@@ -30,13 +30,36 @@ existing `.g.xlf`/language files stay compatible.
   `xlf refresh` against an `alc`- or Microsoft-produced file matches IDs instead of marking
   everything added/removed.
 
-  **Known deviation:** `alc` folds an *extension* object's ID root onto the base object when that
-  base is part of the same project (adding an `al-object-target` attribute). This extractor works one
-  file at a time and has no project view, so it keeps the declaring object as the ID root. That is
-  also what `alc` does for the dominant case of extending a base-application object, but differs when
-  you extend an object from your own app.
+  **Extension objects.** The id root of an extension object follows alc's
+  `GetFoldingExtensionObject`. A customization object is its own root. When the project declares the
+  object an extension extends, that object is the root (`Table <hash of the target>`). Otherwise the
+  extension with the lowest object id among the project's extensions of that target is the root, with
+  its own kind and name. The extractor reads every object header in the project first, because one
+  file does not hold enough to pick the root. Each unit of an extension also carries alc's
+  `al-object-target` attribute: `<TargetKind> <hash of the target>` for properties, and the extension
+  itself for labels. `xlf refresh` keeps the attribute.
+
+  **Unit kinds.** Besides captions, tooltips and labels, the extractor writes the units alc writes for
+  report columns, data items and labels, enum values, query columns and filters, page extension
+  `modify` changes, `OptionCaption`, and the implicit caption of a table field without one.
+
+  **Features.** `xlf generate` is an explicit request for the file, so it behaves as if `TranslationFile`
+  were set, the feature that makes alc write the `.g.xlf`. `GenerateCaptions` (case-insensitive, from
+  the app.json `features` array) adds the units alc synthesizes for objects, actions and option fields
+  without a caption. `AllTranslationItems`, `GenerateLockedTranslations`, `LcgTranslationFile` and
+  `TranslationsWithNamespaces` are not honoured: locked text stays out, there is no `.lcg` file, and
+  the units have no namespace prefix. Two smaller limits: the unit order differs from alc's, and a
+  target written with a namespace (`extends Foo.Bar`) is hashed as written and differs from alc.
+
+  **Verified against alc 18.1.** `crates/al-analysis/tests/xliff_alc.rs` compares ids and
+  `al-object-target` with the `.g.xlf` alc wrote for a synthetic project, for `TranslationFile` and
+  for `TranslationFile` plus `GenerateCaptions`.
 - **Generation** (`generate_xliff`): emits an XLIFF 1.2 document (source/target/state/note per unit).
-  This is the `*.g.xlf` generated base, the source of truth from a build.
+  This is the `*.g.xlf` generated base, the source of truth from a build. The file is named
+  `<app.json name>.g.xlf` with the spaces kept and the characters a file name cannot hold removed, as
+  alc does. `original` is the app name, the group id is `body`, and every unit has a Developer note,
+  empty when the text has no `Comment`. When `xlf refresh` finds both that file and an older
+  `<name without spaces>.g.xlf` in `Translations`, it uses the one named for app.json.
 - **Parsing** (`parse_xliff`): reads an existing language file (e.g. `de-DE.xlf`), preserving targets
   and states. A duplicate `trans-unit id` in the input keeps the *first* occurrence (document order)
   and logs a warning, so a malformed file cannot silently overwrite a reviewed translation.
@@ -58,11 +81,11 @@ Defensive bound: `MAX_XLF_FILE_BYTES = 64 MiB`.
 
 | Aspect | This project | Microsoft AL extension |
 | --- | --- | --- |
-| Generate `.g.xlf` | ✅ native | ✅ (via `alc`/extension, `GenerateCaptions` feature) |
+| Generate `.g.xlf` | ✅ native | ✅ (via `alc`, `TranslationFile` feature) |
 | Refresh/merge translations | ✅ native | partial (3rd-party tools commonly used) |
 | List untranslated | ✅ | ❌ (3rd-party) |
 | Suggest translations | ✅ translation-memory and symbol-name matching | ❌ |
-| ID compatibility | ✅ same FNV-hash scheme as `alc` (see the deviation note above for same-project extension objects) | reference |
+| ID compatibility | ✅ same ids and `al-object-target` as `alc` for the features above | reference |
 
 The generated `.g.xlf` and the ID scheme are deliberately Microsoft-compatible, so these workflows
 drop into an existing BC translation pipeline.

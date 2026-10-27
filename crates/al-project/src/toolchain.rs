@@ -270,10 +270,15 @@ fn extract_version_from_path(dir: &Path) -> String {
     for component in dir.components().rev() {
         if let std::path::Component::Normal(s) = component {
             let s = s.to_string_lossy();
-            if s.chars().next().is_some_and(|c| c.is_ascii_digit()) && s.contains('.') {
-                let parts: Vec<&str> = s.split('.').collect();
+            // A bare version directory (`18.0.43.1464`) or an extension
+            // directory that ends in one (`ms-dynamics-smb.al-18.1.2842859`).
+            let candidate = s.rsplit('-').next().unwrap_or(&s);
+            if candidate.chars().next().is_some_and(|c| c.is_ascii_digit())
+                && candidate.contains('.')
+            {
+                let parts: Vec<&str> = candidate.split('.').collect();
                 if parts.len() >= 2 && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
-                    return s.to_string();
+                    return candidate.to_string();
                 }
             }
         }
@@ -777,6 +782,18 @@ mod tests {
             std::fs::write(leaf.join(f), b"").unwrap();
         }
         leaf
+    }
+
+    #[test]
+    fn version_is_read_from_an_extension_directory_name() {
+        let dir = Path::new("/home/u/.cursor/extensions/ms-dynamics-smb.al-18.1.2842859/bin");
+        assert_eq!(extract_version_from_path(dir), "18.1.2842859");
+        let tool = Path::new("/store/pkg/18.0.43.1464/tools/net8.0/any");
+        assert_eq!(extract_version_from_path(tool), "18.0.43.1464");
+        assert_eq!(
+            extract_version_from_path(Path::new("/opt/al/bin")),
+            "unknown"
+        );
     }
 
     #[test]

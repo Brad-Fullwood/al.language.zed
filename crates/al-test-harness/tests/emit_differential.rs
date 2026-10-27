@@ -41,6 +41,19 @@ const CORPUS: &[(&str, &str)] = &[
         "IGreeter.Interface.al",
         "interface IGreeter { procedure Greet(Name: Text): Text; }",
     ),
+    // Interface ids hash the qualified name, the extended interfaces' ids and
+    // the method ids, so cover a quoted name with several methods, not only the plain
+    // interface above. A namespaced interface also matched alc's id but its
+    // namespace tree layout differs, so it stays out of this corpus. Extending
+    // interfaces are not extracted yet.
+    (
+        "IQuoted.Interface.al",
+        "interface \"I Quoted\" { procedure Ping(); procedure Pong(Count: Integer): Boolean; }",
+    ),
+    (
+        "SpikeIFoo.Interface.al",
+        "interface \"Spike IFoo\" { procedure Foo(x: Integer): Boolean; }",
+    ),
     (
         "Greeter.Codeunit.al",
         "codeunit 50101 Greeter implements IGreeter\n{\n    procedure Greet(Name: Text): Text begin exit('Hi'); end;\n}",
@@ -571,4 +584,115 @@ fn native_emit_matches_alc_for_base_app_bindings_and_resources() {
         "OK: Base Application control/property/page-customization bindings and resources match alc {}",
         dll.display()
     );
+}
+
+/// emitter-02: an extension in a dependency that is named like the base object
+/// it extends ("Customer Card") must not become the owner of that name. alc
+/// writes the Base Application id into `TargetObject`. The native emitter took
+/// the first package that held any object of that name, here the dependency.
+#[test]
+#[ignore = "requires AL_TOOL_PATH, AL_PACKAGE_CACHE_PATH, and dotnet; run with --ignored"]
+fn native_extension_target_names_the_declaring_app_like_alc() {
+    let dll = alc_dll().expect("AL_TOOL_PATH/alc.dll and a working dotnet host are required");
+    let package_cache = std::env::var_os("AL_PACKAGE_CACHE_PATH")
+        .map(PathBuf::from)
+        .expect("AL_PACKAGE_CACHE_PATH is required for the extension target differential");
+    let tmp = std::env::temp_dir().join(format!("al-ext-target-diff-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let dependency = tmp.join("dependency");
+    let dependent = tmp.join("dependent");
+    for project in [&dependency, &dependent] {
+        std::fs::create_dir_all(project.join("src")).unwrap();
+        assert!(copy_package_cache(&package_cache, &project.join(".alpackages")) > 0);
+    }
+    // "Dependency.app" sorts before the Microsoft_* packages, so a first-wins
+    // name lookup meets the dependency's page extension before the Base page.
+    std::fs::write(
+        dependency.join("app.json"),
+        r#"{"id":"11111111-2222-3333-4444-555555555555","name":"Dependency","publisher":"AL","version":"1.0.0.0","platform":"28.0.0.0","application":"28.0.0.0","runtime":"17.0","target":"Cloud","idRanges":[{"from":50100,"to":50149}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dependency.join("src/CustomerCard.PageExt.al"),
+        "pageextension 50100 \"Customer Card\" extends \"Customer Card\" { }",
+    )
+    .unwrap();
+    let dependency_app = dependency.join("Dependency.app");
+    let output = Command::new("dotnet")
+        .arg(&dll)
+        .arg(format!("/project:{}", dependency.display()))
+        .arg(format!("/out:{}", dependency_app.display()))
+        .arg(format!(
+            "/packagecachepath:{}",
+            dependency.join(".alpackages").display()
+        ))
+        .output()
+        .expect("run alc for dependency");
+    assert!(
+        dependency_app.is_file(),
+        "dependency alc failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    std::fs::copy(
+        &dependency_app,
+        dependent.join(".alpackages/Dependency.app"),
+    )
+    .unwrap();
+    std::fs::write(
+        dependent.join("app.json"),
+        r#"{"id":"99999999-2222-3333-4444-555555555555","name":"Dependent","publisher":"AL","version":"1.0.0.0","platform":"28.0.0.0","application":"28.0.0.0","runtime":"17.0","target":"Cloud","idRanges":[{"from":50100,"to":50149}],"dependencies":[{"id":"11111111-2222-3333-4444-555555555555","name":"Dependency","publisher":"AL","version":"1.0.0.0"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dependent.join("src/DependentCard.PageExt.al"),
+        "pageextension 50101 \"Dependent Card\" extends \"Customer Card\" { }",
+    )
+    .unwrap();
+    let alc_app = dependent.join("alc.app");
+    let output = Command::new("dotnet")
+        .arg(&dll)
+        .arg(format!("/project:{}", dependent.display()))
+        .arg(format!("/out:{}", alc_app.display()))
+        .arg(format!(
+            "/packagecachepath:{}",
+            dependent.join(".alpackages").display()
+        ))
+        .output()
+        .expect("run alc for dependent");
+    assert!(
+        alc_app.is_file(),
+        "dependent alc failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let native_app = dependent.join("native.app");
+    let output = Command::new(al_explorer_binary())
+        .args(["pack-native", "--project"])
+        .arg(&dependent)
+        .arg("--out")
+        .arg(&native_app)
+        .output()
+        .expect("run native dependent build");
+    assert!(
+        native_app.is_file(),
+        "native dependent build failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let target = |app: &Path| -> String {
+        let doc = parse_json(&read_app_entry(app, "SymbolReference.json"));
+        doc["PageExtensions"][0]["TargetObject"]
+            .as_str()
+            .expect("TargetObject")
+            .to_string()
+    };
+    let alc_target = target(&alc_app);
+    assert!(
+        alc_target.starts_with("#437dbf0e84ff417a965ded2bb9650972#"),
+        "alc should qualify with the Base Application id, got {alc_target}"
+    );
+    assert_eq!(alc_target, target(&native_app));
+    let _ = std::fs::remove_dir_all(&tmp);
 }

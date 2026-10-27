@@ -23,11 +23,11 @@ Templates:
 | Template | Produces |
 | --- | --- |
 | `default` / `pte` | starter `HelloWorld.Codeunit.al` |
-| `appsource` | starter codeunit + `AppSourceCop.json` |
+| `appsource` | starter codeunit, `AppSourceCop.json` (schema properties only) and the `TranslationFile` + `GenerateCaptions` features |
 | `library` | a library codeunit |
 | `test` | a test codeunit with `[Test]` procedures |
-| `copilot` | a Copilot capability enum extension, a participant codeunit and an Azure OpenAI codeunit |
-| `agent` | Agent orchestration + job-handler codeunits |
+| `copilot` | a Copilot capability enum extension, a participant codeunit that calls the Azure OpenAI codeunit (endpoint and key left empty) and a prompt helper codeunit. No `capabilities` entry in app.json (deprecated from runtime 4.0) |
+| `agent` | two plain codeunits, an entry point and a job handler that echoes its input. It uses no Agent API and does not call a model |
 | `api` | a REST API page |
 
 ## Object generators (`generators.rs`)
@@ -50,8 +50,14 @@ Scans the workspace for object declarations and renders a permission set, mappin
 permission: tables → `tabledata "Name" = RIMD`. Pages/codeunits/reports/xmlports/queries →
 `type "Name" = X` (Execute). Extension objects and non-permissioned objects (enum, interface,
 profile…) are skipped. Output is **AL** (`permissionset <id> "Name" { Assignable = true, Permissions
-= … }`) or **XML** (BC permission-set schema), with proper AL/XML escaping and deterministic ordering
-(sorted by type then name).
+= … }`) or **XML**. The AL output is sorted by type then name. The XML follows the file Microsoft's
+AL command "Generate permission set as XML file containing current extension objects" writes
+(`al/generatePermissionSet` of AL 18.1): `ObjectID`, numeric `ObjectType`, the five flags, an empty
+`SecurityFilter`, a TableData row (0, RIMD) and a Table row (1, X) per table, and the kinds in
+Microsoft's order. Within a kind the ids ascend, where Microsoft follows source file order. A
+RoleID over 20 characters is refused, as BC's schema allows 20. A test compares the full file with one
+the real language server wrote for a synthetic project. The UTF-8 byte order mark Microsoft writes is
+not added, and importing the file into Business Central was not tried.
 
 ## Shell completion generation
 
@@ -65,12 +71,13 @@ sourcing/installing into the shell's completion directory. See the
 
 | Aspect | This project | Microsoft AL extension |
 | --- | --- | --- |
-| New project | ✅ + Copilot/Agent/API templates | ✅ (`AL: Go!`, fewer templates) |
+| New project | ✅ + Copilot and API templates, and an `agent` starter of two plain codeunits (no Agent API) | ✅ (`AL: Go!`, fewer templates) |
 | Page/report/test generators | ✅ CLI and daemon | partial (snippets, some wizards) |
-| Permission-set generation | ✅ (AL + XML, from objects) | ❌ (manual / generated permission set object) |
+| Permission-set generation | ✅ (AL + XML, from objects) | ✅ `AL: Generate permission set containing current extension objects` and its XML variant |
 
-Permission-set generation in particular is a native feature with no direct counterpart in the official
-extension.
+The Microsoft AL extension has two permission set commands (`al.generatePermissionSetForExtensionObjects`
+and `al.generatePermissionSetForExtensionObjectsAsXml`). The AL output here matches the extension's
+object set. Microsoft also writes `table` rows, this generator writes `tabledata` rows only.
 
 ## Why this approach
 
