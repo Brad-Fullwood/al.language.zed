@@ -598,6 +598,33 @@ async fn a_user_name_is_resolved_and_a_base_app_mismatch_warns() {
 }
 
 #[tokio::test]
+async fn the_version_lookup_runs_before_the_attach() {
+    // Live finding process-01: the lookup is a service tier request of the same
+    // user. After a WebServiceClient attach it was the next session on the
+    // tenant, so the server ended the session and status answered 404.
+    let env = env().await;
+    mock_attach(&env, "NextSessionOnTenant").await;
+    let base = mock_automation(
+        &env,
+        json!({ "value": [{ "versionMajor": 29, "versionMinor": 0, "versionBuild": 111, "versionRevision": 2 }] }),
+    )
+    .await;
+    TEST_AUTOMATION_BASE.with(|cell| *cell.borrow_mut() = Some(base));
+    ok(&env, start_params()).await;
+    let paths: Vec<String> = requests(&env)
+        .await
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .collect();
+    let lookup = paths.iter().position(|p| p.ends_with("/extensions"));
+    let attach = paths.iter().position(|p| p.ends_with("/attach"));
+    assert!(lookup.is_some() && attach.is_some(), "{paths:?}");
+    assert!(lookup < attach, "{paths:?}");
+    // Nothing follows the attach.
+    assert_eq!(attach, Some(paths.len() - 1), "{paths:?}");
+}
+
+#[tokio::test]
 async fn a_failed_version_lookup_is_a_warning_and_an_unknown_user_is_an_error() {
     let env = env().await;
     mock_attach(&env, "NextSessionForUserOnTenant").await;

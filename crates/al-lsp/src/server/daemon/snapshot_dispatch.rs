@@ -308,6 +308,31 @@ async fn start(workspace: &Workspace, params: &Value) -> Result<Value, Failure> 
         None => None,
     };
 
+    // The version lookup is a service tier request by the same user. Made after
+    // the attach it would be the next session on the tenant that a
+    // WebServiceClient attach waits for, and the server would end the session
+    // before the caller's first status. It runs first.
+    let mut warnings = Vec::new();
+    if !points.is_empty() {
+        let info = VersionInfo {
+            package_version: points.iter().find_map(|point| match &point.source {
+                SnapSource::PackageSource { version, .. } => version.clone(),
+                _ => None,
+            }),
+            alpackages_base_app: alpackages_app_version(&root, "Microsoft", "Base Application"),
+        };
+        warnings.extend(
+            environment_version_warnings(
+                &http,
+                &config,
+                &token,
+                automation_base_override().as_deref(),
+                &info,
+            )
+            .await,
+        );
+    }
+
     let started = snapshot_capture::start(
         &http,
         &token,
@@ -328,27 +353,7 @@ async fn start(workspace: &Workspace, params: &Value) -> Result<Value, Failure> 
     .await
     .map_err(capture_failure)?;
 
-    let mut warnings = Vec::new();
     warnings.extend(started.save_error);
-    if !points.is_empty() {
-        let info = VersionInfo {
-            package_version: points.iter().find_map(|point| match &point.source {
-                SnapSource::PackageSource { version, .. } => version.clone(),
-                _ => None,
-            }),
-            alpackages_base_app: alpackages_app_version(&root, "Microsoft", "Base Application"),
-        };
-        warnings.extend(
-            environment_version_warnings(
-                &http,
-                &config,
-                &token,
-                automation_base_override().as_deref(),
-                &info,
-            )
-            .await,
-        );
-    }
 
     Ok(json!({
         "cmd": "start",
