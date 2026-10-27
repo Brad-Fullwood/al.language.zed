@@ -69,6 +69,15 @@ live in [ROADMAP.md](../ROADMAP.md).
   the live DAP control loop, a `liveBc`-routed test, and snapshot
   capture/replay. A complete caller-supplied project contract remains available
   for app-specific validation.
+- Native `.app` output is not equivalent to `alc` output on real customer projects. Parity is
+  measured on fixtures only. On one real project the native package differed from `alc` 18.1 in
+  107 of 139 objects: page extension variables, `ActionChanges`, `DocComments.xml`, option members,
+  manifest `Features`, `CalcFormula` text, method parameter `Temporary`, XLIFF units, the
+  `TargetObject` app id of extensions and entry names for folders with spaces are dropped or wrong.
+  Use `al.useOfficialCompiler: true` for any package that goes to Business Central. The native
+  verifier's text checks for procedure calls, return values, overloads, `Continue` and record fields
+  only warn. Findings `emitter-01-native-verifier-rejects-valid-dms-project` and
+  `emitter-02-native-app-differs-from-alc-on-dms`.
 - Native `.app` output has current `alc` 17 differential coverage for the small
   through XL generated Base Application benchmark projects plus an env-gated fixture for
   base-page modification/customization bindings, a report layout, and an app

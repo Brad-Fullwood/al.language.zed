@@ -2,8 +2,10 @@
 
 **Modules:** `crates/al-emit/src/` (verification + emitter), `crates/al-compile/src/lib.rs`,
 `crates/al-publish/src/lib.rs`, `crates/al-project/src/{toolchain,config}.rs`,
-`crates/al-bc/src/{launch,bc_client}.rs`. **Status:** ✅ shipped (verified native
-build is the default). `alc` compatibility/fallback retained
+`crates/al-bc/src/{launch,bc_client}.rs`. **Status:** shipped, with limits.
+The native build is the default, but on a real customer project the package differs from `alc`
+(see the coverage boundary below and the audit finding `emitter-02-native-app-differs-from-alc-on-dms`).
+Use `al.useOfficialCompiler: true` for any package that goes to Business Central.
 
 The pure-Rust compiler back end produces a Business Central `.app` directly from source without
 `alc`, .NET, or the C# bridge. It is the default for daemon `compile`, LSP `al.compile`, publish, and
@@ -219,6 +221,22 @@ package-semantic-equivalence check.
 > source-free package event binding, and analyzer policy remain compatibility-gated. Use `pack-native --validate` for an
 > additional Microsoft compatibility gate or `al.useOfficialCompiler: true` when exact `alc`
 > semantics are required.
+>
+> **Real projects differ from `alc`.** Archive, manifest and symbol parity is measured on the fixtures
+> only. On a real customer project (139 objects) the native package differed from the `alc` 18.1
+> package in 107 objects. What the native emitter drops or gets wrong: page extension variables,
+> `ActionChanges`, `DocComments.xml`, option members, manifest `Features` (for example `NoImplicitWith`),
+> `CalcFormula` text (truncated), method parameter `Temporary`, XLIFF units (208 against 347), the
+> `TargetObject` app id of extensions (wrong in 13 cases), and entry names for source folders with
+> spaces (`alc` writes `%2520`, native writes a raw space). Do not give a native package to Business
+> Central. Recommended: `al.useOfficialCompiler: true`. Details: finding
+> `emitter-02-native-app-differs-from-alc-on-dms`.
+>
+> **The verifier warns, it does not prove.** The text checks for local procedure calls, return
+> values, overloads, `Continue`, identifiers in field triggers and record fields (ALN2202, ALN2203,
+> ALN2208, ALN2209, ALN2402, ALN2404) cannot be exact without a binder. They are reported as
+> warnings and do not stop the build (finding `emitter-01-native-verifier-rejects-valid-dms-project`).
+> A clean native build does not mean `alc` would accept the project.
 
 ## Microsoft comparison
 
@@ -227,9 +245,9 @@ package-semantic-equivalence check.
 | Implementation | pure Rust | .NET application |
 | Work performed | parse → native verify → emit → package integrity check | parse → bind → type-check → emit |
 | Comparative performance | Native phase telemetry plus total wall time | Total wall time (no comparable phase telemetry exposed) |
-| Build-time validation | **yes**: native syntax/project/declaration/declared-binding checks | **yes**: authoritative Microsoft semantics |
+| Build-time validation | partial: native syntax/project/declaration/declared-binding checks block the build, heuristic body checks only warn | **yes**: authoritative Microsoft semantics |
 | Optional parity | `pack-native --validate` runs native first, then `alc` | reference |
-| Output fidelity | Archive/manifest/symbol parity on the measured self-contained, dependency, small-through-XL, and focused Base Application fixtures. Byte-identical XLIFF on translatable fixtures | reference |
+| Output fidelity | Archive/manifest/symbol parity is measured on the self-contained, dependency, small-through-XL, and focused Base Application fixtures only. Byte-identical XLIFF on translatable fixtures. A real customer project differs from `alc` (see the coverage boundary) | reference |
 | Availability | default. Runs anywhere | `al.useOfficialCompiler: true` |
 
 ## Why this approach
