@@ -671,20 +671,34 @@ pub fn native_compile_with_packages(
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuildBackend {
-    /// Pure-Rust `.app` emitter — the default; needs no toolchain, no `.NET`.
+    /// Pure-Rust `.app` emitter. The fallback when no toolchain is found, or
+    /// the choice when `al.useOfficialCompiler` is `false`. Needs no `.NET`.
     Native,
-    /// Microsoft `dotnet alc` subprocess (opt-in via `al.useOfficialCompiler`).
+    /// Microsoft `dotnet alc` subprocess. The default when the toolchain is
+    /// found, and the choice when `al.useOfficialCompiler` is `true`.
     Alc,
 }
 
 impl BuildBackend {
-    /// Map the `al.useOfficialCompiler` flag to a backend (native-first policy).
-    pub fn from_use_official_compiler(use_official: bool) -> Self {
-        if use_official {
-            BuildBackend::Alc
-        } else {
-            BuildBackend::Native
+    /// Line to print or log when auto mode fell back to the native emitter.
+    pub const NATIVE_FALLBACK_NOTE: &'static str = "Building with the native emitter: Microsoft AL toolchain not found. Install ALTool or set al.useOfficialCompiler.";
+
+    /// Map the `al.useOfficialCompiler` setting to a backend. Unset (`None`) is
+    /// auto: `alc` when `toolchain_found`, native otherwise. `Some(true)` is
+    /// always `alc` (the caller reports a missing toolchain), `Some(false)` is
+    /// always native.
+    pub fn from_use_official_compiler(setting: Option<bool>, toolchain_found: bool) -> Self {
+        match setting {
+            Some(true) => BuildBackend::Alc,
+            Some(false) => BuildBackend::Native,
+            None if toolchain_found => BuildBackend::Alc,
+            None => BuildBackend::Native,
         }
+    }
+
+    /// True when the setting is unset and the missing toolchain chose native.
+    pub fn is_auto_fallback(setting: Option<bool>, toolchain_found: bool) -> bool {
+        setting.is_none() && !toolchain_found
     }
 }
 
@@ -1630,14 +1644,24 @@ Build failed.";
 
     #[test]
     fn build_backend_from_use_official_compiler() {
-        assert_eq!(
-            BuildBackend::from_use_official_compiler(false),
-            BuildBackend::Native
-        );
-        assert_eq!(
-            BuildBackend::from_use_official_compiler(true),
-            BuildBackend::Alc
-        );
+        // (setting, toolchain found) -> backend
+        for (setting, found, expected) in [
+            (None, true, BuildBackend::Alc),
+            (None, false, BuildBackend::Native),
+            (Some(true), true, BuildBackend::Alc),
+            (Some(true), false, BuildBackend::Alc),
+            (Some(false), true, BuildBackend::Native),
+            (Some(false), false, BuildBackend::Native),
+        ] {
+            assert_eq!(
+                BuildBackend::from_use_official_compiler(setting, found),
+                expected,
+                "setting {setting:?}, toolchain found {found}"
+            );
+        }
+        assert!(BuildBackend::is_auto_fallback(None, false));
+        assert!(!BuildBackend::is_auto_fallback(None, true));
+        assert!(!BuildBackend::is_auto_fallback(Some(false), false));
     }
 
     #[tokio::test]

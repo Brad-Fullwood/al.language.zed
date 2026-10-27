@@ -94,6 +94,7 @@ graph TD
   al_analysis --> al_source
   al_analysis --> al_semantic
   al_analysis --> al_insight
+  al_analysis --> al_emit
   al_analysis --> al_project
   al_analysis --> al_workspace
   al_publish --> al_bc

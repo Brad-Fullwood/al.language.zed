@@ -38,7 +38,7 @@ The table shows what is native and what still uses Microsoft components.
 | Parsing | Tree-sitter AL grammar and Rust syntax helpers | Microsoft TextMate grammar is used as generator input |
 | Language server | `al-lsp` LSP transport, workspace indexing, document store, completions, hover, definitions, references, rename, formatting, folding, symbols, semantic tokens, inlay hints, CodeLens, code actions, diagnostics plumbing | Optional altool `launchlspserver` via `al.useOfficialLsp` (partial) |
 | Semantic compiler checks | Native bridge host, daemon plumbing, caching, command surfaces | .NET AL CodeAnalysis bridge and Microsoft compiler semantics |
-| Build/package | Pure-Rust verifier + `.app` emitter in `crates/al-emit`: syntax, project/dependency, declaration, declared-symbol binding and package-integrity diagnostics. Body checks that read source text without a binder (ALN2202, ALN2203, ALN2208, ALN2209, ALN2402, ALN2404) only warn, so a clean native build does not prove `alc` accepts the project. Atomic artifact handoff. Native defaults for daemon `compile`, LSP `al.compile`, publish, and DAP launch | `pack-native --validate` adds an explicit `alc` compatibility gate. `al.useOfficialCompiler=true` opts into Microsoft emission and full compiler semantics |
+| Build/package | Pure-Rust verifier + `.app` emitter in `crates/al-emit`: syntax, project/dependency, declaration, declared-symbol binding and package-integrity diagnostics. A tree-based binding pass reports `AL0118` (undeclared name) and `AL0132` (unknown Record member) as errors, so such a build fails with no `.app`. Body checks that read source text without a binder (ALN2202, ALN2203, ALN2208, ALN2209) only warn, so a clean native build does not prove `alc` accepts the project. Atomic artifact handoff. Daemon `compile`, LSP `al.compile`, publish, and DAP launch use `alc` when the toolchain is found and this emitter otherwise | `pack-native` always builds natively and `--validate` adds an `alc` compatibility gate. `al.useOfficialCompiler` forces `true` (alc) or `false` (native) |
 | `.app` inspection and emit fidelity | Native NAVX/ZIP inspection, manifest parsing, generated `SymbolReference.json`, profile symbol references, supported-subset XLIFF/navigation/resources, control-add-in bundles, entitlements, permissions, and ALC golden tests. Parity is measured on fixtures only. On a real project the package drops page extension variables, `ActionChanges`, `DocComments.xml` and option members | Broader real-world resource shapes still require `pack-native --validate` or official `alc`. Business Central publish/runtime behavior is the final compatibility validator |
 | Symbols | Native `.app` reader, symbol model, package cache, source map, composed objects, NuGet/server download orchestration | Symbol package contents and compiler output formats come from the Business Central ecosystem |
 | Analysis | Native impact, event, call graph, dead code, SQL scan, duplicates, architecture lint, breaking/upgrade/obsolete/audit reports | Package-only call-site bodies cannot be recovered when Microsoft `.app` symbols do not contain source bodies |
@@ -85,14 +85,14 @@ The indexing path is built around shared ownership and bounded caches. Large fil
 
 ### Native Compile And Deterministic Build Loop
 
-The default `.app` build path is native Rust. On real customer projects its package differs from `alc` output ([native emitter](Docs/features/native-app-emitter.md)), so set `al.useOfficialCompiler: true` for packages that go to Business Central. Microsoft `alc` remains available as an explicit compatibility gate or fallback for exact compiler semantics and analyzer behavior.
+Builds use Microsoft's `alc` when the toolchain is found and fall back to the native Rust emitter when it is not. The native package still drops page extension variables, `ActionChanges`, `DocComments` and option members, so on real customer projects it differs from `alc` output ([native emitter](Docs/features/native-app-emitter.md)). `al.useOfficialCompiler: true` requires `alc` and `false` forces native. Every build result names the backend that ran.
 
-- The daemon `compile` dispatcher, LSP `al.compile`, publish path, and native DAP launch compile default to the pure-Rust verifier and `.app` emitter: no `alc`, no C# bridge.
+- The daemon `compile` dispatcher, LSP `al.compile`, publish path, and DAP launch compile with `alc` when the toolchain is found. Without a toolchain they use the pure-Rust verifier and `.app` emitter (no `alc`, no C# bridge) and say so.
 - Native builds reject syntax errors, malformed manifests, invalid dependencies/id ranges, duplicate declarations, unresolved declared object types/targets/interfaces/SourceTable bindings, and malformed emitted packages with structured `ALNxxxx` diagnostics and exact native UTF-16 start/end ranges.
 - Workspace-aware daemon/LSP/MCP builds also run the shared native `AL-NC*` semantic checks and resolved call/event-graph transaction diagnostics before emission. Available Microsoft/third-party AL bodies embedded in loaded `.app` packages participate in that graph. Error-severity findings gate the build.
 - Native artifacts are staged, synced, reopened, and atomically persisted only after generated metadata parses, package identity matches `app.json`, and the exact embedded source-path set matches the verified snapshot, so a failed build preserves the previous `.app`.
 - `al-explorer pack-native --validate` runs native checks first and invokes `alc` only after they pass, so Microsoft's compiler checks compatibility on request and stays off the default path.
-- `al.useOfficialCompiler=true` opts into Rust-managed `dotnet alc` where Microsoft compile-time validation is required.
+- `al.useOfficialCompiler` is unset (auto), `true` (require `alc`) or `false` (force native).
 - The native emitter builds the package directly from `app.json`, source files, package symbols, generated manifest data, and generated `SymbolReference.json`.
 - The Microsoft compiler subprocess path is asynchronous, cancellable, and has a timeout, and the process is killed on drop.
 - Analyzer-backed package diagnostics and analyzer selection belong to the Microsoft compiler path.
@@ -411,10 +411,11 @@ So symbol search, completions, object lookup, event discovery, and impact analys
 `al-lsp` and `al-explorer` keep the Microsoft AL compiler as an option and handle the steps around a build natively:
 
 - Toolchain discovery finds ALTool, `.NET`, compiler paths, bridge files, and project manifests.
-- The daemon `compile` dispatcher, LSP `al.compile`, publish path, and native DAP launch compile default to the pure-Rust verified `.app` pipeline and return structured native diagnostics.
-- `al.useOfficialCompiler=true` opts every shared compile/package surface into
-  Rust-managed `dotnet alc`. Otherwise daemon `compile` and `package`, LSP,
-  publish, and native DAP use the verified native emitter.
+- The daemon `compile` dispatcher, LSP `al.compile`, publish path, and DAP launch compile with
+  Rust-managed `dotnet alc` when the toolchain is found, and with the verified native emitter
+  (structured native diagnostics) when it is not.
+- `al.useOfficialCompiler=true` requires `alc` on every shared compile/package surface and
+  `false` forces the native emitter.
 - Compiler output from the Microsoft path is normalized into structured diagnostics.
 - The package cache path is selected explicitly.
 - Analyzer lists can be passed through command surfaces.
@@ -515,7 +516,7 @@ for Microsoft .NET-hosted AL tools. Otherwise the toolchain resolves `dotnet` fr
 The [settings reference](Docs/reference/settings.md) lists each setting with its type, default, and
 description, and [examples/zed-settings.jsonc](examples/zed-settings.jsonc) is a template to copy. `al.enableNativeLint` and
 `al.nativeLintRules` control the native file, project-semantic, transaction, obsolete, and
-architecture rules (`AL-NL*`/`AL-NC*`). For example, set `"AL-NL005": false` to disable the
+architecture rules (`AL-NL*`/`AL-NC*`) and the name and member binding errors `AL0118` and `AL0132`, which need no .NET bridge. Type checking and undeclared procedure calls still need `alc` or the bridge. For example, set `"AL-NL005": false` to disable the
 SetLoadFields rule. Microsoft's CodeAnalysis bridge is optional and adds to the native diagnostics.
 
 On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type. On Stable Zed the settings apply without in-editor autocomplete (use the template above). The registration code is compiled in by the `zed_api_0_8` cfg, so Stable gets autocomplete once the 0.8 extension API reaches the registry.

@@ -23,8 +23,6 @@ use dashmap::DashMap;
 use std::sync::Arc;
 use tracing::warn;
 
-const DEFAULT_COMPLETIONS_CAP: usize = 30;
-
 /// Canonical case-folding for AL package and object names.
 ///
 /// Every name-keyed map in the index uses this one helper so lookups and
@@ -86,9 +84,6 @@ pub struct SymbolIndex {
     app_paths: DashMap<String, AppPathRecord>,
     source_path_cache: DashMap<(String, ObjectKind, i32), String>,
     composed_cache: DashMap<(ObjectKind, String), Arc<crate::model::ComposedObject>>,
-    /// Pre-computed slice of the first DEFAULT_COMPLETIONS_CAP entries for O(1)
-    /// default completion responses. Populated by add_entries/add_entries_owned.
-    default_completions: std::sync::RwLock<Vec<Arc<SymbolEntry>>>,
     /// Monotonic counter bumped on every entry addition/removal; used to
     /// invalidate derived caches (currently the event catalog) cheaply.
     mutation: std::sync::atomic::AtomicU64,
@@ -169,7 +164,6 @@ impl SymbolIndex {
             app_paths: DashMap::new(),
             source_path_cache: DashMap::new(),
             composed_cache: DashMap::new(),
-            default_completions: std::sync::RwLock::new(Vec::new()),
             mutation: std::sync::atomic::AtomicU64::new(0),
             event_catalog: std::sync::RwLock::new(None),
         }

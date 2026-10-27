@@ -177,9 +177,9 @@
       "description": "Language server option in the VS Code AL extension. alc has no incremental switch, so this setting has no effect on the alc build here."
     },
     "al.useOfficialCompiler": {
-      "type": "boolean",
-      "default": false,
-      "description": "Escape hatch: compile via Microsoft's `dotnet alc` subprocess instead of the pure-Rust verified `.app` pipeline. The native default runs syntax, project/dependency, declaration, declared-symbol binding, and package-integrity checks with structured diagnostics and no `alc` or C# bridge. Set this to `true` when exact Microsoft expression/type semantics, analyzers, or compatibility behaviour are required."
+      "type": ["boolean", "null"],
+      "default": null,
+      "description": "Build backend. Unset builds with Microsoft's `dotnet alc` when the toolchain is found and with the pure-Rust native `.app` emitter otherwise. `true` requires `alc` and fails without a toolchain. `false` forces the native emitter, which still drops page extension variables, ActionChanges, DocComments and option members."
     },
     "al.dotnetPath": {
       "type": ["string", "null"],

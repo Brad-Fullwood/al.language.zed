@@ -401,32 +401,27 @@ fn add_default_completions(
         }
     }
 
-    // Use the precomputed cache instead of scanning all indexed symbols.
-    let index_results = workspace.symbols.default_completions_snapshot();
-    for entry in &index_results {
-        let kind = match entry.kind {
-            al_symbols::ObjectKind::Table | al_symbols::ObjectKind::TableExtension => {
-                CompletionKind::Struct
-            }
-            al_symbols::ObjectKind::Codeunit => CompletionKind::Module,
-            al_symbols::ObjectKind::Page | al_symbols::ObjectKind::PageExtension => {
-                CompletionKind::Class
-            }
-            al_symbols::ObjectKind::Enum | al_symbols::ObjectKind::EnumExtension => {
-                CompletionKind::Enum
-            }
-            _ => CompletionKind::Reference,
-        };
+    // Object names (tables, pages, codeunits) are not offered here: a bare
+    // object name cannot start a statement, and `Record`/`Codeunit` variables
+    // are already listed above. Type positions offer them through
+    // `matching_type_symbols`. Standard route checked: the symbol index search
+    // used there; it needs a typed prefix, which a statement start lacks.
+    for function in al_syntax::language_data::builtin_functions() {
         items.push(CompletionEntry {
-            label: entry.name.clone(),
-            kind,
-            detail: Some(format!("{} {}", entry.kind, entry.id)),
-            documentation: None,
+            label: function.name.clone(),
+            kind: CompletionKind::Function,
+            detail: Some(function.signature.clone()),
+            documentation: Some(function.description.clone()).filter(|d| !d.is_empty()),
             insert_text: None,
             sort_text: None,
         });
     }
 
+    // Static system objects (`Database`, `Session`, `System`, `TaskScheduler`)
+    // can start an expression. The bridge lists each as `<Name>Class`, the same
+    // convention `resolve_expression_type` uses. Names that are also a type of
+    // their own (`Integer`/`IntegerClass`) and instance classes are skipped,
+    // so builtin type names that cannot start a statement stay out.
     let builtins =
         workspace
             .builtins
@@ -435,10 +430,21 @@ fn add_default_completions(
                 component: "builtins",
             })?;
     for bt in builtins.iter() {
+        let Some(stem) = bt.name.strip_suffix("Class") else {
+            continue;
+        };
+        if stem.is_empty()
+            || stem.ends_with("Instance")
+            // `FieldClass` is the table field property type, not a global object.
+            || stem == "Field"
+            || builtins.iter().any(|t| t.name.eq_ignore_ascii_case(stem))
+        {
+            continue;
+        }
         items.push(CompletionEntry {
-            label: bt.name.clone(),
-            kind: CompletionKind::Class,
-            detail: Some("built-in type".to_string()),
+            label: stem.to_string(),
+            kind: CompletionKind::Module,
+            detail: Some("system object".to_string()),
             documentation: None,
             insert_text: None,
             sort_text: None,
@@ -1111,5 +1117,65 @@ mod tests {
             "should include local procedure 'Helper', got: {:?}",
             labels
         );
+    }
+
+    /// Journey-23: a statement start listed 29 index objects and every builtin
+    /// type name. It now lists variables, builtin functions and system objects.
+    #[test]
+    fn statement_start_offers_no_object_names_or_type_names() {
+        let ws = Workspace::new();
+        ws.symbols.add_entries_owned(vec![
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Page,
+                id: 1320,
+                name: "O365 Activities".to_string(),
+                ..Default::default()
+            },
+            al_symbols::SymbolEntry {
+                kind: al_symbols::ObjectKind::Table,
+                id: 18,
+                name: "Customer".to_string(),
+                ..Default::default()
+            },
+        ]);
+        let builtin = |name: &str| al_semantic::BuiltinType {
+            name: name.to_string(),
+            methods: Vec::new(),
+            enum_values: Vec::new(),
+        };
+        al_workspace::set_builtins(
+            &ws,
+            [
+                "Integer",
+                "IntegerClass",
+                "Record",
+                "DatabaseClass",
+                "CodeunitInstanceClass",
+            ]
+            .map(builtin)
+            .to_vec(),
+            "test",
+        );
+        let uri = test_uri();
+        let source = "codeunit 50100 X\n{\n    procedure UseIt()\n    var\n        Total: Integer;\n    begin\n        Tot\n    end;\n}\n";
+        ws.documents.open(uri.clone(), source.to_string()).unwrap();
+        let items = completions_native(
+            &ws,
+            &uri,
+            Position {
+                line: 6,
+                character: 11,
+            },
+        )
+        .unwrap();
+        let has = |label: &str| items.iter().any(|i| i.label == label);
+        assert!(has("Total"), "local variable is offered");
+        assert!(has("Message"), "builtin function is offered");
+        assert!(has("Database"), "static system object is offered");
+        assert!(!has("O365 Activities"), "no Page from the index");
+        assert!(!has("Customer"), "no Table from the index");
+        for type_name in ["Integer", "Record", "IntegerClass", "CodeunitInstance"] {
+            assert!(!has(type_name), "{type_name} cannot start a statement");
+        }
     }
 }

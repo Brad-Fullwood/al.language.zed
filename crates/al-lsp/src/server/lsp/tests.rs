@@ -2031,6 +2031,39 @@ mod project_diagnostics_close_tests {
         }
     }
 
+    /// Phase 1 skips the call graph pass (journey-20), so it must carry the
+    /// file's last AL-NL003 finding instead of dropping it for the 1.5 s the
+    /// pass waits. A dropped finding would flicker on every keystroke.
+    #[tokio::test]
+    async fn a_publish_keeps_the_last_transaction_findings_until_the_pass_replaces_them() {
+        let (mut service, socket) = LspService::new(AlLsp::new);
+        let uri = Url::parse("file:///proj/Clean.Codeunit.al").unwrap();
+        let publishes = record_publishes(socket, uri.clone());
+        initialize(&mut service).await;
+        let server = service.inner();
+        let text = open_with_cached_finding(server, &uri).await;
+        let previous = Diagnostic {
+            code: Some(NumberOrString::String("AL-NL003".to_string())),
+            message: "Commit after a database change".to_string(),
+            ..Diagnostic::default()
+        };
+        server
+            .transaction_diagnostic_cache
+            .lock()
+            .await
+            .insert(uri.clone(), vec![previous]);
+
+        diagnostics::publish_diagnostics(server, &uri, text, 1).await;
+        settle().await;
+
+        let sent = std::mem::take(&mut *publishes.lock().unwrap());
+        assert!(!sent.is_empty(), "the publish reached the client");
+        assert!(
+            sent[0].iter().any(|d| d["code"] == "AL-NL003"),
+            "phase 1 dropped the previous AL-NL003 finding: {sent:?}"
+        );
+    }
+
     /// The project pass staged native diagnostics and merged Microsoft ones
     /// only for the exact text snapshot they came from, so a pass that ran
     /// after an edit published a native-only set over them.

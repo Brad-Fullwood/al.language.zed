@@ -227,8 +227,10 @@ pub(super) fn read_app_name(project_root: &Path) -> std::io::Result<String> {
 
 /// The file name alc gives the generated file, `<app name>.g.xlf`.
 ///
-/// alc (`LanguageFileUtilities.GetTranslationFileName`) keeps the spaces and drops the
-/// characters a file name cannot hold. Removing `/` and `\` leaves one path component.
+/// alc 18.1 keeps the spaces: a project named "AL Zed Journey" gets `AL Zed Journey.g.xlf`
+/// (journey stage 07, alc output). alc has no file name rule for invalid characters because
+/// it rejects such an app name first (AL1053 on `A:B?C*D.`, checked with alc 18.1.43). The
+/// removal below only keeps one path component for a name alc would reject.
 pub fn generated_xlf_file_name(app_name: &str) -> String {
     let cleaned: String = app_name
         .chars()

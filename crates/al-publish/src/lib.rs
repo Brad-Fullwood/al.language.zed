@@ -244,18 +244,26 @@ fn record_upload(
 
 /// Compile the project, using the workspace's toolchain.
 ///
-/// Native-first: the default path is the pure-Rust native `.app` emitter — no
-/// Microsoft `alc`, no C# bridge. `al.useOfficialCompiler: true` opts into
-/// Microsoft's `dotnet alc` subprocess instead (logged at WARN as the non-native
-/// path). The native path performs syntax/project/binding verification itself
+/// The default is Microsoft's `dotnet alc` when the toolchain is found and the
+/// pure-Rust native `.app` emitter otherwise. `al.useOfficialCompiler` forces
+/// either one. The native path performs syntax/project/binding verification itself
 /// and refuses to produce an artifact when it reports blocking diagnostics.
 async fn run_compile(
     workspace: &Workspace,
     project_root: &Path,
 ) -> Result<CompileResult, PublishError> {
     let config = workspace.config.read().await.clone();
-    let backend =
-        al_compile::BuildBackend::from_use_official_compiler(config.use_official_compiler);
+    let found_toolchain = workspace.toolchain.read().await.clone();
+    let backend = al_compile::BuildBackend::from_use_official_compiler(
+        config.use_official_compiler,
+        found_toolchain.is_some(),
+    );
+    if al_compile::BuildBackend::is_auto_fallback(
+        config.use_official_compiler,
+        found_toolchain.is_some(),
+    ) {
+        info!("{}", al_compile::BuildBackend::NATIVE_FALLBACK_NOTE);
+    }
     let (package_cache, dependency_packages) = workspace
         .project
         .read()
@@ -266,15 +274,12 @@ async fn run_compile(
     let toolchain = if backend == al_compile::BuildBackend::Alc {
         // Use blocking .read().await rather than try_read() — contention and a
         // genuinely missing toolchain must not collapse into the same error.
-        let toolchain = workspace.toolchain.read().await;
-        Some(toolchain.clone().ok_or(PublishError::NoToolchain)?)
+        Some(found_toolchain.ok_or(PublishError::NoToolchain)?)
     } else {
         None
     };
     if backend == al_compile::BuildBackend::Alc {
-        warn!(
-            "al.useOfficialCompiler=true - publishing with the NON-NATIVE `dotnet alc` subprocess"
-        );
+        info!("Publishing with Microsoft alc");
     }
 
     let analyzers = config.effective_code_analyzers(project_root);

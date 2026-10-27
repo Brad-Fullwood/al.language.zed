@@ -174,28 +174,59 @@ async fn syntax_diagnostics(
     server: &AlServer,
     uri: &Url,
 ) -> Vec<al_analysis::queries::diagnostics::SyntaxDiagnostic> {
-    let project_root = server
-        .workspace
+    native_diagnostics(server, uri, NativePass::Full).await
+}
+
+/// Which native rules a per-document run covers.
+#[derive(Clone, Copy)]
+enum NativePass {
+    /// Syntax, lint and the cheap project rules, without the call graph.
+    Fast,
+    /// Only `AL-NL003/4`, which need the resolved call graph.
+    Transaction,
+    /// Everything, as `workspace/diagnostic` and pull diagnostics report.
+    Full,
+}
+
+async fn native_diagnostics(
+    server: &AlServer,
+    uri: &Url,
+    pass: NativePass,
+) -> Vec<al_analysis::queries::diagnostics::SyntaxDiagnostic> {
+    native_diagnostics_of(&server.workspace, uri, pass).await
+}
+
+async fn native_diagnostics_of(
+    workspace: &Arc<al_workspace::Workspace>,
+    uri: &Url,
+    pass: NativePass,
+) -> Vec<al_analysis::queries::diagnostics::SyntaxDiagnostic> {
+    let project_root = workspace
         .project
         .read()
         .await
         .as_ref()
         .map(|project| project.root.clone());
-    let config = server.workspace.config.read().await.clone();
-    let config = native_lint_config(&server.workspace, config).await;
+    let config = workspace.config.read().await.clone();
+    let config = native_lint_config(workspace, config).await;
     // Native lint walks the project for its cross-file rules, which takes
     // hundreds of milliseconds on a real project. On the blocking pool it
     // does not hold up the requests (semantic tokens, inlay hints) that the
     // editor sends right after an open.
-    let workspace = Arc::clone(&server.workspace);
+    let workspace = Arc::clone(workspace);
     let uri = uri.clone();
     match tokio::task::spawn_blocking(move || {
-        al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-            &workspace,
-            &uri,
-            &config,
-            project_root.as_deref(),
-        )
+        use al_analysis::queries::diagnostics as native;
+        let root = project_root.as_deref();
+        match pass {
+            NativePass::Fast => {
+                native::syntax_diagnostics_fast_at_root(&workspace, &uri, &config, root)
+            }
+            NativePass::Transaction => {
+                native::transaction_diagnostics_for_uri(&workspace, &uri, &config, root)
+            }
+            NativePass::Full => native::syntax_diagnostics_at_root(&workspace, &uri, &config, root),
+        }
     })
     .await
     {
@@ -613,12 +644,27 @@ pub(crate) async fn publish_diagnostics(
     // redundant parse on every did_open or did_change.
     {
         let parse_start = std::time::Instant::now();
-        let syntax_diags = syntax_diagnostics(server, uri).await;
+        let syntax_diags = native_diagnostics(server, uri, NativePass::Fast).await;
         let parse_elapsed = parse_start.elapsed();
         let error_count = syntax_diags.len();
         tracing::debug!(uri = %uri, error_count, parse_us = parse_elapsed.as_micros() as u64, "publish_diagnostics: diagnostics from query");
         diagnostics.extend(syntax_diags.iter().map(syntax_diag_to_lsp));
     }
+    // The transaction rules (AL-NL003/4) rebuild the resolved call graph,
+    // which takes seconds in a project that loads dependency source
+    // (journey-20) and blocks the next edit while it holds the file index.
+    // Phase 1 shows the file's last transaction findings and
+    // `schedule_transaction_refresh` recomputes them once typing pauses.
+    // Standard route checked: the call graph is cached per workspace
+    // revision, and every edit moves the revision, so a cache alone does not
+    // help the edit path.
+    let cached_transaction = server
+        .transaction_diagnostic_cache
+        .lock()
+        .await
+        .get(uri)
+        .cloned()
+        .unwrap_or_default();
 
     // Phase 1 carries the file's last Microsoft diagnostics until phase 2
     // replaces them. Publishing native diagnostics alone would make every
@@ -632,6 +678,7 @@ pub(crate) async fn publish_diagnostics(
         .map(|cached| cached.diagnostics.clone())
         .unwrap_or_default();
     let mut phase1 = diagnostics.clone();
+    phase1.extend(cached_transaction.iter().cloned());
     phase1.extend(previous_semantic);
     let phase1_count = phase1.len();
     if server.session.is_cancelled() {
@@ -656,6 +703,8 @@ pub(crate) async fn publish_diagnostics(
         );
         return;
     }
+
+    schedule_transaction_refresh(server, uri, &text, expected_client_version).await;
 
     let semantic_diags = run_semantic_analysis(server, uri, &text).await;
     if server.session.is_cancelled() {
@@ -689,6 +738,15 @@ pub(crate) async fn publish_diagnostics(
     // Always published, also when the semantic pass found nothing: phase 1
     // may hold findings this pass no longer reports.
     {
+        diagnostics.extend(
+            server
+                .transaction_diagnostic_cache
+                .lock()
+                .await
+                .get(uri)
+                .cloned()
+                .unwrap_or_default(),
+        );
         diagnostics.extend(semantic_diags);
         let total_count = diagnostics.len();
         tracing::debug!(uri = %uri, total_count, "publish_diagnostics: publishing phase 2");
@@ -716,17 +774,109 @@ pub(crate) async fn publish_diagnostics(
 /// publish. The project pass clears only URIs it recorded, so a file that
 /// gained diagnostics here must be recorded and one that lost them dropped.
 async fn record_project_publication(server: &AlServer, uri: &Url, has_diagnostics: bool) {
-    if server.workspace.config.read().await.diagnostics_scope
+    record_project_publication_of(
+        &server.workspace,
+        &server.workspace_diagnostic_uris,
+        uri,
+        has_diagnostics,
+    )
+    .await;
+}
+
+async fn record_project_publication_of(
+    workspace: &al_workspace::Workspace,
+    published: &tokio::sync::Mutex<std::collections::HashSet<Url>>,
+    uri: &Url,
+    has_diagnostics: bool,
+) {
+    if workspace.config.read().await.diagnostics_scope
         != al_project::config::DiagnosticsScope::Project
     {
         return;
     }
-    let mut published = server.workspace_diagnostic_uris.lock().await;
+    let mut published = published.lock().await;
     if has_diagnostics {
         published.insert(uri.clone());
     } else {
         published.remove(uri);
     }
+}
+
+/// Quiet time before the call graph pass runs for a document.
+const TRANSACTION_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Recompute the document's transaction findings after `TRANSACTION_DEBOUNCE`
+/// and publish the file again when they changed. A newer call for the same
+/// document replaces a pending one, so a typing burst runs the pass once.
+async fn schedule_transaction_refresh(
+    server: &AlServer,
+    uri: &Url,
+    text: &Arc<String>,
+    client_version: i32,
+) {
+    let workspace = Arc::clone(&server.workspace);
+    let client = server.client.clone();
+    let session = server.session.clone();
+    let semantic_cache = Arc::clone(&server.semantic_diagnostic_cache);
+    let transaction_cache = Arc::clone(&server.transaction_diagnostic_cache);
+    let published = Arc::clone(&server.workspace_diagnostic_uris);
+    let (uri_task, text) = (uri.clone(), Arc::clone(text));
+    let mut tasks = server.transaction_tasks.lock().await;
+    tasks.retain(|_, handle| !handle.is_finished());
+    if let Some(old) = tasks.remove(uri) {
+        old.abort();
+    }
+    let handle = tokio::spawn(async move {
+        tokio::time::sleep(TRANSACTION_DEBOUNCE).await;
+        if session.is_cancelled()
+            || !snapshot_is_current(&workspace, &uri_task, &text, client_version)
+        {
+            return;
+        }
+        let transaction: Vec<Diagnostic> =
+            native_diagnostics_of(&workspace, &uri_task, NativePass::Transaction)
+                .await
+                .iter()
+                .map(syntax_diag_to_lsp)
+                .collect();
+        let previous = transaction_cache
+            .lock()
+            .await
+            .insert(uri_task.clone(), transaction.clone())
+            .unwrap_or_default();
+        if transaction == previous || session.is_cancelled() {
+            return;
+        }
+        let mut native: Vec<Diagnostic> =
+            native_diagnostics_of(&workspace, &uri_task, NativePass::Fast)
+                .await
+                .iter()
+                .map(syntax_diag_to_lsp)
+                .collect();
+        native.extend(transaction);
+        let config = workspace.config.read().await.clone();
+        let config = native_lint_config(&workspace, config).await;
+        drop_silenced_native_rules(&mut native, &config);
+        native.extend(
+            semantic_cache
+                .lock()
+                .await
+                .get(&uri_task)
+                .map(|cached| cached.diagnostics.clone())
+                .unwrap_or_default(),
+        );
+        record_project_publication_of(&workspace, &published, &uri_task, !native.is_empty()).await;
+        publish_if_current(
+            &workspace,
+            &client,
+            &uri_task,
+            &text,
+            client_version,
+            native,
+        )
+        .await;
+    });
+    tasks.insert(uri.clone(), handle);
 }
 
 /// Publish `diagnostics` for `uri` only while the document still holds `text`
@@ -1310,7 +1460,10 @@ pub fn syntax_error_to_diagnostic(err: &al_syntax::SyntaxError, source: &[u8]) -
     Diagnostic {
         range: crate::syntax_lsp::ts_range_to_lsp(&err.range, source),
         severity: Some(DiagnosticSeverity::ERROR),
-        code: Some(NumberOrString::String("syntax".to_string())),
+        // One mapping table (al_syntax): alc's code where the condition is the same, else "syntax".
+        code: Some(NumberOrString::String(
+            err.code.unwrap_or("syntax").to_string(),
+        )),
         source: Some("al".to_string()),
         message: err.message.clone(),
         ..Default::default()
@@ -1676,6 +1829,7 @@ mod tests {
                 .tree
                 .root_node()
                 .range(),
+            code: None,
         };
 
         let diag = syntax_error_to_diagnostic(&err, src.as_bytes());

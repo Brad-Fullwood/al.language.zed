@@ -133,12 +133,12 @@ fn aln2401_unknown_record_subtype() {
 }
 
 #[test]
-fn aln2402_undeclared_identifier_on_the_left_of_an_assignment() {
+fn al0118_undeclared_identifier_on_the_left_of_an_assignment() {
     let codes = codes_for(&[(
         "C.Codeunit.al",
         "codeunit 50100 C\n{\n    procedure P()\n    begin\n        Nowhere := 1;\n    end;\n}\n",
     )]);
-    assert_reports(&codes, "ALN2402");
+    assert_reports(&codes, "AL0118");
 }
 
 #[test]
@@ -163,7 +163,7 @@ fn aln2403_assigning_a_record_to_an_integer() {
 }
 
 #[test]
-fn aln2404_unknown_field_on_a_known_record() {
+fn al0132_unknown_field_on_a_known_record() {
     let codes = codes_for(&[
         CUSTOMER_TABLE,
         (
@@ -179,7 +179,7 @@ fn aln2404_unknown_field_on_a_known_record() {
              }\n",
         ),
     ]);
-    assert_reports(&codes, "ALN2404");
+    assert_reports(&codes, "AL0132");
     // The field that does exist must not be reported.
     let clean = codes_for(&[
         CUSTOMER_TABLE,
@@ -196,14 +196,14 @@ fn aln2404_unknown_field_on_a_known_record() {
              }\n",
         ),
     ]);
-    assert_silent(&clean, "ALN2404");
+    assert_silent(&clean, "AL0132");
 }
 
 /// A field a table extension adds belongs to the table it extends. The
 /// verifier only read fields from `table` objects, so every per-tenant
 /// extension that wrote to its own field on a base table failed to build.
 #[test]
-fn aln2404_accepts_a_field_added_by_a_table_extension() {
+fn al0132_accepts_a_field_added_by_a_table_extension() {
     let codes = codes_for(&[
         CUSTOMER_TABLE,
         (
@@ -229,7 +229,7 @@ fn aln2404_accepts_a_field_added_by_a_table_extension() {
              }\n",
         ),
     ]);
-    assert_silent(&codes, "ALN2404");
+    assert_silent(&codes, "AL0132");
 }
 
 #[test]
@@ -487,7 +487,7 @@ fn a_named_return_value_is_declared_and_needs_no_exit() {
         "C.Codeunit.al",
         "codeunit 50100 C\n{\n    procedure Describe(Value: Integer) Result: Text\n    begin\n        Result := Format(Value);\n        Value := 2;\n    end;\n}\n",
     )]);
-    assert_silent(&codes, "ALN2402");
+    assert_silent(&codes, "AL0118");
     assert_silent(&codes, "ALN2203");
 }
 
@@ -533,7 +533,7 @@ fn an_error_in_a_multi_object_file_is_reported_once() {
     let undeclared: Vec<_> = built
         .diagnostics
         .iter()
-        .filter(|d| d.code == "ALN2402")
+        .filter(|d| d.code == "AL0118")
         .collect();
     assert_eq!(undeclared.len(), 1, "{:?}", built.diagnostics);
     assert_eq!(undeclared[0].line, 5);

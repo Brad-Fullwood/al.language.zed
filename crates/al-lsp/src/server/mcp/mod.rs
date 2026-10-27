@@ -872,10 +872,10 @@ fn tools() -> &'static [ToolDef] {
         ToolDef {
             name: "al_build",
             method: "compile",
-            description: "Compile and verify the AL project. By default this uses the pure-Rust \
-                          native syntax/project/binding verifier and `.app` emitter with no alc or C# bridge; set \
-                          al.useOfficialCompiler=true to opt into dotnet alc for \
-                          Microsoft compiler diagnostics. Returns success, \
+            description: "Compile and verify the AL project. Uses dotnet alc when the toolchain is \
+                          found and the pure-Rust native `.app` emitter otherwise; \
+                          al.useOfficialCompiler=true or false forces either. The \
+                          result names the backend. Returns success, \
                           diagnostics and the .app path.",
             schema: || obj_schema(serde_json::json!({}), &[]),
         },

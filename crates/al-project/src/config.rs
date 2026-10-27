@@ -146,8 +146,10 @@ pub struct AlConfig {
 
     pub incremental_build: bool,
 
-    /// Use Microsoft's `alc` instead of the native package emitter.
-    pub use_official_compiler: bool,
+    /// Build backend choice. `None` (unset) picks Microsoft's `alc` when the
+    /// toolchain is found and the native emitter otherwise. `Some(true)` forces
+    /// `alc` (an error when no toolchain is found), `Some(false)` forces native.
+    pub use_official_compiler: Option<bool>,
 
     /// Optional per-document size cap in bytes.
     pub max_document_size_bytes: Option<usize>,
@@ -282,7 +284,7 @@ impl Default for AlConfig {
             use_only_custom_feeds: false,
             compilation_options: Vec::new(),
             incremental_build: false,
-            use_official_compiler: false,
+            use_official_compiler: None,
             max_document_size_bytes: None,
             index_threads: None,
         }
@@ -725,7 +727,15 @@ impl AlConfig {
                 "useOnlyCustomFeeds" => merge_bool(obj, key, &mut self.use_only_custom_feeds),
                 "compilationOptions" => merge_string_array(obj, key, &mut self.compilation_options),
                 "incrementalBuild" => merge_bool(obj, key, &mut self.incremental_build),
-                "useOfficialCompiler" => merge_bool(obj, key, &mut self.use_official_compiler),
+                "useOfficialCompiler" => match obj.get(key) {
+                    Some(serde_json::Value::Null) => self.use_official_compiler = None,
+                    Some(v) => {
+                        if let Some(b) = v.as_bool() {
+                            self.use_official_compiler = Some(b);
+                        }
+                    }
+                    None => {}
+                },
                 "maxDocumentSizeBytes" => match obj.get(key) {
                     Some(serde_json::Value::Null) => self.max_document_size_bytes = None,
                     Some(v) => match v.as_u64() {
@@ -830,8 +840,8 @@ fn validate_setting_shapes(
             | "enableCodeActions"
             | "enableNativeLint"
             | "useOnlyCustomFeeds"
-            | "incrementalBuild"
-            | "useOfficialCompiler" => value.is_boolean(),
+            | "incrementalBuild" => value.is_boolean(),
+            "useOfficialCompiler" => value.is_null() || value.is_boolean(),
             "diagnosticsScope" | "diagnosticsTrigger" => value.is_string(),
             "ruleSetPath" | "packageCachePath" | "symbolsCountryRegion" => {
                 value.is_null() || value.is_string()
@@ -1318,6 +1328,20 @@ mod tests {
     }
 
     #[test]
+    fn use_official_compiler_is_three_state() {
+        let mut config = AlConfig::default();
+        assert_eq!(config.use_official_compiler, None);
+        for (value, expected) in [
+            (serde_json::json!(true), Some(true)),
+            (serde_json::json!(false), Some(false)),
+            (serde_json::Value::Null, None),
+        ] {
+            config.merge_editor_settings(&serde_json::json!({ "al.useOfficialCompiler": value }));
+            assert_eq!(config.use_official_compiler, expected, "{value}");
+        }
+    }
+
+    #[test]
     fn editor_settings_normalize_zed_dotted_and_nested_shapes() {
         let mut config = AlConfig::default();
         let unknown = config.merge_editor_settings(&serde_json::json!({
@@ -1342,7 +1366,7 @@ mod tests {
             unknown.is_empty(),
             "extension-only keys are filtered: {unknown:?}"
         );
-        assert!(config.use_official_compiler);
+        assert_eq!(config.use_official_compiler, Some(true));
         assert!(config.incremental_build);
         assert_eq!(
             config.package_cache_path,
@@ -1519,7 +1543,7 @@ mod tests {
         let mut config = AlConfig::default();
         let unknown = config.merge_editor_settings(&value);
         assert!(unknown.is_empty(), "{unknown:?}");
-        assert!(config.use_official_compiler);
+        assert_eq!(config.use_official_compiler, Some(true));
         assert_eq!(config.nuget_feeds.len(), 1);
         assert_eq!(config.nuget_feeds[0].url, "https://example.test/a//b");
     }

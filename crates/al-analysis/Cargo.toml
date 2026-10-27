@@ -13,6 +13,7 @@ al-symbols = { path = "../al-symbols", version = "0.1.0", default-features = fal
 al-source = { path = "../al-source", version = "0.1.0" }
 al-semantic = { path = "../al-semantic", version = "0.1.0" }
 al-insight = { path = "../al-insight", version = "0.1.0" }
+al-emit = { path = "../al-emit", version = "0.1.0" }
 al-project = { path = "../al-project", version = "0.1.0" }
 al-workspace = { path = "../al-workspace", version = "0.1.0" }
 serde = { workspace = true }
@@ -36,4 +37,3 @@ lsp = ["dep:tower-lsp"]
 [dev-dependencies]
 tokio = { workspace = true }
 zip = { workspace = true }
-al-emit = { path = "../al-emit", version = "0.1.0" }

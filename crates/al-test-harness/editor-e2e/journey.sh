@@ -54,7 +54,8 @@ fi
 # built last. Checked with mtimes: building al-explorer or the harness bins does not relink al-lsp, but the
 # last build wins if that changes.
 BUILD_TAG="no-build"
-HEAD_HASH="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null)"
+# JOURNEY_HEAD_HASH pins the build identity when HEAD moves under the run (shared worktree).
+HEAD_HASH="${JOURNEY_HEAD_HASH:-$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null)}"
 if [[ "$NO_BUILD" == 0 ]]; then
   export AL_BUILD_HASH="$HEAD_HASH" CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$TARGET_DIR"
   for b in "-p al-explorer" "-p al-test-harness --bins" "-p al-lsp --features semantic"; do
@@ -68,6 +69,18 @@ fi
 for bin in "$ALX" "$ALLSP"; do
   [[ -x "$bin" ]] || { echo "missing binary $bin" >&2; exit 2; }
 done
+# The semantic bridge: al-lsp loads $(dirname al-lsp)/bridge/AlBridge.dll. Same copy as `make install`
+# (Makefile install-files): the newest al-semantic build output. journey-lsp, journey-rpc and al-explorer
+# all start this al-lsp, so stages 04 and 10 run with the bridge when a `semantic` build produced one.
+BRIDGE_SRC=$(ls -dt "$TARGET_DIR"/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1 || true)
+if [[ -n "$BRIDGE_SRC" && -f "$BRIDGE_SRC/AlBridge.dll" ]]; then
+  rm -rf "$(dirname "$ALLSP")/bridge" && cp -rp "$BRIDGE_SRC" "$(dirname "$ALLSP")/bridge"
+  BUILD_TAG="$BUILD_TAG bridge=found"
+  jlog "bridge: copied $BRIDGE_SRC beside $ALLSP"
+else
+  BUILD_TAG="$BUILD_TAG bridge=none"
+  jlog "bridge: none found under $TARGET_DIR/debug/build/al-semantic-*/out/bridge, semantic checks run without it"
+fi
 if [[ -n "$HEAD_HASH" ]]; then
   for bin in "$ALX" "$ALLSP"; do
     grep -aqF -- "$HEAD_HASH" "$bin" || { echo "preflight: $bin does not carry build hash $HEAD_HASH (HEAD). al-lsp and al-explorer must be built from the same commit, run without --no-build." >&2; exit 2; }

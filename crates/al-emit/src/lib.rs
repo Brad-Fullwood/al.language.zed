@@ -11,6 +11,7 @@
 //! Reverse-engineered against alc 17.0.34.
 
 pub mod assemble;
+pub mod binding;
 pub mod manifest;
 pub mod method_id;
 pub mod package;

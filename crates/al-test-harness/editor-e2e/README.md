@@ -45,6 +45,8 @@ crates/al-test-harness/editor-e2e/drive.sh --file src/Table50100.al
 crates/al-test-harness/editor-e2e/drive.sh --out /tmp/shot.png
 crates/al-test-harness/editor-e2e/drive.sh --build-image   # force-rebuild the image
 crates/al-test-harness/editor-e2e/drive.sh --zed-settings my.json  # theme and LSP settings for Zed
+crates/al-test-harness/editor-e2e/drive.sh --no-settings-prompt  # pre-create al-lsp's .settings-prompt-shown sentinel
+crates/al-test-harness/editor-e2e/drive.sh --source-index DIR  # copy a primed source-index store into the container
 ```
 
 Screenshots default to `target/` (`zed-extension-screenshot.png`,

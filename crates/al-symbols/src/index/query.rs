@@ -1,7 +1,7 @@
 //! Lookup and search over the loaded entries.
 
 use super::{fold_name, SymbolIndex};
-use super::{read_derived_cache, write_derived_cache, DEFAULT_COMPLETIONS_CAP};
+use super::{read_derived_cache, write_derived_cache};
 use crate::model::{ObjectKind, SymbolEntry};
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ impl SymbolIndex {
 
         let query_lower = query.to_lowercase();
         let names = self.sorted_names();
-        let mut results = Vec::with_capacity(limit.min(DEFAULT_COMPLETIONS_CAP));
+        let mut results = Vec::new();
 
         if !query_lower.is_empty() {
             self.append_search_name(&query_lower, limit, &mut results);

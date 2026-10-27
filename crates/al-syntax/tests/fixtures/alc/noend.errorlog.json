@@ -1,0 +1,66 @@
+{
+  "version": "0.2",
+  "toolInfo": {
+    "toolName": "Microsoft (R) AL Compiler",
+    "productVersion": "18.1.43",
+    "fileVersion": "18.1.43"
+  },
+  "issues": [
+    {
+      "ruleId": "AL0104",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "/proj/src/JourneyMgt.Codeunit.al",
+              "region": {
+                "startLine": 14,
+                "startColumn": 5,
+                "endLine": 14,
+                "endColumn": 14
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "Syntax error, 'end' expected",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al104?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0104",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "/proj/src/JourneyMgt.Codeunit.al",
+              "region": {
+                "startLine": 14,
+                "startColumn": 5,
+                "endLine": 14,
+                "endColumn": 14
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "Syntax error, ';' expected",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al104?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    }
+  ]
+}

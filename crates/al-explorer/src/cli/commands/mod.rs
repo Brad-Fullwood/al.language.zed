@@ -568,6 +568,13 @@ pub fn set_projection_override(
     }
 }
 
+/// Whether the caller passed the global `--scope`.
+pub fn scope_requested() -> bool {
+    PROJECTION_OVERRIDE
+        .get()
+        .is_some_and(|overrides| overrides.get("scope").is_some())
+}
+
 /// `--tenant` and `--purpose` as typed, for the requests that connect to a
 /// Business Central cloud tenant.
 static CALLER_TENANT: std::sync::OnceLock<al_bc::tenant_guard::Declaration> =

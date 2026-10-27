@@ -3,13 +3,16 @@
 **Modules:** `crates/al-emit/src/` (verification + emitter), `crates/al-compile/src/lib.rs`,
 `crates/al-publish/src/lib.rs`, `crates/al-project/src/{toolchain,config}.rs`,
 `crates/al-bc/src/{launch,bc_client}.rs`. **Status:** shipped, with limits.
-The native build is the default, but on a real customer project the package differs from `alc`
+Builds use Microsoft's `alc` when the toolchain is found and fall back to the native emitter when it
+is not. `al.useOfficialCompiler` forces either: `true` is `alc` (an error without a toolchain),
+`false` is native. The native package still drops page extension variables, `ActionChanges`,
+`DocComments.xml` and option members, so on a real customer project it differs from the `alc` package
 (see the coverage boundary below and the audit finding `emitter-02-native-app-differs-from-alc-on-dms`).
-Use `al.useOfficialCompiler: true` for any package that goes to Business Central.
+Every build result names the backend that ran. When auto mode fell back to native it also says why.
 
 The pure-Rust compiler back end produces a Business Central `.app` directly from source without
-`alc`, .NET, or the C# bridge. It is the default for daemon `compile`, LSP `al.compile`, publish, and
-native DAP launch. Microsoft's `alc` remains available for full compiler semantics and compatibility
+`alc`, .NET, or the C# bridge. It is the fallback for daemon `compile`, LSP `al.compile`, publish, and
+DAP launch when no toolchain is found, and the backend of `pack-native`. Microsoft's `alc` remains available for full compiler semantics and compatibility
 validation.
 
 The default native path parses and verifies the project, returns structured file/range diagnostics,
@@ -108,7 +111,7 @@ The shipped verifier performs:
 | Layer | Checks | Build behaviour |
 | --- | --- | --- |
 | Project input | parseable `app.json`. Non-empty identity fields. Valid app/dependency GUIDs and four-part versions. Valid `idRanges`. Unique dependency IDs. Readable source files. Declared dependency packages present in the exact configured package paths. Object IDs inside `idRanges` | `ALN01xx` and project diagnostics block before emission. |
-| Syntax | tree-sitter `ERROR` and missing nodes in every `.al` file, including truncated constructs | `ALN0001` carries file and exact 1-based UTF-16 start/end range and always blocks. A file that is not valid UTF-8 blocks with `ALN0002` on that file rather than failing the build. |
+| Syntax | tree-sitter `ERROR` and missing nodes in every `.al` file, including truncated constructs | A statement without its `;` that is followed by another statement reports alc's `AL0111` "Semicolon expected. Add a semicolon (;) to terminate the statement." on the first token of the next statement, the range alc reports (checked against alc 18.1.43 errorlogs in `crates/al-syntax/tests/fixtures/alc`). Every other syntax error reports `ALN0001` with the parser's message: a missing `)` (alc `AL0104` "Syntax error, ')' expected" on the next token, native range has zero width), a missing `end` (alc `AL0104` twice, native reports a cascade of several errors), a missing `;` where the next statement spans more than one token in the tree (for example a following `if`), and all other shapes. Both carry file and exact 1-based UTF-16 start/end range and always block. The editor diagnostic uses the same table, so its code is `AL0111` for the mapped case and `syntax` otherwise (finding journey-15). A file that is not valid UTF-8 blocks with `ALN0002` on that file rather than failing the build. |
 | Declarations | duplicate object IDs/names. Duplicate field IDs/names. Duplicate enum ordinals/names. Duplicate procedure signatures/parameter names. Unknown key/field-group fields | `ALN1xxx` diagnostics point at the complete object declaration range and block emission. |
 | Declared bindings and contracts | extension targets, implemented interfaces, declared object subtypes (`Record`, `Page`, `Codeunit`, `Report`, `XmlPort`, `Query`, `Enum`, `Interface`) and `SourceTable` references resolve against project plus dependency symbols. Locally declared interface methods must be implemented | `ALN2xxx` diagnostics block emission. |
 | Permissions | permission object kinds/flags are validated and permission targets resolve against project plus dependency symbols | `ALN21xx` diagnostics block emission. |
@@ -133,7 +136,8 @@ remain `null`. Native diagnostics preserve both endpoints.
 | `ALN2101`–`ALN2106` | Unsupported permission object type, invalid permission flags, unresolved permission target, a missing local interface member, forbidden page-customization ToolTip, or a duplicate locally added page control. |
 | `ALN2201`–`ALN2211` | Local procedure contracts: no overload or more than one for the argument count, a Record passed to an Integer parameter, `Exit` with or without a value against the declared return, an incompatible literal return, a conditional `Exit(value)` with no unconditional return, `Break`/`Continue` outside a loop, an unknown local or Record method. |
 | `ALN2301` | An `[EventSubscriber]` whose parameters do not match a locally declared publisher. |
-| `ALN2401`–`ALN2405` | Body binding: unknown Record subtype, undeclared identifier, incompatible assignment, a Record field that neither the table nor any of its table extensions declares, an unknown field property. |
+| `ALN2401`, `ALN2403`, `ALN2405` | Body binding: unknown Record subtype, incompatible assignment, an unknown field property. |
+| `AL0118`, `AL0132` | Tree-based name and member binding (`crates/al-emit/src/binding.rs`), with the code and message text `alc` prints. `AL0118`: a bare name that no local, parameter, global, procedure, implicit variable, builtin or table field resolves. `AL0132`: a member of a `Record` variable (or `Rec`/`xRec`) that the table and its table extensions do not declare, quoted or not. Both are errors: the build fails and no `.app` is written. The editor publishes the same pass as native diagnostics without the bridge. |
 | `ALN2501` | A report layout that names a file outside the project. |
 | `ALN3001`–`ALN3006` | Unreadable/corrupt artifact, missing/empty or duplicate entries, source-snapshot mismatch, generated metadata parse failure, or package identity mismatch. |
 
@@ -154,9 +158,9 @@ lower, always-on `native-syntax-project-binding` gate.
 
 | Profile | Default? | Microsoft dependency | Intended use |
 | --- | --- | --- | --- |
-| **Native verified** | Yes | None | Run the shipped syntax/project/declaration/binding/integrity checks, then emit. |
+| **Native verified** | Fallback | None | Run the shipped syntax/project/declaration/binding/integrity checks, then emit. |
 | **Native + compatibility** | No | Required for the extra check | `al-explorer pack-native --validate`: run native verification first, then ask `alc` for authoritative compatibility diagnostics before writing the native artifact. |
-| **Official build** | No | Required | Existing `al.useOfficialCompiler: true` path where `alc` both validates and emits. |
+| **Official build** | Yes, when the toolchain is found | Required | `al.useOfficialCompiler` unset or `true`: `alc` both validates and emits. |
 
 Microsoft compatibility checking does not sit on the default critical path:
 
@@ -236,14 +240,24 @@ package-semantic-equivalence check.
 > entry names for source folders with
 > spaces (`alc` writes `%2520`, native writes a raw space). The `TargetObject` app id of extensions
 > (wrong in 13 cases) and manifest `Features` were fixed after that measurement. Do not give a native package to Business
-> Central. Recommended: `al.useOfficialCompiler: true`. Details: finding
+> Central. Builds therefore use `alc` by default when it is installed. Details: finding
 > `emitter-02-native-app-differs-from-alc-on-dms`.
 >
 > **The verifier warns, it does not prove.** The text checks for local procedure calls, return
-> values, overloads, `Continue`, identifiers in field triggers and record fields (ALN2202, ALN2203,
-> ALN2208, ALN2209, ALN2402, ALN2404) cannot be exact without a binder. They are reported as
-> warnings and do not stop the build (finding `emitter-01-native-verifier-rejects-valid-dms-project`).
-> A clean native build does not mean `alc` would accept the project.
+> values, overloads, `Continue` and identifiers in field triggers (ALN2202, ALN2203, ALN2208,
+> ALN2209) cannot be exact without a binder. They are reported as warnings and do not stop the
+> build (finding `emitter-01-native-verifier-rejects-valid-dms-project`). A clean native build does
+> not mean `alc` would accept the project.
+>
+> **What the binding pass checks (`AL0118`, `AL0132`).** It runs on the syntax tree of codeunits,
+> tables, table extensions and pages whose source table is known, and reports only what the
+> declarations prove. It skips files with syntax errors or preprocessor directives, code under
+> `with`, names that are called (`Foo(...)`, because the builtin catalog is incomplete), and report,
+> query, XMLport and page extension scopes. `AL0132` needs the table in the workspace or a loaded
+> package. Type mismatches, overload resolution, undeclared procedure calls and everything else
+> still need `alc` or the bridge. On the DMS project `alc` reports 0 errors and the native pass 0.
+> Findings: `journey-02-pack-native-accepts-unquoted-missing-field`,
+> `journey-03-lsp-undeclared-identifier-no-diagnostic`.
 
 ## Microsoft comparison
 
@@ -255,7 +269,7 @@ package-semantic-equivalence check.
 | Build-time validation | partial: native syntax/project/declaration/declared-binding checks block the build, heuristic body checks only warn | **yes**: authoritative Microsoft semantics |
 | Optional parity | `pack-native --validate` runs native first, then `alc` | reference |
 | Output fidelity | Archive/manifest/symbol parity is measured on the self-contained, dependency, small-through-XL, and focused Base Application fixtures only. Byte-identical XLIFF on translatable fixtures. A real customer project differs from `alc` (see the coverage boundary) | reference |
-| Availability | default. Runs anywhere | `al.useOfficialCompiler: true` |
+| Availability | fallback when `alc` is absent. Runs anywhere | default when found, or `al.useOfficialCompiler: true` |
 
 ## Why this approach
 
@@ -275,7 +289,8 @@ repeated verified builds reproducible without weakening the verification gate.
 - **LSP:** the `al.compile` execute command.
 - **MCP:** `al_build` is the named compile alias. The other shared build dispatcher methods, including
   `package`, are available through `al_call`.
-- **Force Microsoft `alc`:** set `al.useOfficialCompiler: true`.
+- **Backend:** `al-explorer compile` (alias `build`) uses `alc` when the toolchain is found. Set
+  `al.useOfficialCompiler: true` to require `alc` or `false` to force the native emitter.
 
 ## Compatibility boundaries
 

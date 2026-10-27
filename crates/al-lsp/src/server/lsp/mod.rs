@@ -313,6 +313,13 @@ pub struct AlServer {
     /// these without repeating multi-second bridge calls.
     pub(crate) semantic_diagnostic_cache:
         Arc<Mutex<std::collections::HashMap<Url, diagnostics::CachedSemanticDiagnostics>>>,
+    /// Last `AL-NL003/4` findings per document, shown by the first publish of
+    /// the next edit while the call graph pass recomputes them (journey-20).
+    pub(crate) transaction_diagnostic_cache:
+        Arc<Mutex<std::collections::HashMap<Url, Vec<Diagnostic>>>>,
+    /// The pending debounced call graph pass per document.
+    pub(crate) transaction_tasks:
+        Arc<Mutex<std::collections::HashMap<Url, tokio::task::JoinHandle<()>>>>,
 }
 
 impl AlServer {
@@ -365,6 +372,8 @@ impl AlServer {
             work_done_progress: AtomicBool::new(false),
             workspace_diagnostic_uris: Arc::new(Mutex::new(std::collections::HashSet::new())),
             semantic_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            transaction_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            transaction_tasks: Arc::new(Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -923,6 +932,7 @@ impl AlServer {
             advisory
         };
         self.semantic_diagnostic_cache.lock().await.clear();
+        self.transaction_diagnostic_cache.lock().await.clear();
         if let Some(advisory) = advisory {
             self.client
                 .show_message(MessageType::WARNING, advisory)
@@ -1572,6 +1582,10 @@ impl LanguageServer for AlLsp {
             != al_project::config::DiagnosticsScope::Project
         {
             self.semantic_diagnostic_cache.lock().await.remove(&uri);
+        }
+        self.transaction_diagnostic_cache.lock().await.remove(&uri);
+        if let Some(task) = self.transaction_tasks.lock().await.remove(&uri) {
+            task.abort();
         }
 
         // Cancel this document's pending debounced diagnostics task. Without

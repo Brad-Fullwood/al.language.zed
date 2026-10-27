@@ -21,7 +21,7 @@
 
 S10_STAGE=10
 S10_TSV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/checklist-runs.tsv"
-S10_VARS='$PROJ $ALX $F_CU $F_TBL $F_PEXT $F_SUB $SUBLN $TBLID $TBL $CU $LN $COL $LN0 $CH0 $APP $DEPAPP $SNAP $SNAPZIP $OUTSIDE $CDX_TENANT'
+S10_VARS='$PROJ $ALX $F_CU $F_TBL $F_PEXT $F_SUB $SUBLN $SUBLN0 $F_PUB $PUBLN0 $TBLID $TBL $CU $LN $COL $LN0 $CH0 $APP $DEPAPP $SNAP $SNAPZIP $OUTSIDE $CDX_TENANT'
 
 # s10_discover: sets the placeholder variables from the files in $PROJ.
 s10_discover() {
@@ -39,6 +39,9 @@ s10_discover() {
   fi
   F_SUB=$(grep -rl 'EventSubscriber' "$src" --include='*.al' 2>/dev/null | head -1)
   SUBLN=$(grep -n 'EventSubscriber' "$F_SUB" 2>/dev/null | head -1 | cut -d: -f1)
+  SUBLN0=$(( ${SUBLN:-1} - 1 ))
+  F_PUB=$(grep -rlE '\[(Integration|Business)Event' "$src" --include='*.al' 2>/dev/null | grep -v '/\.alpackages/' | head -1)
+  PUBLN0=$(( $(grep -nE '\[(Integration|Business)Event' "${F_PUB:-/dev/null}" 2>/dev/null | head -1 | cut -d: -f1) - 1 ))
   F_TBL=$(grep -rlE '^table +[0-9]+' "$src" --include='*.al' 2>/dev/null | grep -v '/\.alpackages/' | sort | head -1)
   TBLID=$(sed -nE 's/^table +([0-9]+).*/\1/p' "$F_TBL" 2>/dev/null | head -1)
   F_PEXT=$(grep -rliE '^pageextension ' "$src" --include='*.al' 2>/dev/null | head -1)
@@ -70,7 +73,7 @@ s10_discover() {
   OUTSIDE="$OUT/10/outside/Foo.al"
   if [[ -n "$F_CU" ]]; then cp "$F_CU" "$OUTSIDE"; else OUTSIDE=""; fi
   CDX_TENANT=1b7a9471-d313-4aa4-99e8-7a6c762c8e7d
-  export PROJ ALX F_CU F_TBL F_PEXT F_SUB SUBLN TBLID TBL CU LN COL LN0 CH0 APP DEPAPP SNAP SNAPZIP OUTSIDE CDX_TENANT
+  export PROJ ALX F_CU F_TBL F_PEXT F_SUB SUBLN SUBLN0 F_PUB PUBLN0 TBLID TBL CU LN COL LN0 CH0 APP DEPAPP SNAP SNAPZIP OUTSIDE CDX_TENANT
 }
 
 # s10_expand TEXT: replaces the placeholder variables in TEXT. Prints the result.
@@ -138,6 +141,11 @@ s10_run_row() {
   fi
   if [[ "$inv" == NONE || "$expect" == skip=* ]]; then
     record 10 "$item" SKIP "${expect#skip=} ($first_ref)"; return
+  fi
+  # The rename rows target the stage 6 codeunit. Without it $F_CU falls back to a file with no
+  # procedure (HelloWorld 1:10), so skip instead of renaming the object id.
+  if [[ "$inv$expect" == *Journey10Renamed* && ! -f "$PROJ/src/JourneyFailingTests.Codeunit.al" ]]; then
+    record 10 "$item" SKIP "needs the stage 6 test codeunit (run stage 6 first) ($first_ref)"; return
   fi
   local miss
   if miss=$(s10_missing "$inv$expect"); then
