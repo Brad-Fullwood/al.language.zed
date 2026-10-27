@@ -65,10 +65,13 @@ pub fn build_dap_binary(
     // there used to be `/server:`/`/browser:` flags here too, but al-lsp never
     // parsed them (and `"browser"` was never even a real schema key — the real
     // one is `launchBrowser`), so they were pure dead plumbing. Removed.
-    let args = vec![
-        backend_flag.to_string(),
-        format!("/projectRoot:{}", workspace_path),
-    ];
+    let args = crate::dev_binary::with_extension_build(
+        vec![
+            backend_flag.to_string(),
+            format!("/projectRoot:{}", workspace_path),
+        ],
+        crate::dev_binary::EXTENSION_BUILD,
+    );
 
     let mut envs = Vec::new();
     let compile_settings = crate::settings::compile_settings_for_child(user_settings);

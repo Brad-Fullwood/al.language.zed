@@ -9,9 +9,8 @@
 //! The tests pin release lookup to the manifest so code and packaging cannot
 //! drift independently.
 
-use crate::{release_lookup_failure_message, spawn_failure_message, GITHUB_REPO};
+use crate::{release_unavailable_message, GITHUB_REPO};
 use std::path::Path;
-use zed_extension_api as zed;
 
 /// Extract the `owner/repo` slug from a `https://github.com/owner/repo[.git]`
 /// URL, trimming a trailing `.git` and any trailing slash.
@@ -173,9 +172,8 @@ fn extension_builds_and_releases_a_wasm_component() {
 
 /// Gallery installs download `al-lsp` into the extension work directory, which
 /// is not part of the user's shell PATH. LSP, DAP, and MCP therefore have to
-/// share the path-returning release resolver; a bare context-server command
-/// would work only in developer checkouts that ran `make install`. The context
-/// server asks PATH first and keeps the release as its fallback.
+/// share the path-returning resolver; a bare context-server command would work
+/// only in developer checkouts that ran `make install`.
 #[test]
 fn mcp_and_dap_do_not_depend_on_path_installed_sidecars() {
     let lib = include_str!("lib.rs");
@@ -183,8 +181,8 @@ fn mcp_and_dap_do_not_depend_on_path_installed_sidecars() {
     let manifest = include_str!("../extension.toml");
 
     assert!(
-        lib.contains("match self.find_or_download_binary(None, None, None)")
-            && lib.contains("context_server_launch(recorded, release, posix_shell)"),
+        lib.contains("self.find_or_download_binary(None, None)?")
+            && !lib.contains("worktree.which(\"al-lsp\")"),
         "MCP context_server_command must use the same resolved/downloaded al-lsp path as LSP/DAP"
     );
     assert!(
@@ -286,53 +284,22 @@ fn github_repo_is_owner_slash_repo() {
     );
 }
 
-/// The reported new-user blocker is that when NO GitHub release exists yet,
-/// `latest_github_release(...)?` propagated a raw, opaque error (e.g. "no
-/// releases found") with zero guidance. That path must now be just as
-/// actionable as the asset-not-found path: it must name the releases URL and
-/// the PATH install, so a fresh user whose server fails to spawn knows how to
-/// recover. It must not offer `binary.path`, which the extension ignores (see
-/// `settings::resolve_server_launch`): a recovery step that does nothing is
-/// worse than none.
+/// A release that cannot be used produces one error that names the tag, the
+/// cause and both ways out. It must not offer `binary.path`, which the
+/// extension ignores (see `settings::resolve_server_launch`).
 #[test]
-fn release_lookup_failure_is_actionable() {
-    for os in [zed::Os::Linux, zed::Os::Mac, zed::Os::Windows] {
-        let msg = release_lookup_failure_message(os, "no releases found");
-
-        assert!(
-            msg.contains("no releases found"),
-            "release-lookup error must include the underlying cause: {msg}"
-        );
-        assert!(
-            msg.contains(&format!("https://github.com/{GITHUB_REPO}/releases")),
-            "release-lookup error must link the releases page: {msg}"
-        );
-        assert!(
-            msg.contains("PATH"),
-            "release-lookup error must name the PATH install: {msg}"
-        );
-        assert!(
-            !msg.contains("\"path\": \""),
-            "release-lookup error must not offer a binary.path snippet the extension \
-             ignores: {msg}"
-        );
-    }
-}
-
-/// The asset-not-found message must keep its actionable recovery guidance
-/// (releases URL + PATH install). This pins the shared `manual_install_hint`
-/// contract so a refactor cannot silently strip it.
-#[test]
-fn asset_not_found_is_actionable() {
-    let msg = spawn_failure_message(zed::Os::Linux, "al-linux-x86_64.tar.gz");
+fn an_unusable_release_names_the_version_and_both_routes() {
+    let msg = release_unavailable_message("v0.4.0", "no releases found");
     assert!(
-        msg.contains("al-linux-x86_64.tar.gz"),
-        "asset-not-found error must name the missing asset: {msg}"
+        msg.contains("v0.4.0") && msg.contains("no releases found"),
+        "{msg}"
     );
+    assert!(msg.contains("make install"), "{msg}");
     assert!(
-        msg.contains(&format!("https://github.com/{GITHUB_REPO}/releases")) && msg.contains("PATH"),
-        "asset-not-found error must retain the releases URL and the PATH install: {msg}"
+        msg.contains(&format!("https://github.com/{GITHUB_REPO}/releases")),
+        "{msg}"
     );
+    assert!(!msg.contains("\"path\": \""), "{msg}");
 }
 
 /// Committed code must always target a released extension API.
@@ -860,5 +827,40 @@ fn binaries_are_verified_before_they_are_made_executable() {
         verify < make_executable,
         "src/lib.rs calls make_file_executable before verify_extracted_binaries, \
          so a binary whose digest does not match is made executable anyway"
+    );
+}
+
+/// The extension, the root crate and `al-lsp` ship together, so their versions
+/// are one number. A mismatch would make every `--extension-build` check warn.
+#[test]
+fn extension_and_al_lsp_versions_are_equal() {
+    fn package_version(manifest: &str) -> String {
+        manifest
+            .lines()
+            .skip_while(|line| line.trim() != "[package]")
+            .skip(1)
+            .take_while(|line| !line.trim().starts_with('['))
+            .find_map(|line| {
+                line.trim().strip_prefix("version").map(|rest| {
+                    rest.trim_start_matches([' ', '=', '"'])
+                        .trim_end_matches('"')
+                        .to_string()
+                })
+            })
+            .expect("manifest declares a package version")
+    }
+    let extension_toml = include_str!("../extension.toml")
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("version = \"")
+                .map(|rest| rest.trim_end_matches('"').to_string())
+        })
+        .expect("extension.toml declares a version");
+    let root = package_version(include_str!("../Cargo.toml"));
+    let lsp = package_version(include_str!("../crates/al-lsp/Cargo.toml"));
+    assert_eq!(
+        (extension_toml.as_str(), root.as_str()),
+        (lsp.as_str(), lsp.as_str()),
+        "extension.toml, root Cargo.toml and crates/al-lsp/Cargo.toml versions must be equal"
     );
 }
