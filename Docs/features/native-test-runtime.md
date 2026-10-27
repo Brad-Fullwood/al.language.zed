@@ -255,7 +255,7 @@ MC/DC for compound IF/WHILE/REPEAT decisions. Condition vectors and outcomes com
 evaluation, so coverage does not repeat calls or other side effects. Daemon JSON retains the observed
 vectors, and Cobertura includes per-condition MC/DC evidence and totals.
 
-Mutation testing targets executable bodies in test code and transitively covered production files.
+Mutation testing targets executable bodies in the production files that tests reach. It first runs the unmutated suite and stops without a score if any test fails. Codeunits with `Subtype = Test` are not mutated unless named with `--files`.
 It covers conditional boundaries and whole-condition negation, comparison/logical/arithmetic
 operator swaps, unary `not` removal, Boolean/text literals, and checked integer ±1. Mutants execute
 against the affected tests on both local interpreter tiers and run concurrently with stable result
@@ -272,7 +272,7 @@ affected test are listed but not scored.
 | Routing transparency | `test-classify` explains every decision | n/a |
 | Reproducible randomness | seeded native implementation | BC runtime |
 | JUnit / coverage | static + opt-in dynamic local coverage | results require BC |
-| Mutation testing | ✅ interpreter-routed, optionally parallel | ❌ |
+| Mutation testing | ✅ interpreter-routed, optionally parallel. Runs the unmutated suite first and refuses (no score, nonzero exit) when a test fails. Skips `Subtype = Test` codeunits unless `--files` names them | ❌ |
 | Base-app DB/HTTP/UI/report behavior | live BC | live BC |
 
 ## How to use

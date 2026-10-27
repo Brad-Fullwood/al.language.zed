@@ -62,7 +62,7 @@ feature pages for implementation details and limitations.
 | Test discovery (static, BC-free) | ✅ | needs toolchain |
 | Routing transparency (`test-classify`) | ✅ | ❌ |
 | JUnit output / coverage | ✅ (static call-graph plus opt-in dynamic statement/path/MC/DC coverage) | partial (needs BC) |
-| Mutation testing | ✅ interpreter-routed, optionally parallel | ❌ |
+| Mutation testing | ✅ interpreter-routed, optionally parallel. Runs the unmutated suite first and refuses (no score, nonzero exit) when a test fails. Skips `Subtype = Test` codeunits unless `--files` names them | ❌ |
 | Test snapshot files | live capture/replay plus BC-free validation and file diff | partial (snapshot debugging) |
 | Base-app/package DB, unsupported record, HTTP/UI/report/platform tests | 🔷 classified `liveBc` and reported as skipped. Running them needs a TestRunnerHub client, not built yet (`testing-01-live-bc-dev-tests-endpoint-invented.md`) | 🔷 live BC |
 
