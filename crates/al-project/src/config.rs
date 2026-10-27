@@ -151,6 +151,9 @@ pub struct AlConfig {
 
     /// Optional per-document size cap in bytes.
     pub max_document_size_bytes: Option<usize>,
+
+    /// Threads for index building. `None` uses half the cores, between 2 and 4.
+    pub index_threads: Option<usize>,
 }
 
 /// Outcome of merging one batch of settings.
@@ -281,6 +284,7 @@ impl Default for AlConfig {
             incremental_build: false,
             use_official_compiler: false,
             max_document_size_bytes: None,
+            index_threads: None,
         }
     }
 }
@@ -734,6 +738,14 @@ impl AlConfig {
                     },
                     None => {}
                 },
+                "indexThreads" => match obj.get(key) {
+                    Some(serde_json::Value::Null) => self.index_threads = None,
+                    Some(v) => match v.as_u64().filter(|n| *n >= 1) {
+                        Some(n) => self.index_threads = Some(n as usize),
+                        None => report.invalid_values.push(format!("indexThreads={v}")),
+                    },
+                    None => {}
+                },
                 _ => {
                     report.unknown_keys.push(key.clone());
                 }
@@ -800,6 +812,7 @@ fn is_al_setting_key(key: &str) -> bool {
             | "incrementalBuild"
             | "useOfficialCompiler"
             | "maxDocumentSizeBytes"
+            | "indexThreads"
     )
 }
 
@@ -856,6 +869,7 @@ fn validate_setting_shapes(
                         .and_then(|value| usize::try_from(value).ok())
                         .is_some()
             }
+            "indexThreads" => value.is_null() || value.as_u64().is_some_and(|value| value >= 1),
             _ => true,
         };
         if !valid {

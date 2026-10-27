@@ -194,6 +194,13 @@
       "description": "Optional per-document size cap, in bytes. When set, the server refuses to ingest a single document larger than this (keeping huge files out of the in-memory store). null (default) means no cap.",
       "examples": [10485760]
     },
+    "al.indexThreads": {
+      "type": ["integer", "null"],
+      "minimum": 1,
+      "default": null,
+      "description": "Threads used to build symbol indexes, at nice 10. null (default) uses half the cores, at least 2 and at most 4, so the editor keeps the rest.",
+      "examples": [2]
+    },
     "al.useOfficialLsp": {
       "type": "boolean",
       "default": false,

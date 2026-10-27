@@ -362,6 +362,7 @@ dependencies = [
  "futures",
  "getrandom 0.4.2",
  "keyring",
+ "libc",
  "proptest",
  "quick-xml",
  "rayon",

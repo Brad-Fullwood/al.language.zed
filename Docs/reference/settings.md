@@ -85,6 +85,7 @@ setting for it.
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
 | `al.maxDocumentSizeBytes` | integer\|null | `null` | ✅ |
+| `al.indexThreads` | integer\|null | `null` (half the cores, at least 2, at most 4) | ✅ threads that build symbol indexes (Base Application and other `.app` packages). They run at nice 10 so the editor keeps the other cores. A change applies to the next index build |
 | `al.useOfficialLsp` | boolean | `false` | 🟡 run altool `launchlspserver` instead of al-lsp (ALTool v17+). Hover, definition, references, rename, formatting and completion only. See [language-server](../features/language-server.md#microsoft-comparison) |
 | `al.useOfficialDap` | boolean | `false` | ✅ use Microsoft `EditorServices.Host` (extension-side toggle) |
 

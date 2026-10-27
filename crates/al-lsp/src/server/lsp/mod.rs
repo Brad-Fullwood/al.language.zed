@@ -1035,6 +1035,7 @@ impl LanguageServer for AlLsp {
                     );
                 }
                 let advisory = gate_repository_settings(root_uri.as_ref(), &mut config);
+                al_symbols::index_pool::set_index_threads(config.index_threads);
                 (config.max_document_size_bytes, advisory)
             };
             if let Some(advisory) = advisory {
@@ -1770,6 +1771,7 @@ impl LanguageServer for AlLsp {
                 self.workspace
                     .documents
                     .set_max_doc_bytes(staged_config.max_document_size_bytes);
+                al_symbols::index_pool::set_index_threads(staged_config.index_threads);
                 self.semantic_diagnostic_cache.lock().await.clear();
                 self.workspace.mark_generation_changed();
                 drop(publication);
@@ -1812,6 +1814,7 @@ impl LanguageServer for AlLsp {
                 self.workspace
                     .documents
                     .set_max_doc_bytes(staged_config.max_document_size_bytes);
+                al_symbols::index_pool::set_index_threads(staged_config.index_threads);
                 tracing::info!("Configuration updated (no active AL project)");
                 self.refresh_diagnostics_after_configuration().await;
                 self.schedule_project_semantic(PROJECT_SEMANTIC_DEBOUNCE)

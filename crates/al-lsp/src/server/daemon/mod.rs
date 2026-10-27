@@ -2336,6 +2336,7 @@ pub(crate) async fn initialize_daemon_workspace(
     workspace
         .documents
         .set_max_doc_bytes(workspace.config.read().await.max_document_size_bytes);
+    al_symbols::index_pool::set_index_threads(workspace.config.read().await.index_threads);
     let result = al_workspace::initialize_core_workspace(workspace, project_root).await?;
 
     tracing::info!(
