@@ -142,6 +142,11 @@ s10_run_row() {
   if [[ "$inv" == NONE || "$expect" == skip=* ]]; then
     record 10 "$item" SKIP "${expect#skip=} ($first_ref)"; return
   fi
+  # The rename rows target the stage 6 codeunit. Without it $F_CU falls back to a file with no
+  # procedure (HelloWorld 1:10), so skip instead of renaming the object id.
+  if [[ "$inv$expect" == *Journey10Renamed* && ! -f "$PROJ/src/JourneyFailingTests.Codeunit.al" ]]; then
+    record 10 "$item" SKIP "needs the stage 6 test codeunit (run stage 6 first) ($first_ref)"; return
+  fi
   local miss
   if miss=$(s10_missing "$inv$expect"); then
     record 10 "$item" SKIP "precondition: \$$miss is empty, the earlier stages did not leave it ($first_ref)"; return
