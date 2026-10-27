@@ -27,6 +27,9 @@ pub enum UnusedReason {
     /// The publisher object still exists but no longer declares the event the
     /// subscriber names (removed or renamed).
     EventRemoved,
+    /// No AL name references, but the table is opened through `RecordRef`
+    /// somewhere in the workspace, so the field may be filled by number.
+    ReflectiveAccess,
 }
 
 /// How certain the analysis is that the symbol is genuinely dead.
@@ -46,6 +49,9 @@ pub enum Confidence {
     /// channels static analysis cannot see (other extensions, FieldRef by
     /// number, report layouts, the platform).
     Medium,
+    /// The symbol's container is reached through reflection (`RecordRef`,
+    /// `FieldRef`), so a missing name reference says little about use.
+    Low,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +120,8 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
         }
     }
 
+    let reflective_tables = reflective_table_names(&parsed_files);
+
     // Keep the query on the daemon dispatch thread. Rayon worker startup made
     // this small, latency-sensitive request hang indefinitely on Windows even
     // though the same parsed inputs complete immediately in serial. The
@@ -156,6 +164,7 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
                         node,
                         &obj_info.name,
                         &all_member_access_names,
+                        reflective_tables.contains(&obj_info.name.to_ascii_lowercase()),
                         &mut local,
                     );
                 }
@@ -405,6 +414,7 @@ fn find_unused_fields(
     object: tree_sitter::Node<'_>,
     object_name: &str,
     all_member_access_names: &std::collections::HashSet<String>,
+    reached_by_record_ref: bool,
     results: &mut Vec<UnusedSymbol>,
 ) {
     let fields = collect_table_fields(object, file_text);
@@ -419,24 +429,193 @@ fn find_unused_fields(
             || key_fields.contains(&field_key);
 
         if !referenced {
-            // FieldRef/RecordRef, report layouts, and dependent extensions are
-            // not visible to this analysis.
+            // Report layouts and dependent extensions are not visible to this
+            // analysis. A table opened through RecordRef is filled by field
+            // number, which is not visible either.
+            let (reason, confidence, note) = if reached_by_record_ref {
+                (
+                    UnusedReason::ReflectiveAccess,
+                    Confidence::Low,
+                    "no AL name references, but this table is opened through \
+                     RecordRef/FieldRef in the workspace, which reads and writes \
+                     fields by number (reflective access)"
+                        .to_string(),
+                )
+            } else {
+                (
+                    UnusedReason::ZeroReferences,
+                    Confidence::Medium,
+                    "no AL name references, but fields can be read via \
+                     FieldRef/RecordRef by number, report layouts, or other \
+                     extensions — verify before removing"
+                        .to_string(),
+                )
+            };
             results.push(UnusedSymbol {
                 kind: UnusedKind::Field,
                 name: field_name.clone(),
                 object: object_name.to_string(),
                 file: Some(file_path.to_string()),
                 line: Some(*line),
-                reason: UnusedReason::ZeroReferences,
-                confidence: Confidence::Medium,
-                note: Some(
-                    "no AL name references, but fields can be read via \
-                     FieldRef/RecordRef by number, report layouts, or other \
-                     extensions — verify before removing"
-                        .to_string(),
-                ),
+                reason,
+                confidence,
+                note: Some(note),
             });
         }
+    }
+}
+
+/// Lowercase names of the workspace tables that a `RecordRef` is opened on.
+///
+/// Recognised, on the syntax tree: `R.Open(Database::"X")`, `R.Open(<id>)`,
+/// `R.GetTable(V)` and `R.Open(V)`-style calls where `V` is a `Record` variable,
+/// parameter or trigger variable of table `X`, with `R` a `RecordRef`. A
+/// `FieldRef` taken from such a `RecordRef` reaches the same table.
+///
+/// Only resolvable tables are returned. A `RecordRef` opened from an integer
+/// variable, a Variant, or a parameter has no table known statically, and
+/// downgrading every table in the workspace for it would hide real dead
+/// fields, so those calls add nothing here.
+///
+/// Standard route checked: the symbol index and `TypeResolver` give declared
+/// types, but nothing in them records which table a RecordRef is opened on, so
+/// the call arguments are read here.
+fn reflective_table_names(
+    sources: &[crate::workspace_sources::WorkspaceSource],
+) -> std::collections::HashSet<String> {
+    let mut by_id: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    let mut table_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for source in sources {
+        for (object, _) in source.object_nodes() {
+            let kind = object.info.kind.to_ascii_lowercase();
+            if al_syntax::language_data::object_type_by_keyword(&kind)
+                .is_none_or(|ot| ot.node_kind != "kw_table")
+            {
+                continue;
+            }
+            let name = object.info.name.to_ascii_lowercase();
+            if let Some(id) = object.info.id {
+                by_id.insert(id, name.clone());
+            }
+            table_names.insert(name);
+        }
+    }
+
+    let mut reached = std::collections::HashSet::new();
+    for source in sources {
+        let text = source.text.as_str();
+        let resolver = al_syntax::TypeResolver::new(&source.tree, text);
+        al_syntax::walk_tree(source.tree.root_node(), &mut |node| {
+            if node.kind() != "member_call_suffix" {
+                return;
+            }
+            let Some(method) = node
+                .child_by_field_name("member")
+                .and_then(|n| n.utf8_text(text.as_bytes()).ok())
+                .map(al_syntax::clean_identifier)
+            else {
+                return;
+            };
+            if !method.eq_ignore_ascii_case("open") && !method.eq_ignore_ascii_case("gettable") {
+                return;
+            }
+            // Receiver: a plain variable of type RecordRef.
+            let Some(receiver) = node
+                .prev_sibling()
+                .filter(|n| n.kind() == "primary_expression")
+                .and_then(|n| n.utf8_text(text.as_bytes()).ok())
+                .map(al_syntax::clean_identifier)
+            else {
+                return;
+            };
+            let at = |n: tree_sitter::Node<'_>| al_syntax::types::SyntaxPosition {
+                line: n.start_position().row as u32,
+                character: n.start_position().column as u32,
+            };
+            let is_record_ref = resolver
+                .resolve_type(&receiver, at(node))
+                .is_some_and(|v| v.type_name.eq_ignore_ascii_case("RecordRef"));
+            if !is_record_ref {
+                return;
+            }
+            let Some(arg) = node
+                .child_by_field_name("call")
+                .and_then(|args| first_argument_expression(args))
+            else {
+                return;
+            };
+            if let Some(table) = table_of_argument(arg, text, &resolver, &by_id, &table_names) {
+                reached.insert(table);
+            }
+        });
+    }
+    reached
+}
+
+fn first_argument_expression(args: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut cursor = args.walk();
+    let list = args
+        .children(&mut cursor)
+        .find(|n| n.kind() == "expression_list")?;
+    let mut cursor = list.walk();
+    let first = list
+        .children(&mut cursor)
+        .find(|n| n.kind() == "expression");
+    first
+}
+
+/// The lowercase workspace table name an `Open`/`GetTable` argument names.
+fn table_of_argument(
+    arg: tree_sitter::Node<'_>,
+    text: &str,
+    resolver: &al_syntax::TypeResolver<'_>,
+    by_id: &std::collections::HashMap<i64, String>,
+    table_names: &std::collections::HashSet<String>,
+) -> Option<String> {
+    let postfix = arg
+        .child(0)
+        .filter(|n| n.kind() == "unary_expression")
+        .and_then(|n| n.child(0))
+        .filter(|n| n.kind() == "postfix_expression")?;
+    let primary = postfix
+        .child(0)
+        .filter(|n| n.kind() == "primary_expression")?;
+    let primary_text = primary.utf8_text(text.as_bytes()).ok()?;
+    let scope = postfix.child(1).filter(|n| n.kind() == "scope_suffix");
+    match (primary.child(0)?.kind(), scope) {
+        // Database::"X"
+        ("type_keyword", Some(scope)) if primary_text.eq_ignore_ascii_case("database") => {
+            let member = scope.child_by_field_name("member")?;
+            let name = al_syntax::clean_identifier(member.utf8_text(text.as_bytes()).ok()?)
+                .to_ascii_lowercase();
+            table_names.contains(&name).then_some(name)
+        }
+        // Open(50100)
+        ("integer", None) => by_id
+            .get(&primary_text.trim().parse::<i64>().ok()?)
+            .cloned(),
+        // GetTable(Var), Var being a Record of a workspace table.
+        ("name", None) => {
+            let var = resolver.resolve_type(
+                &al_syntax::clean_identifier(primary_text),
+                al_syntax::types::SyntaxPosition {
+                    line: arg.start_position().row as u32,
+                    character: arg.start_position().column as u32,
+                },
+            )?;
+            if !var.type_name.eq_ignore_ascii_case("Record") {
+                return None;
+            }
+            let subtype = al_syntax::clean_identifier(var.type_subtype.as_deref()?);
+            match subtype.trim().parse::<i64>() {
+                Ok(id) => by_id.get(&id).cloned(),
+                Err(_) => {
+                    let name = subtype.to_ascii_lowercase();
+                    table_names.contains(&name).then_some(name)
+                }
+            }
+        }
+        _ => None,
     }
 }
 
@@ -1702,5 +1881,146 @@ codeunit 50101 "Ship Helper"
                 .any(|r| r.kind == UnusedKind::Subscriber && r.name == "HandleInsert"),
             "platform table events must not be flagged: {results:?}"
         );
+    }
+
+    const REFLECTIVE_TABLE: &str = r#"table 50100 "Service Table"
+{
+    fields
+    {
+        field(1; "Code"; Code[20]) { }
+        field(2; "Description"; Text[100]) { }
+    }
+}"#;
+
+    const PLAIN_TABLE: &str = r#"table 50101 "Plain Table"
+{
+    fields
+    {
+        field(1; "Code"; Code[20]) { }
+        field(2; "Legacy"; Text[100]) { }
+    }
+}"#;
+
+    fn field_finding<'a>(
+        unused: &'a [UnusedSymbol],
+        object: &str,
+        name: &str,
+    ) -> Option<&'a UnusedSymbol> {
+        unused
+            .iter()
+            .find(|u| u.kind == UnusedKind::Field && u.object == object && u.name == name)
+    }
+
+    fn assert_reflective(codeunit: &str) {
+        let ws = workspace_with_files(vec![
+            ("/src/Service.al", REFLECTIVE_TABLE),
+            ("/src/Plain.al", PLAIN_TABLE),
+            ("/src/Cu.al", codeunit),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        let hit = field_finding(&unused, "Service Table", "Description")
+            .unwrap_or_else(|| panic!("Description must still be listed: {unused:?}"));
+        assert_eq!(hit.confidence, Confidence::Low, "{hit:?}");
+        assert_eq!(hit.reason, UnusedReason::ReflectiveAccess, "{hit:?}");
+        let other = field_finding(&unused, "Plain Table", "Legacy")
+            .unwrap_or_else(|| panic!("Legacy must still be listed: {unused:?}"));
+        assert_eq!(other.confidence, Confidence::Medium, "{other:?}");
+        assert_eq!(other.reason, UnusedReason::ZeroReferences, "{other:?}");
+    }
+
+    #[test]
+    fn a_field_of_a_table_opened_by_database_name_is_reflective_access() {
+        assert_reflective(
+            r#"codeunit 50100 "Fill"
+{
+    procedure Run()
+    var
+        RecRef: RecordRef;
+    begin
+        RecRef.Open(Database::"Service Table");
+        RecRef.Field(1).Value := 'A';
+    end;
+}"#,
+        );
+    }
+
+    #[test]
+    fn a_field_of_a_table_opened_by_number_is_reflective_access() {
+        assert_reflective(
+            r#"codeunit 50100 "Fill"
+{
+    procedure Run()
+    var
+        RecRef: RecordRef;
+    begin
+        RecRef.Open(50100);
+        RecRef.Field(2).Value := 'A';
+    end;
+}"#,
+        );
+    }
+
+    #[test]
+    fn a_field_of_a_table_passed_to_get_table_is_reflective_access() {
+        assert_reflective(
+            r#"codeunit 50100 "Fill"
+{
+    var
+        Service: Record "Service Table";
+
+    procedure Run()
+    var
+        RecRef: RecordRef;
+    begin
+        RecRef.GetTable(Service);
+        RecRef.SetTable(Service);
+    end;
+}"#,
+        );
+    }
+
+    #[test]
+    fn a_record_ref_opened_from_a_variable_downgrades_no_table() {
+        let ws = workspace_with_files(vec![
+            ("/src/Service.al", REFLECTIVE_TABLE),
+            (
+                "/src/Cu.al",
+                r#"codeunit 50100 "Fill"
+{
+    procedure Run(TableNo: Integer)
+    var
+        RecRef: RecordRef;
+    begin
+        RecRef.Open(TableNo);
+    end;
+}"#,
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        let hit = field_finding(&unused, "Service Table", "Description").unwrap();
+        assert_eq!(hit.confidence, Confidence::Medium, "{hit:?}");
+    }
+
+    #[test]
+    fn a_name_in_a_comment_or_string_does_not_count_as_record_ref_access() {
+        let ws = workspace_with_files(vec![
+            ("/src/Service.al", REFLECTIVE_TABLE),
+            (
+                "/src/Cu.al",
+                r#"codeunit 50100 "Fill"
+{
+    procedure Run()
+    var
+        Text: Text;
+    begin
+        // RecRef.Open(Database::"Service Table");
+        Text := 'RecRef.Open(50100)';
+    end;
+}"#,
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        let hit = field_finding(&unused, "Service Table", "Description").unwrap();
+        assert_eq!(hit.confidence, Confidence::Medium, "{hit:?}");
     }
 }

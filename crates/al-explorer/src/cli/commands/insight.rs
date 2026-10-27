@@ -159,18 +159,23 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
                     // group by confidence so provably-dead findings
                     // are not mixed with "no references found, but could be
                     // used through channels static analysis can't see".
-                    let (high, medium): (Vec<_>, Vec<_>) = unused.iter().partition(|item| {
+                    let level = |item: &&serde_json::Value| {
                         item.get("confidence")
                             .and_then(|v| v.as_str())
-                            .map(|c| c.eq_ignore_ascii_case("high"))
-                            .unwrap_or(true)
-                    });
-                    print!("{}", dead_code_text(&high, &medium));
+                            .unwrap_or("high")
+                            .to_ascii_lowercase()
+                    };
+                    let (high, rest): (Vec<_>, Vec<_>) =
+                        unused.iter().partition(|item| level(item) == "high");
+                    let (low, medium): (Vec<_>, Vec<_>) =
+                        rest.into_iter().partition(|item| level(item) == "low");
+                    print!("{}", dead_code_text(&high, &medium, &low));
                     eprintln!(
-                        "\n{} findings ({} high, {} possibly-unused)",
+                        "\n{} findings ({} high, {} possibly-unused, {} reflective access)",
                         unused.len(),
                         high.len(),
-                        medium.len()
+                        medium.len(),
+                        low.len()
                     );
                 }
             }
@@ -181,7 +186,11 @@ pub fn cmd_dead_code(json: bool) -> ExitCode {
 }
 
 /// The tables `dead-code` prints, high confidence findings first.
-fn dead_code_text(high: &[&serde_json::Value], medium: &[&serde_json::Value]) -> String {
+fn dead_code_text(
+    high: &[&serde_json::Value],
+    medium: &[&serde_json::Value],
+    low: &[&serde_json::Value],
+) -> String {
     let mut out = String::new();
     if !high.is_empty() {
         let _ = writeln!(
@@ -207,6 +216,22 @@ fn dead_code_text(high: &[&serde_json::Value], medium: &[&serde_json::Value]) ->
              extensions, or the platform.\nVerify before removing.\n"
         );
         dead_code_table(&mut out, medium);
+    }
+    if !low.is_empty() {
+        if !high.is_empty() || !medium.is_empty() {
+            let _ = writeln!(out);
+        }
+        let _ = writeln!(
+            out,
+            "REFLECTIVE ACCESS — low confidence ({} findings):",
+            low.len()
+        );
+        let _ = writeln!(
+            out,
+            "These fields have no name references, but their table is opened through\n\
+             RecordRef/FieldRef in the workspace, which reaches fields by number.\n"
+        );
+        dead_code_table(&mut out, low);
     }
     out
 }
@@ -725,7 +750,7 @@ mod terminal_text_tests {
         let finding = |name: &str, obj: &str| serde_json::json!({"k": "procedure", "n": name, "obj": obj, "f": "src/A.al", "l": 3});
         let high = finding("CallIt", TITLE);
         let medium = finding(COLOURED, CLEAR);
-        let text = dead_code_text(&[&high], &[&medium]);
+        let text = dead_code_text(&[&high], &[&medium], &[]);
         assert_escaped(&text);
         assert!(text.contains("src/A.al:3"), "got: {text}");
 
