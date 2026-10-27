@@ -1044,6 +1044,7 @@ mod dispatch_tests {
             BTreeSet::from([
                 "debug",
                 "downloadSymbols",
+                "environmentVersion",
                 "profiling",
                 "publish",
                 "snapshot",
