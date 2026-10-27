@@ -76,7 +76,7 @@ feature pages for implementation details and limitations.
 | Profiling | ✅ start/status/stop through the snapshot debugger (sampling gives a `.alcpuprofile`, instrumentation saves the snapshot zip only), analyze | ✅ |
 | Snapshot debugging | ✅ capture in Zed, CLI and MCP, replay in Zed (see [snapshot-debugging](./features/snapshot-debugging.md)). `WebServiceClient` capture failed on the test Sandbox | ✅ |
 | BC runtime execution | 🔷 BC server | 🔷 BC server |
-| Delegate to Microsoft adapter | ✅ `al.useOfficialDap` | n/a |
+| Delegate to Microsoft adapter | ⚠️ `al.useOfficialDap` cannot start the AL 18.1 host on Linux without a wrapper (`dap-50-legacy-dap-cannot-start-host-on-linux`) | n/a |
 
 ## Surfaces & automation
 
@@ -99,7 +99,7 @@ The project does not replace these. The Microsoft path is one setting away:
 - **Authoritative AL runtime semantics:** the Business Central server executes AL, and publish/runtime is
   the final compatibility validator for emitted `.app`s and for record/DB/HTTP/UI/report tests.
 - **Official AL Language Server:** `al.useOfficialLsp` delegates the whole editor session.
-- **Official debug adapter:** `al.useOfficialDap` uses `EditorServices.Host`.
+- **Official debug adapter:** `al.useOfficialDap` uses `EditorServices.Host`. On Linux with the AL 18.1 extension it does not start, see `dap-50-legacy-dap-cannot-start-host-on-linux`.
 
 ## Summary
 

@@ -9,7 +9,7 @@ consumed by Zed or the native adapter (Microsoft launch keys outside the schema 
 
 The debugger is a **native Rust Debug Adapter Protocol (DAP) server** that talks directly to a
 Business Central server over SignalR + REST, with no Microsoft `EditorServices.Host` (it remains
-available as a legacy fallback). Zed launches `al-lsp --dap`. The adapter selects the shared verified
+available as a legacy fallback that needs a manual wrapper on Linux, see Limitations). Zed launches `al-lsp --dap`. The adapter selects the shared verified
 native build by default (or the explicit persisted `al.useOfficialCompiler` backend), publishes the
 manifest-selected `.app`, connects to BC's debug hub, and drives breakpoints/stepping/inspection.
 
@@ -264,7 +264,7 @@ runtime must be available and authenticated. Connection details can come from `.
 | Pause-while-running | ❌ (BC limitation) | ❌ (BC limitation) |
 | Timeouts | per-operation | blanket |
 | Error bodies | capped + redacted | unbounded |
-| Fallback | `al.useOfficialDap` keeps the Microsoft proxy | n/a |
+| Fallback | `al.useOfficialDap` keeps the Microsoft proxy, but it cannot start the Host on Linux without a wrapper | n/a |
 
 ## Design rationale
 
@@ -329,3 +329,10 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   `startupObjectId` is set. What Microsoft puts under `connectioncontext` is not checked. `applicationFamily`
   and a non-default `PublishEnvironment` suffix are not supported. No live run compared the URLs. See audit
   finding `dap-34-browser-url-differs-from-microsoft`.
+- `--dap-legacy` (`al.useOfficialDap`) cannot start the Microsoft host on Linux with the AL 18.1
+  extension. The adapter runs a file named `Microsoft.Dynamics.Nav.EditorServices.Host` directly, and
+  that extension ships only `Microsoft.Dynamics.Nav.EditorServices.Host.dll` and `.exe` in `bin/`, with
+  no `bin/linux/` apphost. Without `AL_EDITOR_SERVICES_PATH` it exits 1 with "EditorServices.Host not
+  found". A `.dll` path fails with "Permission denied". It starts only when `AL_EDITOR_SERVICES_PATH`
+  points to a wrapper script that runs `dotnet .../Microsoft.Dynamics.Nav.EditorServices.Host.dll "$@"`.
+  See audit finding `dap-50-legacy-dap-cannot-start-host-on-linux`.
