@@ -212,6 +212,22 @@ fn assert_binary_is_current(binary: &Path, workspace_root: &Path) {
     );
 }
 
+/// Build output directories to search, `(target dir, profile)`. A set
+/// `CARGO_TARGET_DIR` comes first, so a run with a redirected target dir uses
+/// the binaries it just built instead of falling back to an installed copy on
+/// `PATH`. The workspace `target` follows.
+fn target_dirs(workspace_root: &Path) -> Vec<(PathBuf, &'static str)> {
+    let mut roots = Vec::new();
+    if let Some(dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        roots.push(PathBuf::from(dir));
+    }
+    roots.push(workspace_root.join("target"));
+    roots
+        .into_iter()
+        .flat_map(|root| [(root.clone(), "debug"), (root, "release")])
+        .collect()
+}
+
 fn find_binary() -> PathBuf {
     // Explicit override wins. The harness starts al-lsp as a subprocess, so a
     // coverage run must point this at its instrumented build for that process to
@@ -229,11 +245,8 @@ fn find_binary() -> PathBuf {
         .to_path_buf();
 
     let binary_name = format!("al-lsp{}", std::env::consts::EXE_SUFFIX);
-    for profile in ["debug", "release"] {
-        let candidate = workspace_root
-            .join("target")
-            .join(profile)
-            .join(&binary_name);
+    for (target, profile) in target_dirs(&workspace_root) {
+        let candidate = target.join(profile).join(&binary_name);
         if candidate.exists() {
             assert_binary_is_current(&candidate, &workspace_root);
             return candidate;
@@ -254,11 +267,8 @@ pub fn workspace_binary(name: &str) -> PathBuf {
         .unwrap()
         .to_path_buf();
     let binary_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
-    for profile in ["debug", "release"] {
-        let candidate = workspace_root
-            .join("target")
-            .join(profile)
-            .join(&binary_name);
+    for (target, profile) in target_dirs(&workspace_root) {
+        let candidate = target.join(profile).join(&binary_name);
         if candidate.exists() {
             assert_binary_is_current(&candidate, &workspace_root);
             return candidate;

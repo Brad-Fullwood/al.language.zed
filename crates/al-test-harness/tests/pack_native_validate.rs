@@ -37,9 +37,19 @@ fn make_project(root: &Path, codeunit: &str) {
 }
 
 /// Run `al-explorer pack-native --project <dir> --out <out> --validate`.
+///
+/// Hermetic: the user's Zed settings (`<config>/zed/settings.json`) can set
+/// `al.codeAnalyzers`, and `--validate` would then run those analyzers on the
+/// bare test app (AppSourceCop raises AS0051 and others). `XDG_CONFIG_HOME` and
+/// `HOME` point at an empty scratch directory and `--analyzers ""` states the
+/// analyzer list outright, so the result depends on the test project only.
 fn pack_validate(dir: &Path, out: &Path) -> std::process::Output {
+    let config = dir.join("empty-config");
+    std::fs::create_dir_all(&config).unwrap();
     Command::new(al_explorer_binary())
-        .args(["pack-native", "--project"])
+        .env("XDG_CONFIG_HOME", &config)
+        .env("HOME", &config)
+        .args(["pack-native", "--analyzers", "", "--project"])
         .arg(dir)
         .arg("--out")
         .arg(out)

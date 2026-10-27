@@ -68,6 +68,12 @@ Compatibility depends heavily on the shape and identifiers in `SymbolReference.j
   `AL_PACKAGE_CACHE_PATH` at an existing package-cache directory, then run
   `make microsoft-contracts` with `AL_TOOL_PATH` and
   `AL_PACKAGE_CACHE_PATH` set.
+  Known to pass on dotnet tool 18.0.43.1464 (`tools/net8.0/any`), checked on 2026-10-27. Under heavy
+  machine load the `zed_simulation` builtin tests need `AL_TEST_REQUEST_TIMEOUT_MS=120000` and
+  `AL_TEST_DIAG_TIMEOUT_MS=90000`. The Cursor extension 18.1.2842859 passes `emit_differential` and
+  `pack_native_validate`, but the profile stops at its first step there: the semantic bridge cannot
+  load that CodeAnalysis dll. Interface ids follow alc's `CalculateInterfaceId` except the step that
+  folds in extended interface ids, which is not ported.
   The fixture covers external page/table/report bindings, direct `modify`
   properties, page customization defaults, a report layout, and an app logo.
 - `.app` selection prefers the manifest-derived `{publisher}_{name}_{version}.app` name.

@@ -41,6 +41,19 @@ const CORPUS: &[(&str, &str)] = &[
         "IGreeter.Interface.al",
         "interface IGreeter { procedure Greet(Name: Text): Text; }",
     ),
+    // Interface ids hash the qualified name, the extended interfaces' ids and
+    // the method ids, so cover a quoted name with several methods, not only the plain
+    // interface above. A namespaced interface also matched alc's id but its
+    // namespace tree layout differs, so it stays out of this corpus. Extending
+    // interfaces are not extracted yet.
+    (
+        "IQuoted.Interface.al",
+        "interface \"I Quoted\" { procedure Ping(); procedure Pong(Count: Integer): Boolean; }",
+    ),
+    (
+        "SpikeIFoo.Interface.al",
+        "interface \"Spike IFoo\" { procedure Foo(x: Integer): Boolean; }",
+    ),
     (
         "Greeter.Codeunit.al",
         "codeunit 50101 Greeter implements IGreeter\n{\n    procedure Greet(Name: Text): Text begin exit('Hi'); end;\n}",

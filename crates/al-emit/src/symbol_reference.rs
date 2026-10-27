@@ -700,45 +700,69 @@ fn object_json(obj: &EmitObject, app_id: &str, app_name: &str, ctx: &SymbolRefCt
         e.kind,
         ObjectKind::Profile | ObjectKind::ProfileExtension | ObjectKind::ControlAddIn
     ) {
-        m.insert("Id".into(), json!(object_id(e, app_id)));
+        m.insert("Id".into(), json!(object_id(e, app_id, ctx)));
     }
     m.insert("Name".into(), json!(e.name));
     Value::Object(m)
 }
 
-/// Objects with a declared id use it; interfaces (no declared id in AL) get a
-/// generated id reproduced from alc's `InterfaceObjectMembers` hash.
-fn object_id(e: &SymbolEntry, app_id: &str) -> i32 {
+/// Objects with a declared id use it. Interfaces have no declared id in AL, so
+/// they get the generated id alc computes in `InterfaceObjectMembers`.
+fn object_id(e: &SymbolEntry, app_id: &str, ctx: &SymbolRefCtx<'_>) -> i32 {
     if e.id != 0 {
         e.id
     } else if e.kind == ObjectKind::Interface {
-        interface_object_id(&e.name, app_id, e.implements.len(), e.methods.len())
+        interface_object_id(e, app_id, ctx)
     } else {
         0
     }
 }
 
-/// Generated interface object id — reverse-engineered from
-/// `InterfaceObjectMembers` (alc): FNV of the quoted, upper-cased display name,
-/// combined with FNV of the AppId GUID bytes, then combined with `-1` once per
-/// extended-interface and once per method (alc hashes the property `Id`, which
-/// is still `-1` during this computation — count, not value, contributes).
-fn interface_object_id(name: &str, app_id: &str, extended: usize, methods: usize) -> i32 {
-    let display = if needs_quoting(name) {
-        format!("\"{name}\"")
+/// Generated interface object id, a port of
+/// `InterfaceObjectMembers.CalculateInterfaceId` (decompiled from
+/// Microsoft.Dynamics.Nav.CodeAnalysis.dll 18.0.43.1464, same output on
+/// 18.1.2842859 for the contract corpus):
+///
+/// 1. FNV of the upper-cased qualified display name (`Namespace.Name`, quoted
+///    when the name is not a bare identifier),
+/// 2. combined with FNV of the AppId GUID bytes (`Guid.ToByteArray()`),
+/// 3. combined with each extended interface's id, sorted ascending,
+/// 4. combined with each method's `MethodSymbol.Id`, sorted ascending,
+/// 5. masked with `0x7FFFFFFF`.
+///
+/// Step 3 is not ported: `symbol_extract` does not record `interface X extends
+/// Y` (the `extends` clause lands in `SymbolEntry::extends` and only keeps the
+/// last name), so no interface here has an extended list yet. The quoted name,
+/// namespace and method steps match alc in `emit_differential`.
+fn interface_object_id(e: &SymbolEntry, app_id: &str, ctx: &SymbolRefCtx<'_>) -> i32 {
+    let display = if needs_quoting(&e.name) {
+        format!("\"{}\"", e.name)
     } else {
-        name.to_string()
+        e.name.clone()
+    };
+    let qualified = if e.namespace.trim().is_empty() {
+        display
+    } else {
+        format!("{}.{display}", e.namespace.trim())
     };
     // Match .NET ToUpperInvariant's simple one-to-one mapping rather than
     // Rust's full case mapping, as method ID normalization does.
-    let mut h = fnv1_hash(&crate::method_id::to_upper_invariant(&display));
+    let mut h = fnv1_hash(&crate::method_id::to_upper_invariant(&qualified));
     if let Some(bytes) = guid_to_bytes_le(app_id) {
         h = combine_hash(h, fnv1_hash_bytes(&bytes));
     }
-    for _ in 0..(extended + methods) {
-        h = combine_hash(h, -1);
+    // Interface methods hash with object id 0, as `method_json` emits them.
+    let mut methods: Vec<i32> = e
+        .methods
+        .iter()
+        .filter(|mth| !mth.is_local)
+        .map(|mth| method_id_for(mth, 0, ctx.resolver))
+        .collect();
+    methods.sort_unstable();
+    for id in methods {
+        h = combine_hash(h, id);
     }
-    h
+    h & 0x7FFF_FFFF
 }
 
 /// AL quotes an identifier that isn't a bare identifier (contains a non
