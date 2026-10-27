@@ -526,7 +526,7 @@ mod tests {
                 (
                     frame["arguments"][0]["ObjectType"].as_i64().unwrap(),
                     frame["arguments"][0]["ObjectNumber"].as_i64().unwrap(),
-                    frame["arguments"][1]["line"].as_i64().unwrap(),
+                    frame["arguments"][1]["Line"].as_i64().unwrap(),
                 )
             })
             .collect();

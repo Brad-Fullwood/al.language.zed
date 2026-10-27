@@ -594,9 +594,10 @@ impl BcDebugSession {
     }
 
     pub async fn attach(&self, config: &BcDebugConfig) -> Result<()> {
-        // This is EditorServices' AttachOptions wire type. Break flags belong
-        // to DebugOptions/configurationDone, not AttachOptions. SignalR emits
-        // enum values numerically and applies camelCase to the CLR properties.
+        // This is EditorServices' AttachOptions wire type (AttachOptions.cs:15-27).
+        // Break flags belong to DebugOptions/configurationDone. The hub uses
+        // Newtonsoft with DefaultContractResolver (AspNetCoreSignalRFactory.cs:24-27),
+        // so the keys are the CLR property names and enums are integers.
         // Default matches the documented schema default
         // (`debug_adapter_schemas/al.json`'s `breakOnNext` property) —
         // WebServiceClient — so a launch config that omits `breakOnNext`
@@ -625,10 +626,10 @@ impl BcDebugSession {
             .and_then(|value| i32::try_from(value).ok())
             .unwrap_or(-1);
         let args = serde_json::json!({
-            "breakOnNextClient": break_on_next_client,
-            "sessionId": session_id,
+            "BreakOnNextClient": break_on_next_client,
+            "SessionId": session_id,
             // AttachOptions.UserId (AttachOptions.cs:27), a string or null.
-            "userId": config.user_id,
+            "UserId": config.user_id,
         });
         self.invoke("Attach", vec![args]).await?;
         info!("Attached to BC debug session");
@@ -638,23 +639,20 @@ impl BcDebugSession {
     /// BC hub method: `DebugAdapterConfigurationDone(debugOptions)`
     /// Newer BC versions (>1.0) require debug options argument.
     pub async fn configuration_done(&self, config: &BcDebugConfig) -> Result<()> {
-        // Microsoft's SignalR JSON protocol applies camelCase to the public
-        // .NET DebugOptions properties. PascalCase looks plausible from the
-        // CLR types but is rejected by current BC online hubs.
+        // DebugOptions.cs:19-44 property names, PascalCase like every hub
+        // payload (AspNetCoreSignalRFactory.cs:24-27). Enum values are
+        // Unspecified=0, None=1, All=2, ExcludeTry=3 (and the record write
+        // equivalents).
         let debug_options = serde_json::json!({
-            "breakOnError": config.break_on_error.enabled(),
-            // Current EditorServices enum values are Unspecified=0, None=1,
-            // All=2, ExcludeTry=3. Sending the old 0/1 assumption causes
-            // configurationDone to be rejected (or interpreted incorrectly)
-            // by current Business Central online tenants.
-            "breakOnErrorBehaviour": config.break_on_error.wire_value(),
-            "breakOnRecordWrite": config.break_on_record_write.enabled(),
-            "breakOnRecordWriteBehaviour": config.break_on_record_write.wire_value(),
-            "skipSystemTriggers": true,
-            "enableSqlInformationDebugger": config.enable_sql_information_debugger,
-            "enableLongRunningSqlStatements": config.enable_long_running_sql_statements,
-            "longRunningSqlStatementsThreshold": config.long_running_sql_statements_threshold,
-            "numberOfSqlStatements": config.number_of_sql_statements,
+            "BreakOnError": config.break_on_error.enabled(),
+            "BreakOnErrorBehaviour": config.break_on_error.wire_value(),
+            "BreakOnRecordWrite": config.break_on_record_write.enabled(),
+            "BreakOnRecordWriteBehaviour": config.break_on_record_write.wire_value(),
+            "SkipSystemTriggers": true,
+            "EnableSqlInformationDebugger": config.enable_sql_information_debugger,
+            "EnableLongRunningSqlStatements": config.enable_long_running_sql_statements,
+            "LongRunningSqlStatementsThreshold": config.long_running_sql_statements_threshold,
+            "NumberOfSqlStatements": config.number_of_sql_statements,
         });
         // Try with debug options first (newer BC >=2.0), fall back to empty args
         match self
@@ -683,8 +681,8 @@ impl BcDebugSession {
     }
 
     /// BC hub method: `AddBreakpoint(ApplicationObjectIdWrapper, SourcePosition, string condition)`
-    /// - ApplicationObjectIdWrapper: `{objectType: int, objectNumber: int}`
-    /// - SourcePosition: `{line: int, column: int}`
+    /// - ApplicationObjectIdWrapper: `{ObjectType: int, ObjectNumber: int}`
+    /// - SourcePosition: `{Line: int, Column: int}` (SourcePosition.cs:12-15)
     /// - ObjectTypeWrapper enum: use `crate::native_dap::bc_object_type` constants
     pub async fn add_breakpoint(
         &self,
@@ -694,16 +692,16 @@ impl BcDebugSession {
         column: i64,
         condition: &str,
     ) -> Result<serde_json::Value> {
-        // ApplicationObjectIdWrapper comes from TypeWrappers and requires its
-        // CLR property names. camelCase silently becomes object 0/type 0 on
-        // current BC hubs, producing an accepted but inert breakpoint.
+        // ApplicationObjectIdWrapper and SourcePosition are TypeWrappers types
+        // with PascalCase CLR property names. camelCase would bind to object
+        // 0/type 0 and produce an accepted but inert breakpoint.
         let object_id = serde_json::json!({
-            "ObjectType": object_type,
             "ObjectNumber": object_number,
+            "ObjectType": object_type,
         });
         let position = serde_json::json!({
-            "line": line,
-            "column": column,
+            "Line": line,
+            "Column": column,
         });
         let result = self
             .invoke(

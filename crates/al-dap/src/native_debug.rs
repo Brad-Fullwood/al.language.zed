@@ -1060,7 +1060,7 @@ mod native_session_tests {
         assert_eq!(frames[0]["target"], "AddBreakpoint");
         assert_eq!(frames[0]["arguments"][0]["ObjectType"], 5);
         assert_eq!(frames[0]["arguments"][0]["ObjectNumber"], 50100);
-        assert_eq!(frames[0]["arguments"][1]["line"], 9);
+        assert_eq!(frames[0]["arguments"][1]["Line"], 9);
     }
 
     #[tokio::test]

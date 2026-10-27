@@ -53,3 +53,33 @@ pub(crate) fn breakpoint_definition(id: i64) -> Value {
         }
     })
 }
+
+/// `SourcePosition` as sent to `AddBreakpoint`.
+// fixture source: TypeWrappers/Microsoft.Dynamics.Nav.DebuggerService/SourcePosition.cs:12-15 (Line, Column ushort)
+pub(crate) fn source_position(line: u16, column: u16) -> Value {
+    json!({ "Line": line, "Column": column })
+}
+
+/// `AttachOptions` as sent to `Attach`.
+// fixture source: Microsoft.Dynamics.Nav.EditorServices.Protocol/Microsoft.Dynamics.Nav.EditorServices.Protocol.DebugAdapter/AttachOptions.cs:21-27
+// (BreakOnNextClient enum as int, SessionId int, UserId string or null)
+pub(crate) fn attach_options(break_on_next: i32, session_id: i32, user_id: Option<&str>) -> Value {
+    json!({ "BreakOnNextClient": break_on_next, "SessionId": session_id, "UserId": user_id })
+}
+
+/// `DebugOptions` as sent to `DebugAdapterConfigurationDone` for the config's break settings.
+// fixture source: Microsoft.Dynamics.Nav.EditorServices.Protocol/Microsoft.Dynamics.Nav.EditorServices.Protocol.DebugAdapter/DebugOptions.cs:19-44
+// (nine JsonProperty members, enums as int)
+pub(crate) fn debug_options(config: &super::BcDebugConfig) -> Value {
+    json!({
+        "BreakOnError": config.break_on_error.enabled(),
+        "BreakOnErrorBehaviour": config.break_on_error.wire_value(),
+        "BreakOnRecordWrite": config.break_on_record_write.enabled(),
+        "BreakOnRecordWriteBehaviour": config.break_on_record_write.wire_value(),
+        "SkipSystemTriggers": true,
+        "EnableSqlInformationDebugger": config.enable_sql_information_debugger,
+        "EnableLongRunningSqlStatements": config.enable_long_running_sql_statements,
+        "LongRunningSqlStatementsThreshold": config.long_running_sql_statements_threshold,
+        "NumberOfSqlStatements": config.number_of_sql_statements,
+    })
+}

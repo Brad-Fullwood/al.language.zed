@@ -97,7 +97,10 @@ either feature until it can provide the full behavior itself.
 
 A from-scratch SignalR (protocol v1) client: negotiates (`/negotiate?negotiateVersion=1`, validating
 the negotiated version and `connectionToken`), opens a WebSocket with the record-separator handshake,
-and runs reader/writer tasks. Hub methods invoked include `Attach`,
+and runs reader/writer tasks. Every hub request uses the C# property names (PascalCase, for example
+`BreakOnNextClient`, `ObjectNumber`, `Line`) and integer enums, because Microsoft's client registers Newtonsoft
+with `DefaultContractResolver` (`AspNetCoreSignalRFactory.cs:24-27`). A test compares the serialised frame bytes
+with frames built from the decompiled types. Hub methods invoked include `Attach`,
 `DebugAdapterConfigurationDone`, `AddBreakpoint`/`RemoveBreakpoint`/`UpdateBreakpoint`,
 `GetVariables`/`ExpandGlobals`/`GetWatchNode`, `SetBreakpointResponse`
 (0=continue, 1=step-over, 2=step-in, 3=step-out), `StopDebugging`/`TerminateSession`. Server

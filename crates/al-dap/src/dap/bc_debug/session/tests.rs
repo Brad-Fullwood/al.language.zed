@@ -211,8 +211,8 @@ async fn add_breakpoint_serializes_object_position_condition_and_parses_result()
     let args = frame["arguments"].as_array().unwrap();
     assert_eq!(args[0]["ObjectType"], 5);
     assert_eq!(args[0]["ObjectNumber"], 50100);
-    assert_eq!(args[1]["line"], 42);
-    assert_eq!(args[1]["column"], 8);
+    assert_eq!(args[1]["Line"], 42);
+    assert_eq!(args[1]["Column"], 8);
     assert_eq!(args[2], "Rec.\"No.\" = '10000'");
 }
 
@@ -247,8 +247,7 @@ async fn update_breakpoint_serializes_id_and_condition() {
 }
 
 // fixture source: Microsoft.Dynamics.Nav.EditorServices.Protocol.DebugAdapter/AttachOptions.cs:15-27
-// (BreakOnNextClient, SessionId, UserId). The key casing below is what the code
-// sends today. The casing is a phase 2 finding (see the audit's dap-11 to dap-20).
+// (BreakOnNextClient, SessionId, UserId), PascalCase per AspNetCoreSignalRFactory.cs:24-27.
 #[tokio::test]
 async fn attach_serializes_editorservices_attach_options() {
     let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
@@ -262,10 +261,10 @@ async fn attach_serializes_editorservices_attach_options() {
     assert_eq!(frame["target"], "Attach");
     // Default matches the schema-documented default (WebServiceClient,
     // enum value 0) when the launch config omits breakOnNext.
-    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 0);
-    assert_eq!(frame["arguments"][0]["sessionId"], -1);
-    assert!(frame["arguments"][0]["userId"].is_null());
-    assert!(frame["arguments"][0].get("breakOnError").is_none());
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 0);
+    assert_eq!(frame["arguments"][0]["SessionId"], -1);
+    assert!(frame["arguments"][0]["UserId"].is_null());
+    assert!(frame["arguments"][0].get("BreakOnError").is_none());
 }
 
 #[tokio::test]
@@ -283,8 +282,8 @@ async fn attach_forwards_session_id_and_break_on_next() {
     session.attach(&cfg).await.expect("attach ok");
     let frame = next_frame(&mut ws_rx);
     assert_eq!(frame["target"], "Attach");
-    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 2);
-    assert_eq!(frame["arguments"][0]["sessionId"], 7);
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 2);
+    assert_eq!(frame["arguments"][0]["SessionId"], 7);
 }
 
 #[tokio::test]
@@ -303,7 +302,7 @@ async fn attach_explicit_web_client_maps_to_one_not_the_default() {
     };
     session.attach(&cfg).await.expect("attach ok");
     let frame = next_frame(&mut ws_rx);
-    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 1);
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 1);
 }
 
 #[tokio::test]
@@ -319,7 +318,7 @@ async fn attach_explicit_web_service_client_matches_default() {
     };
     session.attach(&cfg).await.expect("attach ok");
     let frame = next_frame(&mut ws_rx);
-    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 0);
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 0);
 }
 
 #[tokio::test]
@@ -347,14 +346,14 @@ async fn configuration_done_sends_debug_options_on_first_attempt() {
     assert_eq!(frame["target"], "DebugAdapterConfigurationDone");
     let args = frame["arguments"].as_array().unwrap();
     assert_eq!(args.len(), 1, "debug options arg present on first attempt");
-    assert_eq!(args[0]["breakOnError"], true);
-    assert_eq!(args[0]["breakOnErrorBehaviour"], 3);
-    assert_eq!(args[0]["breakOnRecordWrite"], true);
-    assert_eq!(args[0]["breakOnRecordWriteBehaviour"], 3);
-    assert_eq!(args[0]["enableSqlInformationDebugger"], false);
-    assert_eq!(args[0]["enableLongRunningSqlStatements"], false);
-    assert_eq!(args[0]["longRunningSqlStatementsThreshold"], 900);
-    assert_eq!(args[0]["numberOfSqlStatements"], 37);
+    assert_eq!(args[0]["BreakOnError"], true);
+    assert_eq!(args[0]["BreakOnErrorBehaviour"], 3);
+    assert_eq!(args[0]["BreakOnRecordWrite"], true);
+    assert_eq!(args[0]["BreakOnRecordWriteBehaviour"], 3);
+    assert_eq!(args[0]["EnableSqlInformationDebugger"], false);
+    assert_eq!(args[0]["EnableLongRunningSqlStatements"], false);
+    assert_eq!(args[0]["LongRunningSqlStatementsThreshold"], 900);
+    assert_eq!(args[0]["NumberOfSqlStatements"], 37);
     // A successful first attempt must NOT send the no-args fallback frame.
     assert!(
         ws_rx.try_recv().is_err(),
@@ -946,7 +945,7 @@ async fn attach_agent_maps_to_client_service() {
     };
     session.attach(&cfg).await.expect("attach ok");
     let frame = next_frame(&mut ws_rx);
-    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 3);
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 3);
 }
 
 #[tokio::test]
@@ -963,5 +962,77 @@ async fn attach_forwards_user_id_as_a_string() {
     };
     session.attach(&cfg).await.expect("attach ok");
     let frame = next_frame(&mut ws_rx);
-    assert_eq!(frame["arguments"][0]["userId"], "BRAD");
+    assert_eq!(frame["arguments"][0]["UserId"], "BRAD");
+}
+
+// dap-18: the serialised frame bytes, not parsed fields, equal a frame built from
+// the decompiled types' property names. A camelCase key would change the bytes.
+#[tokio::test]
+async fn hub_requests_serialise_to_the_decompiled_pascal_case_frames() {
+    use crate::dap::bc_debug::test_fixtures as fx;
+
+    fn frame_bytes(target: &str, arguments: Vec<serde_json::Value>) -> String {
+        // Field order is the order of the invocation struct in wire.rs.
+        format!(
+            r#"{{"type":1,"target":"{target}","arguments":{},"invocationId":"1"}}"#,
+            serde_json::Value::Array(arguments)
+        )
+    }
+
+    // Attach(AttachOptions)
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", Some(serde_json::json!(null)), None))
+        .await
+        .unwrap();
+    let cfg = BcDebugConfig {
+        break_on_next: Some("ClientService".to_string()),
+        session_id: Some(7),
+        user_id: Some("BRAD".to_string()),
+        ..BcDebugConfig::default()
+    };
+    session.attach(&cfg).await.unwrap();
+    assert_eq!(
+        ws_rx.try_recv().unwrap(),
+        frame_bytes("Attach", vec![fx::attach_options(3, 7, Some("BRAD"))])
+    );
+
+    // DebugAdapterConfigurationDone(DebugOptions)
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", Some(serde_json::json!(null)), None))
+        .await
+        .unwrap();
+    session
+        .configuration_done(&BcDebugConfig::default())
+        .await
+        .unwrap();
+    let sent = ws_rx.try_recv().unwrap();
+    let defaults = BcDebugConfig::default();
+    assert_eq!(
+        sent,
+        frame_bytes(
+            "DebugAdapterConfigurationDone",
+            vec![fx::debug_options(&defaults)]
+        )
+    );
+
+    // AddBreakpoint(ApplicationObjectIdWrapper, SourcePosition, string)
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", Some(fx::breakpoint_definition(5)), None))
+        .await
+        .unwrap();
+    session.add_breakpoint(5, 50100, 41, 0, "").await.unwrap();
+    assert_eq!(
+        ws_rx.try_recv().unwrap(),
+        frame_bytes(
+            "AddBreakpoint",
+            vec![
+                fx::object_id(),
+                fx::source_position(41, 0),
+                serde_json::json!("")
+            ]
+        )
+    );
 }
