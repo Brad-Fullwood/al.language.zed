@@ -72,8 +72,9 @@ live in [ROADMAP.md](../ROADMAP.md).
 - Native `.app` output is not equivalent to `alc` output on real customer projects. Parity is
   measured on fixtures only. On one real project the native package differed from `alc` 18.1 in
   107 of 139 objects: page extension variables, `ActionChanges`, `DocComments.xml`, option members,
-  manifest `Features`, `CalcFormula` text, method parameter `Temporary`, XLIFF units, the
-  `TargetObject` app id of extensions and entry names for folders with spaces are dropped or wrong.
+  `CalcFormula` text, method parameter `Temporary`, XLIFF units and entry names for folders with
+  spaces are dropped or wrong. The `TargetObject` app id of extensions and manifest `Features` were
+  fixed after that measurement (emitter-02).
   Use `al.useOfficialCompiler: true` for any package that goes to Business Central. The native
   verifier's text checks for procedure calls, return values, overloads, `Continue` and record fields
   only warn. Findings `emitter-01-native-verifier-rejects-valid-dms-project` and

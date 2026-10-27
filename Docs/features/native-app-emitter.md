@@ -231,10 +231,11 @@ package-semantic-equivalence check.
 > **Real projects differ from `alc`.** Archive, manifest and symbol parity is measured on the fixtures
 > only. On a real customer project (139 objects) the native package differed from the `alc` 18.1
 > package in 107 objects. What the native emitter drops or gets wrong: page extension variables,
-> `ActionChanges`, `DocComments.xml`, option members, manifest `Features` (for example `NoImplicitWith`),
-> `CalcFormula` text (truncated), method parameter `Temporary`, XLIFF units (208 against 347), the
-> `TargetObject` app id of extensions (wrong in 13 cases), and entry names for source folders with
-> spaces (`alc` writes `%2520`, native writes a raw space). Do not give a native package to Business
+> `ActionChanges`, `DocComments.xml`, option members,
+> `CalcFormula` text (truncated), method parameter `Temporary`, XLIFF units (208 against 347), and
+> entry names for source folders with
+> spaces (`alc` writes `%2520`, native writes a raw space). The `TargetObject` app id of extensions
+> (wrong in 13 cases) and manifest `Features` were fixed after that measurement. Do not give a native package to Business
 > Central. Recommended: `al.useOfficialCompiler: true`. Details: finding
 > `emitter-02-native-app-differs-from-alc-on-dms`.
 >
