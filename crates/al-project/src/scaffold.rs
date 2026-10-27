@@ -126,6 +126,12 @@ pub struct ScaffoldConfig {
     pub runtime: String,
     pub target: String,
     pub template: ProjectTemplate,
+    /// Business Central tenant (a GUID). When set, the cloud entries in
+    /// `.zed/debug.json` carry it and `.vscode/launch.json` is written with
+    /// the same entries for VS Code's AL extension.
+    pub tenant: Option<String>,
+    /// Cloud environment name for the cloud launch entries. `sandbox` when unset.
+    pub environment: Option<String>,
 }
 
 impl Default for ScaffoldConfig {
@@ -144,6 +150,8 @@ impl Default for ScaffoldConfig {
             runtime: "17.0".to_string(),
             target: "Cloud".to_string(),
             template: ProjectTemplate::Default,
+            tenant: None,
+            environment: None,
         }
     }
 }
@@ -224,9 +232,17 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
         (".gitignore".to_string(), generate_gitignore().into_bytes()),
         (
             ".zed/debug.json".to_string(),
-            generate_debug_json()?.into_bytes(),
+            generate_debug_json(config)?.into_bytes(),
         ),
     ];
+    // VS Code reads .vscode/launch.json, so a project shared with it gets the
+    // cloud entries only when the caller named a tenant.
+    if config.tenant.is_some() {
+        planned.push((
+            ".vscode/launch.json".to_string(),
+            generate_launch_json(config)?.into_bytes(),
+        ));
+    }
     planned.extend(generate_template_files(config)?);
     // Workspace settings the folder already has are the user's; the
     // analyzer choice is only a default.
@@ -902,8 +918,38 @@ Thumbs.db
     .to_string()
 }
 
-fn generate_debug_json() -> Result<String, String> {
-    serde_json::to_string_pretty(&serde_json::json!([
+/// The environment name the cloud launch entries use.
+fn cloud_environment(config: &ScaffoldConfig) -> &str {
+    config
+        .environment
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("sandbox")
+}
+
+/// Validate a GUID given on the command line and return it in lower case
+/// without braces. Standard route checked: the `uuid` crate is not a
+/// dependency of this crate and the check is 8-4-4-4-12 hex digits.
+pub fn normalize_guid(value: &str, what: &str) -> Result<String, String> {
+    let trimmed = value.trim().trim_start_matches('{').trim_end_matches('}');
+    let groups: Vec<&str> = trimmed.split('-').collect();
+    let well_formed = groups.len() == 5
+        && groups
+            .iter()
+            .zip([8usize, 4, 4, 4, 12])
+            .all(|(group, len)| group.len() == len && group.chars().all(|c| c.is_ascii_hexdigit()));
+    if !well_formed {
+        return Err(format!(
+            "Invalid {what} '{value}': expected a GUID such as 11111111-2222-3333-4444-555555555555"
+        ));
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
+fn generate_debug_json(config: &ScaffoldConfig) -> Result<String, String> {
+    let environment = cloud_environment(config);
+    let mut entries = serde_json::json!([
         {
             "adapter": "al",
             "label": "Publish: Your own server",
@@ -927,7 +973,7 @@ fn generate_debug_json() -> Result<String, String> {
             "label": "Publish: Cloud Sandbox",
             "request": "launch",
             "environmentType": "Sandbox",
-            "environmentName": "sandbox",
+            "environmentName": environment,
             "startupObjectId": 22,
             "breakOnError": "All",
             "breakOnRecordWrite": "None",
@@ -959,7 +1005,7 @@ fn generate_debug_json() -> Result<String, String> {
             "label": "Attach: Cloud Sandbox",
             "request": "attach",
             "environmentType": "Sandbox",
-            "environmentName": "sandbox",
+            "environmentName": environment,
             "breakOnError": "All",
             "breakOnRecordWrite": "None",
             "enableSqlInformationDebugger": true,
@@ -968,8 +1014,54 @@ fn generate_debug_json() -> Result<String, String> {
             "numberOfSqlStatements": 10,
             "breakOnNext": "WebServiceClient"
         }
-    ]))
-    .map_err(|e| format!("Failed to serialize debug.json: {e}"))
+    ]);
+    if let Some(tenant) = &config.tenant {
+        for entry in entries.as_array_mut().into_iter().flatten() {
+            if entry["environmentType"] == "Sandbox" {
+                entry["tenant"] = serde_json::json!(tenant);
+            }
+        }
+    }
+    serde_json::to_string_pretty(&entries)
+        .map_err(|e| format!("Failed to serialize debug.json: {e}"))
+}
+
+/// `.vscode/launch.json` in the shape VS Code's AL extension writes: type
+/// `al`, `launch` and `attach` entries for the cloud environment, with the
+/// tenant, `schemaUpdateMode` and `breakOnNext`.
+fn generate_launch_json(config: &ScaffoldConfig) -> Result<String, String> {
+    let tenant = config
+        .tenant
+        .as_deref()
+        .ok_or_else(|| "launch.json needs a tenant".to_string())?;
+    let environment = cloud_environment(config);
+    serde_json::to_string_pretty(&serde_json::json!({
+        "version": "0.2.0",
+        "configurations": [
+            {
+                "name": format!("Publish: {environment}"),
+                "type": "al",
+                "request": "launch",
+                "environmentType": "Sandbox",
+                "environmentName": environment,
+                "tenant": tenant,
+                "startupObjectId": 22,
+                "breakOnError": "All",
+                "launchBrowser": true,
+                "schemaUpdateMode": "Synchronize"
+            },
+            {
+                "name": format!("Attach: {environment}"),
+                "type": "al",
+                "request": "attach",
+                "environmentType": "Sandbox",
+                "environmentName": environment,
+                "tenant": tenant,
+                "breakOnNext": "WebClient"
+            }
+        ]
+    }))
+    .map_err(|e| format!("Failed to serialize launch.json: {e}"))
 }
 
 /// Escape `text` for an AL single-quoted string literal.
@@ -1607,9 +1699,108 @@ mod tests {
         let _: serde_json::Value = serde_json::from_str(&json).expect("should be valid JSON");
     }
 
+    const TENANT: &str = "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d";
+
+    fn read_json(dir: &Path, name: &str) -> serde_json::Value {
+        let text = std::fs::read_to_string(dir.join(name)).expect(name);
+        serde_json::from_str(&text).expect(name)
+    }
+
+    #[test]
+    fn tenant_flows_into_debug_json_and_launch_json_read_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            id: normalize_guid("{ABCDEF01-2345-6789-ABCD-EF0123456789}", "app id").unwrap(),
+            tenant: Some(TENANT.to_string()),
+            environment: Some("UAT".to_string()),
+            ..Default::default()
+        };
+        let result = create_project(dir.path(), &config).unwrap();
+        assert!(result
+            .files_created
+            .contains(&".vscode/launch.json".to_string()));
+
+        let app = read_json(dir.path(), "app.json");
+        assert_eq!(app["id"], "abcdef01-2345-6789-abcd-ef0123456789");
+
+        let debug = read_json(dir.path(), ".zed/debug.json");
+        let cloud: Vec<_> = debug
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["environmentType"] == "Sandbox")
+            .collect();
+        assert_eq!(cloud.len(), 2);
+        for entry in cloud {
+            assert_eq!(entry["tenant"], TENANT);
+            assert_eq!(entry["environmentName"], "UAT");
+        }
+        for entry in debug
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["environmentType"] == "OnPrem")
+        {
+            assert_eq!(entry["tenant"], "default");
+        }
+
+        let launch = read_json(dir.path(), ".vscode/launch.json");
+        assert_eq!(launch["version"], "0.2.0");
+        let entries = launch["configurations"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        for entry in entries {
+            assert_eq!(entry["type"], "al");
+            assert_eq!(entry["environmentType"], "Sandbox");
+            assert_eq!(entry["environmentName"], "UAT");
+            assert_eq!(entry["tenant"], TENANT);
+        }
+        assert_eq!(entries[0]["request"], "launch");
+        assert_eq!(entries[0]["schemaUpdateMode"], "Synchronize");
+        assert_eq!(entries[1]["request"], "attach");
+        assert_eq!(entries[1]["breakOnNext"], "WebClient");
+    }
+
+    #[test]
+    fn without_a_tenant_no_launch_json_and_cloud_entries_keep_today_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = create_project(dir.path(), &ScaffoldConfig::default()).unwrap();
+        assert!(!result
+            .files_created
+            .contains(&".vscode/launch.json".to_string()));
+        assert!(!dir.path().join(".vscode/launch.json").exists());
+        let debug = read_json(dir.path(), ".zed/debug.json");
+        for entry in debug
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["environmentType"] == "Sandbox")
+        {
+            assert_eq!(entry["environmentName"], "sandbox");
+            assert!(entry.get("tenant").is_none());
+        }
+    }
+
+    #[test]
+    fn normalize_guid_accepts_guids_and_rejects_the_rest() {
+        assert_eq!(
+            normalize_guid(" 1B7A9471-D313-4AA4-99E8-7A6C762C8E7D ", "tenant").unwrap(),
+            TENANT
+        );
+        for bad in [
+            "",
+            "not-a-guid",
+            "1b7a9471d3134aa499e87a6c762c8e7d",
+            "1b7a9471-d313-4aa4-99e8-7a6c762c8e7",
+        ] {
+            let error = normalize_guid(bad, "app id").unwrap_err();
+            assert!(error.contains("app id"), "{error}");
+        }
+    }
+
     #[test]
     fn generate_debug_json_returns_valid_json() {
-        let json = generate_debug_json().expect("serialization should not fail");
+        let json =
+            generate_debug_json(&ScaffoldConfig::default()).expect("serialization should not fail");
         let configs: Vec<serde_json::Value> =
             serde_json::from_str(&json).expect("should be valid JSON");
         assert_eq!(configs.len(), 4);
