@@ -251,7 +251,21 @@ pub fn run(cli: Cli) -> ExitCode {
             publisher,
             template,
             runtime,
-        } => lsp::cmd_new(&dir, &name, &publisher, &template, &runtime, cli.json),
+            app_id,
+            environment,
+        } => lsp::cmd_new(
+            lsp::NewOptions {
+                dir: &dir,
+                name: &name,
+                publisher: &publisher,
+                template: &template,
+                runtime: &runtime,
+                app_id: app_id.as_deref(),
+                tenant: cli.tenant.as_deref(),
+                environment: environment.as_deref(),
+            },
+            cli.json,
+        ),
         Commands::InitDebug => match commands::project_root(None) {
             Ok(root) => lsp::cmd_init_debug(&root, cli.json),
             Err(error) => commands::report_error(&error, cli.json),
