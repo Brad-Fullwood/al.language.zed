@@ -412,6 +412,8 @@ async fn run() {
         }
         let fi = file_index.clone();
         let fi2 = file_index.clone();
+        let fi3 = file_index.clone();
+        let snap_root = PathBuf::from(&project_root);
         let authorize_root = PathBuf::from(&project_root);
 
         if let Err(e) = al_dap::dap::native_dap::run_native_dap(
@@ -442,49 +444,14 @@ async fn run() {
             move |object_type, object_id| {
                 al_lsp::server::dap_mode::native_dap_object_path(&fi2, object_type, object_id)
             },
+            al_lsp::server::dap_mode::package_source::resolver(&snap_root),
             |project_root: PathBuf| async move {
                 // Native DAP is a separate process, so it cannot borrow the
                 // LSP workspace lock.  Load the persisted project policy here
                 // and still delegate artifact choice, timeout/cancellation,
                 // diagnostics, and handoff to `al_compile::build`.
-                let mut config = al_project::config::AlConfig::load_effective(&project_root)
-                    .map_err(|error| error.to_string())?;
-                match std::env::var("AL_DAP_SETTINGS_JSON") {
-                    Ok(settings) => {
-                        let unknown =
-                            config
-                                .merge_editor_settings_json(&settings)
-                                .map_err(|error| {
-                                    format!("invalid AL_DAP_SETTINGS_JSON from extension: {error}")
-                                })?;
-                        if !unknown.is_empty() {
-                            return Err(format!(
-                                "unknown AL_DAP_SETTINGS_JSON keys: {}",
-                                unknown.join(", ")
-                            ));
-                        }
-                    }
-                    Err(std::env::VarError::NotPresent) => {}
-                    Err(error) => {
-                        return Err(format!("cannot read AL_DAP_SETTINGS_JSON: {error}"));
-                    }
-                }
-                // The extension reads Zed's merged settings, so a value the
-                // worktree's own `.zed/settings.json` supplied arrives here
-                // looking exactly like one the user wrote.
-                let decision = al_project::trust::gate(&project_root, &mut config)
-                    .map_err(|error| error.to_string())?;
-                if let Some(advisory) = decision.advisory() {
-                    tracing::warn!("{advisory}");
-                }
-                if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
-                    tracing::warn!("{advisory}");
-                }
-                let mut project = al_project::project::find_project(&project_root)
-                    .map_err(|error| error.to_string())?;
-                project
-                    .apply_symbol_settings(&config)
-                    .map_err(|error| error.to_string())?;
+                let (config, project) =
+                    al_lsp::server::dap_mode::package_source::load_dap_project(&project_root)?;
                 let backend = al_compile::BuildBackend::from_use_official_compiler(
                     config.use_official_compiler,
                 );
@@ -514,6 +481,13 @@ async fn run() {
             |project_root: &std::path::Path| {
                 al_compile::find_app_file(project_root).map_err(|error| error.to_string())
             },
+            // Next to the `symbols` folder of the virtual source cache.
+            al_symbols::virtual_file::cache_dir().with_file_name("snapshot-sources"),
+            std::sync::Arc::new(move |path: &str, line| {
+                al_lsp::server::dap_mode::snappoints::capture_snappoint(
+                    &fi3, &snap_root, path, line,
+                )
+            }),
         )
         .await
         {

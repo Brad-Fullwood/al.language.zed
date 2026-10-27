@@ -1,5 +1,5 @@
-//! Business Central snapshot-debugging and performance-profiling dispatchers.
-//! Both share `BcServerParams` parsing and the SSRF `serverUrl` guard.
+//! Business Central performance-profiling dispatcher. It shares `BcServerParams` parsing and
+//! the SSRF `serverUrl` guard. Snapshot debugging lives in `daemon/snapshot_dispatch.rs`.
 
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 
@@ -8,167 +8,6 @@ use super::bc_server_params::{
 };
 use crate::server::daemon::{optional_bounded_usize_param, rpc_error};
 
-pub(in crate::server::daemon) async fn dispatch_snapshot(
-    workspace: &al_workspace::Workspace,
-    id: u64,
-    params: &serde_json::Value,
-) -> Response {
-    let cmd = match params.get("cmd").and_then(|v| v.as_str()) {
-        Some(c) => c,
-        None => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INVALID_PARAMS,
-                    message: "Missing 'cmd' parameter (expected: start, list, download)"
-                        .to_string(),
-                }),
-                ..Default::default()
-            };
-        }
-    };
-
-    let mut bc = match parse_bc_server_params(workspace, params, "snapshots") {
-        Ok(config) => config,
-        Err(rejection) => return rejection.into_response(id),
-    };
-    if let Some(err) = reject_unsafe_server_url(id, &bc.server_url) {
-        return err;
-    }
-    if let Err(message) = authorize_bc_server(workspace, params, &mut bc) {
-        return rpc_error(id, error_codes::INVALID_PARAMS, &message);
-    }
-    let config = al_bc::snapshot::SnapshotConfig {
-        server_url: bc.server_url,
-        company: bc.company,
-        output_dir: bc.output_dir,
-        username: bc.username,
-        password: bc.password,
-        accept_invalid_certs: bc.accept_invalid_certs,
-    };
-
-    match cmd {
-        "start" => {
-            let description = match params.get("description") {
-                None => None,
-                Some(value) => match value.as_str() {
-                    Some(description) => Some(description),
-                    None => {
-                        return rpc_error(
-                            id,
-                            error_codes::INVALID_PARAMS,
-                            "'description' must be a string when supplied",
-                        );
-                    }
-                },
-            };
-            match al_bc::snapshot::start_snapshot(&config, description).await {
-                Ok(snapshot_id) => Response {
-                    id,
-                    result: Some(serde_json::json!({
-                        "cmd": "start",
-                        "snapshotId": snapshot_id,
-                        "status": "started",
-                    })),
-                    error: None,
-                    ..Default::default()
-                },
-                Err(e) => Response {
-                    id,
-                    result: None,
-                    error: Some(RpcError {
-                        code: error_codes::INTERNAL_ERROR,
-                        message: format!("snapshot start failed: {e}"),
-                    }),
-                    ..Default::default()
-                },
-            }
-        }
-
-        "list" => match al_bc::snapshot::list_snapshots(&config).await {
-            Ok(snapshots) => match serde_json::to_value(&snapshots) {
-                Ok(items) => Response {
-                    id,
-                    result: Some(serde_json::json!({
-                        "cmd": "list",
-                        "snapshots": items,
-                    })),
-                    error: None,
-                    ..Default::default()
-                },
-                Err(error) => rpc_error(
-                    id,
-                    error_codes::INTERNAL_ERROR,
-                    &format!("serialize snapshot list failed: {error}"),
-                ),
-            },
-            Err(e) => Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: format!("snapshot list failed: {e}"),
-                }),
-                ..Default::default()
-            },
-        },
-
-        "download" => {
-            let snapshot_id = match params
-                .get("snapshotId")
-                .and_then(|value| value.as_str())
-                .filter(|value| !value.trim().is_empty())
-            {
-                Some(snapshot_id) => snapshot_id.to_string(),
-                None => {
-                    return Response {
-                        id,
-                        result: None,
-                        error: Some(RpcError {
-                            code: error_codes::INVALID_PARAMS,
-                            message: "Missing 'snapshotId' parameter".to_string(),
-                        }),
-                        ..Default::default()
-                    };
-                }
-            };
-
-            match al_bc::snapshot::download_snapshot(&config, &snapshot_id).await {
-                Ok(path) => Response {
-                    id,
-                    result: Some(serde_json::json!({
-                        "cmd": "download",
-                        "snapshotId": snapshot_id,
-                        "path": path.display().to_string(),
-                        "status": "downloaded",
-                    })),
-                    error: None,
-                    ..Default::default()
-                },
-                Err(e) => Response {
-                    id,
-                    result: None,
-                    error: Some(RpcError {
-                        code: error_codes::INTERNAL_ERROR,
-                        message: format!("snapshot download failed: {e}"),
-                    }),
-                    ..Default::default()
-                },
-            }
-        }
-
-        other => Response {
-            id,
-            result: None,
-            error: Some(RpcError {
-                code: error_codes::INVALID_PARAMS,
-                message: format!("Unknown snapshot command: {other}"),
-            }),
-            ..Default::default()
-        },
-    }
-}
 pub(in crate::server::daemon) async fn dispatch_profiling(
     workspace: &al_workspace::Workspace,
     id: u64,
@@ -445,52 +284,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dispatch_snapshot_rejects_non_http_serverurl() {
-        let (_project, ws) = project_ws();
-        // A file:// serverUrl returns INVALID_PARAMS (the guard) rather than an
-        // INTERNAL_ERROR from a connection attempt — proves the dispatcher
-        // refuses before touching the network.
-        let params = serde_json::json!({ "cmd": "list", "serverUrl": "file:///etc/passwd" });
-        let resp = dispatch_snapshot(&ws, 42, &params).await;
-        let err = resp.error.expect("must error");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("http(s)"));
-    }
-
-    #[tokio::test]
     async fn dispatch_profiling_rejects_non_http_serverurl() {
         let (_project, ws) = project_ws();
         let params = serde_json::json!({ "cmd": "start", "serverUrl": "gopher://internal" });
         let resp = dispatch_profiling(&ws, 7, &params).await;
         let err = resp.error.expect("must error");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
-    }
-
-    #[tokio::test]
-    async fn snapshot_missing_cmd_is_invalid_params() {
-        let (_project, ws) = project_ws();
-        let resp = dispatch_snapshot(&ws, 1, &serde_json::json!({})).await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("cmd"));
-    }
-
-    #[tokio::test]
-    async fn snapshot_unknown_cmd_is_invalid_params() {
-        let (_project, ws) = project_ws();
-        let resp = dispatch_snapshot(&ws, 2, &serde_json::json!({ "cmd": "bogus" })).await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("Unknown snapshot command"));
-    }
-
-    #[tokio::test]
-    async fn snapshot_download_missing_id_is_invalid_params() {
-        let (_project, ws) = project_ws();
-        let resp = dispatch_snapshot(&ws, 3, &serde_json::json!({ "cmd": "download" })).await;
-        let err = resp.error.expect("err");
-        assert_eq!(err.code, error_codes::INVALID_PARAMS);
-        assert!(err.message.contains("snapshotId"));
     }
 
     #[tokio::test]
@@ -534,26 +333,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snapshot_and_profiling_reject_malformed_optional_params() {
+    async fn profiling_rejects_malformed_optional_params() {
         let (project, ws) = project_ws();
         // Inside the project, so the request gets past the path check to `topN`.
         let profile = project.path().join("profile.json");
-        for params in [
-            serde_json::json!({ "cmd": "list", "serverUrl": 7049 }),
-            serde_json::json!({ "cmd": "list", "acceptInvalidCerts": "yes" }),
-            serde_json::json!({ "cmd": "list", "outputDir": "relative" }),
-            serde_json::json!({ "cmd": "start", "description": 7 }),
-        ] {
-            assert_eq!(
-                dispatch_snapshot(&ws, 20, &params)
-                    .await
-                    .error
-                    .expect("malformed snapshot params")
-                    .code,
-                error_codes::INVALID_PARAMS
-            );
-        }
-
         for top_n in [serde_json::json!("many"), serde_json::json!(1001)] {
             let response = dispatch_profiling(
                 &ws,
@@ -575,8 +358,8 @@ mod tests {
     // =======================================================================
     // Mock-harness coverage for the live-infra dispatchers.
     //
-    // These exercise the REAL code paths of `dispatch_snapshot` and
-    // `dispatch_profiling` without a live BC server:
+    // These exercise the real code path of `dispatch_profiling` without a
+    // live BC server:
     //   * BC HTTP is mocked with wiremock — the dispatcher's `serverUrl`
     //     param points at the mock, so the request shape it builds and the
     //     response it parses are asserted end-to-end.
@@ -585,143 +368,6 @@ mod tests {
 
     use wiremock::matchers::{body_json, method as wm_method, path as wm_path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    #[serial_test::serial]
-    #[tokio::test]
-    async fn snapshot_start_posts_and_parses_id() {
-        let server = MockServer::start().await;
-        let (_project, ws) = trusting_project_ws(&server.uri());
-        Mock::given(wm_method("POST"))
-            .and(wm_path("/dev/snapshot"))
-            .and(query_param("company", "CRONUS"))
-            .and(body_json(serde_json::json!({ "description": "dbg" })))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "id": "snap-77" })),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let resp = dispatch_snapshot(
-            &ws,
-            1,
-            &serde_json::json!({
-                "cmd": "start",
-                "serverUrl": server.uri(),
-                "company": "CRONUS",
-                "description": "dbg",
-            }),
-        )
-        .await;
-        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
-        let r = resp.result.expect("result");
-        assert_eq!(r["cmd"], "start");
-        assert_eq!(r["snapshotId"], "snap-77");
-        assert_eq!(r["status"], "started");
-    }
-
-    #[serial_test::serial]
-    #[tokio::test]
-    async fn snapshot_start_server_error_maps_to_internal_error() {
-        let server = MockServer::start().await;
-        // Negative: a 500 from BC must become an INTERNAL_ERROR whose message
-        // names the failed operation — not a silent success.
-        let (_project, ws) = trusting_project_ws(&server.uri());
-        Mock::given(wm_method("POST"))
-            .and(wm_path("/dev/snapshot"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
-            .mount(&server)
-            .await;
-
-        let resp = dispatch_snapshot(
-            &ws,
-            2,
-            &serde_json::json!({
-                "cmd": "start",
-                "serverUrl": server.uri(),
-                "company": "CRONUS",
-            }),
-        )
-        .await;
-        let err = resp.error.expect("500 must surface an error");
-        assert_eq!(err.code, error_codes::INTERNAL_ERROR);
-        assert!(
-            err.message.contains("snapshot start failed"),
-            "got: {}",
-            err.message
-        );
-    }
-
-    #[serial_test::serial]
-    #[tokio::test]
-    async fn snapshot_list_parses_value_envelope() {
-        let server = MockServer::start().await;
-        // The OData `{ "value": [...] }` envelope must be parsed into the
-        // dispatcher's `snapshots` array with id/description carried through.
-        let (_project, ws) = trusting_project_ws(&server.uri());
-        Mock::given(wm_method("GET"))
-            .and(wm_path("/dev/snapshots"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [
-                    { "id": "s1", "description": "first" },
-                    { "id": "s2", "size": 1024 },
-                ]
-            })))
-            .mount(&server)
-            .await;
-
-        let resp = dispatch_snapshot(
-            &ws,
-            3,
-            &serde_json::json!({
-                "cmd": "list",
-                "serverUrl": server.uri(),
-                "company": "CRONUS",
-            }),
-        )
-        .await;
-        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
-        let r = resp.result.expect("result");
-        assert_eq!(r["cmd"], "list");
-        let snaps = r["snapshots"].as_array().expect("snapshots array");
-        assert_eq!(snaps.len(), 2, "both entries must be parsed");
-        assert_eq!(snaps[0]["id"], "s1");
-        assert_eq!(snaps[0]["description"], "first");
-    }
-
-    #[serial_test::serial]
-    #[tokio::test]
-    async fn snapshot_download_writes_file_and_returns_path() {
-        let server = MockServer::start().await;
-        let (project, ws) = trusting_project_ws(&server.uri());
-        Mock::given(wm_method("GET"))
-            .and(wm_path("/dev/snapshots/snap-9"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"BINARY".to_vec()))
-            .mount(&server)
-            .await;
-
-        let out = project.path().join("downloads");
-        let resp = dispatch_snapshot(
-            &ws,
-            4,
-            &serde_json::json!({
-                "cmd": "download",
-                "snapshotId": "snap-9",
-                "serverUrl": server.uri(),
-                "company": "CRONUS",
-                "outputDir": out.to_string_lossy(),
-            }),
-        )
-        .await;
-        assert!(resp.error.is_none(), "got error: {:?}", resp.error);
-        let r = resp.result.expect("result");
-        assert_eq!(r["status"], "downloaded");
-        let written = r["path"].as_str().expect("path string");
-        assert_eq!(
-            std::fs::read(written).expect("downloaded file must exist"),
-            b"BINARY"
-        );
-    }
 
     #[serial_test::serial]
     #[tokio::test]

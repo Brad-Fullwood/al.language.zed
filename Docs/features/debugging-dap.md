@@ -1,7 +1,7 @@
 # Debugging (DAP) & Business Central Runtime
 
 **Modules:** `crates/al-dap/src/dap/`, `crates/al-dap/src/native_debug.rs`, and
-`crates/al-bc/src/` (`bc_client.rs`, `http_auth.rs`, `launch.rs`, `profiling.rs`, `snapshot.rs`) +
+`crates/al-bc/src/` (`bc_client.rs`, `http_auth.rs`, `launch.rs`, `profiling.rs`, `snapshot/`) +
 `crates/al-lsp/src/server/daemon/debug_dispatch.rs` (CLI/MCP control plane) + `src/dap.rs` (Zed
 glue) + `debug_adapter_schemas/al.json`.
 **Status:** ✅ shipped (core flow). Every field advertised by the native schema is
@@ -46,7 +46,7 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 | BC REST | `bc_client.rs` | publish `.app`, RAD delta, status (size caps + secret redaction) |
 | TLS helper | `http_auth.rs` | client builder. Warns loudly when cert validation is disabled |
 | Profiling | `profiling.rs` | start/stop CPU profiling, parse `.alcpuprofile` hotspots |
-| Snapshots | `snapshot.rs` | start/list/download snapshot (`.alvsc`) |
+| Snapshots | `snapshot/` | snapshot debugger zip reader, session store and saved zips |
 
 ## DAP requests implemented
 
@@ -137,8 +137,14 @@ and convert BC's 0-based line/column to DAP's 1-based ones.
   `.alcpuprofile` (Chrome DevTools format), and analyze hotspots using sampled `timeDeltas`, with
   hit counts as a fallback when timing data is absent. See also
   [analysis-and-insight](./analysis-and-insight.md) for mapping hotspots to source.
-- **Snapshots (`snapshot.rs`):** start/list/download snapshot debugging data (`.alvsc`), with response
-  shapes for both bare arrays and OData envelopes and filename sanitization against path traversal.
+- **Snapshots (`snapshot/`):** the snapshot debugger zip reader, the session store that remembers a
+  started session between commands, and `save_finished_snapshot`. The REST calls (attach, status,
+  finish) are in `al-dap` (`bc_debug/snapshot_debugger.rs`).
+- **Snapshot capture and replay:** an `attach` with `"snapshot": "capture"` records a snapshot
+  instead of debugging, and a `launch` with `snapshotFileName` replays a zip. The CLI is
+  `al-explorer snapshot start|status|finish|list|show` and the MCP tool is `al_snapshot`. See
+  [snapshot-debugging](./snapshot-debugging.md). This is Business Central's snapshot debugger, not
+  the `test-snapshot` feature in [native-test-runtime](./native-test-runtime.md).
 
 ## Zed integration
 
@@ -147,7 +153,9 @@ proxy via `al.useOfficialDap`. Debug configs are authored with the bundled snipp
 against `debug_adapter_schemas/al.json`, which exposes the native adapter's consumed launch fields
 (authentication, breakOnError/Next/RecordWrite, environmentType/Name, tenant,
 server/serverInstance/port, launchBrowser, startupObjectType/Id, schemaUpdateMode,
-dependencyPublishingOption, and validateServerCertificate). Zed consumes the schema's optional
+dependencyPublishingOption, and validateServerCertificate) and the snapshot fields (`snapshot`,
+`userId`, `snapshotVerbosity`, `snapshotOutputPath`, `snapshotFileName`, `snapshotPort`,
+`allowProduction`, see [snapshot-debugging](./snapshot-debugging.md)). Zed consumes the schema's optional
 `build` field when a user explicitly supplies one. Generated launch scenarios leave it empty:
 the adapter's launch request already compiles through the shared build service and selects the
 manifest-derived artifact atomically, while attach intentionally performs no build.
@@ -228,8 +236,8 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   with `breakpoint`, `state`, `stack`, `variables`/`globals`/`expand`, `eval`, `continue`/`step`, and
   `stop` calls in the same MCP process.
 - **CLI:** `al-explorer debug start|breakpoint|state|eval|continue|step|history|stop`.
-  `al-explorer profile start|stop|analyze`. `al-explorer snapshot start|list|download`.
-  `al-explorer init-debug` to scaffold `.zed/debug.json`.
+  `al-explorer profile start|stop|analyze`. `al-explorer snapshot start|status|finish|list|show`
+  ([snapshot-debugging](./snapshot-debugging.md)). `al-explorer init-debug` to scaffold `.zed/debug.json`.
 
 ## Limitations
 
@@ -241,7 +249,8 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   raw DAP request/event frames.
 - `sessionId` and `breakOnNext` are forwarded to the BC `Attach` payload. Fields with no native
   behavior (`useMcpServerForDebugging`, `mcpServicePort`, `userId`,
-  `useVsCodeAuthentication`, `primaryTenantDomain`, snapshot/profiling config) were **removed** from
-  `debug_adapter_schemas/al.json` (with a `$comment` pointing to `al-explorer snapshot`/`profile`).
+  `useVsCodeAuthentication`, `primaryTenantDomain`, profiling config) were **removed** from
+  `debug_adapter_schemas/al.json`. The snapshot fields are back, because the native adapter now
+  consumes them.
   When a launch config omits `breakOnNext`, attach defaults to `WebServiceClient`, the
   schema's documented default.

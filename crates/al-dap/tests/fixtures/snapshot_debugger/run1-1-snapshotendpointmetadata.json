@@ -1,0 +1,39 @@
+{
+  "method": "GET",
+  "raw_target": "/BC/snapshotdebugger/snapshotendpointmetadata?tenant=11111111-2222-3333-4444-555555555555",
+  "http_version": "HTTP/1.1",
+  "headers": [
+    [
+      "Host",
+      "127.0.0.1:44151"
+    ],
+    [
+      "Authorization",
+      "Bearer RECORDING-FAKE-TOKEN"
+    ],
+    [
+      "d365-bc-client-activity-telemetry-id",
+      "1528e598-e7b9-4926-99dd-7d5714338fe9"
+    ],
+    [
+      "d365-bc-client-session-telemetry-id",
+      "21e8c358-57dc-4c39-875f-ca6caa30d5b4"
+    ],
+    [
+      "x-ms-correlation-id",
+      "1528e598-e7b9-4926-99dd-7d5714338fe9"
+    ]
+  ],
+  "body_text": "",
+  "body_b64": "",
+  "response": {
+    "status": 200,
+    "headers": [
+      [
+        "Content-Type",
+        "application/json"
+      ]
+    ],
+    "body_b64": "eyJSdW50aW1lVmVyc2lvbiI6ICIxNS4wLjAuMCIsICJXZWJBcGlWZXJzaW9uIjogIjUuMC4wLjAiLCAiRGVidWdnZXJWZXJzaW9uIjogIjEuMC4wLjAiLCAiV2ViRW5kcG9pbnQiOiAiaHR0cDovLzEyNy4wLjAuMS9CQy8ifQ=="
+  }
+}

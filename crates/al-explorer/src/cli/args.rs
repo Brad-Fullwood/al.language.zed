@@ -877,6 +877,142 @@ mod clap_wiring_tests {
         Cli::try_parse_from(full)
     }
 
+    #[test]
+    fn snapshot_subcommands_parse() {
+        use super::super::SnapshotCommands as S;
+        let cli = parse(&[
+            "snapshot",
+            "start",
+            "--config",
+            "Live",
+            "--snap",
+            "codeunit:80:12",
+            "--snap",
+            "src/A.al:9?x > 1",
+            "--break-on-next",
+            "WebClient",
+            "--user",
+            "ALICE",
+            "--session-id",
+            "5",
+            "--verbosity",
+            "snappoint",
+            "--allow-production",
+        ])
+        .expect("start parses");
+        match cli.command {
+            Commands::Snapshot {
+                subcmd:
+                    S::Start {
+                        config,
+                        snap,
+                        break_on_next,
+                        user,
+                        session_id,
+                        verbosity,
+                        allow_production,
+                    },
+            } => {
+                assert_eq!(config.as_deref(), Some("Live"));
+                assert_eq!(snap, ["codeunit:80:12", "src/A.al:9?x > 1"]);
+                assert_eq!(break_on_next, "WebClient");
+                assert_eq!(user.as_deref(), Some("ALICE"));
+                assert_eq!(session_id, Some(5));
+                assert_eq!(verbosity.as_deref(), Some("snappoint"));
+                assert!(allow_production);
+            }
+            _ => panic!("expected snapshot start"),
+        }
+
+        let cli = parse(&["snapshot", "start", "--break-on-next", "WebClient"])
+            .expect("start without --config parses");
+        assert!(matches!(
+            cli.command,
+            Commands::Snapshot {
+                subcmd: S::Start { config: None, .. }
+            }
+        ));
+
+        let cli = parse(&["snapshot", "status", "--context", "g"]).unwrap();
+        assert!(
+            matches!(cli.command, Commands::Snapshot { subcmd: S::Status { context } }
+            if context.as_deref() == Some("g"))
+        );
+        let cli = parse(&["snapshot", "finish", "--out", "caps"]).unwrap();
+        assert!(
+            matches!(cli.command, Commands::Snapshot { subcmd: S::Finish { context, out } }
+            if context.is_none() && out.as_deref() == Some("caps"))
+        );
+        let cli = parse(&["snapshot", "list"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Snapshot { subcmd: S::List }
+        ));
+        let cli = parse(&[
+            "snapshot",
+            "show",
+            "a.zip",
+            "--vars",
+            "Rec,Cust",
+            "--fields",
+            "No.,Lot No.",
+            "--stop",
+            "2",
+            "--json",
+        ])
+        .unwrap();
+        assert!(cli.json);
+        assert!(
+            matches!(cli.command, Commands::Snapshot { subcmd: S::Show { zip, vars, fields, stop } }
+            if zip == "a.zip" && vars.as_deref() == Some("Rec,Cust")
+                && fields.as_deref() == Some("No.,Lot No.") && stop == Some(2))
+        );
+    }
+
+    #[test]
+    fn snapshot_start_requires_break_on_next_and_config_and_snaps_are_optional_and_download_is_gone()
+     {
+        assert!(parse(&["snapshot", "start", "--config", "L", "--snap", "a.al:1"]).is_err());
+        // Snappoints are optional: SnapPoint also records an exception.
+        assert!(
+            parse(&[
+                "snapshot",
+                "start",
+                "--config",
+                "L",
+                "--break-on-next",
+                "WebClient"
+            ])
+            .is_ok()
+        );
+        assert!(
+            parse(&[
+                "snapshot",
+                "start",
+                "--config",
+                "L",
+                "--snap",
+                "a.al:1",
+                "--break-on-next",
+                "Sometimes"
+            ])
+            .is_err()
+        );
+        assert!(
+            parse(&[
+                "snapshot",
+                "start",
+                "--snap",
+                "a.al:1",
+                "--break-on-next",
+                "WebClient"
+            ])
+            .is_ok(),
+            "--config is optional, the daemon picks the first configuration"
+        );
+        assert!(parse(&["snapshot", "download", "id"]).is_err());
+    }
+
     /// Object names come from a dependency `.app`, so an agent puts arbitrary
     /// text here. `--` keeps a name that starts with `-` a name.
     #[test]

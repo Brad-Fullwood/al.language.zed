@@ -1,0 +1,51 @@
+{
+  "method": "POST",
+  "raw_target": "/BC/snapshotdebugger/attach?debuggingcontext=55e1be1d-d794-4420-8d16-1697ae2b9a0d&tenant=my%2520tenant%252Fx%252By",
+  "http_version": "HTTP/1.1",
+  "headers": [
+    [
+      "Host",
+      "127.0.0.1:39855"
+    ],
+    [
+      "Authorization",
+      "Bearer RECORDING-FAKE-TOKEN"
+    ],
+    [
+      "d365-bc-client-activity-telemetry-id",
+      "4bba547b-1584-40db-8b2c-344f3e118034"
+    ],
+    [
+      "d365-bc-client-session-telemetry-id",
+      "f33b5615-c8db-47fb-99c5-5386aed8dbc2"
+    ],
+    [
+      "x-ms-correlation-id",
+      "4bba547b-1584-40db-8b2c-344f3e118034"
+    ],
+    [
+      "Content-Type",
+      "text/plain; charset=utf-8"
+    ],
+    [
+      "Content-Length",
+      "273"
+    ]
+  ],
+  "body_text": "{\"DebuggingContext\":\"55e1be1d-d794-4420-8d16-1697ae2b9a0d\",\"SourceBreakpointLocations\":[{\"Id\":{\"objectNumber\":22,\"objectType\":5,\"ObjectNumber\":22,\"ObjectType\":5},\"Lines\":[{\"Position\":{\"Line\":174},\"Condition\":\"\"}]}],\"SnapshotVerbosity\":1,\"SessionId\":-1,\"ExecutionContext\":3}",
+  "body_b64": "eyJEZWJ1Z2dpbmdDb250ZXh0IjoiNTVlMWJlMWQtZDc5NC00NDIwLThkMTYtMTY5N2FlMmI5YTBkIiwiU291cmNlQnJlYWtwb2ludExvY2F0aW9ucyI6W3siSWQiOnsib2JqZWN0TnVtYmVyIjoyMiwib2JqZWN0VHlwZSI6NSwiT2JqZWN0TnVtYmVyIjoyMiwiT2JqZWN0VHlwZSI6NX0sIkxpbmVzIjpbeyJQb3NpdGlvbiI6eyJMaW5lIjoxNzR9LCJDb25kaXRpb24iOiIifV19XSwiU25hcHNob3RWZXJib3NpdHkiOjEsIlNlc3Npb25JZCI6LTEsIkV4ZWN1dGlvbkNvbnRleHQiOjN9",
+  "response": {
+    "status": 200,
+    "headers": [
+      [
+        "Content-Type",
+        "text/plain"
+      ],
+      [
+        "Set-Cookie",
+        "ApplicationGatewayAffinity=abcdefghij0123456789AB%3D%3D; Path=/"
+      ]
+    ],
+    "body_b64": "VXNlclNlc3Npb24="
+  }
+}

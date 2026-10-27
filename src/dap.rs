@@ -27,6 +27,20 @@ fn parse_debug_task_config(raw: &str) -> zed::Result<Value> {
 /// al-lsp's `--dap` mode runs the native DAP server over stdio. Zed
 /// communicates with it using the DAP protocol for breakpoints, stepping, etc.
 ///
+/// A downloaded al-lsp release is found as a path relative to the extension's
+/// work folder, which is the extension's current directory. Zed resolves such
+/// a path for a language server, but starts a debug adapter with `cwd` set to
+/// the project, where the relative path does not exist (ENOENT). Join it onto
+/// `work_dir` so the adapter starts from any `cwd`.
+pub fn absolute_adapter_path(path: String, work_dir: Option<&std::path::Path>) -> String {
+    match work_dir {
+        Some(dir) if std::path::Path::new(&path).is_relative() => {
+            dir.join(&path).to_string_lossy().into_owned()
+        }
+        _ => path,
+    }
+}
+
 /// `user_settings` is the `lsp."al-lsp".settings` object. The native adapter
 /// (`--dap`) is the default; `al.useOfficialDap: true` opts into Microsoft's
 /// EditorServices.Host proxy (`--dap-legacy`) - see `resolve_dap_backend_flag`.
@@ -145,6 +159,20 @@ pub fn dap_config_to_scenario(config: zed::DebugConfig) -> zed::Result<zed::Debu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_downloaded_relative_adapter_path_is_joined_onto_the_work_folder() {
+        let work = std::path::Path::new("/ext/work");
+        assert_eq!(
+            absolute_adapter_path("al-lsp-v0.4.0/al-lsp".to_string(), Some(work)),
+            "/ext/work/al-lsp-v0.4.0/al-lsp"
+        );
+        assert_eq!(
+            absolute_adapter_path("/usr/bin/al-lsp".to_string(), Some(work)),
+            "/usr/bin/al-lsp"
+        );
+        assert_eq!(absolute_adapter_path("al-lsp".to_string(), None), "al-lsp");
+    }
 
     // ── dap_request_kind ────────────────────────────────────────────────
 
@@ -315,5 +343,74 @@ mod tests {
         // Launch-only defaults must not leak into an attach scenario.
         assert!(config.get("launchBrowser").is_none());
         assert!(config.get("breakOnError").is_none());
+    }
+
+    // ── snapshot capture and replay configurations ───────────────────────
+
+    /// The two `.zed/debug.json` shapes that use snapshots. Zed passes the
+    /// configuration through untouched, so only the request kind and the schema
+    /// matter here.
+    fn snapshot_configs() -> [(Value, zed::StartDebuggingRequestArgumentsRequest); 2] {
+        [
+            (
+                json!({
+                    "adapter": "al",
+                    "label": "Capture next web client session",
+                    "request": "attach",
+                    "snapshot": "capture",
+                    "breakOnNext": "WebClient",
+                    "userId": "ALICE",
+                    "snapshotVerbosity": "SnapPoint",
+                    "snapshotOutputPath": ".snapshots",
+                    "environmentType": "Sandbox",
+                    "environmentName": "Dev",
+                    "snapshotPort": 7083,
+                    "allowProduction": false,
+                }),
+                zed::StartDebuggingRequestArgumentsRequest::Attach,
+            ),
+            (
+                json!({
+                    "adapter": "al",
+                    "label": "Replay a snapshot",
+                    "request": "launch",
+                    "snapshotFileName": ".snapshots/example.zip",
+                }),
+                zed::StartDebuggingRequestArgumentsRequest::Launch,
+            ),
+        ]
+    }
+
+    #[test]
+    fn dap_request_kind_passes_a_capture_attach_and_a_replay_launch() {
+        for (config, expected) in snapshot_configs() {
+            assert_eq!(dap_request_kind(config).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn snapshot_configurations_use_only_fields_the_schema_declares() {
+        let schema: Value =
+            serde_json::from_str(include_str!("../debug_adapter_schemas/al.json")).unwrap();
+        let known = schema["properties"].as_object().unwrap();
+        for (config, _) in snapshot_configs() {
+            for key in config.as_object().unwrap().keys() {
+                assert!(known.contains_key(key), "{key:?} is not declared");
+            }
+        }
+        assert_eq!(known["snapshot"]["enum"], json!(["capture"]));
+        assert_eq!(
+            known["snapshotVerbosity"]["enum"],
+            json!(["SnapPoint", "Full"])
+        );
+        assert_eq!(known["snapshotVerbosity"]["default"], json!("SnapPoint"));
+    }
+
+    #[test]
+    fn a_snapshot_request_kind_stays_unsupported() {
+        // Capture is `attach` with `snapshot: capture`, never a request of its own.
+        let error =
+            dap_request_kind(json!({ "request": "snapshot", "snapshot": "capture" })).unwrap_err();
+        assert!(error.contains("unsupported request type"), "{error}");
     }
 }

@@ -111,6 +111,7 @@ async fn mcp_initialize_and_list_tools() {
         "al_testclassify",
         "al_testcoverage",
         "al_depgraph",
+        "al_snapshot",
     ] {
         assert!(
             tools.iter().any(|t| t == expected),

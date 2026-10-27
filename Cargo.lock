@@ -81,6 +81,7 @@ name = "al-bc"
 version = "0.1.0"
 dependencies = [
  "al-types",
+ "dirs",
  "libc",
  "reqwest",
  "serde",
@@ -94,6 +95,7 @@ dependencies = [
  "url",
  "urlencoding",
  "wiremock",
+ "zip 9.0.5",
 ]
 
 [[package]]
@@ -128,6 +130,7 @@ dependencies = [
  "tokio-tungstenite",
  "tracing",
  "url",
+ "uuid",
  "wiremock",
 ]
 

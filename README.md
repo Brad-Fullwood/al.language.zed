@@ -43,7 +43,7 @@ The table shows what is native and what still uses Microsoft components.
 | Symbols | Native `.app` reader, symbol model, package cache, source map, composed objects, NuGet/server download orchestration | Symbol package contents and compiler output formats come from the Business Central ecosystem |
 | Analysis | Native impact, event, call graph, dead code, SQL scan, duplicates, architecture lint, breaking/upgrade/obsolete/audit reports | Package-only call-site bodies cannot be recovered when Microsoft `.app` symbols do not contain source bodies |
 | Tests | Native discovery, resolved transitive per-codeunit routing, pure-logic and supported workspace-record interpreters, local initialize/cleanup plus deterministic Message/Confirm/StrMenu/Hyperlink handlers, live breakpoint-snapshot capture/replay, JUnit output, static call-graph and opt-in dynamic statement/path/MC/DC Cobertura coverage, and scoped mutation testing for interpreter-routed tests | Base-app/package record schemas, unsupported record/platform behavior, HTTP, UI, report, XmlPort, session, transaction, and mixed/unknown codeunits use live BC |
-| Debugging | Native Zed DAP adapter mode, config conversion, compile/publish/deploy plumbing, SignalR and BC debug data mapping | Business Central runtime/debug service remains the execution backend |
+| Debugging | Native Zed DAP adapter mode, config conversion, compile/publish/deploy plumbing, SignalR and BC debug data mapping, snapshot capture and replay ([docs](Docs/features/snapshot-debugging.md)) | Business Central runtime/debug service remains the execution backend |
 | Automation | `al-explorer`, daemon JSON-RPC, MCP server, contributor-only `.zed` tasks | None required for pure analysis. BC credentials/runtime required for publish/debug/live-test workflows |
 
 Native coverage has limits. Where source-free dependencies, platform runtime behaviour, or
@@ -114,6 +114,7 @@ forwards tool calls into the same daemon dispatcher used by the CLI.
 Current MCP tools:
 
 - `al_call` - invoke any method in the shared daemon tool catalog, so every daemon method is reachable from MCP.
+- `al_snapshot` - snapshot debugging: start (with optional snappoints), status, finish, list, show.
 - `al_debug` - retain and drive a Business Central debug session across agent calls (start/attach,
   conditional breakpoints, state, stack, locals/globals/expansion, evaluate, step, continue,
   history, stop).
@@ -366,7 +367,7 @@ The CLI command surface includes:
 - Tests: `tests`, `test-run`, `test-run-all`, `test-coverage`, `test-mutate`, `test-affected`, `test-classify`, `test-snapshot`, `test-results`.
 - Translation: `xlf`.
 
-Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|list|download`, `profile start|stop|analyze`, `test-snapshot capture|validate|replay|diff`, and `xlf generate|refresh|untranslated|suggest`. `daemon-shutdown` stops an existing daemon for the current project without starting one, so a cold-start check can begin with no daemon running.
+Nested command groups include `debug start|breakpoint|state|eval|continue|step|history|stop`, `snapshot start|status|finish|list|show`, `profile start|stop|analyze`, `test-snapshot capture|validate|replay|diff`, and `xlf generate|refresh|untranslated|suggest`. `daemon-shutdown` stops an existing daemon for the current project without starting one, so a cold-start check can begin with no daemon running.
 
 ### Daemon Protocol
 

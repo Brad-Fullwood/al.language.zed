@@ -17,7 +17,7 @@ use std::path::Path;
 /// the open instead of blocking. The opened handle is checked to be a regular
 /// file before it is truncated. Elsewhere the bytes go to a fresh sibling that
 /// is renamed over `path`, which does not open an existing link.
-pub(crate) async fn write_no_follow(path: &Path, contents: Vec<u8>) -> std::io::Result<()> {
+pub async fn write_no_follow(path: &Path, contents: Vec<u8>) -> std::io::Result<()> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
         refuse_existing_non_regular(&path)?;

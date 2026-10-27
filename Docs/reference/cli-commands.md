@@ -39,7 +39,7 @@ commands that only read a file (`parse`, `lint`, `metrics`, `symbols`, `hover`, 
 file (`format`, `fix`, `sort-members`, `organize-files`, `rename`) refuse it and name the project
 they are confined to. So do the commands that pass a path in another argument, such as
 `event-source`, the `xlf` and `test-snapshot` commands, `test-run-all --junit-out`,
-`test-mutate --files`, `profile analyze` and `snapshot download --output-dir`: the daemon reads
+`test-mutate --files`, `profile analyze` and `snapshot finish --out` and `snapshot show`: the daemon reads
 and writes paths only inside the project it has loaded. See
 [daemon-methods](./daemon-methods.md#paths-and-the-project-boundary).
 
@@ -151,7 +151,7 @@ and writes paths only inside the project it has loaded. See
 | Command | Subcommands / flags | Purpose |
 | --- | --- | --- |
 | `debug` | `start [--config]`, `breakpoint <file> <line> [--condition]`, `state`, `eval <expr>`, `continue`, `step [over\|into\|out]`, `history [--var]`, `stop` | Drive a debug session |
-| `snapshot` | `start [--description]`, `list`, `download <id>`, all with `--company` (required) and `--server --username --password --output-dir` | Snapshot debugging |
+| `snapshot` | `start [--config <name>] --break-on-next <WebClient\|WebServiceClient\|Background\|ClientService> [--snap <spec>]... [--user] [--session-id] [--verbosity snappoint\|full] [--allow-production]`, `status [--context]`, `finish [--context] [--out]`, `list`, `show <zip> [--vars] [--fields] [--stop]` | Business Central snapshot debugging, see [snapshot-debugging](../features/snapshot-debugging.md) |
 | `profile` | `start`, `stop [--session-id]`, `analyze <path> [--top N]`, with the server and auth flags | CPU profiling |
 
 ## Tests

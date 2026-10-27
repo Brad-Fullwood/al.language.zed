@@ -1,0 +1,46 @@
+{
+  "method": "POST",
+  "raw_target": "/BC/snapshotdebugger/finish?debuggingcontext=55e1be1d-d794-4420-8d16-1697ae2b9a0d&applicationgatewayaffinity=abcdefghij0123456789AB%253D%253D&tenant=my%2520tenant%252Fx%252By",
+  "http_version": "HTTP/1.1",
+  "headers": [
+    [
+      "Host",
+      "127.0.0.1:39855"
+    ],
+    [
+      "Authorization",
+      "Bearer RECORDING-FAKE-TOKEN"
+    ],
+    [
+      "d365-bc-client-activity-telemetry-id",
+      "e8875270-ebd7-482b-a56c-bfa62cbd36bf"
+    ],
+    [
+      "d365-bc-client-session-telemetry-id",
+      "f33b5615-c8db-47fb-99c5-5386aed8dbc2"
+    ],
+    [
+      "x-ms-correlation-id",
+      "e8875270-ebd7-482b-a56c-bfa62cbd36bf"
+    ],
+    [
+      "Cookie",
+      "ApplicationGatewayAffinity=abcdefghij0123456789AB%3D%3D"
+    ],
+    [
+      "Content-Type",
+      "text/plain; charset=utf-8"
+    ],
+    [
+      "Content-Length",
+      "59"
+    ]
+  ],
+  "body_text": "{\"DebuggingContext\":\"55e1be1d-d794-4420-8d16-1697ae2b9a0d\"}",
+  "body_b64": "eyJEZWJ1Z2dpbmdDb250ZXh0IjoiNTVlMWJlMWQtZDc5NC00NDIwLThkMTYtMTY5N2FlMmI5YTBkIn0=",
+  "response": {
+    "status": 404,
+    "headers": [],
+    "body_b64": ""
+  }
+}

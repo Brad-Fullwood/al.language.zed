@@ -146,11 +146,17 @@ fn optional_u64(args: &serde_json::Value, key: &str, errors: &mut Vec<String>) -
     }
 }
 
+/// Microsoft's `DeploymentConstants.SnapshotServicesPort`.
+const SNAPSHOT_SERVICES_PORT: u16 = 7083;
+
 #[derive(Debug, Clone)]
 pub struct BcDebugConfig {
     pub server: Option<String>,
     pub server_instance: Option<String>,
     pub port: u16,
+    /// Port of the snapshot debugger services on an OnPrem server. `None` means
+    /// Microsoft's snapshot services port 7083. Unused for SaaS.
+    pub snapshot_port: Option<u16>,
     pub tenant: String,
     pub environment_type: String,
     pub environment_name: Option<String>,
@@ -184,6 +190,7 @@ impl Default for BcDebugConfig {
             server: None,
             server_instance: None,
             port: 7049,
+            snapshot_port: None,
             tenant: "default".to_string(),
             environment_type: "Sandbox".to_string(),
             environment_name: None,
@@ -228,6 +235,14 @@ impl BcDebugConfig {
                     .validation_errors
                     .push("port must be an integer from 1 through 65535".to_string()),
                 Ok(port) => cfg.port = port,
+            }
+        }
+        if let Some(value) = optional_i64(args, "snapshotPort", &mut cfg.validation_errors) {
+            match u16::try_from(value) {
+                Ok(0) | Err(_) => cfg
+                    .validation_errors
+                    .push("snapshotPort must be an integer from 1 through 65535".to_string()),
+                Ok(port) => cfg.snapshot_port = Some(port),
             }
         }
         if let Some(value) = optional_string(args, "tenant", &mut cfg.validation_errors) {
@@ -423,6 +438,10 @@ impl BcDebugConfig {
     /// Build the base URL prefix for on-prem: `{server}:{port}/{instance}`.
     /// Uses the same pattern as the BC server client.
     pub(crate) fn onprem_base(&self) -> String {
+        self.onprem_base_on_port(self.port)
+    }
+
+    fn onprem_base_on_port(&self, port: u16) -> String {
         // A bare host gets the scheme the credential authorisation judged it
         // by, through the same function.
         let server = self
@@ -433,7 +452,7 @@ impl BcDebugConfig {
             })
             .unwrap_or_else(|| "http://localhost".to_string());
         let instance = self.server_instance.as_deref().unwrap_or("BC");
-        let host = format!("{}:{}", server.trim_end_matches('/'), self.port);
+        let host = format!("{}:{}", server.trim_end_matches('/'), port);
         format!("{host}/{instance}")
     }
 
@@ -446,6 +465,21 @@ impl BcDebugConfig {
             let tenant = percent_encode_url(&self.tenant);
             let env = percent_encode_url(self.environment_name.as_deref().unwrap_or("sandbox"));
             format!("https://api.businesscentral.dynamics.com/v2.0/{tenant}/{env}/dev")
+        }
+    }
+
+    /// Base URL of the snapshot debugger endpoints, without a trailing slash.
+    /// SaaS: `https://api.businesscentral.dynamics.com/v2.0/{env}/snapshotdebugger`
+    /// (no tenant segment, the tenant goes in the query). OnPrem:
+    /// `{server}:{snapshot port}/{instance}/snapshotdebugger`, where the port
+    /// is `snapshot_port` or Microsoft's snapshot services port 7083.
+    pub fn snapshot_base_url(&self) -> String {
+        if self.environment_type.eq_ignore_ascii_case("OnPrem") {
+            let port = self.snapshot_port.unwrap_or(SNAPSHOT_SERVICES_PORT);
+            format!("{}/snapshotdebugger", self.onprem_base_on_port(port))
+        } else {
+            let env = percent_encode_url(self.environment_name.as_deref().unwrap_or("sandbox"));
+            format!("https://api.businesscentral.dynamics.com/v2.0/{env}/snapshotdebugger")
         }
     }
 
@@ -852,6 +886,7 @@ mod tests {
         let zed_owned = ["adapter", "build", "label", "request"];
         let native_owned = [
             "acceptInvalidCerts",
+            "allowProduction",
             "authentication",
             "breakOnError",
             "breakOnNext",
@@ -869,10 +904,16 @@ mod tests {
             "server",
             "serverInstance",
             "sessionId",
+            "snapshot",
+            "snapshotFileName",
+            "snapshotOutputPath",
+            "snapshotPort",
+            "snapshotVerbosity",
             "startupCompany",
             "startupObjectId",
             "startupObjectType",
             "tenant",
+            "userId",
             "validateServerCertificate",
         ];
         let owned = zed_owned
@@ -889,7 +930,7 @@ mod tests {
     /// Fields `from_dap_args` reads but the schema does not declare, with the
     /// reason each is deliberately undeclared. An entry here gets no
     /// completion, no description and no validation signal in `.zed/debug.json`,
-    /// so adding one is a decision, not a default.
+    /// so adding one is a decision, not a default. None today.
     const UNDECLARED_BY_DESIGN: [&str; 0] = [];
 
     /// Collect every literal key `from_dap_args` looks up in the DAP argument

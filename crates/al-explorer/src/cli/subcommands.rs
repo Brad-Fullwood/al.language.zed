@@ -106,61 +106,63 @@ pub enum DebugCommands {
 
 #[derive(Subcommand)]
 pub enum SnapshotCommands {
-    /// Initiate a snapshot debugging session on the BC server
+    /// Start a snapshot debugger session with snappoints for the next matching session
     Start {
-        /// BC server URL (e.g. http://localhost:7049/BC)
-        #[arg(long, default_value = "http://localhost:7049/BC")]
-        server: String,
-        /// Company name
-        #[arg(long, required = true)]
-        company: String,
-        /// Optional description for the snapshot
+        /// Name of the launch.json configuration to debug. Default: the first one.
         #[arg(long)]
-        description: Option<String>,
-        /// Username for BC Basic auth
+        config: Option<String>,
+        /// Snappoint: `<type>:<id|name>:<line>[?condition]` or `<file>:<line>[?condition]`.
+        /// Repeat for several snappoints. Optional: the default SnapPoint
+        /// verbosity also records a method context that holds an exception.
+        #[arg(long = "snap")]
+        snap: Vec<String>,
+        /// Client type whose next session is captured
+        #[arg(long = "break-on-next", required = true,
+            value_parser = ["WebClient", "WebServiceClient", "Background", "ClientService"])]
+        break_on_next: String,
+        /// User to capture, as a user security id (GUID) or a user name
         #[arg(long)]
-        username: Option<String>,
-        /// Password for BC Basic auth
-        #[arg(long)]
-        password: Option<String>,
-        /// Directory to store downloaded snapshots
-        #[arg(long)]
-        output_dir: Option<String>,
+        user: Option<String>,
+        /// Capture one session by its session id
+        #[arg(long = "session-id")]
+        session_id: Option<i64>,
+        /// How much the snapshot records (default snappoint)
+        #[arg(long, value_parser = ["snappoint", "full"])]
+        verbosity: Option<String>,
+        /// Allow a Production environment
+        #[arg(long = "allow-production")]
+        allow_production: bool,
     },
-    /// List snapshots available on the BC server
-    List {
-        /// BC server URL
-        #[arg(long, default_value = "http://localhost:7049/BC")]
-        server: String,
-        /// Company name
-        #[arg(long, required = true)]
-        company: String,
-        /// Username for BC Basic auth
+    /// Show the status of a started snapshot session
+    Status {
+        /// Debugging context (GUID). Default: the latest session.
         #[arg(long)]
-        username: Option<String>,
-        /// Password for BC Basic auth
-        #[arg(long)]
-        password: Option<String>,
+        context: Option<String>,
     },
-    /// Download a snapshot by ID as a .alvsc file
-    Download {
-        /// Snapshot ID to download
-        snapshot_id: String,
-        /// BC server URL
-        #[arg(long, default_value = "http://localhost:7049/BC")]
-        server: String,
-        /// Company name
-        #[arg(long, required = true)]
-        company: String,
-        /// Username for BC Basic auth
+    /// Finish a snapshot session and save the snapshot zip
+    Finish {
+        /// Debugging context (GUID). Default: the latest session.
         #[arg(long)]
-        username: Option<String>,
-        /// Password for BC Basic auth
+        context: Option<String>,
+        /// Folder for the zip, inside the project. Default: `.snapshots`.
         #[arg(long)]
-        password: Option<String>,
-        /// Directory to store the downloaded file
+        out: Option<String>,
+    },
+    /// List the snapshot sessions started from this machine
+    List,
+    /// Print the call stack and variables at each stop of a snapshot zip (add --json for JSON)
+    Show {
+        /// Path to the snapshot zip
+        zip: String,
+        /// Variables to print, comma separated (default: all)
         #[arg(long)]
-        output_dir: Option<String>,
+        vars: Option<String>,
+        /// Record fields to print, comma separated (for example "No.,Lot No.")
+        #[arg(long)]
+        fields: Option<String>,
+        /// Print only this stop (1-based)
+        #[arg(long)]
+        stop: Option<u32>,
     },
 }
 

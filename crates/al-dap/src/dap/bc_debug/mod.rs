@@ -19,10 +19,13 @@
 //! `get_metadata`), `wire` (SignalR message shape, negotiate, handshake), and
 //! `session` (`BcDebugSession` + its `invoke()` loop and test doubles).
 
+pub mod automation;
 mod events;
 mod rest;
 mod session;
 mod session_config;
+pub mod snapshot_capture;
+pub mod snapshot_debugger;
 mod wire;
 
 pub use events::{BcEvent, BreakLocation};

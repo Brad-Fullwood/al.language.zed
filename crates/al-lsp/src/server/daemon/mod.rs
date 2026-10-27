@@ -22,6 +22,9 @@ mod lsp_dispatch;
 mod process_memory;
 mod projection;
 mod scope;
+mod snapshot_dispatch;
+#[cfg(test)]
+pub(crate) use snapshot_dispatch::use_test_store;
 
 pub(crate) use debug_dispatch::authorize_live_test_target;
 pub(crate) use projection::list_target;
@@ -1456,7 +1459,7 @@ dispatch_table! {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
         },
         "debug" [authorized] => debug_dispatch::dispatch_debug(workspace, id, &params).await,
-        "snapshot" [named_write, authorized] => build_dispatch::dispatch_snapshot(workspace, id, &params).await,
+        "snapshot" [named_write, authorized] => snapshot_dispatch::dispatch_snapshot(workspace, id, &params).await,
         "profiling" [named_write, authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,
         "xlf.generate" [named_write] => build_dispatch::dispatch_xlf_generate(workspace, id, &params).await,
         "xlf.refresh" [named_write] => build_dispatch::dispatch_xlf_refresh(workspace, id, &params).await,

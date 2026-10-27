@@ -1,0 +1,55 @@
+{
+  "method": "POST",
+  "raw_target": "/BC/snapshotdebugger/finish?debuggingcontext=c4fbb573-e325-443c-9887-8d0574e833ee&applicationgatewayaffinity=abcdefghij0123456789AB%253D%253D&tenant=11111111-2222-3333-4444-555555555555",
+  "http_version": "HTTP/1.1",
+  "headers": [
+    [
+      "Host",
+      "127.0.0.1:33053"
+    ],
+    [
+      "Authorization",
+      "Bearer RECORDING-FAKE-TOKEN"
+    ],
+    [
+      "d365-bc-client-activity-telemetry-id",
+      "a00a194a-e00f-4408-8165-c343093a4c17"
+    ],
+    [
+      "d365-bc-client-session-telemetry-id",
+      "94239d25-246a-4ca3-be4a-a06aa67bf0f6"
+    ],
+    [
+      "x-ms-correlation-id",
+      "a00a194a-e00f-4408-8165-c343093a4c17"
+    ],
+    [
+      "Cookie",
+      "ApplicationGatewayAffinity=abcdefghij0123456789AB%3D%3D"
+    ],
+    [
+      "Content-Type",
+      "text/plain; charset=utf-8"
+    ],
+    [
+      "Content-Length",
+      "59"
+    ]
+  ],
+  "body_text": "{\"DebuggingContext\":\"c4fbb573-e325-443c-9887-8d0574e833ee\"}",
+  "body_b64": "eyJEZWJ1Z2dpbmdDb250ZXh0IjoiYzRmYmI1NzMtZTMyNS00NDNjLTk4ODctOGQwNTc0ZTgzM2VlIn0=",
+  "response": {
+    "status": 200,
+    "headers": [
+      [
+        "Content-Type",
+        "application/zip"
+      ],
+      [
+        "ETag",
+        "\"Sampling\""
+      ]
+    ],
+    "body_b64": "UEsDBBQAAAAIAM6WWl02Y411BgAAAEAAAAAHAAAAdmVyc2lvbmNgoAwAAFBLAwQUAAAACADOllpdMZZP2Q4AAAAMAAAAMQAAAGM0ZmJiNTczLWUzMjUtNDQzYy05ODg3LThkMDU3NGU4MzNlZS5hbGNwdXByb2ZpbGWrVsrLT0ktVrKKjq0FAFBLAQIUAxQAAAAIAM6WWl02Y411BgAAAEAAAAAHAAAAAAAAAAAAAACAAQAAAAB2ZXJzaW9uUEsBAhQDFAAAAAgAzpZaXTGWT9kOAAAADAAAADEAAAAAAAAAAAAAAIABKwAAAGM0ZmJiNTczLWUzMjUtNDQzYy05ODg3LThkMDU3NGU4MzNlZS5hbGNwdXByb2ZpbGVQSwUGAAAAAAIAAgCUAAAAiAAAAAAA"
+  }
+}
