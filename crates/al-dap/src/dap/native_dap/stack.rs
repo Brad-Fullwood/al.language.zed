@@ -6,6 +6,9 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::dap::bc_debug::position::{
+    debugger_column_to_client, debugger_line_to_client, ClientBase,
+};
 use crate::dap::Result;
 
 use super::{NativeDapState, ResolvedObject};
@@ -29,7 +32,7 @@ where
     ) -> Result<()> {
         let session_arc = self.session.lock().await.clone();
         let stack_frames = if let Some(s) = session_arc {
-            bc_stack_to_dap(s.call_stack().await, &self.resolve_path)
+            bc_stack_to_dap(s.call_stack().await, &self.resolve_path, &self.client_base)
         } else {
             Vec::new()
         };
@@ -80,7 +83,15 @@ fn page_stack_frames(
     (frames[start_frame..end].to_vec(), total)
 }
 
-fn bc_stack_to_dap<P>(frames: serde_json::Value, resolve_path: &P) -> Vec<serde_json::Value>
+/// Map BC `StackFrame` objects (StackFrame.cs: `MethodName`, `ObjectId`,
+/// `ObjectName`, `StatementSpan`) to DAP stack frames, as
+/// DebugAdapterStackTraceHandler.cs:101-104 does. Line and column conversion
+/// follows the client's `linesStartAt1` / `columnsStartAt1`.
+fn bc_stack_to_dap<P>(
+    frames: serde_json::Value,
+    resolve_path: &P,
+    base: &ClientBase,
+) -> Vec<serde_json::Value>
 where
     P: Fn(i32, i32) -> Option<PathBuf>,
 {
@@ -88,71 +99,42 @@ where
         Some(a) => a,
         None => return Vec::new(),
     };
+    let lines_one = base.lines_start_at_1();
+    let columns_one = base.columns_start_at_1();
+    let number = |value: Option<&serde_json::Value>, key: &str| {
+        value.and_then(|v| v.get(key)).and_then(|v| v.as_i64())
+    };
 
     arr.iter()
         .enumerate()
         .map(|(i, frame)| {
-            let display_name = frame
-                .get("DisplayName")
-                .or_else(|| frame.get("displayName"))
+            let name = frame
+                .get("MethodName")
                 .and_then(|v| v.as_str())
                 .unwrap_or("(unknown)")
                 .to_string();
 
-            // Current BC servers send `StatementSpan.From` instead of
-            // `SourcePosition`; prefer it when present (see the fixture at
-            // native_debug.rs:905). Both carry 0-based line/column — DAP
-            // `stackFrame.line`/`column` are 1-based, so add 1 the same way
-            // `parse_bc_stack` (native_debug.rs:527) does. Without the +1
-            // Zed highlights one line above the actual stop; without the
-            // StatementSpan fallback, servers that only send it report
-            // line/column 0.
-            let position = frame
-                .get("StatementSpan")
-                .or_else(|| frame.get("statementSpan"))
-                .and_then(|span| span.get("From").or_else(|| span.get("from")))
-                .or_else(|| {
-                    frame
-                        .get("SourcePosition")
-                        .or_else(|| frame.get("sourcePosition"))
-                });
+            let span = frame.get("StatementSpan");
+            let from = span.and_then(|s| s.get("From"));
+            let to = span.and_then(|s| s.get("To"));
 
-            let line = position
-                .and_then(|sp| sp.get("Line").or_else(|| sp.get("line")))
-                .and_then(|v| v.as_i64())
-                .map(|v| v.saturating_add(1))
-                .unwrap_or(0);
-
-            let col = position
-                .and_then(|sp| sp.get("Column").or_else(|| sp.get("column")))
-                .and_then(|v| v.as_i64())
-                .map(|v| v.saturating_add(1))
-                .unwrap_or(0);
-
-            let object_type = frame
-                .get("ApplicationObjectId")
-                .and_then(|oid| oid.get("ObjectType").or_else(|| oid.get("objectType")))
-                .and_then(|v| v.as_i64())
-                .map(|v| v as i32);
-
-            let object_number = frame
-                .get("ApplicationObjectId")
-                .and_then(|oid| oid.get("ObjectNumber").or_else(|| oid.get("objectNumber")))
-                .and_then(|v| v.as_i64())
-                .map(|v| v as i32);
-
-            let source = match (object_type, object_number) {
-                (Some(ot), Some(on)) => {
-                    resolve_path(ot, on).map(|p| serde_json::json!({ "path": p.to_string_lossy() }))
-                }
+            let object_id = frame.get("ObjectId");
+            let source = match (
+                number(object_id, "ObjectType"),
+                number(object_id, "ObjectNumber"),
+            ) {
+                (Some(ot), Some(on)) => resolve_path(ot as i32, on as i32)
+                    .map(|p| serde_json::json!({ "path": p.to_string_lossy() })),
                 _ => None,
             };
 
             let mut val = serde_json::json!({
                 "id": i as i64,
-                "name": display_name,
-                "line": line,
-                "column": col,
+                "name": name,
+                "line": debugger_line_to_client(number(from, "Line").unwrap_or(0), lines_one),
+                "column": debugger_column_to_client(number(from, "Column").unwrap_or(0), columns_one),
+                "endLine": debugger_line_to_client(number(to, "Line").unwrap_or(0), lines_one),
+                "endColumn": debugger_column_to_client(number(to, "Column").unwrap_or(0), columns_one),
             });
             if let Some(src) = source {
                 val["source"] = src;
@@ -170,13 +152,16 @@ mod tests {
 
     use super::super::test_support::*;
 
+    use crate::dap::bc_debug::test_fixtures::stack_frame;
+
+    fn no_path(_: i32, _: i32) -> Option<PathBuf> {
+        None
+    }
+
+    // fixture source: see test_fixtures::stack_frame (StackFrame.cs:34-58)
     #[test]
     fn bc_stack_to_dap_includes_source_when_path_resolves() {
-        let frames = serde_json::json!([{
-            "DisplayName": "MyCodeunit.OnRun",
-            "SourcePosition": { "Line": 10, "Column": 4 },
-            "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
-        }]);
+        let frames = serde_json::json!([stack_frame("OnRun", (41, 8), (43, 30))]);
         let resolve = |ot: i32, on: i32| -> Option<PathBuf> {
             if ot == bc_object_type::CODEUNIT && on == 50100 {
                 Some(PathBuf::from("/workspace/src/MyCodeunit.al"))
@@ -184,13 +169,17 @@ mod tests {
                 None
             }
         };
-        let result = bc_stack_to_dap(frames, &resolve);
+        let result = bc_stack_to_dap(frames, &resolve, &ClientBase::default());
         assert_eq!(result.len(), 1);
         let frame = &result[0];
-        assert_eq!(frame["name"], "MyCodeunit.OnRun");
-        // BC's SourcePosition is 0-based; DAP stackFrame line/column are 1-based.
-        assert_eq!(frame["line"], 11);
-        assert_eq!(frame["column"], 5);
+        assert_eq!(frame["name"], "OnRun");
+        // DebugHelper.cs:105-121: a one-based client gets line and column + 1
+        // for values above 0. StatementSpan.To fills endLine and endColumn
+        // (DebugAdapterStackTraceHandler.cs:101-104).
+        assert_eq!(frame["line"], 42);
+        assert_eq!(frame["column"], 9);
+        assert_eq!(frame["endLine"], 44);
+        assert_eq!(frame["endColumn"], 31);
         assert_eq!(
             frame["source"]["path"].as_str().unwrap_or(""),
             "/workspace/src/MyCodeunit.al"
@@ -198,19 +187,61 @@ mod tests {
     }
 
     #[test]
-    fn bc_stack_to_dap_prefers_statement_span_from_over_source_position() {
-        // Current BC servers send StatementSpan.From instead of
-        // SourcePosition. When both are present StatementSpan.From wins;
-        // when only StatementSpan.From is present it must still be honored
-        // (not fall back to the line/column-0 default).
+    fn break_callback_frames_become_named_frames_with_a_source_path() {
+        // fixture source: test_fixtures::break_args (HubBasedDebuggerService.cs:393)
+        let args = crate::dap::bc_debug::test_fixtures::break_args(
+            vec![
+                stack_frame("OnRun", (41, 8), (41, 30)),
+                stack_frame("Caller", (9, 4), (9, 20)),
+            ],
+            "",
+        );
+        let resolve = |ot: i32, on: i32| -> Option<PathBuf> {
+            (ot == bc_object_type::CODEUNIT && on == 50100).then(|| PathBuf::from("/ws/Probe.al"))
+        };
+        let result = bc_stack_to_dap(args[1].clone(), &resolve, &ClientBase::default());
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["name"], "OnRun");
+        assert_eq!(result[1]["name"], "Caller");
+        assert_eq!(result[1]["source"]["path"], "/ws/Probe.al");
+        assert_eq!(result[1]["line"], 10);
+    }
+
+    #[test]
+    fn bc_stack_to_dap_keeps_debugger_numbers_for_a_zero_based_client() {
+        let base = ClientBase::default();
+        base.set_from_initialize(&serde_json::json!({
+            "linesStartAt1": false,
+            "columnsStartAt1": false
+        }));
+        let frames = serde_json::json!([stack_frame("OnRun", (41, 8), (43, 30))]);
+        let result = bc_stack_to_dap(frames, &no_path, &base);
+        assert_eq!(result[0]["line"], 41);
+        assert_eq!(result[0]["column"], 8);
+    }
+
+    #[test]
+    fn bc_stack_to_dap_leaves_line_zero_at_zero() {
+        // DebugHelper.cs:107: the +1 applies only when the line is above 0.
+        let frames = serde_json::json!([stack_frame("OnRun", (0, 0), (0, 0))]);
+        let result = bc_stack_to_dap(frames, &no_path, &ClientBase::default());
+        assert_eq!(result[0]["line"], 0);
+        assert_eq!(result[0]["column"], 0);
+    }
+
+    #[test]
+    fn bc_stack_to_dap_ignores_fields_the_bc_type_does_not_have() {
+        // StackFrame.cs has no DisplayName, ApplicationObjectId or SourcePosition.
         let frames = serde_json::json!([{
-            "DisplayName": "MyCodeunit.OnRun",
-            "StatementSpan": { "From": { "Line": 42, "Column": 8 } },
-            "SourcePosition": { "Line": 0, "Column": 0 }
+            "DisplayName": "Invented",
+            "SourcePosition": { "Line": 9, "Column": 9 },
+            "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
         }]);
-        let result = bc_stack_to_dap(frames, &|_ot: i32, _on: i32| None::<PathBuf>);
-        assert_eq!(result[0]["line"], 43);
-        assert_eq!(result[0]["column"], 9);
+        let resolve = |_: i32, _: i32| Some(PathBuf::from("/x.al"));
+        let result = bc_stack_to_dap(frames, &resolve, &ClientBase::default());
+        assert_eq!(result[0]["name"], "(unknown)");
+        assert_eq!(result[0]["line"], 0);
+        assert!(result[0].get("source").is_none());
     }
 
     #[test]
@@ -270,24 +301,9 @@ mod tests {
     }
 
     #[test]
-    fn bc_stack_to_dap_statement_span_only_still_converts_to_one_based() {
-        let frames = serde_json::json!([{
-            "MethodName": "RunProbe - OnAction",
-            "StatementSpan": { "From": { "Line": 42, "Column": 8 } }
-        }]);
-        let result = bc_stack_to_dap(frames, &|_ot: i32, _on: i32| None::<PathBuf>);
-        assert_eq!(result[0]["line"], 43);
-        assert_eq!(result[0]["column"], 9);
-    }
-
-    #[test]
     fn bc_stack_to_dap_omits_source_when_path_unknown() {
-        let frames = serde_json::json!([{
-            "DisplayName": "UnknownObject.Trigger",
-            "SourcePosition": { "Line": 1, "Column": 0 },
-            "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 99999 }
-        }]);
-        let result = bc_stack_to_dap(frames, &|_ot: i32, _on: i32| None::<PathBuf>);
+        let frames = serde_json::json!([stack_frame("OnRun", (1, 0), (1, 5))]);
+        let result = bc_stack_to_dap(frames, &no_path, &ClientBase::default());
         assert_eq!(result.len(), 1);
         assert!(
             result[0].get("source").is_none(),
@@ -296,12 +312,10 @@ mod tests {
     }
 
     #[test]
-    fn bc_stack_to_dap_handles_missing_application_object_id() {
-        let frames = serde_json::json!([{
-            "DisplayName": "SomeProc",
-            "SourcePosition": { "Line": 5, "Column": 0 }
-        }]);
-        let result = bc_stack_to_dap(frames, &|_ot: i32, _on: i32| None::<PathBuf>);
+    fn bc_stack_to_dap_handles_missing_object_id() {
+        let mut frame = stack_frame("SomeProc", (5, 0), (5, 3));
+        frame.as_object_mut().unwrap().remove("ObjectId");
+        let result = bc_stack_to_dap(serde_json::json!([frame]), &no_path, &ClientBase::default());
         assert_eq!(result.len(), 1);
         assert!(result[0].get("source").is_none());
         assert_eq!(result[0]["name"], "SomeProc");
@@ -309,50 +323,20 @@ mod tests {
 
     #[test]
     fn bc_stack_to_dap_returns_empty_for_non_array_input() {
-        let result = bc_stack_to_dap(serde_json::json!(null), &|_: i32, _: i32| None::<PathBuf>);
+        let result = bc_stack_to_dap(serde_json::json!(null), &no_path, &ClientBase::default());
         assert!(result.is_empty(), "non-array input must yield empty vec");
-    }
-
-    #[test]
-    fn bc_stack_to_dap_reads_camelcase_inner_keys() {
-        // The mapper reads the *inner* position/object keys with a camelCase
-        // fallback (Line→line, Column→column, ObjectType→objectType, etc.).
-        // The outer container keys are still PascalCase (SourcePosition,
-        // ApplicationObjectId); DisplayName has its own displayName fallback.
-        let frames = serde_json::json!([{
-            "displayName": "CamelProc",
-            "SourcePosition": { "line": 12, "column": 3 },
-            "ApplicationObjectId": { "objectType": 5, "objectNumber": 50100 }
-        }]);
-        let resolve = |ot: i32, on: i32| -> Option<PathBuf> {
-            if ot == bc_object_type::CODEUNIT && on == 50100 {
-                Some(PathBuf::from("/ws/Cu.al"))
-            } else {
-                None
-            }
-        };
-        let result = bc_stack_to_dap(frames, &resolve);
-        assert_eq!(result.len(), 1);
-        assert_eq!(result[0]["name"], "CamelProc");
-        assert_eq!(result[0]["line"], 13);
-        assert_eq!(result[0]["column"], 4);
-        assert_eq!(
-            result[0]["source"]["path"].as_str().unwrap_or(""),
-            "/ws/Cu.al"
-        );
     }
 
     #[test]
     fn bc_stack_to_dap_assigns_sequential_frame_ids() {
         // DAP stackTrace frame ids must be the array index so scopes/variables
-        // can map a frameId back to the BC stack frame. A regression that reused
-        // a constant id would break per-frame variable inspection.
+        // can map a frameId back to the BC stack frame.
         let frames = serde_json::json!([
-            { "DisplayName": "Top", "SourcePosition": { "Line": 1, "Column": 0 } },
-            { "DisplayName": "Mid", "SourcePosition": { "Line": 2, "Column": 0 } },
-            { "DisplayName": "Bottom", "SourcePosition": { "Line": 3, "Column": 0 } },
+            stack_frame("Top", (1, 0), (1, 1)),
+            stack_frame("Mid", (2, 0), (2, 1)),
+            stack_frame("Bottom", (3, 0), (3, 1)),
         ]);
-        let result = bc_stack_to_dap(frames, &|_: i32, _: i32| None::<PathBuf>);
+        let result = bc_stack_to_dap(frames, &no_path, &ClientBase::default());
         assert_eq!(result.len(), 3);
         assert_eq!(result[0]["id"], 0);
         assert_eq!(result[1]["id"], 1);
@@ -363,10 +347,8 @@ mod tests {
 
     #[test]
     fn bc_stack_to_dap_defaults_missing_fields() {
-        // A frame missing DisplayName / SourcePosition must not panic and must
-        // fall back to documented defaults: "(unknown)" name, line 0, column 0.
         let frames = serde_json::json!([{}]);
-        let result = bc_stack_to_dap(frames, &|_: i32, _: i32| None::<PathBuf>);
+        let result = bc_stack_to_dap(frames, &no_path, &ClientBase::default());
         assert_eq!(result.len(), 1);
         assert_eq!(result[0]["name"], "(unknown)");
         assert_eq!(result[0]["line"], 0);
@@ -376,25 +358,20 @@ mod tests {
 
     #[test]
     fn bc_stack_to_dap_empty_array_yields_empty_vec() {
-        let result = bc_stack_to_dap(serde_json::json!([]), &|_: i32, _: i32| None::<PathBuf>);
+        let result = bc_stack_to_dap(serde_json::json!([]), &no_path, &ClientBase::default());
         assert!(result.is_empty());
     }
 
     #[test]
     fn bc_stack_to_dap_omits_source_when_only_object_type_present() {
-        // resolve_path is only consulted when BOTH object_type and object_number
-        // are present. A frame with object_type but no object_number must not
-        // resolve a source (the (Some, None) match arm yields None).
-        let frames = serde_json::json!([{
-            "DisplayName": "Partial",
-            "SourcePosition": { "Line": 1, "Column": 0 },
-            "ApplicationObjectId": { "ObjectType": 5 }
-        }]);
-        let result = bc_stack_to_dap(frames, &|_: i32, _: i32| None::<PathBuf>);
-        assert_eq!(result.len(), 1);
+        // resolve_path is only consulted when both ObjectType and ObjectNumber are present.
+        let mut frame = stack_frame("Partial", (1, 0), (1, 1));
+        frame["ObjectId"] = serde_json::json!({ "ObjectType": 5 });
+        let resolve = |_: i32, _: i32| Some(PathBuf::from("/x.al"));
+        let result = bc_stack_to_dap(serde_json::json!([frame]), &resolve, &ClientBase::default());
         assert!(
             result[0].get("source").is_none(),
-            "source must be absent when object_number is missing"
+            "source must be absent when ObjectNumber is missing"
         );
     }
 

@@ -5,6 +5,9 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use crate::dap::bc_debug::position::{
+    client_line_to_debugger, debugger_column_to_client, debugger_line_to_client,
+};
 use crate::dap::bc_debug::{BcDebugConfig, BcDebugSession};
 use crate::dap::types::*;
 use crate::dap::Result;
@@ -111,9 +114,8 @@ impl NativeDebugSession {
 
         for &(line, condition) in lines {
             let cond = condition.unwrap_or("");
-            // MCP/CLI source lines are one-based, like DAP clients. BC's
-            // SourcePosition.Line is zero-based.
-            let server_line = i64::from(line.saturating_sub(1));
+            // MCP/CLI source lines are one-based, like DAP clients.
+            let server_line = client_line_to_debugger(i64::from(line), true);
             match self
                 .session
                 .add_breakpoint(object_type, object_id, server_line, 0, cond)
@@ -215,13 +217,14 @@ impl NativeDebugSession {
                 // of a stale copy of the previous entry. The daemon doesn't
                 // resolve BC object ids to workspace file paths, so `file` stays
                 // empty; line/column/procedure now reflect the genuine location.
+                let debugger_line = location.as_ref().map_or(0, |loc| i64::from(loc.line));
                 let location = match location {
                     Some(loc) => {
                         self.last_object = loc.object_type.zip(loc.object_number);
                         Location {
                             file: String::new(),
-                            line: loc.line.saturating_add(1),
-                            column: loc.column.saturating_add(1),
+                            line: debugger_line_to_client(i64::from(loc.line), true) as u32,
+                            column: debugger_column_to_client(i64::from(loc.column), true) as u32,
                             procedure: loc.procedure,
                         }
                     }
@@ -236,7 +239,7 @@ impl NativeDebugSession {
                     .last_object
                     .and_then(|(object_type, object_id)| {
                         self.armed
-                            .get(&(object_type, object_id, i64::from(location.line) - 1))
+                            .get(&(object_type, object_id, debugger_line))
                             .copied()
                     })
                     .unwrap_or(0);
@@ -562,44 +565,36 @@ fn parse_bc_variable(node: &serde_json::Value) -> Option<Variable> {
     })
 }
 
+/// Frames for the MCP stack view from the Break callback's `StackFrame[]`
+/// (StackFrame.cs: `MethodName`, `ObjectName`, `StatementSpan.From`). MCP
+/// clients count lines and columns from 1, like a DAP client with
+/// `linesStartAt1`.
 fn parse_bc_stack(frames: &[serde_json::Value]) -> Vec<StackFrame> {
     frames
         .iter()
         .enumerate()
         .map(|(id, frame)| {
-            let position = frame
-                .get("StatementSpan")
-                .or_else(|| frame.get("statementSpan"))
-                .and_then(|span| span.get("From").or_else(|| span.get("from")))
-                .or_else(|| {
-                    frame
-                        .get("SourcePosition")
-                        .or_else(|| frame.get("sourcePosition"))
-                });
+            let from = frame.get("StatementSpan").and_then(|span| span.get("From"));
             StackFrame {
                 id: id as i64,
                 name: frame
                     .get("MethodName")
-                    .or_else(|| frame.get("methodName"))
-                    .or_else(|| frame.get("DisplayName"))
-                    .or_else(|| frame.get("displayName"))
                     .and_then(|value| value.as_str())
                     .unwrap_or("")
                     .to_string(),
                 source: frame
                     .get("ObjectName")
-                    .or_else(|| frame.get("objectName"))
                     .and_then(|value| value.as_str())
                     .map(str::to_string),
-                line: position
-                    .and_then(|value| value.get("Line").or_else(|| value.get("line")))
-                    .and_then(|value| value.as_u64())
-                    .map(|value| value.saturating_add(1) as u32)
+                line: from
+                    .and_then(|value| value.get("Line"))
+                    .and_then(|value| value.as_i64())
+                    .map(|value| debugger_line_to_client(value, true) as u32)
                     .unwrap_or(0),
-                column: position
-                    .and_then(|value| value.get("Column").or_else(|| value.get("column")))
-                    .and_then(|value| value.as_u64())
-                    .map(|value| value.saturating_add(1) as u32)
+                column: from
+                    .and_then(|value| value.get("Column"))
+                    .and_then(|value| value.as_i64())
+                    .map(|value| debugger_column_to_client(value, true) as u32)
                     .unwrap_or(0),
             }
         })
@@ -968,17 +963,17 @@ mod parse_bc_variables_tests {
 
     #[test]
     fn parses_current_bc_stack_frame_shape() {
-        let frames = [json!({
-            "MethodName": "RunProbe - OnAction",
-            "ObjectId": 70200,
-            "ObjectName": "MCP Debug Probe",
-            "StatementSpan": { "From": { "Line": 42, "Column": 8 } }
-        })];
+        // fixture source: test_fixtures::stack_frame (StackFrame.cs:34-58)
+        let frames = [crate::dap::bc_debug::test_fixtures::stack_frame(
+            "RunProbe - OnAction",
+            (42, 8),
+            (42, 30),
+        )];
 
         let stack = parse_bc_stack(&frames);
         assert_eq!(stack[0].id, 0);
         assert_eq!(stack[0].name, "RunProbe - OnAction");
-        assert_eq!(stack[0].source.as_deref(), Some("MCP Debug Probe"));
+        assert_eq!(stack[0].source.as_deref(), Some("BJF Probe"));
         assert_eq!(stack[0].line, 43);
         assert_eq!(stack[0].column, 9);
     }
@@ -1003,7 +998,17 @@ mod parse_bc_variables_tests {
 mod native_session_tests {
     use super::*;
     use crate::dap::bc_debug::fake::FakeBc;
+    use crate::dap::bc_debug::test_fixtures::{break_args, stack_frame};
     use serde_json::json;
+
+    /// A `Break` callback whose top frame starts at `line` (BC's own number).
+    // fixture source: test_fixtures::break_args (HubBasedDebuggerService.cs:393)
+    fn break_at(method: &str, line: u16, column: u16) -> serde_json::Value {
+        serde_json::Value::Array(break_args(
+            vec![stack_frame(method, (line, column), (line, column + 10))],
+            "",
+        ))
+    }
 
     fn session(conn: &str) -> (NativeDebugSession, FakeBc) {
         let (bc, fake) = FakeBc::start(conn);
@@ -1114,18 +1119,7 @@ mod native_session_tests {
             .await
             .unwrap();
 
-        fake.push_callback(
-            "Break",
-            json!([
-                null,
-                [{
-                    "DisplayName": "OnRun",
-                    "SourcePosition": { "Line": 41, "Column": 0 },
-                    "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
-                }],
-                ""
-            ]),
-        );
+        fake.push_callback("Break", break_at("OnRun", 41, 0));
         fake.reply_ok("GetVariables", json!([]));
         nds.state().await.unwrap();
 
@@ -1206,18 +1200,7 @@ mod native_session_tests {
     #[tokio::test]
     async fn state_stopped_reports_paused_with_variables_and_location() {
         let (mut nds, fake) = session("sess-7");
-        fake.push_callback(
-            "Break",
-            json!([
-                null,
-                [{
-                    "DisplayName": "OnRun",
-                    "SourcePosition": { "Line": 42, "Column": 8 },
-                    "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
-                }],
-                ""
-            ]),
-        );
+        fake.push_callback("Break", break_at("OnRun", 42, 8));
         fake.reply_ok(
             "GetVariables",
             json!([{ "Name": "Customer", "Value": "10000", "TypeName": "Record" }]),
@@ -1311,14 +1294,8 @@ mod native_session_tests {
     #[tokio::test]
     async fn drain_events_records_breaks_with_incrementing_seq() {
         let (mut nds, fake) = session("c1");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 1, "Column": 0 } }], ""]),
-        );
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 2, "Column": 0 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("P", 1, 0));
+        fake.push_callback("Break", break_at("P", 2, 0));
         fake.reply_ok("GetVariables", json!([]));
 
         nds.state().await.unwrap();
@@ -1332,23 +1309,16 @@ mod native_session_tests {
     }
 
     #[tokio::test]
-    async fn drain_events_extracts_camelcase_break_location() {
-        // BreakLocation extraction must accept camelCase field names from BC.
+    async fn break_on_debugger_line_zero_stays_zero_for_the_client() {
+        // DebugHelper.cs:107: the +1 applies only when the line is above 0.
         let (mut nds, fake) = session("c1");
-        fake.push_callback(
-            "Break",
-            json!([
-                null,
-                [{ "displayName": "MyProc", "sourcePosition": { "line": 7, "column": 3 } }],
-                ""
-            ]),
-        );
+        fake.push_callback("Break", break_at("MyProc", 0, 0));
         fake.reply_ok("GetVariables", json!([]));
 
         let st = nds.state().await.unwrap();
-        let loc = st.location.expect("camelCase location extracted");
-        assert_eq!(loc.line, 8);
-        assert_eq!(loc.column, 4);
+        let loc = st.location.expect("location extracted");
+        assert_eq!(loc.line, 0);
+        assert_eq!(loc.column, 0);
         assert_eq!(loc.procedure.as_deref(), Some("MyProc"));
     }
 
@@ -1357,10 +1327,7 @@ mod native_session_tests {
         // A Break that lands while an invoke holds event_rx is buffered into
         // pending_events (not dropped); the next drain flushes it to history.
         let (mut nds, fake) = session("c1");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 5, "Column": 1 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("P", 5, 1));
         fake.reply_ok(
             "GetWatchNode",
             json!({ "Value": "1", "TypeName": "Integer" }),
@@ -1384,10 +1351,7 @@ mod native_session_tests {
     #[tokio::test]
     async fn agent_inspection_methods_forward_frame_and_path() {
         let (mut nds, fake) = session("inspect");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "DisplayName": "OnRun", "SourcePosition": { "Line": 12 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("OnRun", 12, 0));
         fake.reply_ok(
             "GetVariables",
             json!([{ "Name": "LocalValue", "Value": "1", "TypeName": "Integer" }]),
@@ -1402,7 +1366,7 @@ mod native_session_tests {
         );
 
         let stack = nds.stack().await.unwrap();
-        assert_eq!(stack[0]["DisplayName"], "OnRun");
+        assert_eq!(stack[0]["MethodName"], "OnRun");
         assert_eq!(stack[0]["frameId"], 0);
 
         let locals = nds.variables(7).await.unwrap();
@@ -1486,10 +1450,7 @@ mod native_session_tests {
     #[tokio::test]
     async fn continue_exec_drains_pending_then_resumes_running() {
         let (mut nds, fake) = session("sess-c");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 12, "Column": 0 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("P", 12, 0));
         fake.reply_ok("SetBreakpointResponse", json!(null));
 
         let st = nds.continue_exec().await.unwrap();
@@ -1542,10 +1503,7 @@ mod native_session_tests {
     async fn step_drains_pending_break_before_advancing() {
         // symmetry with continue: a pending Break is recorded before step.
         let (mut nds, fake) = session("c");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 8, "Column": 0 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("P", 8, 0));
         fake.reply_ok("SetBreakpointResponse", json!(null));
 
         nds.step("over").await.unwrap();

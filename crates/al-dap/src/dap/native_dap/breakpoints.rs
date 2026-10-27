@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::dap::bc_debug::position::client_line_to_debugger;
 use crate::dap::bc_debug::BcDebugSession;
 use crate::dap::Result;
 
@@ -131,7 +132,9 @@ where
                 result_bps.push(unresolved_object_breakpoint(source_path, *line));
                 continue;
             };
-            let server_line = line.saturating_sub(1);
+            // Position.Create (Position.cs:92-100): subtract 1 only for a
+            // one-based client.
+            let server_line = client_line_to_debugger(*line, self.client_base.lines_start_at_1());
 
             match session
                 .add_breakpoint(
@@ -368,6 +371,7 @@ mod tests {
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
             pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
             configured: Arc::new(Mutex::new(false)),
+            client_base: Arc::default(),
             variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
             cancel_tx,
             cancel_rx,

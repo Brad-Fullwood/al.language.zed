@@ -21,6 +21,7 @@
 
 pub mod automation;
 mod events;
+pub(crate) mod position;
 mod rest;
 mod session;
 mod session_config;

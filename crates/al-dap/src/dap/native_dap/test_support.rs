@@ -56,6 +56,7 @@ pub(super) fn test_state() -> TestState {
         breakpoints: Arc::new(Mutex::new(HashMap::new())),
         pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
         configured: Arc::new(Mutex::new(false)),
+        client_base: Arc::default(),
         variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
         cancel_tx,
         cancel_rx,

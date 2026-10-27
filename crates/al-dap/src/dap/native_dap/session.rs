@@ -33,7 +33,9 @@ where
         out: &mut W,
         request_seq: i64,
         command: &str,
+        arguments: &serde_json::Value,
     ) -> Result<()> {
+        self.client_base.set_from_initialize(arguments);
         let resp = make_response(
             &self.seq,
             request_seq,
@@ -644,6 +646,7 @@ mod tests {
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
             pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
             configured: Arc::new(Mutex::new(false)),
+            client_base: Arc::default(),
             variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
             cancel_tx,
             cancel_rx,
@@ -740,6 +743,7 @@ mod tests {
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
             pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
             configured: Arc::new(Mutex::new(false)),
+            client_base: Arc::default(),
             variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
             cancel_tx,
             cancel_rx,

@@ -117,7 +117,10 @@ where
             return Ok(done);
         }
         match command {
-            "initialize" => self.handle_initialize(out, request_seq, command).await?,
+            "initialize" => {
+                self.handle_initialize(out, request_seq, command, arguments)
+                    .await?
+            }
             "configurationDone" => {
                 self.handle_configuration_done(out, request_seq, command)
                     .await?

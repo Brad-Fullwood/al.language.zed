@@ -208,6 +208,8 @@ pub(crate) struct NativeDapState<F, R, P, C, A> {
     /// retried by the background event-forwarding task rather than left
     /// permanently unconfigured.
     configured: Arc<Mutex<bool>>,
+    /// `linesStartAt1` / `columnsStartAt1` from `initialize`.
+    client_base: Arc<crate::dap::bc_debug::position::ClientBase>,
     variable_handles: Arc<Mutex<VariableHandleStore>>,
     /// Cancellation channel for the background event-forwarding task.
     /// When a new debug session starts we send a new value so the old task exits.
@@ -282,6 +284,7 @@ where
         breakpoints: Arc::new(Mutex::new(HashMap::new())),
         pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
         configured: Arc::new(Mutex::new(false)),
+        client_base: Arc::default(),
         variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
         cancel_tx,
         cancel_rx,
