@@ -145,6 +145,18 @@ actions, code lens or inlay hints, and the Zed extension does not forward `al.*`
 Starting `Microsoft.Dynamics.Nav.EditorServices.Host` (the VS Code server) is queued as a
 follow-up, see finding `delegation-03-official-lsp-is-not-the-editor-server.md`.
 
+## Cache root and index threads
+
+Every on-disk cache (`index`, `symbols`, `semantic`, `oauth`, `reports`) lives under one root:
+`AL_LSP_CACHE_DIR` when set, otherwise `<user cache dir>/al-lsp` (`XDG_CACHE_HOME` is honoured on
+Linux). The daemon logs the root at start. Test binaries built by cargo use a private temp directory
+unless `AL_LSP_CACHE_DIR` is set, so `cargo test` does not touch the editor's cache.
+
+Index building runs on its own pool of `max(2, cores / 2)` threads, at most 4, at nice 10. The
+`al.indexThreads` setting overrides the count. A daemon refuses to start for a `--project`
+directory that has no `app.json`. The CLI starts the `al-lsp` that sits beside its own executable
+before it looks on `PATH`.
+
 ## Why this approach
 
 Native parsing + a cached workspace model means most language requests are answered from in-memory

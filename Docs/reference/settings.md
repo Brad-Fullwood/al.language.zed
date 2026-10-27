@@ -97,7 +97,7 @@ setting for it.
 For CI, custom templates, and troubleshooting: `AL_TOOL_PATH`, `AL_DOTNET_PATH`,
 `AL_TEMPLATES_DIR`, `AL_COMPILE_TIMEOUT_SECS`, `AL_LOG_FILE_LEVEL`, `AL_LSP_ALLOW_HTTP_FEED`,
 `AL_EDITOR_SERVICES_PATH`, `AL_BRIDGE_DIR`, `AL_ERROR_CODES_LIVE`, `AL_DAP_CAPTURE`,
-`AL_OAUTH_DISABLE_KEYRING`, and `AL_EXPLORER_PATH` (the `al-explorer` that
+`AL_OAUTH_DISABLE_KEYRING`, `AL_LSP_CACHE_DIR` (the al-lsp cache directory, default `<user cache dir>/al-lsp`), and `AL_EXPLORER_PATH` (the `al-explorer` that
 `experimental/runnables` answers name, by default the one beside `al-lsp`).
 
 Daemon and client:
