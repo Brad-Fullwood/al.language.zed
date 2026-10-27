@@ -193,6 +193,7 @@ fn find_unused_procedures(
     let mut procs = Vec::new();
 
     collect_procedures(object, source, &mut procs);
+    let object_call_names = al_syntax::collect_call_site_names_in(object, file_text);
 
     for (proc_name, is_event, line, is_local) in &procs {
         // Skip event publishers — they're entry points
@@ -205,7 +206,13 @@ fn find_unused_procedures(
         if implemented.contains(&lname) {
             continue;
         }
-        let referenced = all_call_names.contains(&lname);
+        // A `local` procedure is callable only inside its own object, so a
+        // same-named call elsewhere does not keep it alive.
+        let referenced = if *is_local {
+            object_call_names.contains(&lname)
+        } else {
+            all_call_names.contains(&lname)
+        };
 
         if !referenced {
             // Locality decides confidence. A `local` procedure with
@@ -272,11 +279,7 @@ fn implemented_methods(
             if let Some(found) = interface_methods.get(&name) {
                 methods.extend(found.iter().cloned());
             }
-            for entry in workspace.symbols.get_by_name(&name) {
-                if entry.kind == al_symbols::ObjectKind::Interface {
-                    methods.extend(entry.methods.iter().map(|m| m.name.to_ascii_lowercase()));
-                }
-            }
+            methods.extend(workspace.symbols.interface_method_names([name.as_str()]));
         }
     }
     methods
@@ -1046,6 +1049,27 @@ codeunit 50101 "Ship Helper"
         assert!(!flagged(&unused, "Book"), "{unused:?}");
         assert!(!flagged(&unused, "Cancel"), "{unused:?}");
         assert!(flagged(&unused, "Unrelated"), "{unused:?}");
+    }
+
+    #[test]
+    fn a_local_procedure_is_not_kept_alive_by_a_call_in_another_object() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/A.al",
+                "codeunit 50100 \"A\"\n{\n    local procedure Encode(Input: Text): Text\n    begin\n    end;\n}\n",
+            ),
+            (
+                "/src/B.al",
+                "codeunit 50101 \"B\"\n{\n    procedure Run()\n    begin\n        Encode('x');\n    end;\n\n    local procedure Encode(Input: Text): Text\n    begin\n    end;\n}\n",
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        let hits: Vec<_> = unused
+            .iter()
+            .filter(|u| u.name == "Encode")
+            .map(|u| u.object.as_str())
+            .collect();
+        assert_eq!(hits, vec!["A"], "{unused:?}");
     }
 
     #[test]

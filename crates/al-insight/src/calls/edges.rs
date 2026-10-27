@@ -490,6 +490,36 @@ pub(super) fn find_interface_implementors(
         .collect()
 }
 
+/// Reach each implementer's interface procedures from the interface.
+///
+/// The interface dispatches to them, from a caller in a dependency when the
+/// interface is a dependency's, so a workspace caller need not exist.
+/// Without these edges `entrypoints` lists every implementer procedure.
+pub fn link_interface_implementers(
+    symbols: &SymbolIndex,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) {
+    for entry in symbols.get_by_kind(ObjectKind::Codeunit) {
+        for interface in &entry.implements {
+            let interface = interface.unquote_identifier();
+            let Some(from) = CallGraph::node_id_for(
+                insight,
+                &NodeKey::Object(ObjectKind::Interface, interface.to_lowercase()),
+            ) else {
+                continue;
+            };
+            for method in symbols.interface_method_names([interface.as_ref()]) {
+                let key =
+                    NodeKey::Procedure(ObjectKind::Codeunit, entry.name.to_lowercase(), method);
+                if let Some(to) = CallGraph::node_id_for(insight, &key) {
+                    call_graph.add_indirect_call(from, to);
+                }
+            }
+        }
+    }
+}
+
 /// Return the event names for a record operation.
 ///
 /// BC table events follow the pattern: `OnBefore{Op}Event` / `OnAfter{Op}Event`.

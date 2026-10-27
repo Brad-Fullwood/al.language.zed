@@ -474,7 +474,15 @@ pub fn count_call_references(tree: &Tree, text: &str, name: &str) -> usize {
 /// membership checks without per-query allocation.
 ///
 pub fn collect_call_site_names(tree: &Tree, text: &str) -> std::collections::HashSet<String> {
-    let root = tree.root_node();
+    collect_call_site_names_in(tree.root_node(), text)
+}
+
+/// [`collect_call_site_names`] for the subtree under `root`, such as one
+/// object of a file that holds several.
+pub fn collect_call_site_names_in(
+    root: tree_sitter::Node<'_>,
+    text: &str,
+) -> std::collections::HashSet<String> {
     let source = text.as_bytes();
     let mut names = std::collections::HashSet::new();
     walk_tree(root, &mut |node| {

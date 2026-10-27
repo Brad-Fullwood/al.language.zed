@@ -1740,3 +1740,34 @@ fn a_call_through_a_global_variable_is_an_edge() {
     callers.sort();
     assert_eq!(callers, vec!["Glob Page", "OnOpenPage"]);
 }
+
+#[test]
+fn an_interface_reaches_the_procedures_of_its_implementers() {
+    let file_index = al_source::file_index::FileIndex::new();
+    for (name, content) in [
+        (
+            "/ws/IFoo.Interface.al",
+            "interface IFoo\n{\n    procedure Bar();\n}\n",
+        ),
+        (
+            "/ws/Impl.Codeunit.al",
+            "codeunit 50101 \"Impl A\" implements IFoo\n{\n    procedure Bar()\n    begin\n    end;\n\n    procedure Other()\n    begin\n    end;\n}\n",
+        ),
+    ] {
+        file_index.add_file(std::path::PathBuf::from(name), content.to_string());
+    }
+    let symbols = SymbolIndex::new();
+    let mut insight = InsightGraph::new();
+    register_workspace_nodes(&file_index, &symbols, &mut insight).unwrap();
+    let mut cg = CallGraph::build_from_insight(&insight);
+    resolve_all_workspace_call_edges(&file_index, &symbols, &insight, &mut cg).unwrap();
+    link_interface_implementers(&symbols, &insight, &mut cg);
+
+    let bar = proc_node(&insight, ObjectKind::Codeunit, "Impl A", "Bar");
+    let other = proc_node(&insight, ObjectKind::Codeunit, "Impl A", "Other");
+    assert!(!cg.callers_of(bar).is_empty(), "Bar is reached from IFoo");
+    assert!(
+        cg.callers_of(other).is_empty(),
+        "Other is not an IFoo member"
+    );
+}

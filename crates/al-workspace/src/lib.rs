@@ -1256,6 +1256,7 @@ impl Workspace {
                 &insight,
                 &mut cg,
             )?;
+            al_insight::calls::link_interface_implementers(&self.symbols, &insight, &mut cg);
             al_insight::calls::populate_summary_call_edges(
                 &dependency_files,
                 &self.symbols,
