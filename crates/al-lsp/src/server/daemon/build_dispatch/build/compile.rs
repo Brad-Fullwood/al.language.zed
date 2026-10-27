@@ -230,14 +230,14 @@ pub(in crate::server::daemon) async fn dispatch_compile(
         // failures (no toolchain, missing app.json, alc spawn) propagate as Err
         // → INTERNAL/CODE_ANALYSIS error; a compile that ran with error
         // diagnostics comes back as Ok(success:false).
+        let analyzers = config_snapshot.effective_code_analyzers(&project_root);
         let compile_result = al_compile::build(al_compile::BuildRequest {
             project_root: &project_root,
             backend: al_compile::BuildBackend::Alc,
             toolchain: Some(toolchain),
             dependency_packages: Some(dependency_packages.as_slice()),
             package_cache: package_cache.as_deref(),
-            analyzers: (!config_snapshot.code_analyzers.is_empty())
-                .then_some(config_snapshot.code_analyzers.as_slice()),
+            analyzers: Some(analyzers.as_slice()),
             config: config_options,
         })
         .await
@@ -418,14 +418,9 @@ pub(in crate::server::daemon) async fn dispatch_package(
     let (code_analyzers, config_options) = {
         let cfg = workspace.config.read().await;
         (
-            cfg.code_analyzers.clone(),
+            cfg.effective_code_analyzers(&project_root),
             al_compile::CompilationConfigOptions::from(&*cfg),
         )
-    };
-    let analyzer_filter: Option<Vec<String>> = if code_analyzers.is_empty() {
-        None
-    } else {
-        Some(code_analyzers)
     };
 
     // Route through the shared build service. Infrastructure failures
@@ -437,7 +432,7 @@ pub(in crate::server::daemon) async fn dispatch_package(
         toolchain: Some(&toolchain),
         dependency_packages: Some(dependency_packages.as_slice()),
         package_cache: package_cache.as_deref(),
-        analyzers: analyzer_filter.as_deref(),
+        analyzers: Some(code_analyzers.as_slice()),
         config: config_options,
     })
     .await

@@ -148,6 +148,18 @@ actions, code lens or inlay hints, and the Zed extension does not forward `al.*`
 Starting `Microsoft.Dynamics.Nav.EditorServices.Host` (the VS Code server) is queued as a
 follow-up, see finding `delegation-03-official-lsp-is-not-the-editor-server.md`.
 
+## Cache root and index threads
+
+Every on-disk cache (`index`, `symbols`, `semantic`, `oauth`, `reports`) lives under one root:
+`AL_LSP_CACHE_DIR` when set, otherwise `<user cache dir>/al-lsp` (`XDG_CACHE_HOME` is honoured on
+Linux). The daemon logs the root at start. Test binaries built by cargo use a private temp directory
+unless `AL_LSP_CACHE_DIR` is set, so `cargo test` does not touch the editor's cache.
+
+Index building runs on its own pool of `max(2, cores / 2)` threads, at most 4, at nice 10. The
+`al.indexThreads` setting overrides the count. A daemon refuses to start for a `--project`
+directory that has no `app.json`. The CLI starts the `al-lsp` that sits beside its own executable
+before it looks on `PATH`.
+
 ## Why this approach
 
 Native parsing + a cached workspace model means most language requests are answered from in-memory
@@ -155,6 +167,24 @@ indexes without a compiler round-trip, and the slow compiler-grade work (the bri
 isolated so it never blocks typing. The transport-boundary rule means the very same query code serves
 the editor, the CLI (`al-explorer hover/definition/references/...`), and MCP clients, so all three
 give the same answers.
+
+## Which al-lsp the extension runs
+
+The Zed extension resolves `al-lsp` in this order:
+
+1. `dev/al-lsp` in the extension's work directory (`~/.local/share/zed/extensions/work/al`
+   on Linux). `make install` copies `al-lsp`, `al-explorer` and the bridge there and writes
+   `dev/BUILD`, the `al-lsp --version` line of the copy, after checking that the copy reports it.
+2. The GitHub release tagged `v<extension version>`, for an extension installed from Zed's
+   extension list. It is never "latest". Directories of other versions are deleted. A missing
+   release or a failed download gives one error naming the version and both routes.
+
+`al-lsp` on `PATH` is not consulted. The extension passes `--extension-build
+<version>+git.<commit>[.dirty]` on every launch. `al-lsp` (`crates/al-lsp/src/extension_build.rs`)
+compares version and commit with its own build. On a mismatch it logs one line at start and sends
+one `window/showMessage` warning after `initialize` that names its build, its path and the
+extension build, and says to run `make install`. Same build, or no flag, is silent. Unknown flags
+are ignored by `al-lsp`, so an older binary still starts.
 
 ## How to use
 

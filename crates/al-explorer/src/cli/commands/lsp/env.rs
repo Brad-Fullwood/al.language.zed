@@ -176,9 +176,7 @@ pub fn cmd_daemon_shutdown(json: bool) -> ExitCode {
 }
 
 fn al_lsp_index_dir() -> PathBuf {
-    dirs::cache_dir()
-        .map(|d| d.join("al-lsp").join("index"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/index"))
+    al_types::cache_root_or_tmp().join("index")
 }
 
 fn cache_clear_exit_code(existed: bool, deleted: bool, has_error: bool) -> ExitCode {
@@ -469,12 +467,12 @@ mod clear_cache_tests {
 
     #[test]
     fn al_lsp_index_dir_targets_index_subdir() {
+        // The root comes from `al_types::cache_root_or_tmp` (AL_LSP_CACHE_DIR,
+        // or a per-process temp dir inside cargo test), so only the shape is
+        // asserted here: the `index` folder directly under that root.
         let dir = al_lsp_index_dir();
-        let s = dir.to_string_lossy();
-        assert!(
-            s.ends_with("/al-lsp/index") || s.ends_with("\\al-lsp\\index"),
-            "expected …/al-lsp/index, got {s}"
-        );
+        assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some("index"));
+        assert_eq!(dir.parent(), Some(al_types::cache_root_or_tmp().as_path()));
     }
 
     #[test]

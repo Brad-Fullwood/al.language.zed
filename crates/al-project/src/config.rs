@@ -84,8 +84,17 @@ pub struct AlConfig {
     /// When to run diagnostics: `continuous` or `onSave`.
     pub diagnostics_trigger: DiagnosticsTrigger,
 
-    /// Which analyzers to run (e.g., "CodeCop", "AppSourceCop", "UICop", "PerTenantCop").
+    /// The analyzers `al.codeAnalyzers` lists (e.g., "CodeCop", "AppSourceCop",
+    /// "UICop", "PerTenantCop"). Read the list to run through
+    /// [`AlConfig::effective_code_analyzers`], which also covers the unset case.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub code_analyzers: Vec<String>,
+
+    /// True when `al.codeAnalyzers` was present, so an empty list means "run
+    /// no analyzers" rather than "unset". Set by `merge` only and not
+    /// persisted.
+    #[serde(skip)]
+    pub code_analyzers_set: bool,
 
     // These settings are forwarded to the official alc backend.
     /// Enable external rulesets (local .ruleset.json files).
@@ -144,6 +153,9 @@ pub struct AlConfig {
 
     /// Optional per-document size cap in bytes.
     pub max_document_size_bytes: Option<usize>,
+
+    /// Threads for index building. `None` uses half the cores, between 2 and 4.
+    pub index_threads: Option<usize>,
 }
 
 /// Outcome of merging one batch of settings.
@@ -254,12 +266,8 @@ impl Default for AlConfig {
             background_code_analysis: true,
             diagnostics_scope: DiagnosticsScope::default(),
             diagnostics_trigger: DiagnosticsTrigger::default(),
-            code_analyzers: vec![
-                "CodeCop".to_string(),
-                "AppSourceCop".to_string(),
-                "UICop".to_string(),
-                "PerTenantCop".to_string(),
-            ],
+            code_analyzers: Vec::new(),
+            code_analyzers_set: false,
             enable_external_rulesets: false,
             rule_set_path: None,
             assembly_probing_paths: Vec::new(),
@@ -278,6 +286,7 @@ impl Default for AlConfig {
             incremental_build: false,
             use_official_compiler: None,
             max_document_size_bytes: None,
+            index_threads: None,
         }
     }
 }
@@ -287,6 +296,20 @@ impl Default for InlayHintConfig {
         Self {
             parameter_names: true,
             return_types: false,
+        }
+    }
+}
+
+impl AlConfig {
+    /// The analyzers to run for the project at `project_root`: the
+    /// `al.codeAnalyzers` list when the setting is present (an empty list runs
+    /// none), otherwise the default for the project's target.
+    #[must_use]
+    pub fn effective_code_analyzers(&self, project_root: &std::path::Path) -> Vec<String> {
+        if self.code_analyzers_set || !self.code_analyzers.is_empty() {
+            self.code_analyzers.clone()
+        } else {
+            crate::analyzers::default_code_analyzers(project_root)
         }
     }
 }
@@ -596,7 +619,12 @@ impl AlConfig {
                         }
                     }
                 }
-                "codeAnalyzers" => merge_string_array(obj, key, &mut self.code_analyzers),
+                "codeAnalyzers" => {
+                    merge_string_array(obj, key, &mut self.code_analyzers);
+                    if obj.get(key).is_some_and(|v| v.is_array()) {
+                        self.code_analyzers_set = true;
+                    }
+                }
                 "enableExternalRulesets" => {
                     merge_bool(obj, key, &mut self.enable_external_rulesets)
                 }
@@ -720,6 +748,14 @@ impl AlConfig {
                     },
                     None => {}
                 },
+                "indexThreads" => match obj.get(key) {
+                    Some(serde_json::Value::Null) => self.index_threads = None,
+                    Some(v) => match v.as_u64().filter(|n| *n >= 1) {
+                        Some(n) => self.index_threads = Some(n as usize),
+                        None => report.invalid_values.push(format!("indexThreads={v}")),
+                    },
+                    None => {}
+                },
                 _ => {
                     report.unknown_keys.push(key.clone());
                 }
@@ -786,6 +822,7 @@ fn is_al_setting_key(key: &str) -> bool {
             | "incrementalBuild"
             | "useOfficialCompiler"
             | "maxDocumentSizeBytes"
+            | "indexThreads"
     )
 }
 
@@ -842,6 +879,7 @@ fn validate_setting_shapes(
                         .and_then(|value| usize::try_from(value).ok())
                         .is_some()
             }
+            "indexThreads" => value.is_null() || value.as_u64().is_some_and(|value| value >= 1),
             _ => true,
         };
         if !valid {
@@ -989,10 +1027,8 @@ mod tests {
         let config = AlConfig::default();
         assert!(config.enable_code_analysis);
         assert!(config.background_code_analysis);
-        assert_eq!(
-            config.code_analyzers,
-            vec!["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]
-        );
+        assert!(config.code_analyzers.is_empty());
+        assert!(!config.code_analyzers_set);
         assert!(!config.enable_external_rulesets);
         assert!(config.rule_set_path.is_none());
         assert!(config.assembly_probing_paths.is_empty());
@@ -1163,10 +1199,8 @@ mod tests {
 
         assert!(!config.enable_code_analysis);
         assert!(config.background_code_analysis);
-        assert_eq!(
-            config.code_analyzers,
-            vec!["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]
-        );
+        assert!(config.code_analyzers.is_empty());
+        assert!(!config.code_analyzers_set);
     }
 
     #[test]
@@ -1564,6 +1598,24 @@ mod tests {
         }));
         assert!(!issues.is_empty());
         assert_eq!(config.code_analyzers, original);
+    }
+
+    #[test]
+    fn empty_code_analyzers_setting_is_explicit_and_unset_is_not() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("app.json"), "{}").unwrap();
+        let mut unset = AlConfig::default();
+        unset.merge(&serde_json::json!({}));
+        assert_eq!(
+            unset.effective_code_analyzers(root.path()),
+            ["CodeCop", "PerTenantExtensionCop", "UICop"]
+        );
+        let mut empty = AlConfig::default();
+        empty.merge(&serde_json::json!({"codeAnalyzers": []}));
+        assert!(empty.effective_code_analyzers(root.path()).is_empty());
+        let mut listed = AlConfig::default();
+        listed.merge(&serde_json::json!({"codeAnalyzers": ["UICop"]}));
+        assert_eq!(listed.effective_code_analyzers(root.path()), ["UICop"]);
     }
 
     #[test]

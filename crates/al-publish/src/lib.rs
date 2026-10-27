@@ -282,17 +282,14 @@ async fn run_compile(
         info!("Publishing with Microsoft alc");
     }
 
+    let analyzers = config.effective_code_analyzers(project_root);
     al_compile::build(al_compile::BuildRequest {
         project_root,
         backend,
         toolchain: toolchain.as_ref(),
         dependency_packages: Some(dependency_packages.as_slice()),
         package_cache: package_cache.as_deref(),
-        analyzers: if config.code_analyzers.is_empty() {
-            None
-        } else {
-            Some(config.code_analyzers.as_slice())
-        },
+        analyzers: Some(analyzers.as_slice()),
         config: al_compile::CompilationConfigOptions::from(&config),
     })
     .await

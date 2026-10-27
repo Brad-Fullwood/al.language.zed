@@ -306,17 +306,14 @@ pub(super) async fn compile(server: &AlServer) {
             timings: None,
         }
     } else {
+        let analyzers = config.effective_code_analyzers(&root);
         match al_compile::build(al_compile::BuildRequest {
             project_root: &root,
             backend,
             toolchain: toolchain.as_ref(),
             dependency_packages: Some(dependency_packages.as_slice()),
             package_cache: Some(&package_cache),
-            analyzers: if config.code_analyzers.is_empty() {
-                None
-            } else {
-                Some(config.code_analyzers.as_slice())
-            },
+            analyzers: Some(analyzers.as_slice()),
             config: al_compile::CompilationConfigOptions::from(&config),
         })
         .await
@@ -699,9 +696,8 @@ pub(super) async fn show_report(
     text.push_str(&String::from_utf8_lossy(&output.stdout));
     text.push_str(&String::from_utf8_lossy(&output.stderr));
 
-    let dir = dirs::cache_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("al-lsp")
+    let dir = al_types::cache_root()
+        .unwrap_or_else(|| std::env::temp_dir().join("al-lsp"))
         .join("reports");
     std::fs::create_dir_all(&dir)
         .map_err(|error| format!("cannot create {}: {error}", dir.display()))?;

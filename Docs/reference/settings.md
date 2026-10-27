@@ -23,7 +23,7 @@ without trust. Written in the clone it is dropped, with one message naming it, u
 | `al.backgroundCodeAnalysis` | boolean | `true` | ✅ |
 | `al.diagnosticsScope` | `project`\|`openFiles` | `project` | ✅ |
 | `al.diagnosticsTrigger` | `continuous`\|`onSave` | `continuous` | ✅ |
-| `al.codeAnalyzers` | string[] | `["CodeCop","AppSourceCop","UICop","PerTenantCop"]` | ✅ (incl. 3rd-party DLL paths), 🔒 entries that are not built-in tokens |
+| `al.codeAnalyzers` | string[] | unset: `["CodeCop","PerTenantExtensionCop","UICop"]`, or `["CodeCop","AppSourceCop","UICop"]` for an AppSource project (`AppSourceCop.json` in the project root, or every `app.json` ID range inside 1,000,000 to 74,999,999) | ✅ (incl. 3rd-party DLL paths), 🔒 entries that are not built-in tokens. A list you set always wins, `[]` runs none. Microsoft's VS Code extension has no default and runs no analyzer unless you list it |
 | `al.enableExternalRulesets` | boolean | `false` | ✅ official `alc` backend only |
 | `al.ruleSetPath` | string\|null | `null` | ✅ official `alc` backend only, 🔒 outside the project |
 | `al.assemblyProbingPaths` | string[] | `[]` | ✅ official `alc` backend, and the custom analyzer search for both backends, 🔒 |
@@ -85,6 +85,7 @@ setting for it.
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
 | `al.maxDocumentSizeBytes` | integer\|null | `null` | ✅ |
+| `al.indexThreads` | integer\|null | `null` (half the cores, at least 2, at most 4) | ✅ threads that build symbol indexes (Base Application and other `.app` packages). They run at nice 10 so the editor keeps the other cores. A change applies to the next index build |
 | `al.useOfficialLsp` | boolean | `false` | 🟡 run altool `launchlspserver` instead of al-lsp (ALTool v17+). Hover, definition, references, rename, formatting and completion only. See [language-server](../features/language-server.md#microsoft-comparison) |
 | `al.useOfficialDap` | boolean | `false` | ✅ use Microsoft `EditorServices.Host` (extension-side toggle) |
 
@@ -96,7 +97,7 @@ setting for it.
 For CI, custom templates, and troubleshooting: `AL_TOOL_PATH`, `AL_DOTNET_PATH`,
 `AL_TEMPLATES_DIR`, `AL_COMPILE_TIMEOUT_SECS`, `AL_LOG_FILE_LEVEL`, `AL_LSP_ALLOW_HTTP_FEED`,
 `AL_EDITOR_SERVICES_PATH`, `AL_BRIDGE_DIR`, `AL_ERROR_CODES_LIVE`, `AL_DAP_CAPTURE`,
-`AL_OAUTH_DISABLE_KEYRING`, and `AL_EXPLORER_PATH` (the `al-explorer` that
+`AL_OAUTH_DISABLE_KEYRING`, `AL_LSP_CACHE_DIR` (the al-lsp cache directory, default `<user cache dir>/al-lsp`), and `AL_EXPLORER_PATH` (the `al-explorer` that
 `experimental/runnables` answers name, by default the one beside `al-lsp`).
 
 Daemon and client:

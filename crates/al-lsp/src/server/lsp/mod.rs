@@ -1035,6 +1035,7 @@ impl LanguageServer for AlLsp {
                     );
                 }
                 let advisory = gate_repository_settings(root_uri.as_ref(), &mut config);
+                al_symbols::index_pool::set_index_threads(config.index_threads);
                 (config.max_document_size_bytes, advisory)
             };
             if let Some(advisory) = advisory {
@@ -1149,6 +1150,12 @@ impl LanguageServer for AlLsp {
         self.client
             .log_message(MessageType::INFO, "AL Language Server initialized")
             .await;
+
+        if let Some(warning) = crate::extension_build::startup_warning() {
+            self.client
+                .show_message(MessageType::WARNING, warning)
+                .await;
+        }
 
         let root_uri = self.root_uri.read().await.clone();
         tracing::info!(root_uri = ?root_uri, "initialized: spawning workspace init in background");
@@ -1770,6 +1777,7 @@ impl LanguageServer for AlLsp {
                 self.workspace
                     .documents
                     .set_max_doc_bytes(staged_config.max_document_size_bytes);
+                al_symbols::index_pool::set_index_threads(staged_config.index_threads);
                 self.semantic_diagnostic_cache.lock().await.clear();
                 self.workspace.mark_generation_changed();
                 drop(publication);
@@ -1812,6 +1820,7 @@ impl LanguageServer for AlLsp {
                 self.workspace
                     .documents
                     .set_max_doc_bytes(staged_config.max_document_size_bytes);
+                al_symbols::index_pool::set_index_threads(staged_config.index_threads);
                 tracing::info!("Configuration updated (no active AL project)");
                 self.refresh_diagnostics_after_configuration().await;
                 self.schedule_project_semantic(PROJECT_SEMANTIC_DEBOUNCE)

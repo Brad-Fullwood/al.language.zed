@@ -309,6 +309,19 @@ async fn run() {
 
     let args: Vec<String> = env::args().collect();
 
+    // The extension passes its build with `--extension-build`. A mismatch is
+    // logged here and shown once to the editor from `initialized`. Other
+    // flags are found with `args.iter().any`, so this one never fails an
+    // older binary or another client.
+    {
+        let identity = al_protocol::identity::current_identity();
+        let exe = env::current_exe().unwrap_or_default();
+        if let Some(message) = al_lsp::extension_build::mismatch_message(&args, &identity, &exe) {
+            tracing::warn!("{message}");
+            al_lsp::extension_build::set_startup_warning(message);
+        }
+    }
+
     #[cfg(unix)]
     let is_daemon_mode = args.iter().any(|a| a == "daemon");
     #[cfg(unix)]
@@ -484,14 +497,14 @@ async fn run() {
                 } else {
                     None
                 };
+                let analyzers = config.effective_code_analyzers(&project_root);
                 let result = al_compile::build(al_compile::BuildRequest {
                     project_root: &project_root,
                     backend,
                     toolchain: toolchain.as_ref(),
                     dependency_packages: Some(project.packages.as_slice()),
                     package_cache: Some(project.packages_dir.as_path()),
-                    analyzers: (!config.code_analyzers.is_empty())
-                        .then_some(config.code_analyzers.as_slice()),
+                    analyzers: Some(analyzers.as_slice()),
                     config: al_compile::CompilationConfigOptions::from(&config),
                 })
                 .await
@@ -574,6 +587,17 @@ async fn run() {
                 std::process::exit(1);
             }
         };
+        // A daemon for a directory without app.json has nothing to serve and idles for
+        // the full timeout. This happened when a client ran inside a Rust crate directory.
+        if !project_root.join("app.json").is_file() {
+            tracing::error!(path = %project_root.display(), "no app.json in the daemon project root, refusing to start");
+            eprintln!(
+                "al-lsp: {} has no app.json, so there is no AL project to serve. Start the daemon \
+                 with --project <directory that holds app.json>.",
+                project_root.display()
+            );
+            std::process::exit(2);
+        }
         let idle_timeout = match args.iter().position(|a| a == "--idle-timeout-secs") {
             None => None,
             Some(flag) => match args.get(flag + 1).and_then(|raw| raw.parse::<u64>().ok()) {

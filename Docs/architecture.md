@@ -67,6 +67,7 @@ graph TD
   al_project --> al_types
   al_project --> al_bc
   al_project --> al_semantic
+  al_semantic --> al_types
 
   al_insight --> al_symbols
   al_insight --> al_source

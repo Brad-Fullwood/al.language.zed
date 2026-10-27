@@ -377,12 +377,6 @@ fn resolve_analyzer_paths(
     project_root: &Path,
     assembly_probing_paths: &[PathBuf],
 ) -> Result<Vec<String>, AlError> {
-    let builtins = [
-        &toolchain.analyzers.code_cop,
-        &toolchain.analyzers.app_source_cop,
-        &toolchain.analyzers.ui_cop,
-        &toolchain.analyzers.per_tenant_cop,
-    ];
     let mut paths = Vec::<PathBuf>::new();
 
     if let Some(filter) = analyzer_filter {
@@ -429,9 +423,17 @@ fn resolve_analyzer_paths(
             }
         }
     } else {
-        for path in builtins {
-            if path.is_file() && !paths.contains(path) {
-                paths.push(path.clone());
+        // No analyzer list reached the build. Microsoft's AL extension has no
+        // default and runs none, so the set follows the project's target
+        // instead of every cop (AppSourceCop fails a per-tenant app).
+        // A cop missing from the toolchain is skipped, not an error.
+        for name in al_project::analyzers::default_code_analyzers(project_root) {
+            let path = al_project::analyzers::builtin_analyzer_path(&toolchain.analyzers, &name)
+                .filter(|path| path.is_file());
+            if let Some(path) = path {
+                if !paths.iter().any(|existing| existing == path) {
+                    paths.push(path.to_path_buf());
+                }
             }
         }
         for path in &toolchain.analyzers.custom {
@@ -996,6 +998,73 @@ mod tests {
             !ran_after_the_change,
             "a dotnet whose runtime changed after the grant must not run"
         );
+    }
+
+    /// Names (file stems with the cop prefix removed) of the analyzers a build
+    /// of `app_json` and `files` gets when no analyzer list is given.
+    fn default_cops(app_json: &str, files: &[&str]) -> Vec<String> {
+        let root = tempfile::tempdir().unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+        for cop in [
+            &toolchain.analyzers.code_cop,
+            &toolchain.analyzers.app_source_cop,
+            &toolchain.analyzers.ui_cop,
+            &toolchain.analyzers.per_tenant_cop,
+        ] {
+            std::fs::write(cop, b"").unwrap();
+        }
+        std::fs::write(root.path().join("app.json"), app_json).unwrap();
+        for file in files {
+            std::fs::write(root.path().join(file), b"{}").unwrap();
+        }
+        resolve_analyzer_paths(&toolchain, None, root.path(), &[])
+            .unwrap()
+            .iter()
+            .map(|path| {
+                Path::new(path)
+                    .file_stem()
+                    .unwrap()
+                    .to_string_lossy()
+                    .trim_start_matches("Microsoft.Dynamics.Nav.")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    const PTE_APP: &str = r#"{"idRanges":[{"from":50200,"to":50900}]}"#;
+
+    #[test]
+    fn default_analyzers_of_a_per_tenant_app_leave_out_appsourcecop() {
+        let cops = default_cops(PTE_APP, &[]);
+        assert_eq!(cops, ["CodeCop", "PerTenantExtensionCop", "UICop"]);
+    }
+
+    #[test]
+    fn default_analyzers_follow_appsourcecop_json() {
+        let cops = default_cops(PTE_APP, &["AppSourceCop.json"]);
+        assert_eq!(cops, ["CodeCop", "AppSourceCop", "UICop"]);
+    }
+
+    #[test]
+    fn default_analyzers_follow_an_appsource_id_range() {
+        let app = r#"{"idRanges":[{"from":70000000,"to":70000100}]}"#;
+        assert_eq!(default_cops(app, &[]), ["CodeCop", "AppSourceCop", "UICop"]);
+        let mixed = r#"{"idRanges":[{"from":70000000,"to":70000100},{"from":50100,"to":50200}]}"#;
+        assert!(!default_cops(mixed, &[]).contains(&"AppSourceCop".to_string()));
+    }
+
+    #[test]
+    fn explicit_analyzer_list_wins_over_the_project_default() {
+        let root = tempfile::tempdir().unwrap();
+        let toolchain = analyzer_test_toolchain(root.path());
+        std::fs::write(&toolchain.analyzers.code_cop, b"").unwrap();
+        std::fs::write(root.path().join("app.json"), PTE_APP).unwrap();
+        let only_code =
+            resolve_analyzer_paths(&toolchain, Some(&["CodeCop".to_string()]), root.path(), &[])
+                .unwrap();
+        assert_eq!(only_code.len(), 1);
+        let none = resolve_analyzer_paths(&toolchain, Some(&[]), root.path(), &[]).unwrap();
+        assert!(none.is_empty());
     }
 
     #[test]

@@ -128,10 +128,12 @@ pub(super) fn load_package_batch_via_cache(
 ) -> Vec<CachedPackageLoad> {
     use rayon::prelude::*;
 
-    paths
-        .par_iter()
-        .map(|path| load_package_via_cache(path.as_ref(), cache))
-        .collect()
+    crate::index_pool::index_pool().install(|| {
+        paths
+            .par_iter()
+            .map(|path| load_package_via_cache(path.as_ref(), cache))
+            .collect()
+    })
 }
 
 pub(super) fn prewarm_source_index(path: &Path) {
@@ -212,22 +214,24 @@ impl SymbolIndex {
         // so duplicate versions of one package could interleave and leave both
         // copies indexed. Keeping the expensive ZIP/JSON work parallel while
         // applying results in input order is deterministic and idempotent.
-        let parsed: Vec<_> = paths
-            .par_iter()
-            .map(|path| {
-                let path = path.as_ref();
-                match app_reader::read_app_file(path) {
-                    Ok(pkg) => {
-                        prewarm_source_index(path);
-                        Ok((path.to_path_buf(), pkg))
+        let parsed: Vec<_> = crate::index_pool::index_pool().install(|| {
+            paths
+                .par_iter()
+                .map(|path| {
+                    let path = path.as_ref();
+                    match app_reader::read_app_file(path) {
+                        Ok(pkg) => {
+                            prewarm_source_index(path);
+                            Ok((path.to_path_buf(), pkg))
+                        }
+                        Err(error) => Err(PackageLoadFailure {
+                            path: path.to_path_buf(),
+                            message: error.to_string(),
+                        }),
                     }
-                    Err(error) => Err(PackageLoadFailure {
-                        path: path.to_path_buf(),
-                        message: error.to_string(),
-                    }),
-                }
-            })
-            .collect();
+                })
+                .collect()
+        });
         let parsed = newest_per_identity(complete_package_batch(parsed)?, |(_, pkg)| pkg);
 
         let mut results = Vec::with_capacity(parsed.len());
