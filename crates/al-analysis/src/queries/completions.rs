@@ -194,7 +194,11 @@ pub fn completions_native(
             // Include implicit trigger variables (Rec, xRec, CurrPage, etc.) in the
             // default context. A dedicated TriggerBody detection pass would be needed
             // to offer these only inside trigger bodies, but default context is safe.
+            let object_kind = enclosing_object_kind(workspace, uri, position);
             for var in al_syntax::language_data::implicit_variables() {
+                if !implicit_variable_applies(&var.name, object_kind.as_deref()) {
+                    continue;
+                }
                 items.push(CompletionEntry {
                     label: var.name.clone(),
                     kind: CompletionKind::Variable,
@@ -205,6 +209,9 @@ pub fn completions_native(
                 });
             }
             add_default_completions(workspace, uri, position, &mut items)?;
+            // The type resolver also lists CurrPage and CurrReport as trigger
+            // variables for every object kind, so filter the merged list.
+            items.retain(|item| implicit_variable_applies(&item.label, object_kind.as_deref()));
         }
     }
 
@@ -329,6 +336,43 @@ pub async fn completions_full(
             insert_text: None,
         })
         .collect())
+}
+
+/// Keyword of the object declaration that contains `position` (`codeunit`,
+/// `pageextension`, ...), or `None` outside every object.
+///
+/// Routes checked: `TypeResolver::find_enclosing_object` has the same lookup
+/// but is private and returns a node, and journey-23 (c4d00747) added no
+/// enclosing-object detection. The resolver also pushes CurrPage and CurrReport
+/// for every object kind, so there is no per-kind knowledge to reuse.
+fn enclosing_object_kind(workspace: &Workspace, uri: &Url, position: Position) -> Option<String> {
+    let (_, tree) = al_source::parsing::get_or_parse(&workspace.documents, uri)?;
+    let row = position.line as usize;
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    let object = root
+        .children(&mut cursor)
+        .filter(|child| child.kind() == "object_declaration")
+        .find(|child| child.start_position().row <= row && row <= child.end_position().row)?;
+    let kind = object.child_by_field_name("kind")?.kind();
+    Some(
+        kind.strip_prefix("kw_")
+            .unwrap_or(kind)
+            .to_ascii_lowercase(),
+    )
+}
+
+/// CurrPage exists only in pages and page extensions, CurrReport only in
+/// reports and report extensions. Other implicit variables are unfiltered.
+fn implicit_variable_applies(name: &str, object_kind: Option<&str>) -> bool {
+    let allowed: &[&str] = if name.eq_ignore_ascii_case("CurrPage") {
+        &["page", "pageextension"]
+    } else if name.eq_ignore_ascii_case("CurrReport") {
+        &["report", "reportextension"]
+    } else {
+        return true;
+    };
+    object_kind.is_some_and(|kind| allowed.contains(&kind))
 }
 
 fn add_default_completions(
@@ -1177,5 +1221,62 @@ mod tests {
         for type_name in ["Integer", "Record", "IntegerClass", "CodeunitInstance"] {
             assert!(!has(type_name), "{type_name} cannot start a statement");
         }
+    }
+
+    fn implicit_labels(source: &str, line: u32, character: u32) -> Vec<String> {
+        let ws = Workspace::new();
+        let uri = test_uri();
+        ws.documents.open(uri.clone(), source.to_string()).unwrap();
+        completions_native(&ws, &uri, Position { line, character })
+            .unwrap()
+            .into_iter()
+            .map(|i| i.label)
+            .collect()
+    }
+
+    fn assert_curr(source: &str, line: u32, curr_page: bool, curr_report: bool) {
+        let labels = implicit_labels(source, line, 8);
+        assert_eq!(
+            labels.iter().any(|l| l == "CurrPage"),
+            curr_page,
+            "CurrPage"
+        );
+        assert_eq!(
+            labels.iter().any(|l| l == "CurrReport"),
+            curr_report,
+            "CurrReport"
+        );
+    }
+
+    /// Journey-23: CurrPage and CurrReport are offered only in their object kinds.
+    #[test]
+    fn codeunit_offers_neither_curr_page_nor_curr_report() {
+        let src = "codeunit 50100 X\n{\n    procedure P()\n    begin\n        \n    end;\n}\n";
+        assert_curr(src, 4, false, false);
+    }
+
+    #[test]
+    fn page_offers_curr_page_only() {
+        let src = "page 50100 X\n{\n    trigger OnOpenPage()\n    begin\n        \n    end;\n}\n";
+        assert_curr(src, 4, true, false);
+    }
+
+    #[test]
+    fn page_extension_offers_curr_page_only() {
+        let src = "pageextension 50100 X extends \"Customer Card\"\n{\n    trigger OnOpenPage()\n    begin\n        \n    end;\n}\n";
+        assert_curr(src, 4, true, false);
+    }
+
+    #[test]
+    fn report_offers_curr_report_only() {
+        let src =
+            "report 50100 X\n{\n    trigger OnPreReport()\n    begin\n        \n    end;\n}\n";
+        assert_curr(src, 4, false, true);
+    }
+
+    #[test]
+    fn report_extension_offers_curr_report_only() {
+        let src = "reportextension 50100 X extends \"Standard Sales - Invoice\"\n{\n    trigger OnPreReport()\n    begin\n        \n    end;\n}\n";
+        assert_curr(src, 4, false, true);
     }
 }
