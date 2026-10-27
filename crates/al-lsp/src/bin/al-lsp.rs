@@ -566,6 +566,17 @@ async fn run() {
                 std::process::exit(1);
             }
         };
+        // A daemon for a directory without app.json has nothing to serve and idles for
+        // the full timeout. This happened when a client ran inside a Rust crate directory.
+        if !project_root.join("app.json").is_file() {
+            tracing::error!(path = %project_root.display(), "no app.json in the daemon project root, refusing to start");
+            eprintln!(
+                "al-lsp: {} has no app.json, so there is no AL project to serve. Start the daemon \
+                 with --project <directory that holds app.json>.",
+                project_root.display()
+            );
+            std::process::exit(2);
+        }
         let idle_timeout = match args.iter().position(|a| a == "--idle-timeout-secs") {
             None => None,
             Some(flag) => match args.get(flag + 1).and_then(|raw| raw.parse::<u64>().ok()) {
