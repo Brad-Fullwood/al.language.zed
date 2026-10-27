@@ -25,15 +25,15 @@ LSP_BIN := $(TARGET_DIR)/debug/al-lsp
 EXPLORER_BIN := $(TARGET_DIR)/debug/al-explorer
 # al-explorer and the `al` alias for the terminal. al-lsp is copied here too
 # for terminal use, but the extension does not look here.
-INSTALL_DIR := $(HOME)/.local/bin
+INSTALL_DIR ?= $(HOME)/.local/bin
 UNAME_S := $(shell uname -s)
 # Zed's dev-extension directory is platform-specific: XDG data dir on Linux,
 # Application Support on macOS (a supported dev platform per CI/README).
 ifeq ($(UNAME_S),Darwin)
-ZED_EXT_DIR := $(HOME)/Library/Application Support/Zed/extensions/installed
+ZED_EXT_DIR ?= $(HOME)/Library/Application Support/Zed/extensions/installed
 ZED_WORK_DIR ?= $(HOME)/Library/Application Support/Zed/extensions/work/al
 else
-ZED_EXT_DIR := $(HOME)/.local/share/zed/extensions/installed
+ZED_EXT_DIR ?= $(HOME)/.local/share/zed/extensions/installed
 # The extension's work directory: the extension resolves al-lsp from
 # $(ZED_WORK_DIR)/dev first (see Docs/features/language-server.md).
 ZED_WORK_DIR ?= $(HOME)/.local/share/zed/extensions/work/al
@@ -41,7 +41,7 @@ endif
 
 # .NET bridge projects (quoted for paths with spaces)
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
-WASM_BIN := $(ROOT)/target/wasm32-wasip2/release/zed_al.wasm
+WASM_BIN := $(TARGET_DIR)/wasm32-wasip2/release/zed_al.wasm
 
 .PHONY: build install install-lsp install-files install-status dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate plugin-evals clean
 

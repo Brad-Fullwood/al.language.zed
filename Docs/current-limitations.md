@@ -128,8 +128,8 @@ live in [ROADMAP.md](../ROADMAP.md).
   cannot be the one to refuse it.
 - So the extension ignores `binary.path`, `binary.arguments` and the debug
   adapter path outright, whoever wrote them. al-lsp is chosen by the extension:
-  the session cache, then `al-lsp` on `PATH`, then the cached or downloaded
-  release. Its arguments come from `al.useOfficialLsp`, which is an inert
+  the managed `dev/al-lsp` copy that `make install` writes, then the session
+  cache, then the release tagged with the extension's version. Its arguments come from `al.useOfficialLsp`, which is an inert
   toggle between two spellings the extension itself holds.
   `settings::resolve_server_launch` is the decision, and
   `settings_test::settings_cannot_choose_the_language_server_program_or_its_arguments`
@@ -138,8 +138,10 @@ live in [ROADMAP.md](../ROADMAP.md).
   `BinarySettings` carries `path` and `arguments` only. It is in the trust
   digest anyway, so a newer API that exposes it does not silently widen an
   existing record.
-- To run a specific `al-lsp` build, put it on `PATH`. A `binary.path` in user
-  settings no longer chooses it, which is the cost of the rule.
+- To run a specific `al-lsp` build, run `make install`: it copies the build to
+  `dev/` in the extension's work directory, which the extension reads first. `al-lsp`
+  on `PATH` is not consulted. A `binary.path` in user settings no longer chooses
+  it, which is the cost of the rule.
 - `dotnetPath` is different, because al-lsp is already running when it matters,
   and al-lsp can read the repository's files. The extension filters by location
   (`settings::is_worktree_resident_program`: a relative path, or an absolute

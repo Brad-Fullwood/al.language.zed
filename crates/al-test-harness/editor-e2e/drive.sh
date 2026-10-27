@@ -113,8 +113,8 @@ fi
 
 EXTRA_ENV=()
 # `target` is often a symlink to a build cache outside the repo. Inside the
-# container that link dangles, so Zed would not find target/debug/al-lsp and
-# the extension would download a released al-lsp instead. Mount the real
+# container that link dangles, so run-zed.sh could not copy target/debug/al-lsp
+# into the extension work dir. Mount the real
 # directory at its host path so the link resolves.
 if [[ -L "$ROOT/target" ]]; then
   TARGET_REAL="$(readlink -f "$ROOT/target")"
@@ -152,7 +152,8 @@ rm -rf "$OUTDIR"
 ok=1
 [[ -f "$OUT" ]] || { echo "FAIL: screenshot not retrieved to $OUT"; ok=0; }
 case "$MODE" in
-  zed)     grep -q "AL_LSP_PROCS: 1" "$LOG" || { echo "FAIL: al-lsp did not start inside Zed"; ok=0; } ;;
+  zed)     grep -q "AL_LSP_PROCS: 1" "$LOG" || { echo "FAIL: al-lsp did not start inside Zed"; ok=0; }
+           grep -q "AL_LSP_DEV: 1" "$LOG"   || { echo "FAIL: the running al-lsp is not the managed dev/ copy"; ok=0; } ;;
   vscode)  grep -q "SHOT:" "$LOG"           || { echo "FAIL: VS Code did not render"; ok=0; } ;;
   compare) grep -q "COMPARE:" "$LOG"        || { echo "FAIL: comparison image not produced"; ok=0; } ;;
 esac

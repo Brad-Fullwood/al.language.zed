@@ -106,8 +106,8 @@ In practice the editor and CLI answer most questions from indexes already built,
 ## MCP Automation
 
 The extension registers a Zed context server named `AL Tools`, which launches `al-lsp mcp`. It uses
-the binary LSP or DAP already resolved in this Zed session (which may be the one on `PATH`),
-otherwise a downloaded release, the same way as step 3 of the resolution order under
+the binary LSP or DAP already resolved in this Zed session (the `dev/` copy or the matching
+release), the same way as the two steps of the resolution order under
 [Zed Integration](#zed-integration). The MCP server speaks newline-delimited JSON-RPC over stdio and
 forwards tool calls into the same daemon dispatcher used by the CLI.
 
@@ -296,19 +296,31 @@ The extension manifest registers:
 
 The Zed extension resolves `al-lsp` in this order:
 
-1. An in-memory cache from an earlier resolution in the same Zed session.
-2. `al-lsp` on `PATH`.
-3. The latest GitHub release. The extension looks up the latest release version,
-   uses the downloaded copy of that version if one is on disk (and removes older
-   downloads), and otherwise downloads the asset for the current platform. When
-   the lookup fails, as it does offline, it starts the newest download already on
-   disk.
+1. The managed copy `dev/al-lsp` in the extension's work directory
+   (`~/.local/share/zed/extensions/work/al` on Linux,
+   `~/Library/Application Support/Zed/extensions/work/al` on macOS). `make install`
+   writes it, together with `dev/al-explorer`, `dev/bridge` and `dev/BUILD`, which
+   holds the `al-lsp --version` line of the copy.
+2. The GitHub release tagged with the extension's own version (`v` plus the
+   version in `extension.toml`, never the latest release). This is the route for
+   an extension installed from Zed's extension list. The extension uses the
+   download already on disk if there is one, deletes the directories of other
+   versions, and otherwise downloads the asset for the current platform. When the
+   release is missing or the download fails it reports one error that names the
+   version and both routes: `make install` from the repository, or a release that
+   matches.
+
+`al-lsp` on `PATH` is not consulted. Every launch the extension builds (language
+server, debug adapter, AL Tools) passes `--extension-build <version>+git.<commit>`.
+`al-lsp` compares that with its own build. On a mismatch it logs one line at start and
+shows one warning after `initialize`: which `al-lsp` build runs, from which path, and
+which extension build it does not match. No flag, or the same version and commit, is silent.
 
 `lsp.al-lsp.binary.path`, `lsp.al-lsp.binary.arguments` and the debug adapter path
 are not in that list. Zed hands the extension one value with a worktree's
 `.zed/settings.json` merged into the user's own, and those keys name a program
-and its command line, so a clone could choose what runs on open. `PATH` is how
-you point at a specific build. See
+and its command line, so a clone could choose what runs on open. `make install`
+and its `dev/` copy is how you point at a specific build. See
 [current limitations](Docs/current-limitations.md#zed-worktree-settings-and-executable-paths).
 
 ### LSP Features
@@ -476,7 +488,8 @@ expectation. LSP commands and the **AL Tools** MCP server cover the same operati
 
 ## Zed Settings
 
-To run a build of your own, put it on `PATH`. The extension ignores
+To run a build of your own, run `make install` in the extension repository. It
+copies the build to `dev/` in the extension's work directory. The extension ignores
 `lsp.al-lsp.binary.path` and `lsp.al-lsp.binary.arguments`.
 
 Common AL settings:
