@@ -80,6 +80,17 @@ fn entrypoints_text(result: &serde_json::Value) -> String {
     out
 }
 
+/// The size and cap in the daemon's "Graph too large to export" error.
+fn graph_cap_counts(message: &str) -> Option<(u64, u64)> {
+    let rest = message
+        .split("Graph too large to export in one response: ")
+        .nth(1)?;
+    let (size, rest) = rest.split_once(" nodes+edges")?;
+    let cap = rest.split("exceeds cap of ").nth(1)?;
+    let cap = cap.split(|c: char| !c.is_ascii_digit()).next()?;
+    Some((size.trim().parse().ok()?, cap.parse().ok()?))
+}
+
 pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
@@ -87,7 +98,24 @@ pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
     };
 
     let params = serde_json::json!({ "format": format });
-    match request_checked(&mut client, "graphExport", Some(params)) {
+    let mut outcome = request_checked(&mut client, "graphExport", Some(params));
+    // Without --scope the daemon exports every loaded package, which is over its
+    // cap for a project with Base Application. Fall back to the workspace part
+    // and say so. An explicit --scope keeps the daemon's error. The daemon stays
+    // strict because MCP callers get the error text that names the cap.
+    if !super::scope_requested()
+        && let Err(message) = &outcome
+        && let Some(counts) = graph_cap_counts(message)
+    {
+        let (size, cap): (u64, u64) = counts;
+        eprintln!(
+            "graph: the full graph has {size} nodes+edges, over the cap of {cap}. \
+             Exporting scope workspace instead (use --scope packages to choose another scope)."
+        );
+        let params = serde_json::json!({ "format": format, "scope": "workspace" });
+        outcome = request_checked(&mut client, "graphExport", Some(params));
+    }
+    match outcome {
         Ok(result) => {
             if format == "dot" {
                 if let Some(content) = result.get("content").and_then(|v| v.as_str()) {
@@ -768,5 +796,19 @@ mod terminal_text_tests {
             [serde_json::json!({"k": "Codeunit", "n": TITLE, "type": "call", "proc": CLEAR})];
         let text = impact_text(COLOURED, &serde_json::json!({}), &impacted);
         assert_escaped(&text);
+    }
+}
+
+#[cfg(test)]
+mod graph_cap_tests {
+    use super::graph_cap_counts;
+
+    #[test]
+    fn reads_the_size_and_cap_from_the_daemon_error() {
+        // Text as built in al-lsp insight_dispatch.rs for graphExport.
+        let message = "Graph too large to export in one response: 123456 nodes+edges \
+                       exceeds cap of 50000. Export the workspace part with scope 'workspace'.";
+        assert_eq!(graph_cap_counts(message), Some((123_456, 50_000)));
+        assert_eq!(graph_cap_counts("some other error"), None);
     }
 }
