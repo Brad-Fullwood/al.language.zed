@@ -13,10 +13,6 @@ use serde::Deserialize;
 use std::time::{Duration, SystemTime};
 use tracing::{debug, info};
 
-/// The AL extension's public client, the default in Microsoft's own client
-/// (CloudHttpClientFactory.cs:228). The Azure CLI client this module used
-/// before is still reachable through `BC_CLIENT_ID`.
-
 /// Upper bound on the device-code polling interval. Each `slow_down` response
 /// from the token endpoint bumps the interval by 5s; without a cap a buggy or
 /// hostile server could push the interval arbitrarily high (stalling sign-in

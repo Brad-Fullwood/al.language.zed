@@ -360,14 +360,14 @@ fn path_dependency_check_rejects_unreadable_package_inventory() {
 fn effective_feeds_honor_custom_and_only_flags() {
     let mut cfg = al_project::config::AlConfig::default();
     let feeds = effective_nuget_feeds(&cfg);
-    assert_eq!(feeds.len(), 3, "the three public Microsoft feeds");
+    assert_eq!(feeds.len(), 4, "the four public Microsoft feeds");
 
     cfg.nuget_feeds = vec![al_project::config::NuGetFeedConfig {
         name: "corp".into(),
         url: "https://nuget.corp.example/v3/index.json".into(),
     }];
     let feeds = effective_nuget_feeds(&cfg);
-    assert_eq!(feeds.len(), 4);
+    assert_eq!(feeds.len(), 5);
     assert_eq!(
         feeds[0].index_url,
         "https://nuget.corp.example/v3/index.json"

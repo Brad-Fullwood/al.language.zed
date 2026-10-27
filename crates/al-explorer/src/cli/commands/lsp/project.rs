@@ -435,7 +435,7 @@ fn login_in_process(
             if json {
                 print_json(&result);
             } else {
-                eprintln!("Authenticated to tenant {tenant}.");
+                eprintln!("Authenticated to tenant {}.", terminal_text(&tenant));
             }
             ExitCode::SUCCESS
         }
