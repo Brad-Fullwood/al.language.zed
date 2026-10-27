@@ -815,7 +815,9 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
     let (target, features) = match &config.template {
         ProjectTemplate::AppSourceApp => (
             "Cloud",
-            serde_json::json!(["NoImplicitWith", "GenerateCaptions"]),
+            // GenerateCaptions only writes a .g.xlf when TranslationFile is on too,
+            // otherwise alc reports AL1059.
+            serde_json::json!(["NoImplicitWith", "TranslationFile", "GenerateCaptions"]),
         ),
         ProjectTemplate::Api => ("Cloud", serde_json::json!(["NoImplicitWith"])),
         _ => (
@@ -824,7 +826,7 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
         ),
     };
 
-    let mut manifest = serde_json::json!({
+    let manifest = serde_json::json!({
         "id": config.id,
         "name": config.name,
         "publisher": config.publisher,
@@ -851,13 +853,8 @@ fn generate_app_json(config: &ScaffoldConfig) -> Result<String, String> {
         "features": features
     });
 
-    if matches!(
-        &config.template,
-        ProjectTemplate::Copilot | ProjectTemplate::Agent
-    ) {
-        manifest["capabilities"] = serde_json::json!(["AzureOpenAI"]);
-    }
-
+    // No "capabilities": alc 18.1 deprecates it from runtime 4.0 (AL0667) and
+    // Microsoft's own copilot and agent app.json templates omit it.
     serde_json::to_string_pretty(&manifest)
         .map_err(|e| format!("Failed to serialize app.json: {e}"))
 }
@@ -1084,9 +1081,9 @@ fn generate_copilot_codeunit(config: &ScaffoldConfig) -> String {
 
     local procedure GetApiKey(): SecretText
     var
-        Key: SecretText;
+        ApiKey: SecretText;
     begin
-        exit(Key);
+        exit(ApiKey);
     end;
 }}
 "#
@@ -1210,10 +1207,13 @@ fn generate_api_page(config: &ScaffoldConfig) -> String {
     )
 }
 
+/// Only properties of `syntaxes/appSourceCopSyntax.json` (AL 18.1), which sets
+/// `additionalProperties: false`. The analyzer list lives in
+/// `.vscode/settings.json`. `mandatoryAffixes` stays empty because the affix is
+/// registered with Microsoft per publisher and cannot be derived from the name.
 fn generate_app_source_cop_json() -> Result<String, String> {
     serde_json::to_string_pretty(&serde_json::json!({
         "mandatoryAffixes": [],
-        "mandatoryAnalyzers": ["AppSourceCop", "PerTenantExtensionCop", "UICop"],
         "obsoleteTagMinAllowedMajorMinor": "14.0"
     }))
     .map_err(|e| format!("Failed to serialize AppSourceCop.json: {e}"))
@@ -1763,14 +1763,69 @@ mod tests {
     }
 
     #[test]
-    fn copilot_app_json_has_capability() {
+    fn app_json_has_no_deprecated_capabilities() {
+        for template in [ProjectTemplate::Copilot, ProjectTemplate::Agent] {
+            let config = ScaffoldConfig {
+                template,
+                ..Default::default()
+            };
+            let json = generate_app_json(&config).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+            assert!(parsed.get("capabilities").is_none());
+        }
+    }
+
+    #[test]
+    fn appsource_features_pair_captions_with_translation_file() {
+        let config = ScaffoldConfig {
+            template: ProjectTemplate::AppSourceApp,
+            ..Default::default()
+        };
+        let parsed: serde_json::Value =
+            serde_json::from_str(&generate_app_json(&config).unwrap()).unwrap();
+        let features = parsed["features"].as_array().unwrap();
+        assert!(features.contains(&"TranslationFile".into()));
+        assert!(features.contains(&"GenerateCaptions".into()));
+    }
+
+    #[test]
+    fn app_source_cop_json_only_has_schema_properties() {
+        // Property names of syntaxes/appSourceCopSyntax.json in AL 18.1.
+        const SCHEMA: &[&str] = &[
+            "name",
+            "publisher",
+            "version",
+            "baselinePackageCachePath",
+            "sourceMovedObjectsPackagesCachePath",
+            "mandatoryAffixes",
+            "mandatoryPrefix",
+            "mandatorySuffix",
+            "supportedCountries",
+            "targetVersion",
+            "obsoleteTagVersion",
+            "obsoleteTagAllowedVersions",
+            "obsoleteTagPattern",
+            "obsoleteTagPatternDescription",
+            "obsoleteTagMinAllowedMajorMinor",
+            "obsoleteTagMinAllowedMajorMinorOnSourceSymbols",
+            "validateInternalSymbols",
+            "validateOnPremSymbols",
+            "validateObsoleteSymbols",
+        ];
+        let parsed: serde_json::Value =
+            serde_json::from_str(&generate_app_source_cop_json().unwrap()).unwrap();
+        for key in parsed.as_object().unwrap().keys() {
+            assert!(SCHEMA.contains(&key.as_str()), "{key} is not in the schema");
+        }
+    }
+
+    #[test]
+    fn copilot_template_uses_no_keyword_as_a_variable() {
         let config = ScaffoldConfig {
             template: ProjectTemplate::Copilot,
             ..Default::default()
         };
-        let json = generate_app_json(&config).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(parsed["capabilities"].is_array());
+        assert!(!generate_copilot_codeunit(&config).contains("        Key:"));
     }
 
     #[test]

@@ -23,11 +23,11 @@ Templates:
 | Template | Produces |
 | --- | --- |
 | `default` / `pte` | starter `HelloWorld.Codeunit.al` |
-| `appsource` | starter codeunit + `AppSourceCop.json` |
+| `appsource` | starter codeunit, `AppSourceCop.json` (schema properties only) and the `TranslationFile` + `GenerateCaptions` features |
 | `library` | a library codeunit |
 | `test` | a test codeunit with `[Test]` procedures |
-| `copilot` | a Copilot capability enum extension, a participant codeunit and an Azure OpenAI codeunit |
-| `agent` | Agent orchestration + job-handler codeunits |
+| `copilot` | a Copilot capability enum extension, a participant codeunit that calls the Azure OpenAI codeunit (endpoint and key left empty) and a prompt helper codeunit. No `capabilities` entry in app.json (deprecated from runtime 4.0) |
+| `agent` | two plain codeunits, an entry point and a job handler that echoes its input. It uses no Agent API and does not call a model |
 | `api` | a REST API page |
 
 ## Object generators (`generators.rs`)
@@ -65,7 +65,7 @@ sourcing/installing into the shell's completion directory. See the
 
 | Aspect | This project | Microsoft AL extension |
 | --- | --- | --- |
-| New project | ✅ + Copilot/Agent/API templates | ✅ (`AL: Go!`, fewer templates) |
+| New project | ✅ + Copilot and API templates, and an `agent` starter of two plain codeunits (no Agent API) | ✅ (`AL: Go!`, fewer templates) |
 | Page/report/test generators | ✅ CLI and daemon | partial (snippets, some wizards) |
 | Permission-set generation | ✅ (AL + XML, from objects) | ❌ (manual / generated permission set object) |
 
