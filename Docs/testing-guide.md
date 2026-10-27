@@ -13,7 +13,7 @@ real output (or inspect the screenshot), not just an exit code.
 | tree-sitter grammar or generator | Grammar crate/generator tests, fixture build, and `tree-sitter-al/tests/run_repo_tests.sh` |
 | `languages/al/*.scm`, `extension.toml`, language-server wiring, in-editor behavior | GUI e2e: `crates/al-test-harness/editor-e2e/drive.sh`, then **open the screenshot** |
 | Native `.app` emit / `alc` / live semantic bridge | env-gated harness tests with `AL_TOOL_PATH=…` (see below) |
-| Publish/install and native DAP | strict live service profile: `make live-bc-contracts` (see below). Live-routed tests and test snapshots cannot run until the TestRunnerHub client exists, see `testing-01-live-bc-dev-tests-endpoint-invented.md` |
+| Publish/install and native DAP | strict live service profile: `make live-bc-contracts` (see below). The live test run step is reported as SKIP until the TestRunnerHub client exists, see `testing-01-live-bc-dev-tests-endpoint-invented.md` |
 | Generated artifacts (`languages/al`, grammar, themes) | `make repro-artifacts` (and `scripts/check-release-hygiene.sh`) |
 | Anything you intend to release | `make release-dryrun` |
 
@@ -229,11 +229,11 @@ contract instead:
 ```bash
 AL_LIVE_BC_PROJECT=/absolute/path/to/live-test-app \
 AL_LIVE_BC_CONFIG='BC Online Sandbox' \
-AL_LIVE_BC_TEST_CODEUNIT_ID=50100 \
+AL_LIVE_BC_TEST_CODEUNIT_ID=98100 \
 AL_LIVE_BC_TEST_CODEUNIT_NAME='Live Contract Tests' \
 AL_LIVE_BC_TEST_METHOD='PublishDebugAndSnapshot' \
 AL_LIVE_BC_BREAKPOINT_FILE='src/LiveContractTests.Codeunit.al' \
-AL_LIVE_BC_BREAKPOINT_LINE=24 \
+AL_LIVE_BC_BREAKPOINT_LINE=13 \
 AL_LIVE_BC_EVAL='ObservedValue' \
 AL_LIVE_BC_EXPECT_EVAL='42' \
 AL_LIVE_BC_VERSION='26.5.0.0' \
@@ -241,27 +241,59 @@ BC_ACCESS_TOKEN='<headless AAD bearer token>' \
   make live-bc-contracts
 ```
 
-Running the test needs a client for BC's SignalR TestRunnerHub, which is not built yet (`testing-01-live-bc-dev-tests-endpoint-invented.md`), so the test-run and snapshot steps below fail until it is. The custom test must route to live BC, invoke the supplied breakpoint, have a
-second executable statement for step-over, expose at least one local, and be
-deterministic at the captured sample. The profile:
+The test runs six named steps. Every step runs, each reports PASS, FAIL or
+SKIP(reason) with the BC API it hits, and the test fails if any step FAILs. A
+summary table is printed at the end. Every `al-explorer` call the test makes
+carries `--tenant`. A custom project needs the same pieces as the fixture: a
+test codeunit with the supplied breakpoint, and an API page
+(`src/LiveContractApi.Page.al`, with a `LIVE_BC_SNAPPOINT` marker line inside
+code that runs on every read) so snapshot debugging and profiling have AL code
+to capture and sample.
 
-1. Builds the current `al-lsp` and `al-explorer` binaries.
-2. Runs the shared publish pipeline and requires BC to report a completed
-   upload/install step.
-3. Drives native DAP over its real `Content-Length` transport through
+1. **publish** (`POST dev/apps`): the shared publish pipeline, which must report
+   a completed upload/install step. The symbol download runs first so the
+   compile finds the base app.
+2. **DAP attach**: native DAP over its real `Content-Length` transport through
    initialize, launch compile/publish/attach, verified breakpoint, threads,
    stack, scopes, locals, evaluate, step, continue, and disconnect.
-4. Runs the exact test through the BC test API and proves the CLI reports the
-   `liveBc` routing decision.
-5. Captures a live breakpoint snapshot, validates it, replays it against the
-   declared BC version with zero divergences, and self-diffs the persisted file.
+3. **live test run**: SKIP with the testing-01 reason, because running the
+   test needs a client for BC's SignalR TestRunnerHub, which is not built yet
+   (`testing-01-live-bc-dev-tests-endpoint-invented.md`).
+4. **snapshot debugging** (`snapshotdebugger/attach|status|finish`): start with
+   `--break-on-next WebServiceClient` and a snappoint on the fixture API page,
+   read the API to trigger it, finish, and run `snapshot show` on the zip.
+5. **profiling** (`snapshotdebugger/attach`, execution context Profiling):
+   `profile start`, read the API for `AL_LIVE_BC_PROFILE_SECONDS` seconds
+   (default 60), `profile stop`, `profile analyze`. The profile must hold nodes
+   or samples.
+6. **symbol download** (`GET dev/packages`): `download-symbols --source server`
+   downloads packages and leaves `.app` files in `.alpackages`.
 
 The generated local project and snapshots are removed when the command exits.
 A custom project receives normal build output and a temporary snapshot
-directory, which is removed afterward. The fixture extension is intentionally
+directory, which is removed afterward. The fixture extension ("AL Live Contract") is intentionally
 published/installed in the selected tenant and is not automatically uninstalled.
 Use a disposable sandbox. Never commit credentials, tenant launch files, or
 captured service data.
+
+### Recorded runs
+
+One row per full run. Cells are PASS, FAIL or SKIP with a short reason.
+Add a row after each run against a sandbox. Leave out tenant ids, tokens and
+user names.
+
+| Date | Commit | BC version | publish | DAP attach | test run | snapshot debugging | profiling | symbol download |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2026-10-27 | 353fc565 plus the harness restructure | 29.0.54011.56136 (Sandbox) | PASS | FAIL: timed out waiting for a DAP message (AddBreakpoint answers null, dap-14) | SKIP: no TestRunnerHub client (testing-01) | FAIL: the server answers 404 to status and finish for a context that attach accepted with a snappoint, so finish returns no zip | FAIL: 181 API requests over 60 s, the server returned an empty profile (`{"kind":1}`, no nodes or samples) | PASS |
+
+Notes on the failing cells of that run:
+
+- Snapshot debugging: `attach` with the same body, URL and cookie succeeds and
+  stays `Initialized` when sent with curl or Python. The same attach sent by the
+  daemon is dropped by the server at once. A session started without a
+  snappoint works. The cause is open (dap-35, process-01).
+- Profiling: the fixture app sets `resourceExposurePolicy.allowDebugging`. The
+  server still returns an empty sampling profile for the API page loop.
 
 ## 6. Reproducible generated artifacts
 

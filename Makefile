@@ -12,7 +12,7 @@
 #   make record-methods — regenerate the Microsoft-derived Record method catalog
 #   make check-record-methods — prove the catalog matches the pinned Microsoft DLL
 #   make repro-artifacts — regenerate generated artifacts; fail on any diff (CI drift guard)
-#   make live-bc-contracts — strict tenant-backed publish/DAP/test/snapshot profile
+#   make live-bc-contracts — strict tenant-backed publish/DAP/snapshot/profiling/symbols profile (live test run is SKIP)
 #   make release-dryrun  — read-only release-readiness gate (never publishes)
 #   make plugin-validate — check the Claude Code plugin under plugin/
 #   make clean     — clean all build artifacts
