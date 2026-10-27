@@ -11,9 +11,9 @@
 //! send, so the glue in the shared files is a lock, a call and a write loop.
 //!
 //! Differences from Microsoft's adapter, on purpose:
-//! - `initialized` is sent by `initialize` in this adapter, not after
-//!   `launch`. Breakpoints that arrive before `launch` wait in the shared
-//!   pending map and are applied when the replay starts.
+//! - `initialized` follows the `launch` response, as there is no hub to wait
+//!   for. Breakpoints sent before `launch` wait in the shared pending map and
+//!   are applied when the replay starts.
 //! - Microsoft's host sends one more `stopped` after `terminated` because its
 //!   break request is still running. That is not copied.
 //! - `stopped.reason` is the DAP value `step` (the host sends `Step`).
@@ -577,7 +577,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<crate::dap::native_dap::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -675,7 +675,7 @@ where
         let chosen = frame_sources::choose(
             &archive,
             &extracted,
-            &|t, n| (self.resolve_path)(t, n),
+            &|t, n| (self.resolve_path)(t, n).map(|source| source.path),
             &*self.package_source,
             &|p| std::fs::read_to_string(p).ok(),
         );
@@ -698,6 +698,8 @@ where
         for text in &notices {
             write_dap(out, &text_event(&self.seq, text)).await?;
         }
+        // A replay has no hub, so `initialized` follows the launch response.
+        self.send_initialized(out).await?;
         Ok(())
     }
 }

@@ -18,6 +18,10 @@ use crate::dap::{DapError, Result};
 
 use super::events::{fatal_exception_message, signalr_to_bc_event, BcEvent};
 use super::session_config::BcDebugConfig;
+use super::version::{
+    configuration_done_takes_options, debug_options, debugger_major_from_metadata,
+    get_watch_node_takes_option, ATTACH_MIN_MAJOR,
+};
 use super::wire::{
     default_invoke_timeout, percent_encode_url, redact_connection_token,
     resolve_negotiate_connection, validate_signalr_handshake_response, SignalRMessage,
@@ -134,16 +138,33 @@ pub struct BcDebugSession {
     /// ("step" vs "breakpoint") — BC's own `Break` callback carries no such
     /// distinction. Reset on every `continue_execution` call.
     expecting_step: Mutex<bool>,
+    /// `StackFrame[]` of the last `Break` callback. Microsoft's client keeps
+    /// the same list (`DebuggerService.SetExecutionState`, DebuggerService.cs:124-135,
+    /// `Frames = stack.ToList()`) and answers `stackTrace` from it: the hub has
+    /// no stack method to call.
+    last_break_frames: Mutex<Vec<serde_json::Value>>,
     /// Receives `true` when a Break event arrives and `false` when the session
     /// ends (Detached or FatalError). Populated by the WebSocket reader task,
     /// which sends without holding any lock — no deadlock risk. The channel is
     /// unbounded so events are never lost even if they arrive before the
     /// receiver calls `wait_for_break_event`.
     break_event_rx: Mutex<mpsc::UnboundedReceiver<bool>>,
+    /// Major part of `ServerInfo.DebuggerVersion` from `GET dev/metadata`
+    /// (ServerInfo.cs:11-12). Microsoft stores it as `Version` on the service
+    /// (DebugAdapterStartRequestHandler.cs:69-72) and branches on it. `None`
+    /// when the metadata names no parsable version: the newest call shapes are used.
+    debugger_major: Option<u32>,
 }
 
 impl BcDebugSession {
-    pub async fn connect(config: &BcDebugConfig, access_token: &str) -> Result<Self> {
+    /// `attaching` is true when the session will send `Attach`: Microsoft puts
+    /// `sessionId` and `userid` on the hub URL only then (their source is
+    /// `AttachOptions`, DebugAdapterStartRequestHandler.cs:58-65).
+    pub async fn connect(
+        config: &BcDebugConfig,
+        access_token: &str,
+        attaching: bool,
+    ) -> Result<Self> {
         if config.accept_invalid_certs {
             // Match the warn-on-construction parity from BcClient::new at
             // bc_client.rs:99. Without this the DAP path silently
@@ -153,13 +174,32 @@ impl BcDebugSession {
         }
         let hub_url = config.debug_hub_url();
 
-        let negotiate_url = format!("{hub_url}/negotiate?negotiateVersion=1");
+        // Microsoft puts the query parameters on the hub URL, so negotiate and the
+        // WebSocket both carry them (HubBasedDebuggerService.cs:176-200). The
+        // SignalR client appends `negotiateVersion` and `id` after them.
+        let query = config
+            .debug_hub_query(access_token, attaching)
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join("&");
+        let negotiate_url = format!("{hub_url}/negotiate?{query}&negotiateVersion=1");
         let http = reqwest::Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .build()
             .map_err(|e| DapError::ConnectionFailed(format!("HTTP client error: {e}")))?;
 
-        info!("SignalR negotiate: {negotiate_url}");
+        // Microsoft reads the server info before it opens the hub and fails the
+        // start when the request fails (DebugAdapterStartRequestHandler.cs:169-176,
+        // ServerInfoApiClient.cs:27-29).
+        let metadata = super::rest::get_metadata(&http, config, access_token).await?;
+        let debugger_major = debugger_major_from_metadata(&metadata);
+        if debugger_major.is_none() {
+            warn!("dev/metadata has no parsable debuggerVersion, using the newest hub call shapes");
+        }
+
+        // The query holds the bearer token, so only the path is logged.
+        info!("SignalR negotiate: {hub_url}/negotiate");
         let negotiate_resp = http
             .post(&negotiate_url)
             .header(AUTHORIZATION, format!("Bearer {access_token}"))
@@ -167,9 +207,26 @@ impl BcDebugSession {
             .body("")
             .send()
             .await
-            .map_err(|e| DapError::ConnectionFailed(format!("SignalR negotiate failed: {e}")))?;
+            .map_err(|e| {
+                // reqwest errors print the URL, which carries the bearer token.
+                DapError::ConnectionFailed(format!("SignalR negotiate failed: {}", e.without_url()))
+            })?;
 
         let status = negotiate_resp.status();
+        // Microsoft's connection keeps a CookieContainer (HubBasedService.cs:57-58),
+        // so the Application Gateway affinity cookie set by negotiate reaches the
+        // WebSocket. reqwest's cookie store is not enabled here, so the name=value
+        // pairs are forwarded by hand.
+        let cookie_header = negotiate_resp
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .filter_map(|value| value.split(';').next())
+            .map(str::trim)
+            .filter(|pair| pair.contains('='))
+            .collect::<Vec<_>>()
+            .join("; ");
         let resp_text = negotiate_resp.text().await.map_err(|e| {
             DapError::ConnectionFailed(format!("Failed to read negotiate response: {e}"))
         })?;
@@ -208,13 +265,16 @@ impl BcDebugSession {
         let ws_url = hub_url
             .replace("https://", "wss://")
             .replace("http://", "ws://");
-        let ws_url = format!("{ws_url}?id={}", percent_encode_url(&resolved.ws_id));
+        let ws_url = format!(
+            "{ws_url}?{query}&id={}",
+            percent_encode_url(&resolved.ws_id)
+        );
         // Redact the connection_token from the log line — it grants access to
         // the active debug session and must not appear in plaintext logs.
         let log_url = ws_url.split('?').next().unwrap_or(&ws_url);
-        info!("SignalR WebSocket: {log_url}?id=<redacted>");
+        info!("SignalR WebSocket: {log_url}?<redacted>");
 
-        let request = tokio_tungstenite::tungstenite::http::Request::builder()
+        let mut request = tokio_tungstenite::tungstenite::http::Request::builder()
             .uri(&ws_url)
             .header("Authorization", format!("Bearer {access_token}"))
             .header("Connection", "Upgrade")
@@ -224,7 +284,11 @@ impl BcDebugSession {
                 "Sec-WebSocket-Key",
                 tokio_tungstenite::tungstenite::handshake::client::generate_key(),
             )
-            .header("Host", websocket_host_header(&ws_url)?)
+            .header("Host", websocket_host_header(&ws_url)?);
+        if !cookie_header.is_empty() {
+            request = request.header("Cookie", cookie_header);
+        }
+        let request = request
             .body(())
             .map_err(|e| DapError::ConnectionFailed(format!("WS request build error: {e}")))?;
 
@@ -359,7 +423,9 @@ impl BcDebugSession {
             is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
             expecting_step: Mutex::new(false),
+            last_break_frames: Mutex::new(Vec::new()),
             break_event_rx: Mutex::new(break_event_rx),
+            debugger_major,
         })
     }
 
@@ -511,8 +577,9 @@ impl BcDebugSession {
         // step's own Break was then reported as a breakpoint.
         let mut expecting_step = self.expecting_step.lock().await;
         let event = signalr_to_bc_event(msg, *expecting_step);
-        if matches!(event, Some(BcEvent::Break { .. })) {
+        if let Some(BcEvent::Break { frames, .. }) = &event {
             *expecting_step = false;
+            *self.last_break_frames.lock().await = frames.clone();
         }
         event
     }
@@ -587,9 +654,20 @@ impl BcDebugSession {
     }
 
     pub async fn attach(&self, config: &BcDebugConfig) -> Result<()> {
-        // This is EditorServices' AttachOptions wire type. Break flags belong
-        // to DebugOptions/configurationDone, not AttachOptions. SignalR emits
-        // enum values numerically and applies camelCase to the CLR properties.
+        if self
+            .debugger_major
+            .is_some_and(|major| major < ATTACH_MIN_MAJOR)
+        {
+            // DebugAdapterAttachRequestHandler.cs:33-36 refuses an attach below major 3.
+            return Err(DapError::ConnectionFailed(format!(
+                "The server's debugger version {} does not support attach requests (major 3 or later is needed)",
+                self.debugger_major.unwrap_or_default()
+            )));
+        }
+        // This is EditorServices' AttachOptions wire type (AttachOptions.cs:15-27).
+        // Break flags belong to DebugOptions/configurationDone. The hub uses
+        // Newtonsoft with DefaultContractResolver (AspNetCoreSignalRFactory.cs:24-27),
+        // so the keys are the CLR property names and enums are integers.
         // Default matches the documented schema default
         // (`debug_adapter_schemas/al.json`'s `breakOnNext` property) —
         // WebServiceClient — so a launch config that omits `breakOnNext`
@@ -606,7 +684,11 @@ impl BcDebugSession {
             "webclient" => 1,
             "background" => 2,
             "clientservice" => 3,
-            "agent" => 4,
+            // `Agent` exists only in the VS Code client's own enum (Agent=4).
+            // BreakOnNext.cs has four values (WebServiceClient=0 .. ClientService=3)
+            // and the Microsoft client sends ClientService for Agent
+            // (dist/extension.js: `"Agent"===r.breakOnNext&&(e=F.ClientService)`).
+            "agent" => 3,
             _ => 0, // WebServiceClient
         };
         let session_id = config
@@ -614,65 +696,34 @@ impl BcDebugSession {
             .and_then(|value| i32::try_from(value).ok())
             .unwrap_or(-1);
         let args = serde_json::json!({
-            "breakOnNextClient": break_on_next_client,
-            "sessionId": session_id,
-            "userId": null,
+            "BreakOnNextClient": break_on_next_client,
+            "SessionId": session_id,
+            // AttachOptions.UserId (AttachOptions.cs:27), a string or null.
+            "UserId": config.user_id,
         });
         self.invoke("Attach", vec![args]).await?;
         info!("Attached to BC debug session");
         Ok(())
     }
 
-    /// BC hub method: `DebugAdapterConfigurationDone(debugOptions)`
-    /// Newer BC versions (>1.0) require debug options argument.
+    /// BC hub method: `DebugAdapterConfigurationDone`. Major 1 or lower takes no
+    /// arguments, later versions take `DebugOptions`
+    /// (HubBasedDebuggerService.cs:264-269), normalised for the version as in
+    /// DebugAdapterStartRequestHandler.cs:69-119. The failure of a call is the
+    /// caller's error, there is no second form to try.
     pub async fn configuration_done(&self, config: &BcDebugConfig) -> Result<()> {
-        // Microsoft's SignalR JSON protocol applies camelCase to the public
-        // .NET DebugOptions properties. PascalCase looks plausible from the
-        // CLR types but is rejected by current BC online hubs.
-        let debug_options = serde_json::json!({
-            "breakOnError": config.break_on_error.enabled(),
-            // Current EditorServices enum values are Unspecified=0, None=1,
-            // All=2, ExcludeTry=3. Sending the old 0/1 assumption causes
-            // configurationDone to be rejected (or interpreted incorrectly)
-            // by current Business Central online tenants.
-            "breakOnErrorBehaviour": config.break_on_error.wire_value(),
-            "breakOnRecordWrite": config.break_on_record_write.enabled(),
-            "breakOnRecordWriteBehaviour": config.break_on_record_write.wire_value(),
-            "skipSystemTriggers": true,
-            "enableSqlInformationDebugger": config.enable_sql_information_debugger,
-            "enableLongRunningSqlStatements": config.enable_long_running_sql_statements,
-            "longRunningSqlStatementsThreshold": config.long_running_sql_statements_threshold,
-            "numberOfSqlStatements": config.number_of_sql_statements,
-        });
-        // Try with debug options first (newer BC >=2.0), fall back to empty args
-        match self
-            .invoke("DebugAdapterConfigurationDone", vec![debug_options])
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(first_err) => {
-                // Older BC: no args. If this also fails, both forms were
-                // rejected — surface the second error instead of silently
-                // returning Ok, so the caller (which uses `?`) can abort the
-                // debug session rather than proceeding with an unconfigured
-                // adapter that will misbehave on later operations.
-                match self.invoke("DebugAdapterConfigurationDone", vec![]).await {
-                    Ok(_) => Ok(()),
-                    Err(second_err) => {
-                        tracing::warn!(
-                            "configurationDone failed both with debug options ({first_err}) \
-                             and with no args ({second_err})"
-                        );
-                        Err(second_err)
-                    }
-                }
-            }
-        }
+        let args = if configuration_done_takes_options(self.debugger_major) {
+            vec![debug_options(config, self.debugger_major)]
+        } else {
+            vec![]
+        };
+        self.invoke("DebugAdapterConfigurationDone", args).await?;
+        Ok(())
     }
 
     /// BC hub method: `AddBreakpoint(ApplicationObjectIdWrapper, SourcePosition, string condition)`
-    /// - ApplicationObjectIdWrapper: `{objectType: int, objectNumber: int}`
-    /// - SourcePosition: `{line: int, column: int}`
+    /// - ApplicationObjectIdWrapper: `{ObjectType: int, ObjectNumber: int}`
+    /// - SourcePosition: `{Line: int, Column: int}` (SourcePosition.cs:12-15)
     /// - ObjectTypeWrapper enum: use `crate::native_dap::bc_object_type` constants
     pub async fn add_breakpoint(
         &self,
@@ -682,16 +733,16 @@ impl BcDebugSession {
         column: i64,
         condition: &str,
     ) -> Result<serde_json::Value> {
-        // ApplicationObjectIdWrapper comes from TypeWrappers and requires its
-        // CLR property names. camelCase silently becomes object 0/type 0 on
-        // current BC hubs, producing an accepted but inert breakpoint.
+        // ApplicationObjectIdWrapper and SourcePosition are TypeWrappers types
+        // with PascalCase CLR property names. camelCase would bind to object
+        // 0/type 0 and produce an accepted but inert breakpoint.
         let object_id = serde_json::json!({
-            "ObjectType": object_type,
             "ObjectNumber": object_number,
+            "ObjectType": object_type,
         });
         let position = serde_json::json!({
-            "line": line,
-            "column": column,
+            "Line": line,
+            "Column": column,
         });
         let result = self
             .invoke(
@@ -761,16 +812,13 @@ impl BcDebugSession {
         Ok(())
     }
 
-    /// BC hub method: `GetStackTrace()` → `StackFrame[]`
-    ///
-    /// Each StackFrame has (at minimum):
-    ///   - `ApplicationObjectId` — BC object reference
-    ///   - `SourcePosition` — `{Line, Column}`
-    ///   - `DisplayName` — human-readable frame name
-    ///
-    pub async fn call_stack(&self) -> Result<serde_json::Value> {
-        let result = self.invoke("GetStackTrace", vec![]).await?;
-        Ok(result.unwrap_or(serde_json::json!([])))
+    /// The call stack of the last `Break` callback, as BC sent it: an array of
+    /// `StackFrame` objects with `MethodName`, `ObjectId`, `ObjectName` and
+    /// `StatementSpan` (StackFrame.cs). Empty before the first break.
+    /// Microsoft answers `stackTrace` from the same stored list and has no hub
+    /// method that returns a stack (HubBasedDebuggerService.cs:34-79).
+    pub async fn call_stack(&self) -> serde_json::Value {
+        serde_json::Value::Array(self.last_break_frames.lock().await.clone())
     }
 
     /// BC hub method: `GetVariables(int frameId)` → `LocalNode[]`
@@ -800,57 +848,24 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
-    /// BC hub method: `GetWatchNode(int frameId, string expression, WatchOption)` → `LocalNode`
+    /// BC hub method: `GetWatchNode(int frameId, string expression[, WatchOption])` → `LocalNode`.
+    /// The `WatchOption` argument exists from debugger major 4 (HubBasedDebuggerService.cs:349-353).
+    /// Microsoft sends `AllowLargeStrings` (1) for the console context and `None` (0) otherwise
+    /// (DebugAdapterEvaluateRequestHandler.cs:92). This client does not tell the contexts apart and sends 0.
     pub async fn evaluate(&self, frame_id: i64, expression: &str) -> Result<serde_json::Value> {
-        let result = match self
-            .invoke(
-                "GetWatchNode",
-                vec![
-                    serde_json::json!(frame_id),
-                    serde_json::json!(expression),
-                    serde_json::json!(0),
-                ],
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                self.invoke(
-                    "GetWatchNode",
-                    vec![serde_json::json!(frame_id), serde_json::json!(expression)],
-                )
-                .await?
-            }
-        };
+        let mut args = vec![serde_json::json!(frame_id), serde_json::json!(expression)];
+        if get_watch_node_takes_option(self.debugger_major) {
+            args.push(serde_json::json!(0));
+        }
+        let result = self.invoke("GetWatchNode", args).await?;
         Ok(result.unwrap_or(serde_json::Value::Null))
     }
 
-    /// BC hub method: `GetSource(ApplicationObjectIdWrapper)` → `string`
-    pub async fn get_source(&self, object_type: i32, object_number: i32) -> Result<String> {
-        let object_id = serde_json::json!({
-            "ObjectType": object_type,
-            "ObjectNumber": object_number,
-        });
-        let result = self.invoke("GetSource", vec![object_id]).await?;
-        Ok(result
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .unwrap_or_default())
-    }
-
-    pub async fn terminate(&self) -> Result<()> {
-        if let Err(e) = self.invoke("TerminateSession", vec![]).await {
-            tracing::debug!(error = %e, "TerminateSession RPC errored — session may already be closed");
-        }
-        Ok(())
-    }
-
-    /// Calls `invoke()`, which acquires `completion_rx`. Only safe to call when no
-    /// other `invoke()` is in progress (i.e. outside of an active debug loop).
-    /// Server-side `IsAlive` pings during a session are handled automatically
-    /// via `try_send` in `handle_server_callback`.
-    pub async fn is_alive(&self) -> bool {
-        self.invoke("IsAlive", vec![]).await.is_ok()
-    }
+    // Not invoked: `GetStackTrace`, `GetSource`, `TerminateSession` and a client-to-server
+    // `IsAlive`. HubBasedDebuggerService.cs:34-79 lists the only hub methods Microsoft's client
+    // calls. A session ends with `StopDebugging` (:256) and the liveness reply is
+    // `AcknowledgeIsAlive` (:224-229). Source download is `GetSourceContent` for debugger
+    // version 2 and later, `GetSource` before (:327-340), and this client reads source from disk.
 
     pub async fn is_stopped(&self) -> bool {
         *self.is_stopped.lock().await
@@ -929,7 +944,9 @@ impl BcDebugSession {
             is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
             expecting_step: Mutex::new(false),
+            last_break_frames: Mutex::new(Vec::new()),
             break_event_rx: Mutex::new(break_event_rx),
+            debugger_major: None,
         };
         (
             session,

@@ -16,7 +16,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<super::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -117,7 +117,10 @@ where
             return Ok(done);
         }
         match command {
-            "initialize" => self.handle_initialize(out, request_seq, command).await?,
+            "initialize" => {
+                self.handle_initialize(out, request_seq, command, arguments)
+                    .await?
+            }
             "configurationDone" => {
                 self.handle_configuration_done(out, request_seq, command)
                     .await?

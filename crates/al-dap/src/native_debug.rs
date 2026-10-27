@@ -5,6 +5,9 @@
 
 use std::collections::{HashMap, VecDeque};
 
+use crate::dap::bc_debug::position::{
+    client_line_to_debugger, debugger_column_to_client, debugger_line_to_client,
+};
 use crate::dap::bc_debug::{BcDebugConfig, BcDebugSession};
 use crate::dap::types::*;
 use crate::dap::Result;
@@ -36,16 +39,10 @@ pub struct NativeDebugSession {
     /// the debug-context browser URL is opened, so configuration is deferred
     /// from `start` until event draining observes that callback.
     configured: bool,
-    /// configurationDone attempts spent. `DebugAdapterConfigurationDone`
-    /// carries a two-minute invoke budget and falls back to a second,
-    /// no-arguments call on failure, so a server that rejects the options by
-    /// timing out costs four minutes per retry. `drain_events` runs at the
-    /// head of every debug command, so an uncapped retry stalls each one.
-    configure_attempts: u32,
+    /// Set when the one configurationDone call was rejected. Every later
+    /// command reports it. Microsoft's adapter has no retry either.
+    configure_error: Option<String>,
 }
-
-/// configurationDone attempts before the session is declared misconfigured.
-const MAX_CONFIGURE_ATTEMPTS: u32 = 3;
 
 /// Append a Break event to history with the configured cap. Pure (no `self`
 /// dependency) so it unit-tests without standing up a `BcDebugSession`.
@@ -62,9 +59,10 @@ impl NativeDebugSession {
     /// `config` — BC server connection config (built from launch.json / debug.json).
     /// `access_token` — OAuth Bearer token for the BC tenant.
     pub async fn start(config: BcDebugConfig, access_token: &str) -> Result<Self> {
-        let session = BcDebugSession::connect(&config, access_token).await?;
-
-        session.attach(&config).await?;
+        // A launch-style start: no hub `Attach` call. Microsoft's launch passes
+        // attachOptions = null (DebugAdapterLaunchRequestHandlerBase.cs:~89),
+        // and the Web client URL's debuggingcontext and sk bind the session.
+        let session = BcDebugSession::connect(&config, access_token, false).await?;
 
         info!(connection_id = %session.connection_id, "Native debug session started");
 
@@ -77,7 +75,7 @@ impl NativeDebugSession {
             last_stack: Vec::new(),
             last_object: None,
             configured: false,
-            configure_attempts: 0,
+            configure_error: None,
         })
     }
 
@@ -89,13 +87,15 @@ impl NativeDebugSession {
     /// Set breakpoints for a file. Removes old breakpoints for the same file first.
     ///
     /// `object_type` and `object_id` come from the workspace file index — the caller
-    /// resolves the AL file path to its BC object type + ID.
+    /// resolves the AL file path to its BC object type + ID. `line_shift` is the
+    /// object's [`crate::dap::bc_debug::object_line_shift`], 0 for a file with one object.
     pub async fn set_breakpoints(
         &mut self,
         file: &str,
         lines: &[(u32, Option<&str>)],
         object_type: i32,
         object_id: i32,
+        line_shift: i64,
     ) -> Result<Vec<BreakpointInfo>> {
         if let Some(old_ids) = self.breakpoints.remove(file) {
             for bp_id in &old_ids {
@@ -111,37 +111,30 @@ impl NativeDebugSession {
 
         for &(line, condition) in lines {
             let cond = condition.unwrap_or("");
-            // MCP/CLI source lines are one-based, like DAP clients. BC's
-            // SourcePosition.Line is zero-based.
-            let server_line = i64::from(line.saturating_sub(1));
+            // MCP/CLI source lines are one-based, like DAP clients.
+            // DocumentHelper.cs:25-66: BC counts lines inside the object's own
+            // compilation unit, see `object_line_shift`.
+            let server_line = (client_line_to_debugger(i64::from(line), true) + line_shift).max(0);
             match self
                 .session
                 .add_breakpoint(object_type, object_id, server_line, 0, cond)
                 .await
             {
                 Ok(resp) => {
+                    // AddBreakpoint returns a BreakpointDefinition
+                    // (BreakpointDefinition.cs:9-27): `BreakpointId` and `ObjectId`
+                    // are its only fields this client reads, there is no `Id`
+                    // or `Verified`. A breakpoint BC placed has a non-zero id.
                     let bp_id = resp
                         .get("BreakpointId")
-                        .or_else(|| resp.get("breakpointId"))
-                        .or_else(|| resp.get("Id"))
-                        .or_else(|| resp.get("id"))
                         .and_then(|v| v.as_i64())
                         .unwrap_or(0);
-                    let verified = resp
-                        .get("Verified")
-                        .or_else(|| resp.get("verified"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(bp_id != 0);
-                    let echoed_object = resp.get("ObjectId").or_else(|| resp.get("objectId"));
+                    let verified = bp_id != 0;
+                    let echoed_object = resp.get("ObjectId");
                     let object_matches = echoed_object.is_none_or(|echoed| {
-                        let echoed_type = echoed
-                            .get("ObjectType")
-                            .or_else(|| echoed.get("objectType"))
-                            .and_then(|value| value.as_i64());
-                        let echoed_number = echoed
-                            .get("ObjectNumber")
-                            .or_else(|| echoed.get("objectNumber"))
-                            .and_then(|value| value.as_i64());
+                        let echoed_type = echoed.get("ObjectType").and_then(|value| value.as_i64());
+                        let echoed_number =
+                            echoed.get("ObjectNumber").and_then(|value| value.as_i64());
                         echoed_type == Some(i64::from(object_type))
                             && echoed_number == Some(i64::from(object_id))
                     });
@@ -215,13 +208,14 @@ impl NativeDebugSession {
                 // of a stale copy of the previous entry. The daemon doesn't
                 // resolve BC object ids to workspace file paths, so `file` stays
                 // empty; line/column/procedure now reflect the genuine location.
+                let debugger_line = location.as_ref().map_or(0, |loc| i64::from(loc.line));
                 let location = match location {
                     Some(loc) => {
                         self.last_object = loc.object_type.zip(loc.object_number);
                         Location {
                             file: String::new(),
-                            line: loc.line.saturating_add(1),
-                            column: loc.column.saturating_add(1),
+                            line: debugger_line_to_client(i64::from(loc.line), true) as u32,
+                            column: debugger_column_to_client(i64::from(loc.column), true) as u32,
                             procedure: loc.procedure,
                         }
                     }
@@ -236,7 +230,7 @@ impl NativeDebugSession {
                     .last_object
                     .and_then(|(object_type, object_id)| {
                         self.armed
-                            .get(&(object_type, object_id, i64::from(location.line) - 1))
+                            .get(&(object_type, object_id, debugger_line))
                             .copied()
                     })
                     .unwrap_or(0);
@@ -256,41 +250,25 @@ impl NativeDebugSession {
             }
         }
 
-        // The Attach RPC registers a break-on-next debugger but does not mean
-        // a WebClient/NST session is bound yet. Current BC online rejects
-        // configurationDone before OnAttachedToConnection, leaving accepted
-        // breakpoints inert. Complete configuration exactly once after that
-        // callback has been processed above.
-        if !self.configured
-            && self.configure_attempts < MAX_CONFIGURE_ATTEMPTS
-            && self.session.is_attached().await
-        {
-            self.configure_attempts += 1;
+        // BC binds the session when OnAttachedToConnection arrives. Send
+        // configurationDone once after that callback, as Microsoft's adapter
+        // does after its `initialized` event. A rejection is final.
+        if !self.configured && self.configure_error.is_none() && self.session.is_attached().await {
             match self.session.configuration_done(&self.config).await {
                 Ok(()) => {
                     self.configured = true;
                     info!("Native debug session configured after client attach");
                 }
-                Err(error) if self.configure_attempts < MAX_CONFIGURE_ATTEMPTS => {
-                    warn!(
-                        %error,
-                        attempt = self.configure_attempts,
-                        "configurationDone rejected after client attach; will retry"
-                    );
-                }
                 Err(error) => {
-                    warn!(
-                        %error,
-                        attempts = self.configure_attempts,
-                        "configurationDone rejected on every attempt; breakpoints stay inert"
-                    );
+                    warn!(%error, "configurationDone rejected; breakpoints stay inert");
+                    self.configure_error = Some(error.to_string());
                 }
             }
         }
 
-        if !self.configured && self.configure_attempts >= MAX_CONFIGURE_ATTEMPTS {
+        if let Some(message) = &self.configure_error {
             return Err(crate::dap::DapError::ConfigurationFailed {
-                attempts: self.configure_attempts,
+                message: message.clone(),
             });
         }
         Ok(())
@@ -488,7 +466,7 @@ impl NativeDebugSession {
             last_stack: Vec::new(),
             last_object: None,
             configured: false,
-            configure_attempts: 0,
+            configure_error: None,
         }
     }
 
@@ -562,44 +540,36 @@ fn parse_bc_variable(node: &serde_json::Value) -> Option<Variable> {
     })
 }
 
+/// Frames for the MCP stack view from the Break callback's `StackFrame[]`
+/// (StackFrame.cs: `MethodName`, `ObjectName`, `StatementSpan.From`). MCP
+/// clients count lines and columns from 1, like a DAP client with
+/// `linesStartAt1`.
 fn parse_bc_stack(frames: &[serde_json::Value]) -> Vec<StackFrame> {
     frames
         .iter()
         .enumerate()
         .map(|(id, frame)| {
-            let position = frame
-                .get("StatementSpan")
-                .or_else(|| frame.get("statementSpan"))
-                .and_then(|span| span.get("From").or_else(|| span.get("from")))
-                .or_else(|| {
-                    frame
-                        .get("SourcePosition")
-                        .or_else(|| frame.get("sourcePosition"))
-                });
+            let from = frame.get("StatementSpan").and_then(|span| span.get("From"));
             StackFrame {
                 id: id as i64,
                 name: frame
                     .get("MethodName")
-                    .or_else(|| frame.get("methodName"))
-                    .or_else(|| frame.get("DisplayName"))
-                    .or_else(|| frame.get("displayName"))
                     .and_then(|value| value.as_str())
                     .unwrap_or("")
                     .to_string(),
                 source: frame
                     .get("ObjectName")
-                    .or_else(|| frame.get("objectName"))
                     .and_then(|value| value.as_str())
                     .map(str::to_string),
-                line: position
-                    .and_then(|value| value.get("Line").or_else(|| value.get("line")))
-                    .and_then(|value| value.as_u64())
-                    .map(|value| value.saturating_add(1) as u32)
+                line: from
+                    .and_then(|value| value.get("Line"))
+                    .and_then(|value| value.as_i64())
+                    .map(|value| debugger_line_to_client(value, true) as u32)
                     .unwrap_or(0),
-                column: position
-                    .and_then(|value| value.get("Column").or_else(|| value.get("column")))
-                    .and_then(|value| value.as_u64())
-                    .map(|value| value.saturating_add(1) as u32)
+                column: from
+                    .and_then(|value| value.get("Column"))
+                    .and_then(|value| value.as_i64())
+                    .map(|value| debugger_column_to_client(value, true) as u32)
                     .unwrap_or(0),
             }
         })
@@ -968,17 +938,17 @@ mod parse_bc_variables_tests {
 
     #[test]
     fn parses_current_bc_stack_frame_shape() {
-        let frames = [json!({
-            "MethodName": "RunProbe - OnAction",
-            "ObjectId": 70200,
-            "ObjectName": "MCP Debug Probe",
-            "StatementSpan": { "From": { "Line": 42, "Column": 8 } }
-        })];
+        // fixture source: test_fixtures::stack_frame (StackFrame.cs:34-58)
+        let frames = [crate::dap::bc_debug::test_fixtures::stack_frame(
+            "RunProbe - OnAction",
+            (42, 8),
+            (42, 30),
+        )];
 
         let stack = parse_bc_stack(&frames);
         assert_eq!(stack[0].id, 0);
         assert_eq!(stack[0].name, "RunProbe - OnAction");
-        assert_eq!(stack[0].source.as_deref(), Some("MCP Debug Probe"));
+        assert_eq!(stack[0].source.as_deref(), Some("BJF Probe"));
         assert_eq!(stack[0].line, 43);
         assert_eq!(stack[0].column, 9);
     }
@@ -1003,7 +973,17 @@ mod parse_bc_variables_tests {
 mod native_session_tests {
     use super::*;
     use crate::dap::bc_debug::fake::FakeBc;
+    use crate::dap::bc_debug::test_fixtures::{break_args, breakpoint_definition, stack_frame};
     use serde_json::json;
+
+    /// A `Break` callback whose top frame starts at `line` (BC's own number).
+    // fixture source: test_fixtures::break_args (HubBasedDebuggerService.cs:393)
+    fn break_at(method: &str, line: u16, column: u16) -> serde_json::Value {
+        serde_json::Value::Array(break_args(
+            vec![stack_frame(method, (line, column), (line, column + 10))],
+            "",
+        ))
+    }
 
     fn session(conn: &str) -> (NativeDebugSession, FakeBc) {
         let (bc, fake) = FakeBc::start(conn);
@@ -1034,12 +1014,12 @@ mod native_session_tests {
     }
 
     #[tokio::test]
-    async fn set_breakpoints_adds_and_parses_pascalcase_response() {
+    async fn set_breakpoints_adds_and_parses_breakpoint_definition() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 77, "Verified": true }));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(77));
 
         let infos = nds
-            .set_breakpoints("src/Foo.al", &[(10, None)], 5, 50100)
+            .set_breakpoints("src/Foo.al", &[(10, None)], 5, 50100, 0)
             .await
             .unwrap();
 
@@ -1055,37 +1035,50 @@ mod native_session_tests {
         assert_eq!(frames[0]["target"], "AddBreakpoint");
         assert_eq!(frames[0]["arguments"][0]["ObjectType"], 5);
         assert_eq!(frames[0]["arguments"][0]["ObjectNumber"], 50100);
-        assert_eq!(frames[0]["arguments"][1]["line"], 9);
+        assert_eq!(frames[0]["arguments"][1]["Line"], 9);
     }
 
     #[tokio::test]
-    async fn set_breakpoints_parses_camelcase_response() {
-        // Older BC returns camelCase id/verified. Without the camelCase
-        // fallback the id would default to 0 and verified to true.
+    async fn set_breakpoints_sends_the_line_inside_the_object() {
+        // DocumentHelper.cs:25-66: file line 10 (row 9) of an object whose
+        // unit starts 4 rows up is row 5.
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "id": 5, "verified": false }));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(77));
+        nds.set_breakpoints("src/Foo.al", &[(10, None)], 5, 50100, -4)
+            .await
+            .unwrap();
+        assert_eq!(fake.sent_frames()[0]["arguments"][1]["Line"], 5);
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_reports_unverified_when_bc_returns_no_breakpoint_id() {
+        // BreakpointDefinition.cs:9: BreakpointId 0 is not a usable handle.
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(0));
 
         let infos = nds
-            .set_breakpoints("src/A.al", &[(3, None)], 1, 18)
+            .set_breakpoints("src/A.al", &[(3, None)], 1, 18, 0)
             .await
             .unwrap();
 
-        assert_eq!(infos[0].id, 5, "camelCase id parsed");
-        assert!(!infos[0].verified, "camelCase verified parsed");
+        assert_eq!(infos[0].id, 0);
+        assert!(!infos[0].verified);
     }
 
     #[tokio::test]
     async fn set_breakpoints_rejects_silently_coerced_object_id() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok(
-            "AddBreakpoint",
-            json!({ "Id": 5, "Verified": true, "ObjectId": { "ObjectType": 0, "ObjectNumber": 0 } }),
-        );
+        fake.reply_ok("AddBreakpoint", {
+            // A reply for the wrong object: BreakpointDefinition.ObjectId is 0/0.
+            let mut def = breakpoint_definition(5);
+            def["ObjectId"] = json!({ "ObjectType": 0, "ObjectNumber": 0 });
+            def
+        });
 
         fake.reply_ok("RemoveBreakpoint", json!(null));
 
         let infos = nds
-            .set_breakpoints("src/A.al", &[(3, None)], 8, 70200)
+            .set_breakpoints("src/A.al", &[(3, None)], 8, 70200, 0)
             .await
             .unwrap();
 
@@ -1109,23 +1102,12 @@ mod native_session_tests {
     #[tokio::test]
     async fn break_history_names_the_breakpoint_it_came_from() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 91, "Verified": true }));
-        nds.set_breakpoints("src/Foo.al", &[(42, None)], 5, 50100)
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(91));
+        nds.set_breakpoints("src/Foo.al", &[(42, None)], 5, 50100, 0)
             .await
             .unwrap();
 
-        fake.push_callback(
-            "Break",
-            json!([
-                null,
-                [{
-                    "DisplayName": "OnRun",
-                    "SourcePosition": { "Line": 41, "Column": 0 },
-                    "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
-                }],
-                ""
-            ]),
-        );
+        fake.push_callback("Break", break_at("OnRun", 41, 0));
         fake.reply_ok("GetVariables", json!([]));
         nds.state().await.unwrap();
 
@@ -1140,11 +1122,17 @@ mod native_session_tests {
         // A real condition is preserved; an empty condition normalises to None
         // but is still forwarded verbatim ("") to BC as the third arg.
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 1, "Verified": true }));
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 2, "Verified": true }));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(1));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(2));
 
         let infos = nds
-            .set_breakpoints("src/B.al", &[(1, Some("x > 5")), (2, Some(""))], 5, 99)
+            .set_breakpoints(
+                "src/B.al",
+                &[(1, Some("x > 5")), (2, Some(""))],
+                5,
+                50100,
+                0,
+            )
             .await
             .unwrap();
 
@@ -1159,16 +1147,16 @@ mod native_session_tests {
     #[tokio::test]
     async fn set_breakpoints_removes_prior_ids_for_same_file() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 100, "Verified": true }));
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 101, "Verified": true }));
-        nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50)
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(100));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(101));
+        nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50100, 0)
             .await
             .unwrap();
 
         fake.reply_ok("RemoveBreakpoint", json!(null));
         fake.reply_ok("RemoveBreakpoint", json!(null));
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 200, "Verified": true }));
-        nds.set_breakpoints("src/C.al", &[(9, None)], 5, 50)
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(200));
+        nds.set_breakpoints("src/C.al", &[(9, None)], 5, 50100, 0)
             .await
             .unwrap();
 
@@ -1188,11 +1176,11 @@ mod native_session_tests {
     #[tokio::test]
     async fn set_breakpoints_partial_failure_marks_failed_unverified() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 11, "Verified": true }));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(11));
         fake.reply_err("AddBreakpoint", "compilation error");
 
         let infos = nds
-            .set_breakpoints("src/D.al", &[(1, None), (2, None)], 5, 50)
+            .set_breakpoints("src/D.al", &[(1, None), (2, None)], 5, 50100, 0)
             .await
             .unwrap();
 
@@ -1206,18 +1194,7 @@ mod native_session_tests {
     #[tokio::test]
     async fn state_stopped_reports_paused_with_variables_and_location() {
         let (mut nds, fake) = session("sess-7");
-        fake.push_callback(
-            "Break",
-            json!([
-                null,
-                [{
-                    "DisplayName": "OnRun",
-                    "SourcePosition": { "Line": 42, "Column": 8 },
-                    "ApplicationObjectId": { "ObjectType": 5, "ObjectNumber": 50100 }
-                }],
-                ""
-            ]),
-        );
+        fake.push_callback("Break", break_at("OnRun", 42, 8));
         fake.reply_ok(
             "GetVariables",
             json!([{ "Name": "Customer", "Value": "10000", "TypeName": "Record" }]),
@@ -1269,56 +1246,34 @@ mod native_session_tests {
         assert_eq!(configured, 1, "configurationDone is deferred and sent once");
     }
 
-    /// DebugAdapterConfigurationDone carries a two-minute invoke budget and
-    /// falls back to a no-arguments call on failure, so an uncapped retry at
-    /// the head of every command stalls each one for up to four minutes.
+    /// A rejected configurationDone is final: the error is reported, and no
+    /// further call is made.
     #[tokio::test]
-    async fn configuration_done_stops_retrying_and_reports_the_failure() {
+    async fn configuration_done_rejection_is_reported_and_not_retried() {
         let (mut nds, fake) = session("c");
         fake.push_callback("OnAttachedToConnection", json!(null));
-        for _ in 0..12 {
-            fake.reply_err("DebugAdapterConfigurationDone", "options rejected");
-        }
+        fake.reply_err("DebugAdapterConfigurationDone", "options rejected");
         fake.reply_ok("GetVariables", json!([]));
 
-        for attempt in 1..MAX_CONFIGURE_ATTEMPTS {
-            nds.state()
-                .await
-                .unwrap_or_else(|error| panic!("attempt {attempt} must still run: {error}"));
-        }
-        let error = nds
-            .state()
-            .await
-            .expect_err("the session is misconfigured once the attempts are spent");
+        let error = nds.state().await.expect_err("the rejection is reported");
         assert!(
             matches!(error, crate::dap::DapError::ConfigurationFailed { .. }),
             "got: {error}"
         );
-
-        // Further commands report the same failure without another attempt.
         assert!(nds.state().await.is_err());
         let attempts = fake
             .sent_frames()
             .into_iter()
             .filter(|frame| frame["target"] == "DebugAdapterConfigurationDone")
             .count();
-        assert!(
-            attempts <= (MAX_CONFIGURE_ATTEMPTS as usize) * 2,
-            "each attempt sends at most the options call plus its no-args fallback, got {attempts}"
-        );
+        assert_eq!(attempts, 1, "one call, no retry");
     }
 
     #[tokio::test]
     async fn drain_events_records_breaks_with_incrementing_seq() {
         let (mut nds, fake) = session("c1");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 1, "Column": 0 } }], ""]),
-        );
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 2, "Column": 0 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("P", 1, 0));
+        fake.push_callback("Break", break_at("P", 2, 0));
         fake.reply_ok("GetVariables", json!([]));
 
         nds.state().await.unwrap();
@@ -1332,23 +1287,16 @@ mod native_session_tests {
     }
 
     #[tokio::test]
-    async fn drain_events_extracts_camelcase_break_location() {
-        // BreakLocation extraction must accept camelCase field names from BC.
+    async fn break_on_debugger_line_zero_stays_zero_for_the_client() {
+        // DebugHelper.cs:107: the +1 applies only when the line is above 0.
         let (mut nds, fake) = session("c1");
-        fake.push_callback(
-            "Break",
-            json!([
-                null,
-                [{ "displayName": "MyProc", "sourcePosition": { "line": 7, "column": 3 } }],
-                ""
-            ]),
-        );
+        fake.push_callback("Break", break_at("MyProc", 0, 0));
         fake.reply_ok("GetVariables", json!([]));
 
         let st = nds.state().await.unwrap();
-        let loc = st.location.expect("camelCase location extracted");
-        assert_eq!(loc.line, 8);
-        assert_eq!(loc.column, 4);
+        let loc = st.location.expect("location extracted");
+        assert_eq!(loc.line, 0);
+        assert_eq!(loc.column, 0);
         assert_eq!(loc.procedure.as_deref(), Some("MyProc"));
     }
 
@@ -1357,10 +1305,7 @@ mod native_session_tests {
         // A Break that lands while an invoke holds event_rx is buffered into
         // pending_events (not dropped); the next drain flushes it to history.
         let (mut nds, fake) = session("c1");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 5, "Column": 1 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("P", 5, 1));
         fake.reply_ok(
             "GetWatchNode",
             json!({ "Value": "1", "TypeName": "Integer" }),
@@ -1384,10 +1329,7 @@ mod native_session_tests {
     #[tokio::test]
     async fn agent_inspection_methods_forward_frame_and_path() {
         let (mut nds, fake) = session("inspect");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "DisplayName": "OnRun", "SourcePosition": { "Line": 12 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("OnRun", 12, 0));
         fake.reply_ok(
             "GetVariables",
             json!([{ "Name": "LocalValue", "Value": "1", "TypeName": "Integer" }]),
@@ -1402,7 +1344,7 @@ mod native_session_tests {
         );
 
         let stack = nds.stack().await.unwrap();
-        assert_eq!(stack[0]["DisplayName"], "OnRun");
+        assert_eq!(stack[0]["MethodName"], "OnRun");
         assert_eq!(stack[0]["frameId"], 0);
 
         let locals = nds.variables(7).await.unwrap();
@@ -1486,10 +1428,7 @@ mod native_session_tests {
     #[tokio::test]
     async fn continue_exec_drains_pending_then_resumes_running() {
         let (mut nds, fake) = session("sess-c");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 12, "Column": 0 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("P", 12, 0));
         fake.reply_ok("SetBreakpointResponse", json!(null));
 
         let st = nds.continue_exec().await.unwrap();
@@ -1542,10 +1481,7 @@ mod native_session_tests {
     async fn step_drains_pending_break_before_advancing() {
         // symmetry with continue: a pending Break is recorded before step.
         let (mut nds, fake) = session("c");
-        fake.push_callback(
-            "Break",
-            json!([null, [{ "SourcePosition": { "Line": 8, "Column": 0 } }], ""]),
-        );
+        fake.push_callback("Break", break_at("P", 8, 0));
         fake.reply_ok("SetBreakpointResponse", json!(null));
 
         nds.step("over").await.unwrap();

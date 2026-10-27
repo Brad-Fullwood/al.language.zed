@@ -680,23 +680,34 @@ fn dedup_package_versions(packages: Vec<PathBuf>) -> Vec<PathBuf> {
     result
 }
 
+/// Built-in NuGet feeds, tried in order until one serves the package.
+///
+/// Microsoft's client lists `MSSymbolsV2` for Microsoft apps and `AppSourceSymbols`
+/// for every other publisher (`NuGetPackageDownloader.cs:47,49,815-826`), so those
+/// two come first. `MSSymbols` (V1) and `MSApps` are not in Microsoft's list. V1
+/// stays last because it holds older builds that V2 no longer lists (998 versions of
+/// BaseApplication against 434 on V2, audit 2026-10-26). `MSApps` carries runtime
+/// packages and country localizations.
 pub fn nuget_feeds() -> Vec<NuGetFeed> {
     vec![
         NuGetFeed {
-            name: "BC Symbols".into(),
-            index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json".into(),
+            name: "BC Symbols V2".into(),
+            index_url: "https://pkgs.dev.azure.com/dynamicssmb2/DynamicsBCPublicFeeds/_packaging/MSSymbolsV2/nuget/v3/index.json".into(),
         },
         NuGetFeed {
             name: "AppSource Symbols".into(),
-            index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/AppSourceSymbols/nuget/v3/index.json".into(),
+            index_url: "https://pkgs.dev.azure.com/dynamicssmb2/DynamicsBCPublicFeeds/_packaging/AppSourceSymbols/nuget/v3/index.json".into(),
         },
         NuGetFeed {
-            // Microsoft's full-apps feed (runtime packages, country
-            // localizations). NOTE: an earlier revision pointed at
-            // "BCPublic", which does not exist on Azure DevOps (404 —
-            // TF1600011) and added a noisy failure to every download run.
+            // NOTE: an earlier revision pointed at "BCPublic", which does not
+            // exist on Azure DevOps (404, TF1600011) and added a noisy failure
+            // to every download run.
             name: "MS Apps".into(),
             index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSApps/nuget/v3/index.json".into(),
+        },
+        NuGetFeed {
+            name: "BC Symbols".into(),
+            index_url: "https://dynamicssmb2.pkgs.visualstudio.com/DynamicsBCPublicFeeds/_packaging/MSSymbols/nuget/v3/index.json".into(),
         },
     ]
 }
@@ -1093,8 +1104,14 @@ mod tests {
     }
 
     #[test]
-    fn test_nuget_feeds_returns_three() {
-        assert_eq!(nuget_feeds().len(), 3);
+    fn nuget_feeds_start_with_the_two_feeds_microsofts_client_lists() {
+        // fixture source: NuGetPackageDownloader.cs:47 and :49 in
+        // Deployment/Microsoft.Dynamics.Nav.Deployment.ReferenceDownloader.
+        let feeds = nuget_feeds();
+        assert_eq!(feeds.len(), 4);
+        assert!(feeds[0].index_url.contains("/_packaging/MSSymbolsV2/"));
+        assert!(feeds[1].index_url.contains("/_packaging/AppSourceSymbols/"));
+        assert!(feeds[3].index_url.contains("/_packaging/MSSymbols/"));
     }
 
     #[test]

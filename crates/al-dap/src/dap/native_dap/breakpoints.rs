@@ -7,6 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::dap::bc_debug::position::client_line_to_debugger;
 use crate::dap::bc_debug::BcDebugSession;
 use crate::dap::Result;
 
@@ -17,7 +18,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<crate::dap::native_dap::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -131,7 +132,13 @@ where
                 result_bps.push(unresolved_object_breakpoint(source_path, *line));
                 continue;
             };
-            let server_line = line.saturating_sub(1);
+            // Position.Create (Position.cs:92-100): subtract 1 only for a
+            // one-based client.
+            // DocumentHelper.cs:25-66: BC counts lines inside the object's own
+            // compilation unit, see `object_line_shift`.
+            let server_line = (client_line_to_debugger(*line, self.client_base.lines_start_at_1())
+                + object.line_shift)
+                .max(0);
 
             match session
                 .add_breakpoint(
@@ -239,11 +246,10 @@ where
 /// could neither later remove it nor truthfully report `verified: true` — so a
 /// missing or zero id maps to `None`.
 fn extract_breakpoint_id(result: &serde_json::Value) -> Option<i64> {
+    // BreakpointDefinition.BreakpointId (BreakpointDefinition.cs:9-11) is the
+    // only id field of the AddBreakpoint reply.
     result
         .get("BreakpointId")
-        .or_else(|| result.get("breakpointId"))
-        .or_else(|| result.get("Id"))
-        .or_else(|| result.get("id"))
         .and_then(|v| v.as_i64())
         .filter(|&id| id != 0)
 }
@@ -291,22 +297,13 @@ mod tests {
     use super::super::{bc_object_type, VariableHandleStore};
 
     #[test]
-    fn extract_breakpoint_id_reads_pascal_and_camel_case() {
+    fn extract_breakpoint_id_reads_breakpoint_definition() {
+        // fixture source: test_fixtures::breakpoint_definition (BreakpointDefinition.cs:9)
         assert_eq!(
-            extract_breakpoint_id(&serde_json::json!({ "BreakpointId": 99 })),
+            extract_breakpoint_id(&crate::dap::bc_debug::test_fixtures::breakpoint_definition(
+                99
+            )),
             Some(99)
-        );
-        assert_eq!(
-            extract_breakpoint_id(&serde_json::json!({ "breakpointId": 88 })),
-            Some(88)
-        );
-        assert_eq!(
-            extract_breakpoint_id(&serde_json::json!({ "Id": 42 })),
-            Some(42)
-        );
-        assert_eq!(
-            extract_breakpoint_id(&serde_json::json!({ "id": 7 })),
-            Some(7)
         );
     }
 
@@ -320,8 +317,17 @@ mod tests {
             extract_breakpoint_id(&serde_json::json!({ "Other": 1 })),
             None
         );
-        assert_eq!(extract_breakpoint_id(&serde_json::json!({ "Id": 0 })), None);
-        assert_eq!(extract_breakpoint_id(&serde_json::json!({ "id": 0 })), None);
+        assert_eq!(
+            extract_breakpoint_id(&crate::dap::bc_debug::test_fixtures::breakpoint_definition(
+                0
+            )),
+            None
+        );
+        assert_eq!(
+            extract_breakpoint_id(&serde_json::json!({ "id": 7, "Id": 7, "breakpointId": 7 })),
+            None,
+            "only BreakpointId is a field of BreakpointDefinition"
+        );
     }
 
     #[tokio::test]
@@ -368,6 +374,7 @@ mod tests {
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
             pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
             configured: Arc::new(Mutex::new(false)),
+            client_base: Arc::default(),
             variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
             cancel_tx,
             cancel_rx,
@@ -376,7 +383,9 @@ mod tests {
             authorize_target: allow_every_target(),
             acquire_token: Arc::new(no_token),
             resolve_object: resolve_foo_al,
-            resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            resolve_path: |_: i32, _: i32| -> Option<crate::dap::native_dap::ResolvedSource> {
+                None
+            },
             package_source: std::sync::Arc::new(|_, _| None),
             compile: no_compile,
             find_app: |_| Ok(None),
@@ -412,8 +421,14 @@ mod tests {
         // exactly as `handle_launch_attach` does right after connect/attach
         // succeed, against a fake BC hub.
         let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
-        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 501 }));
-        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 502 }));
+        fake.reply_ok(
+            "AddBreakpoint",
+            crate::dap::bc_debug::test_fixtures::breakpoint_definition(501),
+        );
+        fake.reply_ok(
+            "AddBreakpoint",
+            crate::dap::bc_debug::test_fixtures::breakpoint_definition(502),
+        );
 
         let (mut client, server) = tokio::io::duplex(64 * 1024);
         state
@@ -464,7 +479,8 @@ mod tests {
     }
 
     /// `/proj/src/Posting.al` declares a table on lines 1 to 3 and a
-    /// codeunit from line 5.
+    /// codeunit from line 5. BC counts the codeunit's lines from its own
+    /// compilation unit, 4 lines up (`object_line_shift`).
     fn resolve_posting_al(path: &str, line: i64) -> Option<ResolvedObject> {
         if path != "/proj/src/Posting.al" {
             return None;
@@ -473,11 +489,13 @@ mod tests {
             ResolvedObject {
                 object_type: bc_object_type::TABLE,
                 object_id: 50200,
+                line_shift: 0,
             }
         } else {
             ResolvedObject {
                 object_type: bc_object_type::CODEUNIT,
                 object_id: 50100,
+                line_shift: -4,
             }
         })
     }
@@ -490,8 +508,14 @@ mod tests {
         let mut state = test_state();
         state.resolve_object = resolve_posting_al;
         let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
-        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 601 }));
-        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 602 }));
+        fake.reply_ok(
+            "AddBreakpoint",
+            crate::dap::bc_debug::test_fixtures::breakpoint_definition(601),
+        );
+        fake.reply_ok(
+            "AddBreakpoint",
+            crate::dap::bc_debug::test_fixtures::breakpoint_definition(602),
+        );
         *state.session.lock().await = Some(Arc::new(session));
 
         let (_, frames) = run_request_on(
@@ -514,7 +538,7 @@ mod tests {
                 (
                     frame["arguments"][0]["ObjectType"].as_i64().unwrap(),
                     frame["arguments"][0]["ObjectNumber"].as_i64().unwrap(),
-                    frame["arguments"][1]["line"].as_i64().unwrap(),
+                    frame["arguments"][1]["Line"].as_i64().unwrap(),
                 )
             })
             .collect();
@@ -522,7 +546,7 @@ mod tests {
             objects,
             [
                 (i64::from(bc_object_type::TABLE), 50200, 1),
-                (i64::from(bc_object_type::CODEUNIT), 50100, 7),
+                (i64::from(bc_object_type::CODEUNIT), 50100, 3),
             ]
         );
         assert_eq!(

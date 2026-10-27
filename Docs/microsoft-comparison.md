@@ -32,8 +32,8 @@ feature pages for implementation details and limitations.
 | Produce `.app` | 🟡 pure-Rust emitter, parity measured on fixtures only. On real projects it drops page extension variables, `ActionChanges`, `DocComments.xml`, option members, `CalcFormula` text and parameter `Temporary`, and encodes folder names with spaces differently. Use `alc` for packages that go to BC | 🔷 `alc` (parse→bind→type-check→emit) |
 | Compile-time validation | 🟡 syntax, project, declaration, declared-binding and integrity checks block the build. Body checks without a binder (ALN2202, ALN2203, ALN2208, ALN2209, ALN2402, ALN2404) only warn. Optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
-| Symbol download | ✅ NuGet + BC server, concurrent, deduped, no restart | ✅ download-symbols |
-| OAuth (Entra) | ✅ PKCE + device code, token zeroization | ✅ |
+| Symbol download | ✅ NuGet or BC server (one per run, chosen with `--source`), concurrent, deduped, no restart. Per-tenant apps need `--source server` | ✅ download-symbols |
+| OAuth (Entra) | ✅ PKCE + device code (`authenticate login --device-code` prints the code to stderr). Uses the AL extension client id, honours launch.json `entraIdAuthentication`, and exchanges the AL extension's cached refresh token. Access and refresh token fields are zeroized on drop. The access token string handed to callers and HTTP headers is a plain `String` | ✅ |
 | Force Microsoft compiler | ✅ `al.useOfficialCompiler` | n/a |
 
 ## Analysis (largely unique to this project)
@@ -49,7 +49,7 @@ feature pages for implementation details and limitations.
 | Obsolescence timeline | ✅ | ❌ |
 | Data-classification audit | ✅ | ❌ |
 | Dependency graph + conflict detection | ✅ (DOT) | ❌ |
-| Profiler hotspot → source mapping | ✅ | partial |
+| Profiler hotspot → source mapping | ✅ by `callFrame.url` file URI plus procedure name, object name for hand written profiles | partial |
 | Project-wide bulk property fixes | ✅ | partial (per-file) |
 | Entry-point discovery, suggest-event | ✅ | ❌ |
 
@@ -71,12 +71,12 @@ feature pages for implementation details and limitations.
 | Capability | This project | Microsoft |
 | --- | --- | --- |
 | Debug adapter | ✅ native Rust DAP (direct SignalR/REST) | 🔷 `EditorServices.Host` |
-| Launch / attach / breakpoints (conditional) / step / stack / scopes / variables / evaluate | ✅ | ✅ |
+| Launch / attach / breakpoints (conditional) / step / stack / scopes / variables / evaluate | ✅ project files only, no dependency source (`dap-30-dependency-source-breakpoints`), evaluate differs (`dap-31-evaluate-array-index-and-large-strings`) | ✅ |
 | Pause-while-running | ❌ (BC limitation) | ❌ (BC limitation) |
-| Profiling | ✅ start/stop/analyze | ✅ |
+| Profiling | ✅ start/status/stop through the snapshot debugger (sampling gives a `.alcpuprofile`, instrumentation saves the snapshot zip only), analyze | ✅ |
 | Snapshot debugging | ✅ capture in Zed, CLI and MCP, replay in Zed (see [snapshot-debugging](./features/snapshot-debugging.md)). `WebServiceClient` capture failed on the test Sandbox | ✅ |
 | BC runtime execution | 🔷 BC server | 🔷 BC server |
-| Delegate to Microsoft adapter | ✅ `al.useOfficialDap` | n/a |
+| Delegate to Microsoft adapter | ⚠️ `al.useOfficialDap` cannot start the AL 18.1 host on Linux without a wrapper (`dap-50-legacy-dap-cannot-start-host-on-linux`) | n/a |
 
 ## Surfaces & automation
 
@@ -99,7 +99,7 @@ The project does not replace these. The Microsoft path is one setting away:
 - **Authoritative AL runtime semantics:** the Business Central server executes AL, and publish/runtime is
   the final compatibility validator for emitted `.app`s and for record/DB/HTTP/UI/report tests.
 - **Microsoft's altool LSP:** `al.useOfficialLsp` replaces the al-lsp process with `altool launchlspserver`. It is not the server VS Code runs and it lacks diagnostics, code actions, code lens and inlay hints. See [language-server](./features/language-server.md#microsoft-comparison).
-- **Official debug adapter:** `al.useOfficialDap` uses `EditorServices.Host`.
+- **Official debug adapter:** `al.useOfficialDap` uses `EditorServices.Host`. On Linux with the AL 18.1 extension it does not start, see `dap-50-legacy-dap-cannot-start-host-on-linux`.
 
 ## Summary
 

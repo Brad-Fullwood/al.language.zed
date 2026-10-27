@@ -554,7 +554,7 @@ mod dispatch_tests {
             ),
             (
                 "profiling",
-                serde_json::json!({ "cmd": "analyze", "outputDir": directory }),
+                serde_json::json!({ "cmd": "stop", "outputDir": directory }),
             ),
             (
                 "profiling",

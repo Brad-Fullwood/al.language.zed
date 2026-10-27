@@ -1,8 +1,9 @@
-//! CPU profiling — start, stop, and analyze AL profiling sessions on a BC server.
+//! Analysis of AL CPU profiles (`.alcpuprofile`).
 //!
-//! BC's dev endpoint exposes profiling APIs at:
-//!   POST /dev/profiler/start       — begin CPU profiling
-//!   POST /dev/profiler/stop        — end profiling and retrieve data
+//! Capturing a profile is not done here. Profiling start, status and stop are the
+//! snapshot debugger calls with ExecutionContext 2 in
+//! `al_dap::dap::bc_debug::snapshot_capture`, and the stop saves the
+//! `<debuggingcontext>.alcpuprofile` that the sampling zip holds.
 //!
 //! The `.alcpuprofile` data is a JSON-encoded call tree compatible with Chrome's
 //! CPU profiling format. `analyze_profile` parses it and identifies hotspot
@@ -12,28 +13,6 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tracing::{debug, info, warn};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProfilingConfig {
-    /// BC server base URL, e.g. `http://localhost:7049/BC`.
-    pub server_url: String,
-    /// BC company name (URL-encoded on use).
-    pub company: String,
-    /// Output directory for downloaded `.alcpuprofile` files. Must be an absolute path.
-    pub output_dir: PathBuf,
-    /// Optional username for Basic auth. With no username and password the
-    /// request falls back to the `BC_ACCESS_TOKEN` bearer override, and with
-    /// neither it carries no `Authorization` header — there is no
-    /// Windows-integrated fallback.
-    pub username: Option<String>,
-    /// Optional password for Basic auth. Never serialized to prevent credential leaks.
-    #[serde(default, skip_serializing)]
-    pub password: Option<String>,
-    /// Accept invalid/self-signed TLS certificates. Defaults to `false`.
-    #[serde(default)]
-    pub accept_invalid_certs: bool,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,271 +40,10 @@ pub struct ProfilingResult {
 
 #[derive(Debug, Error)]
 pub enum ProfilingError {
-    #[error("HTTP request failed: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("Server returned {status}: {message}")]
-    ServerError { status: u16, message: String },
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("Failed to parse profile data: {0}")]
     ParseError(String),
-    #[error("No profiling session active")]
-    NoActiveSession,
-    #[error("output_dir must be an absolute path, got: {path}")]
-    RelativeOutputDir { path: String },
-}
-
-fn make_client(config: &ProfilingConfig) -> Result<reqwest::Client, ProfilingError> {
-    Ok(crate::http_auth::build_http_client(
-        config.accept_invalid_certs,
-        300,
-    )?)
-}
-
-pub async fn start_profiling(config: &ProfilingConfig) -> Result<String, ProfilingError> {
-    let client = make_client(config)?;
-
-    let url = format!(
-        "{}/dev/profiler/start?company={}",
-        config.server_url.trim_end_matches('/'),
-        urlencoding::encode(&config.company),
-    );
-
-    debug!(url = %url, "profiling: starting CPU profiler");
-
-    let req = crate::http_auth::apply_snapshot_auth(
-        client.post(&url).json(&serde_json::json!({})),
-        &config.username,
-        &config.password,
-    );
-    let resp = req.send().await?;
-    let status = resp.status();
-
-    if !status.is_success() {
-        let message = crate::bc_client::read_error_body_capped(resp).await;
-        warn!(status = status.as_u16(), %message, "profiling: start failed");
-        return Err(ProfilingError::ServerError {
-            status: status.as_u16(),
-            message,
-        });
-    }
-
-    // Content-Length-capped read. BC dev API responses for
-    // session start are tiny (a few hundred bytes); 16 MB is a generous
-    // defence-in-depth bound. Wrap the cross-crate BcClientError into our
-    // local error variant so the caller doesn't see a foreign type.
-    let json: serde_json::Value = crate::bc_client::read_json_body_capped(resp)
-        .await
-        .map_err(|e| ProfilingError::ParseError(format!("Failed to parse start response: {e}")))?;
-    let session_id = json
-        .get("id")
-        .or_else(|| json.get("sessionId"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .ok_or(ProfilingError::NoActiveSession)?
-        .to_string();
-
-    info!(session_id = %session_id, "profiling: session started");
-    Ok(session_id)
-}
-
-pub async fn stop_profiling(
-    config: &ProfilingConfig,
-    session_id: &str,
-) -> Result<PathBuf, ProfilingError> {
-    // Validate that output_dir is an absolute path before doing any work
-    // A relative output_dir
-    // would be resolved against the long-lived daemon's cwd, allowing the
-    // downloaded profile to escape to an arbitrary location. Fail fast, before
-    // the network round-trip.
-    if !config.output_dir.is_absolute() {
-        return Err(ProfilingError::RelativeOutputDir {
-            path: config.output_dir.display().to_string(),
-        });
-    }
-
-    let client = make_client(config)?;
-
-    let url = format!(
-        "{}/dev/profiler/stop?company={}",
-        config.server_url.trim_end_matches('/'),
-        urlencoding::encode(&config.company),
-    );
-
-    debug!(url = %url, session_id = session_id, "profiling: stopping profiler");
-
-    let body = serde_json::json!({ "sessionId": session_id });
-    let req = crate::http_auth::apply_snapshot_auth(
-        client.post(&url).json(&body),
-        &config.username,
-        &config.password,
-    );
-    let resp = req.send().await?;
-    let status = resp.status();
-
-    if !status.is_success() {
-        let message = crate::bc_client::read_error_body_capped(resp).await;
-        warn!(status = status.as_u16(), %message, "profiling: stop failed");
-        return Err(ProfilingError::ServerError {
-            status: status.as_u16(),
-            message,
-        });
-    }
-
-    tokio::fs::create_dir_all(&config.output_dir).await?;
-
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let file_name = format!("profile-{timestamp}.alcpuprofile");
-    let dest = config.output_dir.join(&file_name);
-
-    // A misbehaving server could otherwise stream gigabytes through
-    // `bytes()` straight into
-    // the daemon's memory; the helper enforces a 500 MB cap pre- and post-read.
-    let bytes = crate::bc_client::read_binary_body_capped(resp)
-        .await
-        .map_err(|e| ProfilingError::ParseError(format!("Failed to read profile data: {e}")))?;
-    let len = bytes.len();
-    crate::output_file::write_no_follow(&dest, bytes).await?;
-
-    info!(
-        path = %dest.display(),
-        bytes = len,
-        "profiling: profile saved"
-    );
-
-    Ok(dest)
-}
-
-/// Aggregate per-node self time (in **microseconds**) from a profile's
-/// `samples` + `timeDeltas` arrays.
-///
-/// Chrome / V8 CPU-profile association convention used here: the `i`-th recorded
-/// sample (`samples[i]`, a node id) is charged the `i`-th time delta
-/// (`timeDeltas[i]`, microseconds). We sum those deltas per sampled node id, so
-/// a node's self time reflects how long it was actually on-CPU — not merely how
-/// many times it was sampled. The two arrays are expected to be equal length; if
-/// they differ (a malformed profile) we defensively iterate over the common
-/// prefix (`min(len)`) so we can't panic.
-///
-/// Returns an empty map when either array is absent or empty, in which case the
-/// caller falls back to the legacy "1 ms per hit" estimate.
-fn aggregate_self_time_us(json: &serde_json::Value) -> std::collections::HashMap<u64, f64> {
-    let mut by_node: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
-
-    let (samples, deltas) = match (
-        json.get("samples").and_then(|v| v.as_array()),
-        json.get("timeDeltas").and_then(|v| v.as_array()),
-    ) {
-        (Some(s), Some(d)) if !s.is_empty() && !d.is_empty() => (s, d),
-        _ => return by_node,
-    };
-
-    if samples.len() != deltas.len() {
-        warn!(
-            samples = samples.len(),
-            time_deltas = deltas.len(),
-            "profiling: samples/timeDeltas length mismatch; aggregating over common prefix"
-        );
-    }
-
-    let n = samples.len().min(deltas.len());
-    for i in 0..n {
-        let Some(node_id) = samples[i].as_u64() else {
-            continue;
-        };
-        // timeDeltas are integer microseconds in practice; read as f64 defensively.
-        let delta_us = deltas[i].as_f64().unwrap_or(0.0);
-        *by_node.entry(node_id).or_insert(0.0) += delta_us;
-    }
-
-    by_node
-}
-
-/// Roll up per-node **total time** (self time + the total time of every
-/// descendant) in milliseconds, given each node's self time (ms,
-/// `self_ms_by_node`) and the `children` adjacency encoded in the profile's
-/// `nodes` array.
-///
-/// `total_time(node) = self_time(node) + Σ total_time(child)` over the subtree
-/// rooted at `node`. The parent→child tree is built from each node's
-/// `children:[childId, …]` list; an iterative post-order DFS visits every node —
-/// handling a **forest** of multiple roots — memoizing each node's total so a
-/// shared subtree is summed only once.
-///
-/// Robustness: a Chrome CPU profile is a proper tree, but a malformed profile
-/// may carry **cycles** or **dangling child ids**. Both are guarded — a child id
-/// already on the current DFS path (a back edge) or that names no real node is
-/// absent from the memo table and so contributes 0, meaning we can never loop
-/// forever or panic. The DFS stack lives on the heap, so a deeply nested call
-/// tree cannot overflow the native stack.
-fn aggregate_total_time_ms(
-    nodes: &[serde_json::Value],
-    self_ms_by_node: &std::collections::HashMap<u64, f64>,
-) -> std::collections::HashMap<u64, f64> {
-    use std::collections::{HashMap, HashSet};
-
-    // parent id -> child ids, taken from each node's `children` list.
-    let mut children: HashMap<u64, Vec<u64>> = HashMap::new();
-    let mut order: Vec<u64> = Vec::with_capacity(nodes.len());
-    for node in nodes {
-        let Some(id) = node.get("id").and_then(|v| v.as_u64()) else {
-            continue;
-        };
-        order.push(id);
-        let kids: Vec<u64> = node
-            .get("children")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|c| c.as_u64()).collect())
-            .unwrap_or_default();
-        children.entry(id).or_default().extend(kids);
-    }
-
-    let mut total: HashMap<u64, f64> = HashMap::new();
-
-    for &start in &order {
-        if total.contains_key(&start) {
-            continue; // already finished as a descendant of an earlier root
-        }
-        // Iterative post-order DFS. Each frame is (node_id, children_expanded).
-        let mut stack: Vec<(u64, bool)> = vec![(start, false)];
-        let mut on_path: HashSet<u64> = HashSet::new();
-        while let Some((id, expanded)) = stack.pop() {
-            if expanded {
-                // Children are all finished; sum their memoized totals.
-                on_path.remove(&id);
-                let mut sum = self_ms_by_node.get(&id).copied().unwrap_or(0.0);
-                if let Some(kids) = children.get(&id) {
-                    for k in kids {
-                        // Back edges (cycles) and dangling ids never entered the
-                        // memo table, so they add 0 — no loop, no panic.
-                        if let Some(t) = total.get(k) {
-                            sum += *t;
-                        }
-                    }
-                }
-                total.insert(id, sum);
-            } else {
-                if total.contains_key(&id) || on_path.contains(&id) {
-                    // Finished already, or a back edge into the active path.
-                    continue;
-                }
-                on_path.insert(id);
-                stack.push((id, true));
-                if let Some(kids) = children.get(&id) {
-                    for &k in kids {
-                        if !total.contains_key(&k) && !on_path.contains(&k) {
-                            stack.push((k, false));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    total
 }
 
 /// Parse a `.alcpuprofile` file and return the top hotspots.
@@ -336,9 +54,9 @@ fn aggregate_total_time_ms(
 /// ```
 /// Each node has `{ "id": N, "callFrame": { "functionName": ..., "url": ... }, "hitCount": N, "children": [...] }`.
 ///
-/// Self time is computed by aggregating `timeDeltas` per node (see
-/// `aggregate_self_time_us`); profiles that omit `samples`/`timeDeltas` fall
-/// back to the legacy 1 ms-per-hit approximation. `hit_count` is always retained.
+/// Times come from `sampleExecutionTimes` (inclusive per node), with self time
+/// as inclusive minus children. See `al_types::profile_timing`. Profiles without
+/// those arrays fall back to 1 ms per hit. `hit_count` is always retained.
 pub fn analyze_profile(
     profile_data: &[u8],
     top_n: usize,
@@ -365,30 +83,9 @@ pub fn analyze_profile(
         .cloned()
         .unwrap_or_default();
 
-    // Accurate self time: sum the timeDeltas of each node's samples (µs).
-    // Empty when the profile carries no samples/timeDeltas, in which case we
-    // fall back to the old hit-count estimate below.
-    let self_time_by_node = aggregate_self_time_us(&json);
-    let have_time = !self_time_by_node.is_empty();
-
-    // Per-node self time (ms) for *every* node — the input to the call-tree
-    // total-time roll-up below. Mirrors the per-hotspot self-time rule used
-    // further down (aggregated timeDeltas when present, else 1 ms/hit).
-    let self_ms_by_node: std::collections::HashMap<u64, f64> = nodes
-        .iter()
-        .filter_map(|node| {
-            let id = node.get("id").and_then(|v| v.as_u64())?;
-            let self_ms = if have_time {
-                self_time_by_node.get(&id).copied().unwrap_or(0.0) / 1000.0
-            } else {
-                node.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0) as f64
-            };
-            Some((id, self_ms))
-        })
-        .collect();
-    // Total time = self + Σ descendants, rolled up over the call tree.
-    // Nodes outside the map fall back to self time.
-    let total_by_node = aggregate_total_time_ms(&nodes, &self_ms_by_node);
+    // Inclusive time per node from sampleExecutionTimes, self = inclusive minus
+    // children (see al_types::profile_timing).
+    let times = al_types::profile_timing::node_times(&json, &nodes);
 
     let mut hotspots: Vec<Hotspot> = nodes
         .iter()
@@ -419,23 +116,9 @@ pub fn analyze_profile(
                         .map(String::from)
                 });
 
-            // Self time: aggregate this node's sampled timeDeltas (µs -> ms).
-            // Falls back to the legacy "1 ms per hit" estimate only when the
-            // profile has no samples/timeDeltas to aggregate.
-            let self_time_ms = if have_time {
-                node_id
-                    .and_then(|id| self_time_by_node.get(&id).copied())
-                    .unwrap_or(0.0)
-                    / 1000.0
-            } else {
-                hit_count as f64
-            };
-            // Total time: self + the total time of every descendant, rolled up
-            // over the call tree (see `aggregate_total_time_ms`). Falls back to
-            // self time for an id-less node that can't appear in the tree.
-            let total_time_ms = node_id
-                .and_then(|id| total_by_node.get(&id).copied())
-                .unwrap_or(self_time_ms);
+            let time = node_id.and_then(|id| times.get(&id).copied());
+            let self_time_ms = time.map_or(0.0, |t| t.self_ms);
+            let total_time_ms = time.map_or(self_time_ms, |t| t.total_ms);
 
             Some(Hotspot {
                 procedure: function_name,
@@ -484,26 +167,6 @@ pub async fn analyze_profile_file(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_config() -> ProfilingConfig {
-        ProfilingConfig {
-            server_url: "http://localhost:7049/BC".to_string(),
-            company: "CRONUS International Ltd.".to_string(),
-            output_dir: std::env::temp_dir().join("al-profiling-test"),
-            username: Some("admin".to_string()),
-            password: Some("password".to_string()),
-            accept_invalid_certs: false,
-        }
-    }
-
-    #[test]
-    fn config_roundtrip() {
-        let config = test_config();
-        let json = serde_json::to_string(&config).unwrap();
-        let parsed: ProfilingConfig = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.server_url, config.server_url);
-        assert_eq!(parsed.company, config.company);
-    }
 
     #[test]
     fn analyze_minimal_profile() {
@@ -555,180 +218,53 @@ mod tests {
         assert_eq!(result.hotspots[1].hit_count, 45);
     }
 
-    #[test]
-    fn time_based_self_time_beats_hit_count_ranking() {
-        // The node with fewer hits but larger aggregated timeDeltas must
-        // rank as the bigger hotspot — proving time-based beats count-based.
-        //
-        //   ManyHits: hitCount 100, but sampled once for 100µs  -> 0.1 ms
-        //   FewHits:  hitCount  10, but sampled once for 5000µs -> 5.0 ms
-        //
-        // Count-based ranking would put ManyHits first; time-based flips it.
-        let profile = serde_json::json!({
+    // The two profiles below are built from the decompiled CpuProfile and
+    // CpuProfileGenerator types, not captured from a host. Replace them with a
+    // real CDX capture when one exists. `timeDeltas` holds absolute differences
+    // of neighbouring inclusive times (CpuProfileGenerator.cs:190-197) and must
+    // not be read as time per node.
+    //   root(1) 10 ms inclusive -> A(2) 8 ms -> B(3) 3 ms
+    fn generator_profile() -> serde_json::Value {
+        serde_json::json!({
             "startTime": 0,
-            "endTime": 1000000,
+            "endTime": 10000,
             "nodes": [
-                { "id": 2, "callFrame": { "functionName": "ManyHits", "url": "a.al" }, "hitCount": 100 },
-                { "id": 3, "callFrame": { "functionName": "FewHits",  "url": "b.al" }, "hitCount": 10 }
+                { "id": 1, "callFrame": { "functionName": "(root)", "url": "" }, "hitCount": 0, "children": [2] },
+                { "id": 2, "callFrame": { "functionName": "A", "url": "a.al" }, "hitCount": 2, "children": [3] },
+                { "id": 3, "callFrame": { "functionName": "B", "url": "b.al" }, "hitCount": 3, "children": [] }
             ],
-            "samples":    [2, 3],
-            "timeDeltas": [100, 5000]
-        });
-
-        let bytes = serde_json::to_vec(&profile).unwrap();
-        let result = analyze_profile(&bytes, 10).unwrap();
-
-        assert_eq!(result.hotspots.len(), 2);
-        // Time-based: FewHits ranks first despite having far fewer hits.
-        assert_eq!(result.hotspots[0].procedure, "FewHits");
-        assert_eq!(result.hotspots[0].hit_count, 10);
-        assert!(
-            (result.hotspots[0].self_time_ms - 5.0).abs() < 1e-9,
-            "FewHits self_time should be 5.0 ms, got {}",
-            result.hotspots[0].self_time_ms
-        );
-        assert_eq!(result.hotspots[1].procedure, "ManyHits");
-        assert_eq!(result.hotspots[1].hit_count, 100);
-        assert!(
-            (result.hotspots[1].self_time_ms - 0.1).abs() < 1e-9,
-            "ManyHits self_time should be 0.1 ms, got {}",
-            result.hotspots[1].self_time_ms
-        );
+            "samples": [1, 2, 3],
+            "timeDeltas": [10000, 2000, 5000],
+            "sampleExecutionTimes": [10000, 8000, 3000]
+        })
     }
 
     #[test]
-    fn mismatched_samples_timedeltas_lengths_handled_gracefully() {
-        // A malformed profile whose samples/timeDeltas arrays differ in
-        // length must not panic — we aggregate over the common prefix only.
-        // samples has 3 entries, timeDeltas has 1: only samples[0] (node 2) is
-        // charged, for 1000µs = 1.0 ms; node 3 gets nothing.
-        let profile = serde_json::json!({
-            "startTime": 0,
-            "endTime": 1000000,
-            "nodes": [
-                { "id": 2, "callFrame": { "functionName": "Charged",   "url": "a.al" }, "hitCount": 2 },
-                { "id": 3, "callFrame": { "functionName": "Uncharged", "url": "b.al" }, "hitCount": 1 }
-            ],
-            "samples":    [2, 2, 3],
-            "timeDeltas": [1000]
-        });
-
-        let bytes = serde_json::to_vec(&profile).unwrap();
+    fn self_time_is_inclusive_minus_children_not_the_time_deltas() {
+        let bytes = serde_json::to_vec(&generator_profile()).unwrap();
         let result = analyze_profile(&bytes, 10).unwrap();
-
-        // Both nodes are still reported (no panic); Charged leads on time.
-        assert_eq!(result.hotspots.len(), 2);
-        assert_eq!(result.hotspots[0].procedure, "Charged");
-        assert!(
-            (result.hotspots[0].self_time_ms - 1.0).abs() < 1e-9,
-            "Charged self_time should be 1.0 ms, got {}",
-            result.hotspots[0].self_time_ms
-        );
-        assert_eq!(result.hotspots[1].procedure, "Uncharged");
-        assert!(
-            result.hotspots[1].self_time_ms.abs() < 1e-9,
-            "Uncharged self_time should be 0.0 ms, got {}",
-            result.hotspots[1].self_time_ms
-        );
-    }
-
-    #[test]
-    fn total_time_rolls_up_the_call_tree() {
-        // total_time(node) = self + Σ total_time(descendants).
-        // A 3-node chain root -> child -> grandchild with distinct self times.
-        //   root(1):       sampled 1000µs -> 1.0 ms self
-        //   child(2):      sampled 2000µs -> 2.0 ms self
-        //   grandchild(3): sampled 4000µs -> 4.0 ms self
-        // => total(root) = 7.0, total(child) = 6.0, total(grandchild) = 4.0.
-        let profile = serde_json::json!({
-            "startTime": 0,
-            "endTime": 7000,
-            "nodes": [
-                { "id": 1, "callFrame": { "functionName": "Root",       "url": "a.al" }, "hitCount": 1, "children": [2] },
-                { "id": 2, "callFrame": { "functionName": "Child",      "url": "b.al" }, "hitCount": 1, "children": [3] },
-                { "id": 3, "callFrame": { "functionName": "Grandchild", "url": "c.al" }, "hitCount": 1, "children": [] }
-            ],
-            "samples":    [1, 2, 3],
-            "timeDeltas": [1000, 2000, 4000]
-        });
-
-        let bytes = serde_json::to_vec(&profile).unwrap();
-        let result = analyze_profile(&bytes, 10).unwrap();
-        assert_eq!(result.hotspots.len(), 3);
-
-        let find = |name: &str| {
-            result
-                .hotspots
-                .iter()
-                .find(|h| h.procedure == name)
-                .unwrap_or_else(|| panic!("missing hotspot {name}"))
-        };
-        let root = find("Root");
-        let child = find("Child");
-        let grandchild = find("Grandchild");
-
-        // Self times are unchanged by the roll-up.
-        assert!((root.self_time_ms - 1.0).abs() < 1e-9);
-        assert!((child.self_time_ms - 2.0).abs() < 1e-9);
-        assert!((grandchild.self_time_ms - 4.0).abs() < 1e-9);
-
-        // Total = self + every descendant's total.
-        assert!(
-            (root.total_time_ms - 7.0).abs() < 1e-9,
-            "root total should be 1+2+4 = 7.0, got {}",
-            root.total_time_ms
-        );
-        assert!(
-            (child.total_time_ms - 6.0).abs() < 1e-9,
-            "child total should be 2+4 = 6.0, got {}",
-            child.total_time_ms
-        );
-        // Leaf total equals its own self time.
-        assert!(
-            (grandchild.total_time_ms - grandchild.self_time_ms).abs() < 1e-9,
-            "leaf total should equal its self time, got {}",
-            grandchild.total_time_ms
-        );
-    }
-
-    #[test]
-    fn total_time_handles_cycle_and_dangling_child_without_hanging() {
-        // A malformed profile with a cycle (1 -> 2 -> 1) and a
-        // dangling child id (99, no such node) must not loop forever or panic.
-        //   A(1): sampled 3000µs -> 3.0 ms self, children [2, 99]
-        //   B(2): sampled 5000µs -> 5.0 ms self, children [1]   (back edge)
-        // total(B) = 5.0 (the back edge to A contributes 0).
-        // total(A) = 3.0 + total(B) + 0(dangling 99) = 8.0.
-        let profile = serde_json::json!({
-            "startTime": 0,
-            "endTime": 8000,
-            "nodes": [
-                { "id": 1, "callFrame": { "functionName": "A", "url": "a.al" }, "hitCount": 1, "children": [2, 99] },
-                { "id": 2, "callFrame": { "functionName": "B", "url": "b.al" }, "hitCount": 1, "children": [1] }
-            ],
-            "samples":    [1, 2],
-            "timeDeltas": [3000, 5000]
-        });
-
-        let bytes = serde_json::to_vec(&profile).unwrap();
-        let result = analyze_profile(&bytes, 10).unwrap();
-        assert_eq!(result.hotspots.len(), 2);
-
         let a = result.hotspots.iter().find(|h| h.procedure == "A").unwrap();
         let b = result.hotspots.iter().find(|h| h.procedure == "B").unwrap();
+        // A: 8 ms inclusive minus B's 3 ms. The timeDeltas entry for A is 2000.
+        assert!((a.self_time_ms - 5.0).abs() < 1e-9, "{}", a.self_time_ms);
+        assert!((a.total_time_ms - 8.0).abs() < 1e-9, "{}", a.total_time_ms);
+        assert!((b.self_time_ms - 3.0).abs() < 1e-9, "{}", b.self_time_ms);
+        assert!((b.total_time_ms - 3.0).abs() < 1e-9, "{}", b.total_time_ms);
+        assert_eq!(result.hotspots[0].procedure, "A");
+    }
 
-        assert!(
-            (b.total_time_ms - 5.0).abs() < 1e-9,
-            "B total should be 5.0 (back edge adds 0), got {}",
-            b.total_time_ms
-        );
-        assert!(
-            (a.total_time_ms - 8.0).abs() < 1e-9,
-            "A total should be 3+5 = 8.0 (dangling id adds 0), got {}",
-            a.total_time_ms
-        );
-        // Totals must be finite — never NaN/inf from a cycle.
-        assert!(a.total_time_ms.is_finite() && b.total_time_ms.is_finite());
+    #[test]
+    fn profile_without_execution_times_falls_back_to_one_ms_per_hit() {
+        let mut profile = generator_profile();
+        profile
+            .as_object_mut()
+            .unwrap()
+            .remove("sampleExecutionTimes");
+        let bytes = serde_json::to_vec(&profile).unwrap();
+        let result = analyze_profile(&bytes, 10).unwrap();
+        let a = result.hotspots.iter().find(|h| h.procedure == "A").unwrap();
+        assert!((a.self_time_ms - 2.0).abs() < 1e-9);
+        assert!((a.total_time_ms - 5.0).abs() < 1e-9);
     }
 
     #[test]
@@ -776,20 +312,6 @@ mod tests {
     fn analyze_profile_invalid_json() {
         let result = analyze_profile(b"not json", 10);
         assert!(matches!(result, Err(ProfilingError::ParseError(_))));
-    }
-
-    #[tokio::test]
-    async fn relative_output_dir_rejected() {
-        // A relative output_dir must be rejected up front, before any network
-        // round-trip, to prevent the downloaded profile from escaping to an
-        // arbitrary location relative to the daemon's cwd (path-traversal guard).
-        let mut cfg = test_config();
-        cfg.output_dir = PathBuf::from("relative/path");
-        let err = stop_profiling(&cfg, "test-session").await;
-        assert!(
-            matches!(err, Err(ProfilingError::RelativeOutputDir { .. })),
-            "expected RelativeOutputDir, got {err:?}"
-        );
     }
 
     #[test]
@@ -1036,245 +558,5 @@ mod tests {
         assert_eq!(parsed.session_id.as_deref(), Some("session-1"));
         assert_eq!(parsed.hotspots.len(), 1);
         assert_eq!(parsed.hotspots[0].procedure, "Test.Proc");
-    }
-
-    #[test]
-    fn config_password_never_serialized() {
-        let config = test_config();
-        let json = serde_json::to_string(&config).unwrap();
-        assert!(
-            !json.contains("password"),
-            "serialized config leaked password: {json}"
-        );
-    }
-
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    /// A config pointing at the given mock server URI, writing to a unique temp
-    /// dir so parallel tests do not collide.
-    fn config_for(server_uri: &str) -> ProfilingConfig {
-        let unique = format!(
-            "al-profiling-http-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        );
-        ProfilingConfig {
-            server_url: server_uri.to_string(),
-            company: "CRONUS International Ltd.".to_string(),
-            output_dir: std::env::temp_dir().join(unique),
-            username: Some("admin".to_string()),
-            password: Some("password".to_string()),
-            accept_invalid_certs: false,
-        }
-    }
-
-    /// A project can ship links at the names the next seconds give the
-    /// profile. `stop_profiling` refuses the link it lands on and leaves the
-    /// target absent.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn stop_refuses_a_link_at_the_profile_name() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/dev/profiler/stop"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"PROFILE BYTES".to_vec()))
-            .mount(&server)
-            .await;
-        let dir = tempfile::tempdir().unwrap();
-        let out = dir.path().join("project").join("profiles");
-        std::fs::create_dir_all(&out).unwrap();
-        let outside = dir.path().join("outside");
-        std::fs::create_dir_all(&outside).unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
-        for second in now..now + 60 {
-            std::os::unix::fs::symlink(
-                outside.join("created"),
-                out.join(format!("profile-{second}.alcpuprofile")),
-            )
-            .unwrap();
-        }
-        let mut config = config_for(&server.uri());
-        config.output_dir = out.canonicalize().unwrap();
-
-        let error = stop_profiling(&config, "sess-1")
-            .await
-            .expect_err("a link at the profile name must be refused");
-        assert!(
-            error
-                .to_string()
-                .contains("refusing to write through the symbolic link"),
-            "{error}"
-        );
-        assert!(!outside.join("created").exists());
-    }
-
-    #[tokio::test]
-    async fn start_profiling_returns_id_from_id_field() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/dev/profiler/start"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "prof-123"
-            })))
-            .mount(&server)
-            .await;
-
-        let config = config_for(&server.uri());
-        let id = start_profiling(&config)
-            .await
-            .expect("start should succeed");
-        assert_eq!(id, "prof-123");
-    }
-
-    #[tokio::test]
-    async fn start_profiling_falls_back_to_session_id_field() {
-        // BC variants return `sessionId` instead of `id`.
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "sessionId": "sess-999"
-            })))
-            .mount(&server)
-            .await;
-
-        let config = config_for(&server.uri());
-        let id = start_profiling(&config)
-            .await
-            .expect("start should succeed");
-        assert_eq!(id, "sess-999");
-    }
-
-    #[tokio::test]
-    async fn start_profiling_empty_id_yields_no_active_session() {
-        // A 200 with an empty id string must be rejected (the `filter` drops
-        // empty strings) rather than returning an empty session id.
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": ""
-            })))
-            .mount(&server)
-            .await;
-
-        let config = config_for(&server.uri());
-        let err = start_profiling(&config)
-            .await
-            .expect_err("empty id should error");
-        assert!(
-            matches!(err, ProfilingError::NoActiveSession),
-            "expected NoActiveSession, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn start_profiling_missing_id_yields_no_active_session() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "status": "ok"
-            })))
-            .mount(&server)
-            .await;
-
-        let config = config_for(&server.uri());
-        let err = start_profiling(&config)
-            .await
-            .expect_err("missing id should error");
-        assert!(
-            matches!(err, ProfilingError::NoActiveSession),
-            "expected NoActiveSession, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn start_profiling_server_error_propagates_status() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden: no dev endpoint"))
-            .mount(&server)
-            .await;
-
-        let config = config_for(&server.uri());
-        let err = start_profiling(&config)
-            .await
-            .expect_err("403 should error");
-        match err {
-            ProfilingError::ServerError { status, message } => {
-                assert_eq!(status, 403);
-                assert!(
-                    message.contains("forbidden"),
-                    "message should include server body, got {message:?}"
-                );
-            }
-            other => panic!("expected ServerError, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn stop_profiling_writes_profile_file() {
-        let server = MockServer::start().await;
-        let payload = b"{\"nodes\":[]}".to_vec();
-        Mock::given(method("POST"))
-            .and(path("/dev/profiler/stop"))
-            .respond_with(ResponseTemplate::new(200).set_body_bytes(payload.clone()))
-            .mount(&server)
-            .await;
-
-        let mut config = config_for(&server.uri());
-        config.output_dir = std::env::temp_dir().join(format!(
-            "al-prof-stop-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&config.output_dir);
-
-        let dest = stop_profiling(&config, "sess-1")
-            .await
-            .expect("stop should succeed");
-
-        assert!(dest.starts_with(&config.output_dir));
-        let file_name = dest.file_name().unwrap().to_string_lossy();
-        assert!(
-            file_name.starts_with("profile-") && file_name.ends_with(".alcpuprofile"),
-            "unexpected filename: {file_name}"
-        );
-
-        let written = std::fs::read(&dest).expect("file should exist");
-        assert_eq!(written, payload);
-
-        let _ = std::fs::remove_dir_all(&config.output_dir);
-    }
-
-    #[tokio::test]
-    async fn stop_profiling_server_error_propagates_status() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
-            .mount(&server)
-            .await;
-
-        let mut config = config_for(&server.uri());
-        config.output_dir = std::env::temp_dir().join(format!(
-            "al-prof-stop-err-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-
-        let err = stop_profiling(&config, "sess-1")
-            .await
-            .expect_err("500 should error");
-        match err {
-            ProfilingError::ServerError { status, message } => {
-                assert_eq!(status, 500);
-                assert!(message.contains("boom"), "got {message:?}");
-            }
-            other => panic!("expected ServerError, got {other:?}"),
-        }
-        // On the error path no file dir should have been created.
-        assert!(!config.output_dir.exists());
     }
 }

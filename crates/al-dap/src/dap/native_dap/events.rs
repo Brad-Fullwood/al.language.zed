@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 
-use super::session::try_configuration_done;
 use crate::dap::bc_debug::BcEvent;
 
 use super::{make_event, NativeDapState, ResolvedObject};
@@ -16,7 +15,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<super::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -38,12 +37,11 @@ where
         let session_clone = self.session.clone();
         let event_tx_clone = self.dap_event_tx.clone();
         let seq_clone = self.seq.clone();
-        let debug_config_clone = self.debug_config.clone();
-        let configured_clone = self.configured.clone();
         tokio::spawn(async move {
             // Snapshot the generation we were spawned in.
             // If cancel_rx_clone sees a newer value, the task exits.
             let my_generation = generation;
+            let mut initialized_sent = false;
             loop {
                 if *cancel_rx_clone.borrow() != my_generation {
                     return;
@@ -58,15 +56,17 @@ where
                     None => return, // session ended
                 };
 
-                // Retry configurationDone here, exactly like the MCP path's
-                // `NativeDebugSession::drain_events` (native_debug.rs:222):
-                // current BC online rejects `DebugAdapterConfigurationDone`
-                // until `OnAttachedToConnection` fires, which for
-                // break-on-next web-client sessions happens only after the
-                // browser attaches — i.e. after the client already sent
-                // configurationDone once and got rejected. Poll here until
-                // it succeeds so accepted breakpoints don't stay inert.
-                try_configuration_done(&bc_session, &debug_config_clone, &configured_clone).await;
+                // `initialized` goes out once, when BC reports
+                // OnAttachedToConnection (Microsoft: DebuggerService.cs:119-122).
+                if !initialized_sent && bc_session.is_attached().await {
+                    initialized_sent = true;
+                    let evt = make_event(&seq_clone, "initialized", None);
+                    if let Ok(body) = serde_json::to_vec(&evt) {
+                        if event_tx_clone.try_send(body).is_err() {
+                            tracing::warn!("could not queue the initialized event");
+                        }
+                    }
+                }
 
                 // All async calls happen without holding the session mutex.
                 let mut bc_events = bc_session.try_drain_push_events().await;
@@ -142,5 +142,37 @@ where
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::test_state;
+    use std::sync::Arc;
+
+    /// Microsoft emits `initialized` only on OnAttachedToConnection
+    /// (DebuggerService.cs:119-122), so the forwarder holds it back until then.
+    #[tokio::test]
+    async fn initialized_follows_the_attached_callback_and_is_sent_once() {
+        let mut state = test_state();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        state.dap_event_tx = tx;
+        let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
+        *state.session.lock().await = Some(Arc::new(session));
+
+        state.spawn_event_forwarder();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(rx.try_recv().is_err(), "no event before the hub attaches");
+
+        fake.push_callback("OnAttachedToConnection", serde_json::Value::Null);
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("initialized arrives")
+            .expect("channel open");
+        let event: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(event["event"], "initialized");
+
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(rx.try_recv().is_err(), "sent once");
     }
 }

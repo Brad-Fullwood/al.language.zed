@@ -5,11 +5,11 @@
 `crates/al-lsp/src/server/daemon/debug_dispatch.rs` (CLI/MCP control plane) + `src/dap.rs` (Zed
 glue) + `debug_adapter_schemas/al.json`.
 **Status:** ✅ shipped (core flow). Every field advertised by the native schema is
-consumed by Zed or the native adapter
+consumed by Zed or the native adapter (Microsoft launch keys outside the schema are ignored, see Limitations)
 
 The debugger is a **native Rust Debug Adapter Protocol (DAP) server** that talks directly to a
 Business Central server over SignalR + REST, with no Microsoft `EditorServices.Host` (it remains
-available as a legacy fallback). Zed launches `al-lsp --dap`. The adapter selects the shared verified
+available as a legacy fallback that needs a manual wrapper on Linux, see Limitations). Zed launches `al-lsp --dap`. The adapter selects the shared verified
 native build by default (or the explicit persisted `al.useOfficialCompiler` backend), publishes the
 manifest-selected `.app`, connects to BC's debug hub, and drives breakpoints/stepping/inspection.
 
@@ -34,7 +34,7 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 
 | Layer | File | Role |
 | --- | --- | --- |
-| Native DAP server | `dap/native_dap/` | the Zed-facing stdio DAP server. Compile→publish→attach→drive |
+| Native DAP server | `dap/native_dap/` | the Zed-facing stdio DAP server. Compile→publish→connect→drive |
 | DAP wire types & framing | `dap/protocol.rs`, `dap/framing.rs` | `Content-Length` framing (8 KiB header cap, 20 MB body cap), `seq` patching |
 | DAP subprocess client | `dap/client.rs` | (legacy path) spawn + route a DAP subprocess by `request_seq` |
 | BC debug session | `dap/bc_debug/` | SignalR (WebSocket) client to `/dev/DebuggerHub` |
@@ -43,9 +43,9 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 | High-level session | `native_debug.rs` | wrap session, breakpoint registry, 10k-entry hit history |
 | MCP control plane | `server/daemon/debug_dispatch.rs` | stateful structured commands shared by CLI and MCP |
 | MCP tool | `server/mcp/mod.rs` (`al_debug`) | schema mapped to daemon method `debug` |
-| BC REST | `bc_client.rs` | publish `.app`, RAD delta, status (size caps + secret redaction) |
+| BC REST | `bc_client.rs` | publish `.app` and RAD delta via `POST dev/apps` (size caps + secret redaction) |
 | TLS helper | `http_auth.rs` | client builder. Warns loudly when cert validation is disabled |
-| Profiling | `profiling.rs` | start/stop CPU profiling, parse `.alcpuprofile` hotspots |
+| Profiling | `profiling.rs`, `bc_debug/snapshot_capture.rs` | start/status/stop through the snapshot debugger (ExecutionContext 2), parse `.alcpuprofile` hotspots |
 | Snapshots | `snapshot/` | snapshot debugger zip reader, session store and saved zips |
 
 ## DAP requests implemented
@@ -88,27 +88,71 @@ either feature until it can provide the full behavior itself.
    error rather than silently debugging a stale build.
    The `tenant` must be the tenant GUID and listed in the tenant registry, see
    [project trust](project-trust.md#tenant-registry-and---tenant). `tenantPurpose` names the issue for a customer tenant.
-4. **Connect** SignalR to `/dev/DebuggerHub`, **Attach** (`breakOnError`, `breakOnRecordWrite`).
-5. Optionally **open the browser** at the debug-context URL when `launchBrowser` is set.
+4. **Connect** SignalR to `/dev/DebuggerHub`. Launch makes no `Attach` call: Microsoft's launch handler passes
+   `attachOptions = null` (`DebugAdapterLaunchRequestHandlerBase.cs:89`) and the `debuggingcontext` and `sk`
+   values of the browser URL bind the session (`HubBasedDebuggerService.cs:245-248`).
+5. Optionally **open the browser** at the debug-context URL when `launchBrowser` is set. The URL differs from Microsoft's in four details, see Limitations.
+6. When the hub reports `OnAttachedToConnection`, send the DAP `initialized` event
+   (`DebuggerService.cs:119-122`). The client then sends its breakpoints and `configurationDone`.
+   `breakOnError` and `breakOnRecordWrite` travel in `DebugAdapterConfigurationDone`, not in an attach.
 
-**Attach** skips compile/publish and connects to an existing session.
+**Attach** skips compile/publish and connects to an existing session. It calls the hub's `Attach` with
+`breakOnNextClient`, `sessionId` and `userId`, then sends `breakOnError`/`breakOnRecordWrite` in
+`ConfigurationDone` like launch.
 
 ## BC SignalR integration (`bc_debug/`)
 
+The hub URL follows Microsoft's adapter. In the cloud it is
+`https://api.businesscentral.dynamics.com/v2.0/{environment}/dev/DebuggerHub` with no tenant segment
+(`CloudHttpClientFactory.cs:137-158`, `DebugAdapterStartRequestHandler.cs:133-137`), on premises
+`{server}:{port}/{instance}/dev/DebuggerHub`. The query parameters are those of
+`HubBasedDebuggerService.OpenConnectionAsync` (`HubBasedDebuggerService.cs:176-200`): `tenant` (on premises
+only), `sessionId` (when set and not -1) and `userid` (both only for an attach, they come from the attach options),
+and `Authentication=Bearer <token>`. Negotiate and the WebSocket both carry them, and the affinity cookie
+that negotiate sets is sent on the WebSocket (`HubBasedService.cs:57-58`). Not sent: `deploymentId` (no
+configuration field), application family and sovereign cloud hosts. Live check on CDX pending in the lead's contract run.
+
 A from-scratch SignalR (protocol v1) client: negotiates (`/negotiate?negotiateVersion=1`, validating
 the negotiated version and `connectionToken`), opens a WebSocket with the record-separator handshake,
-and runs reader/writer tasks. Hub methods invoked include `Attach`,
+and runs reader/writer tasks. Every hub request uses the C# property names (PascalCase, for example
+`BreakOnNextClient`, `ObjectNumber`, `Line`) and integer enums, because Microsoft's client registers Newtonsoft
+with `DefaultContractResolver` (`AspNetCoreSignalRFactory.cs:24-27`). A test compares the serialised frame bytes
+with frames built from the decompiled types. Hub methods invoked are a subset of the ones in `HubBasedDebuggerService.cs:34-79`. Invoked: `Attach`,
 `DebugAdapterConfigurationDone`, `AddBreakpoint`/`RemoveBreakpoint`/`UpdateBreakpoint`,
-`GetStackTrace`, `GetVariables`/`ExpandGlobals`/`GetWatchNode`, `SetBreakpointResponse`
-(0=continue, 1=step-over, 2=step-in, 3=step-out), `StopDebugging`/`TerminateSession`. Server
-callbacks handled: `Break` (→ `stopped`), `IsAlive` (→ ack), `OnAttachedToConnection`,
-`OnDetachedFromConnection` (→ `terminated`), `OnFatalDebuggerException` (→ `output`). All
-field access tolerates both PascalCase and camelCase from different BC versions. `Break`'s stop
-reason is derived rather than hard-coded: a non-empty message argument means BC broke on a runtime
+`GetVariables`/`ExpandNode`/`ExpandGlobals`/`GetWatchNode`, `SetBreakpointResponse`
+(0=continue, 1=step-over, 2=step-in, 3=step-out), `StopDebugging`. Server
+Not invoked: `AddBreakpointByName` and `AddBreakpointByNameAndNamespace` (Microsoft uses them for interface
+objects only), `GetSource` and `GetSourceContent`, `GetNstSessionInfo`. There is no client call named
+`GetStackTrace`, `TerminateSession` or `IsAlive`. Server
+callbacks handled: `Break` (→ `stopped`), `IsAlive` (answered with the `AcknowledgeIsAlive` hub call), `OnAttachedToConnection`,
+`OnDetachedFromConnection` (→ `terminated`), `OnFatalDebuggerException` (→ `output`).
+`Break`'s stop reason is derived rather than hard-coded: a non-empty message argument means BC broke on a runtime
 error (`stopped.reason = "exception"`, with the message surfaced in `stopped.text`). Otherwise the
 reason is `"step"` when the last client action was step over/in/out, and `"breakpoint"` otherwise.
-Stack frames prefer `StatementSpan.From` over `SourcePosition` (current BC servers send the former)
-and convert BC's 0-based line/column to DAP's 1-based ones.
+`stackTrace` answers from the `StackFrame[]` of the last `Break` callback, kept in the session, as
+Microsoft's client does (`DebuggerService.SetExecutionState`). Microsoft has no `GetStackTrace` hub
+method. A `StackFrame` has `MethodName`, `ObjectId` (`ObjectType`, `ObjectNumber`), `ObjectName` and
+`StatementSpan` (`From`, `To`, each with `Line` and `Column`) and nothing else, and only those are
+read. Lines and columns follow Microsoft's `ConvertClientLineToDebuggerLine` (DebugHelper.cs:105-112):
+add 1 when the client sent `linesStartAt1` (or `columnsStartAt1`) and the value is above 0. Breakpoint
+lines go the other way with `Position.Create` (subtract 1). In a file that declares two or more objects BC counts
+lines inside each object's own compilation unit (the `using`/`namespace` header, then the object with its leading
+comments), so the line also moves by an object offset: `DocumentHelper.cs:25-66` adds it to breakpoint lines
+and `DebugAdapterStackTraceHandler.cs:80-101` takes it off stack frame lines. The offset is computed by
+`object_line_shift` from `GetDebuggerLineOffsetForNode` (CodeAnalysis `SyntaxNodeExtensions`). A one-object file
+has offset 0. Live check on CDX pending in the lead's contract run: break on a line in the second object. The MCP path treats its clients as
+one-based.
+
+**Debugger version.** `connect` reads `debuggerVersion` from `GET dev/metadata` (`ServerInfo.cs:11-12`,
+`ServerInfoApiClient.cs:27-29`) and keeps its major part, as Microsoft does
+(`DebugAdapterStartRequestHandler.cs:69-72`). It selects the call shape, with no second try: `Attach` is refused
+below major 3 (`DebugAdapterAttachRequestHandler.cs:33-36`), `DebugAdapterConfigurationDone` has no
+arguments up to major 1 and sends `DebugOptions` after (`HubBasedDebuggerService.cs:264-269`), `GetWatchNode`
+has the `WatchOption` argument from major 4 (`:349-353`), and `DebugOptions` carries the legacy
+`BreakOnError`/`BreakOnRecordWrite` booleans below major 5 and only the behaviour values from major 5
+(`DebugAdapterStartRequestHandler.cs:69-119`). `SkipSystemTriggers` is always sent as true, the
+`DebugOptions` default, and has no launch.json field. A metadata body without a parsable version uses the newest
+shapes with a warning. Live check on CDX pending in the lead's contract run.
 
 ### Engineering details worth knowing
 
@@ -118,26 +162,33 @@ and convert BC's 0-based line/column to DAP's 1-based ones.
   a file that declares more than one object sets every breakpoint on the right one. A
   `setBreakpoints` call clears a file's previously tracked breakpoints even when none of its
   requested lines resolve to an object.
-- **Per-operation timeouts:** `IsAlive` 5 s, `StopDebugging`/`TerminateSession` 10 s,
+- **Per-operation timeouts:** `StopDebugging` 10 s,
   breakpoints and step/continue (`SetBreakpointResponse`) 30 s, stack and variables 30 s,
   `Attach`/`DebugAdapterConfigurationDone` 120 s, any other hub method 60 s.
 - **Lock discipline:** clone the session `Arc` inside the lock, drop the lock, then await.
 - **Bounded event channel** (4096 messages, overflow dropped with a warning) with a dedicated
   unbounded channel for `Break` events so a paused breakpoint is never dropped under back-pressure.
   Completion replies to `invoke` have their own 32-entry channel.
-- **`configurationDone` retry:** current BC online rejects `DebugAdapterConfigurationDone` until
-  `OnAttachedToConnection` fires, which for break-on-next web-client launches happens only after the
-  browser attaches, i.e. often after the client already sent `configurationDone` once. The handler
-  attempts immediately when already attached, and the background event-forwarding task retries on
-  every poll afterward until BC accepts it (mirrors the MCP path's `NativeDebugSession` retry).
+- **`configurationDone` order:** BC rejects `DebugAdapterConfigurationDone` before the hub reports
+  `OnAttachedToConnection`. The adapter therefore sends `initialized` only after that callback, as
+  Microsoft's does (`DebuggerService.cs:119-122`), and calls `configurationDone` once. It has no retry
+  and no second call without arguments. A rejection is an error response to the client's request. The
+  MCP path (`NativeDebugSession`) sends the call once after the callback and reports a rejection as an
+  error on every later command.
 - **Security:** REST size caps (500 MB upload / 16 MB JSON / 500 MB binary), error-body redaction of
   bearer tokens/passwords/secrets, and a loud warning whenever TLS cert validation is disabled.
 
 ## Profiling & snapshots
 
-- **Profiling (`profiling.rs`):** start/stop CPU profiling against the BC dev endpoint, download an
-  `.alcpuprofile` (Chrome DevTools format), and analyze hotspots using sampled `timeDeltas`, with
-  hit counts as a fallback when timing data is absent. See also
+- **Profiling (`profiling.rs`):** `profile start|status|stop` use the snapshot debugger REST API
+  (`snapshotdebugger/attach` with ExecutionContext 2, then `status` and `finish`), the same client as
+  snapshots. A sampling profile (`--kind sampling`, the default, interval 50, 100 or 150 ms) needs
+  snapshot API version 3.0 and `stop` saves `<context>.alcpuprofile` from the zip. An instrumentation
+  profile (`--kind instrumentation`) returns a snapshot zip that is saved but not converted to an
+  `.alcpuprofile`. `analyze` reads the file (Chrome DevTools format) and takes the time of a node from
+  `sampleExecutionTimes` (inclusive, self is inclusive minus children), with hit counts as a fallback
+  when timing data is absent. The time unit is assumed to be microseconds until a real capture
+  confirms it. See also
   [analysis-and-insight](./analysis-and-insight.md) for mapping hotspots to source.
 - **Snapshots (`snapshot/`):** the snapshot debugger zip reader, the session store that remembers a
   started session between commands, and `save_finished_snapshot`. The REST calls (attach, status,
@@ -170,7 +221,7 @@ one continuous debugging session rather than isolated commands.
 
 | `cmd` | Relevant parameters | Result/effect |
 | --- | --- | --- |
-| `start` | `config?`, `accessToken?`, or inline BC connection fields | Attach using the named project debug configuration (or the first AL configuration) and retain the session. Callers can instead supply `tenant`/`environmentName` for BC online or `server`/`serverInstance` for on-prem, plus authentication and attach selectors. |
+| `start` | `config?`, `accessToken?`, or inline BC connection fields | Connect using the named project debug configuration (or the first AL configuration) and retain the session. Callers can instead supply `tenant`/`environmentName` for BC online or `server`/`serverInstance` for on-prem, plus authentication and attach selectors. |
 | `breakpoint` | `file`, `line`, `condition?`, `objectType?`, `objectId?` | Replace the breakpoints for that file and return BC verification details. Object metadata is normally resolved from the workspace index. |
 | `state` | | Return running/paused status, current location, variables, session ID, and thread ID. Calling it also drains pending BC break events. |
 | `stack` | | Return the complete BC call-stack payload for the current stop, enriched with a zero-based `frameId` for follow-up inspection. |
@@ -191,9 +242,9 @@ to scrape terminal output.
 For BC online and AAD targets, `accessToken` is optional. When it is absent, `al_debug start` uses the
 same keyring-backed OAuth cache and refresh flow as `al-explorer authenticate login`. Clients do not
 need to retrieve, print, or relay a bearer token. An explicit token remains available for headless
-automation. Some BC online environments accept `Attach` but reject the known
-`DebugAdapterConfigurationDone` signatures. As in the editor DAP path, that compatibility call is
-warned and treated as non-fatal after a successful attach.
+automation. `start` is launch-style and makes no `Attach` call. The adapter sends
+`DebugAdapterConfigurationDone` once after BC reports `OnAttachedToConnection`. A rejection is
+fatal for the session: `al_debug` reports it as an error on every later command.
 
 This is a structured MCP control plane, not a second wire-level DAP endpoint. Zed's `launch`
 request owns the compile-and-publish convenience flow. `al_debug start` attaches to the configured
@@ -213,7 +264,7 @@ runtime must be available and authenticated. Connection details can come from `.
 | Pause-while-running | ❌ (BC limitation) | ❌ (BC limitation) |
 | Timeouts | per-operation | blanket |
 | Error bodies | capped + redacted | unbounded |
-| Fallback | `al.useOfficialDap` keeps the Microsoft proxy | n/a |
+| Fallback | `al.useOfficialDap` keeps the Microsoft proxy, but it cannot start the Host on Linux without a wrapper | n/a |
 
 ## Design rationale
 
@@ -238,7 +289,7 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   with `breakpoint`, `state`, `stack`, `variables`/`globals`/`expand`, `eval`, `continue`/`step`, and
   `stop` calls in the same MCP process.
 - **CLI:** `al-explorer debug start|breakpoint|state|eval|continue|step|history|stop`.
-  `al-explorer profile start|stop|analyze`. `al-explorer snapshot start|status|finish|list|show`
+  `al-explorer profile start|status|stop|analyze`. `al-explorer snapshot start|status|finish|list|show`
   ([snapshot-debugging](./snapshot-debugging.md)). `al-explorer init-debug` to scaffold `.zed/debug.json`.
 
 ## Limitations
@@ -249,10 +300,39 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   `ExpandNode` requests. MCP clients can also expand values explicitly by `path`.
 - MCP exposes structured equivalents of the native runtime control and inspection loop rather than
   raw DAP request/event frames.
-- `sessionId` and `breakOnNext` are forwarded to the BC `Attach` payload. Fields with no native
-  behavior (`useMcpServerForDebugging`, `mcpServicePort`, `userId`,
+- `sessionId`, `breakOnNext` and `userId` are forwarded to the BC `Attach` payload (`userId` as the
+  string `AttachOptions.UserId`). An attach also sends `userid` and `sessionId` on the hub URL (see above). `Agent` is sent as
+  `ClientService` (3): `BreakOnNext.cs` has the values 0 to 3 and Microsoft's VS Code client maps
+  `Agent` to `ClientService` too. Fields with no native
+  behavior (`useMcpServerForDebugging`, `mcpServicePort`,
   `useVsCodeAuthentication`, `primaryTenantDomain`, profiling config) were **removed** from
   `debug_adapter_schemas/al.json`. The snapshot fields are back, because the native adapter now
   consumes them.
   When a launch config omits `breakOnNext`, attach defaults to `WebServiceClient`, the
   schema's documented default.
+- Breakpoints and source display work only for files in the project folder. A breakpoint in dependency
+  code (BaseApp, other apps) is reported `verified:false`, and frames in dependency code have no
+  source because the `source` request is not served. The adapter calls `AddBreakpoint` only and never
+  `AddBreakpointByName`. See audit finding `dap-30-dependency-source-breakpoints`.
+- `evaluate` sends the expression to BC unchanged. Microsoft rewrites array element access (`arr[2]`
+  becomes `arr."[2]"`) and passes `AllowLargeStrings` for the debug console. Neither is done here, so
+  array element watches and strings over the normal limit may fail. A failed evaluation is also sent
+  to BC twice (3-argument call, then 2-argument retry). See audit finding
+  `dap-31-evaluate-array-index-and-large-strings`.
+- Microsoft launch keys that are not in the native schema are dropped without a warning:
+  `forceUpgrade`, `useSystemSessionForDeployment`, `applicationFamily`, `usePublicURLFromServer`,
+  `sandboxName`, `disableHttpRequestTimeout`, `vsCodeAuthenticationProvider`. Publish never sends
+  `ForceUpgrade` or `UseSystemSession`. `authentication` accepts only `MicrosoftEntraID` and `AAD`.
+  See audit finding `dap-33-launch-fields-silently-ignored`.
+- The `launchBrowser` URL differs from Microsoft's in four details. On-prem URLs lack `tenant=`. An
+  object key is always sent, defaulting to Page 22, where Microsoft sends one only when
+  `startupObjectId` is set. What Microsoft puts under `connectioncontext` is not checked. `applicationFamily`
+  and a non-default `PublishEnvironment` suffix are not supported. No live run compared the URLs. See audit
+  finding `dap-34-browser-url-differs-from-microsoft`.
+- `--dap-legacy` (`al.useOfficialDap`) cannot start the Microsoft host on Linux with the AL 18.1
+  extension. The adapter runs a file named `Microsoft.Dynamics.Nav.EditorServices.Host` directly, and
+  that extension ships only `Microsoft.Dynamics.Nav.EditorServices.Host.dll` and `.exe` in `bin/`, with
+  no `bin/linux/` apphost. Without `AL_EDITOR_SERVICES_PATH` it exits 1 with "EditorServices.Host not
+  found". A `.dll` path fails with "Permission denied". It starts only when `AL_EDITOR_SERVICES_PATH`
+  points to a wrapper script that runs `dotnet .../Microsoft.Dynamics.Nav.EditorServices.Host.dll "$@"`.
+  See audit finding `dap-50-legacy-dap-cannot-start-host-on-linux`.

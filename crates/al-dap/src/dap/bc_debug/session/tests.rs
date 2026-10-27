@@ -211,8 +211,8 @@ async fn add_breakpoint_serializes_object_position_condition_and_parses_result()
     let args = frame["arguments"].as_array().unwrap();
     assert_eq!(args[0]["ObjectType"], 5);
     assert_eq!(args[0]["ObjectNumber"], 50100);
-    assert_eq!(args[1]["line"], 42);
-    assert_eq!(args[1]["column"], 8);
+    assert_eq!(args[1]["Line"], 42);
+    assert_eq!(args[1]["Column"], 8);
     assert_eq!(args[2], "Rec.\"No.\" = '10000'");
 }
 
@@ -246,6 +246,8 @@ async fn update_breakpoint_serializes_id_and_condition() {
     assert_eq!(frame["arguments"][1], "x > 5");
 }
 
+// fixture source: Microsoft.Dynamics.Nav.EditorServices.Protocol.DebugAdapter/AttachOptions.cs:15-27
+// (BreakOnNextClient, SessionId, UserId), PascalCase per AspNetCoreSignalRFactory.cs:24-27.
 #[tokio::test]
 async fn attach_serializes_editorservices_attach_options() {
     let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
@@ -259,10 +261,10 @@ async fn attach_serializes_editorservices_attach_options() {
     assert_eq!(frame["target"], "Attach");
     // Default matches the schema-documented default (WebServiceClient,
     // enum value 0) when the launch config omits breakOnNext.
-    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 0);
-    assert_eq!(frame["arguments"][0]["sessionId"], -1);
-    assert!(frame["arguments"][0]["userId"].is_null());
-    assert!(frame["arguments"][0].get("breakOnError").is_none());
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 0);
+    assert_eq!(frame["arguments"][0]["SessionId"], -1);
+    assert!(frame["arguments"][0]["UserId"].is_null());
+    assert!(frame["arguments"][0].get("BreakOnError").is_none());
 }
 
 #[tokio::test]
@@ -280,8 +282,8 @@ async fn attach_forwards_session_id_and_break_on_next() {
     session.attach(&cfg).await.expect("attach ok");
     let frame = next_frame(&mut ws_rx);
     assert_eq!(frame["target"], "Attach");
-    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 2);
-    assert_eq!(frame["arguments"][0]["sessionId"], 7);
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 2);
+    assert_eq!(frame["arguments"][0]["SessionId"], 7);
 }
 
 #[tokio::test]
@@ -300,7 +302,7 @@ async fn attach_explicit_web_client_maps_to_one_not_the_default() {
     };
     session.attach(&cfg).await.expect("attach ok");
     let frame = next_frame(&mut ws_rx);
-    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 1);
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 1);
 }
 
 #[tokio::test]
@@ -316,11 +318,11 @@ async fn attach_explicit_web_service_client_matches_default() {
     };
     session.attach(&cfg).await.expect("attach ok");
     let frame = next_frame(&mut ws_rx);
-    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 0);
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 0);
 }
 
 #[tokio::test]
-async fn configuration_done_sends_debug_options_on_first_attempt() {
+async fn configuration_done_sends_one_debug_options_argument() {
     let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
     event_tx
         .send(completion("1", Some(serde_json::json!(null)), None))
@@ -342,79 +344,98 @@ async fn configuration_done_sends_debug_options_on_first_attempt() {
 
     let frame = next_frame(&mut ws_rx);
     assert_eq!(frame["target"], "DebugAdapterConfigurationDone");
-    let args = frame["arguments"].as_array().unwrap();
-    assert_eq!(args.len(), 1, "debug options arg present on first attempt");
-    assert_eq!(args[0]["breakOnError"], true);
-    assert_eq!(args[0]["breakOnErrorBehaviour"], 3);
-    assert_eq!(args[0]["breakOnRecordWrite"], true);
-    assert_eq!(args[0]["breakOnRecordWriteBehaviour"], 3);
-    assert_eq!(args[0]["enableSqlInformationDebugger"], false);
-    assert_eq!(args[0]["enableLongRunningSqlStatements"], false);
-    assert_eq!(args[0]["longRunningSqlStatementsThreshold"], 900);
-    assert_eq!(args[0]["numberOfSqlStatements"], 37);
-    // A successful first attempt must NOT send the no-args fallback frame.
-    assert!(
-        ws_rx.try_recv().is_err(),
-        "no fallback invoke when the first attempt succeeds"
+    assert_eq!(
+        frame["arguments"],
+        serde_json::json!([crate::dap::bc_debug::test_fixtures::debug_options(&cfg)])
     );
+    assert!(ws_rx.try_recv().is_err(), "exactly one invoke");
 }
 
 #[tokio::test]
-async fn configuration_done_falls_back_to_no_args_when_options_rejected() {
-    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
-    // First attempt (id "1") rejected by an older BC; second (id "2") ok.
+async fn configuration_done_sends_legacy_booleans_below_major_5() {
+    let (mut session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    session.debugger_major = Some(4);
     event_tx
-        .send(completion(
-            "1",
-            None,
-            Some("Method does not accept debugOptions"),
-        ))
+        .send(completion("1", Some(serde_json::json!(null)), None))
         .await
         .unwrap();
+    let cfg = BcDebugConfig {
+        break_on_error: crate::dap::bc_debug::BreakOnError::All,
+        ..BcDebugConfig::default()
+    };
+    session.configuration_done(&cfg).await.unwrap();
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"][0]["BreakOnError"], true);
+    assert_eq!(frame["arguments"][0]["BreakOnErrorBehaviour"], 2);
+}
+
+#[tokio::test]
+async fn configuration_done_has_no_arguments_for_major_1() {
+    // HubBasedDebuggerService.cs:264-269
+    let (mut session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    session.debugger_major = Some(1);
     event_tx
-        .send(completion("2", Some(serde_json::json!(null)), None))
+        .send(completion("1", Some(serde_json::json!(null)), None))
         .await
         .unwrap();
     session
         .configuration_done(&BcDebugConfig::default())
         .await
-        .expect("fallback path succeeds");
-
-    let first = next_frame(&mut ws_rx);
-    let second = next_frame(&mut ws_rx);
-    assert_eq!(first["target"], "DebugAdapterConfigurationDone");
-    assert_eq!(
-        first["arguments"].as_array().unwrap().len(),
-        1,
-        "first attempt carries debug options"
-    );
-    assert_eq!(second["target"], "DebugAdapterConfigurationDone");
-    assert_eq!(
-        second["arguments"].as_array().unwrap().len(),
-        0,
-        "fallback attempt carries no args"
-    );
+        .unwrap();
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
-async fn configuration_done_surfaces_second_error_when_both_attempts_fail() {
-    let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+async fn configuration_done_error_is_returned_without_a_second_form() {
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
     event_tx
-        .send(completion("1", None, Some("first fail")))
-        .await
-        .unwrap();
-    event_tx
-        .send(completion("2", None, Some("second fail")))
+        .send(completion("1", None, Some("rejected")))
         .await
         .unwrap();
     let err = session
         .configuration_done(&BcDebugConfig::default())
         .await
-        .expect_err("both attempts failing must error");
+        .expect_err("a rejected call is an error");
     assert!(
-        matches!(&err, DapError::ServerError(m) if m.contains("second fail")),
-        "must surface the second error, got {err:?}"
+        matches!(&err, DapError::ServerError(m) if m.contains("rejected")),
+        "{err:?}"
     );
+    let _ = next_frame(&mut ws_rx);
+    assert!(ws_rx.try_recv().is_err(), "no retry with another shape");
+}
+
+#[tokio::test]
+async fn get_watch_node_has_two_arguments_below_major_4() {
+    // HubBasedDebuggerService.cs:349-353
+    let (mut session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    session.debugger_major = Some(3);
+    event_tx
+        .send(completion("1", Some(serde_json::json!(null)), None))
+        .await
+        .unwrap();
+    session.evaluate(7, "x").await.unwrap();
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"], serde_json::json!([7, "x"]));
+}
+
+#[tokio::test]
+async fn get_watch_node_error_is_not_swallowed() {
+    let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", None, Some("watch failed")))
+        .await
+        .unwrap();
+    assert!(session.evaluate(7, "x").await.is_err());
+}
+
+#[tokio::test]
+async fn attach_is_refused_below_major_3() {
+    // DebugAdapterAttachRequestHandler.cs:33-36
+    let (mut session, _e, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    session.debugger_major = Some(2);
+    assert!(session.attach(&BcDebugConfig::default()).await.is_err());
+    assert!(ws_rx.try_recv().is_err(), "nothing is sent");
 }
 
 #[tokio::test]
@@ -576,18 +597,10 @@ async fn continue_execution_clears_is_stopped_and_sends_response() {
 #[tokio::test]
 async fn variable_inspection_requests_have_correct_targets_and_params() {
     let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
-    // Completions for the five invocations in call order (ids 1..=5).
+    // Completions for the four invocations in call order (ids 1..=4).
     event_tx
         .send(completion(
             "1",
-            Some(serde_json::json!([{ "name": "Customer" }])),
-            None,
-        ))
-        .await
-        .unwrap();
-    event_tx
-        .send(completion(
-            "2",
             Some(serde_json::json!([{ "name": "x" }])),
             None,
         ))
@@ -595,7 +608,7 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
         .unwrap();
     event_tx
         .send(completion(
-            "3",
+            "2",
             Some(serde_json::json!([{ "name": "g" }])),
             None,
         ))
@@ -603,7 +616,7 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
         .unwrap();
     event_tx
         .send(completion(
-            "4",
+            "3",
             Some(serde_json::json!([{ "name": "child" }])),
             None,
         ))
@@ -611,14 +624,13 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
         .unwrap();
     event_tx
         .send(completion(
-            "5",
+            "4",
             Some(serde_json::json!({ "value": "42" })),
             None,
         ))
         .await
         .unwrap();
 
-    assert_eq!(session.call_stack().await.unwrap()[0]["name"], "Customer");
     assert_eq!(session.variables(7).await.unwrap()[0]["name"], "x");
     assert_eq!(session.globals(7).await.unwrap()[0]["name"], "g");
     assert_eq!(
@@ -630,9 +642,6 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
         "42"
     );
 
-    let f = next_frame(&mut ws_rx);
-    assert_eq!(f["target"], "GetStackTrace");
-    assert_eq!(f["arguments"].as_array().unwrap().len(), 0);
     let f = next_frame(&mut ws_rx);
     assert_eq!(f["target"], "GetVariables");
     assert_eq!(f["arguments"][0], 7);
@@ -651,46 +660,11 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
 }
 
 #[tokio::test]
-async fn get_source_serializes_object_id_and_parses_string() {
-    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
-    event_tx
-        .send(completion(
-            "1",
-            Some(serde_json::json!("codeunit 50100 X { }")),
-            None,
-        ))
-        .await
-        .unwrap();
-    let src = session.get_source(5, 50100).await.unwrap();
-    assert_eq!(src, "codeunit 50100 X { }");
-    let f = next_frame(&mut ws_rx);
-    assert_eq!(f["target"], "GetSource");
-    assert_eq!(f["arguments"][0]["ObjectType"], 5);
-    assert_eq!(f["arguments"][0]["ObjectNumber"], 50100);
-}
-
-#[tokio::test]
-async fn get_source_non_string_result_becomes_empty_string() {
-    let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
-    event_tx
-        .send(completion("1", Some(serde_json::json!(42)), None))
-        .await
-        .unwrap();
-    assert_eq!(
-        session.get_source(5, 1).await.unwrap(),
-        "",
-        "a non-string GetSource result must collapse to empty"
-    );
-}
-
-#[tokio::test]
 async fn null_results_fall_back_to_empty_collections() {
     let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
     // Completions with neither result nor error → invoke returns Ok(None).
     event_tx.send(completion("1", None, None)).await.unwrap();
     event_tx.send(completion("2", None, None)).await.unwrap();
-    event_tx.send(completion("3", None, None)).await.unwrap();
-    assert_eq!(session.call_stack().await.unwrap(), serde_json::json!([]));
     assert_eq!(session.variables(0).await.unwrap(), serde_json::json!([]));
     assert_eq!(
         session.evaluate(0, "x").await.unwrap(),
@@ -709,7 +683,7 @@ async fn invoke_ignores_completion_with_mismatched_invocation_id() {
         .send(completion("1", Some(serde_json::json!("fresh")), None))
         .await
         .unwrap();
-    let r = session.invoke("GetSource", vec![]).await.unwrap();
+    let r = session.invoke("GetVariables", vec![]).await.unwrap();
     assert_eq!(r, Some(serde_json::json!("fresh")));
 }
 
@@ -781,11 +755,14 @@ async fn invoke_buffers_server_push_events_for_flush() {
     let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
     // A Break callback arrives BEFORE our completion while invoke holds
     // event_rx — it must be buffered, not dropped, then drained by flush.
-    let break_args = vec![
-        serde_json::Value::Null,
-        serde_json::json!([{ "DisplayName": "OnRun", "SourcePosition": { "Line": 10, "Column": 2 } }]),
-        serde_json::json!(""),
-    ];
+    let break_args = super::super::test_fixtures::break_args(
+        vec![super::super::test_fixtures::stack_frame(
+            "OnRun",
+            (10, 2),
+            (10, 9),
+        )],
+        "",
+    );
     event_tx
         .send(invocation(Some("Break"), Some(break_args)))
         .await
@@ -795,7 +772,7 @@ async fn invoke_buffers_server_push_events_for_flush() {
         .await
         .unwrap();
 
-    session.invoke("GetStackTrace", vec![]).await.unwrap();
+    session.invoke("IsAlive", vec![]).await.unwrap();
 
     let events = session.flush_pending_events().await;
     assert_eq!(events.len(), 1, "exactly the buffered Break is flushed");
@@ -811,6 +788,39 @@ async fn invoke_buffers_server_push_events_for_flush() {
     }
     // flush_pending_events also runs handle_server_callback("Break").
     assert!(session.is_stopped().await, "Break dispatch set is_stopped");
+}
+
+#[tokio::test]
+async fn call_stack_is_the_last_break_callback_frames_and_sends_nothing() {
+    use super::super::test_fixtures::{break_args, stack_frame};
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    assert_eq!(
+        session.call_stack().await,
+        serde_json::json!([]),
+        "before any Break"
+    );
+
+    let frames = vec![
+        stack_frame("OnRun", (41, 8), (41, 30)),
+        stack_frame("Caller", (9, 4), (9, 20)),
+    ];
+    event_tx
+        .send(invocation(
+            Some("Break"),
+            Some(break_args(frames.clone(), "")),
+        ))
+        .await
+        .unwrap();
+    session.try_drain_push_events().await;
+    assert_eq!(
+        session.call_stack().await,
+        serde_json::Value::Array(frames),
+        "stack is kept from the Break callback"
+    );
+    assert!(
+        ws_rx.try_recv().is_err(),
+        "reading the stack must not invoke a hub method"
+    );
 }
 
 #[tokio::test]
@@ -890,18 +900,208 @@ async fn handle_server_callback_isalive_sends_acknowledge() {
 }
 
 #[tokio::test]
-async fn is_alive_true_on_completion_false_on_error() {
-    let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+async fn attach_agent_maps_to_client_service() {
+    // BreakOnNext.cs: WebServiceClient=0, WebClient=1, Background=2,
+    // ClientService=3. The VS Code client maps "Agent" to ClientService.
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
     event_tx
         .send(completion("1", Some(serde_json::json!(null)), None))
         .await
         .unwrap();
-    assert!(session.is_alive().await, "a completion => alive");
+    let cfg = BcDebugConfig {
+        break_on_next: Some("Agent".to_string()),
+        ..BcDebugConfig::default()
+    };
+    session.attach(&cfg).await.expect("attach ok");
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"][0]["BreakOnNextClient"], 3);
+}
 
-    let (session2, event_tx2, _b2, _w2) = BcDebugSession::test_new("c".into());
-    event_tx2
-        .send(completion("1", None, Some("dead")))
+#[tokio::test]
+async fn attach_forwards_user_id_as_a_string() {
+    // fixture source: AttachOptions.cs:27 (UserId is a string)
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", Some(serde_json::json!(null)), None))
         .await
         .unwrap();
-    assert!(!session2.is_alive().await, "a server error => not alive");
+    let cfg = BcDebugConfig {
+        user_id: Some("BRAD".to_string()),
+        ..BcDebugConfig::default()
+    };
+    session.attach(&cfg).await.expect("attach ok");
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"][0]["UserId"], "BRAD");
+}
+
+// dap-18: the serialised frame bytes, not parsed fields, equal a frame built from
+// the decompiled types' property names. A camelCase key would change the bytes.
+#[tokio::test]
+async fn hub_requests_serialise_to_the_decompiled_pascal_case_frames() {
+    use crate::dap::bc_debug::test_fixtures as fx;
+
+    fn frame_bytes(target: &str, arguments: Vec<serde_json::Value>) -> String {
+        // Field order is the order of the invocation struct in wire.rs.
+        format!(
+            r#"{{"type":1,"target":"{target}","arguments":{},"invocationId":"1"}}"#,
+            serde_json::Value::Array(arguments)
+        )
+    }
+
+    // Attach(AttachOptions)
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", Some(serde_json::json!(null)), None))
+        .await
+        .unwrap();
+    let cfg = BcDebugConfig {
+        break_on_next: Some("ClientService".to_string()),
+        session_id: Some(7),
+        user_id: Some("BRAD".to_string()),
+        ..BcDebugConfig::default()
+    };
+    session.attach(&cfg).await.unwrap();
+    assert_eq!(
+        ws_rx.try_recv().unwrap(),
+        frame_bytes("Attach", vec![fx::attach_options(3, 7, Some("BRAD"))])
+    );
+
+    // DebugAdapterConfigurationDone(DebugOptions)
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", Some(serde_json::json!(null)), None))
+        .await
+        .unwrap();
+    session
+        .configuration_done(&BcDebugConfig::default())
+        .await
+        .unwrap();
+    let sent = ws_rx.try_recv().unwrap();
+    let defaults = BcDebugConfig::default();
+    assert_eq!(
+        sent,
+        frame_bytes(
+            "DebugAdapterConfigurationDone",
+            vec![fx::debug_options(&defaults)]
+        )
+    );
+
+    // AddBreakpoint(ApplicationObjectIdWrapper, SourcePosition, string)
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", Some(fx::breakpoint_definition(5)), None))
+        .await
+        .unwrap();
+    session.add_breakpoint(5, 50100, 41, 0, "").await.unwrap();
+    assert_eq!(
+        ws_rx.try_recv().unwrap(),
+        frame_bytes(
+            "AddBreakpoint",
+            vec![
+                fx::object_id(),
+                fx::source_position(41, 0),
+                serde_json::json!("")
+            ]
+        )
+    );
+}
+
+/// dap-11: negotiate and the WebSocket both carry the query Microsoft builds
+/// (HubBasedDebuggerService.cs:176-200) and the WebSocket gets the cookie
+/// negotiate set (HubBasedService.cs:57-58).
+#[tokio::test]
+#[allow(clippy::result_large_err)] // tungstenite's accept_hdr_async callback fixes the Err type
+async fn connect_sends_the_hub_query_on_both_requests_and_forwards_the_cookie() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let server = tokio::spawn(async move {
+        // 0. dev/metadata: ServerInfo with DebuggerVersion.
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = vec![0u8; 8192];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("GET /BC/dev/metadata"));
+        // fixture source: Deployment/Microsoft.Dynamics.Nav.Deployment.ApiClients/ServerInfo.cs:9-12
+        let body = r#"{"RuntimeVersion":"16.0.0.0","WebApiVersion":"2.0.0.0","DebuggerVersion":"9.0.0.0"}"#;
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(reply.as_bytes()).await.unwrap();
+        drop(stream);
+
+        // 1. negotiate: plain HTTP POST.
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let n = stream.read(&mut buf).await.unwrap();
+        let negotiate_request = String::from_utf8_lossy(&buf[..n]).to_string();
+        // fixture source: shape of the ASP.NET Core negotiate v1 reply that
+        // wire.rs resolve_negotiate_connection reads (connectionId, connectionToken, negotiateVersion).
+        let body = r#"{"negotiateVersion":1,"connectionId":"cid","connectionToken":"ctok","availableTransports":[]}"#;
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nSet-Cookie: ApplicationGatewayAffinity=abc123; Path=/; HttpOnly\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(reply.as_bytes()).await.unwrap();
+        drop(stream);
+
+        // 2. WebSocket upgrade.
+        let (stream, _) = listener.accept().await.unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new((String::new(), String::new())));
+        let seen_in_cb = seen.clone();
+        let mut ws = tokio_tungstenite::accept_hdr_async(
+            stream,
+            move |req: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                  resp: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                let cookie = req
+                    .headers()
+                    .get("cookie")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string();
+                *seen_in_cb.lock().unwrap() = (req.uri().to_string(), cookie);
+                Ok(resp)
+            },
+        )
+        .await
+        .unwrap();
+        // SignalR handshake: read the client's, answer with an empty record.
+        let _ = ws.next().await;
+        ws.send(tokio_tungstenite::tungstenite::Message::Text(
+            "{}\x1e".into(),
+        ))
+        .await
+        .unwrap();
+        let ws_seen = seen.lock().unwrap().clone();
+        (negotiate_request, ws_seen, ws)
+    });
+
+    let cfg = BcDebugConfig {
+        environment_type: "OnPrem".to_string(),
+        server: Some("http://127.0.0.1".to_string()),
+        server_instance: Some("BC".to_string()),
+        port,
+        tenant: "default".to_string(),
+        session_id: Some(12),
+        user_id: Some("BRAD".to_string()),
+        ..BcDebugConfig::default()
+    };
+    let session = BcDebugSession::connect(&cfg, "tok", true)
+        .await
+        .expect("connect succeeds against the local hub");
+    assert_eq!(session.connection_id, "cid");
+    assert_eq!(session.debugger_major, Some(9));
+
+    let (negotiate_request, (ws_uri, ws_cookie), _ws) = server.await.unwrap();
+    let request_line = negotiate_request.lines().next().unwrap();
+    assert_eq!(
+        request_line,
+        "POST /BC/dev/DebuggerHub/negotiate?tenant=default&sessionId=12&userid=BRAD&Authentication=Bearer%20tok&negotiateVersion=1 HTTP/1.1"
+    );
+    assert_eq!(
+        ws_uri,
+        "/BC/dev/DebuggerHub?tenant=default&sessionId=12&userid=BRAD&Authentication=Bearer%20tok&id=ctok"
+    );
+    assert_eq!(ws_cookie, "ApplicationGatewayAffinity=abc123");
 }

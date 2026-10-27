@@ -11,7 +11,7 @@
 //!   OpenConnectionAsync, Attach, ConfigurationDoneAsync, ContinueAsync,
 //!   AddBreakpointAsync, RemoveBreakpointAsync, UpdateBreakpointAsync,
 //!   GetVariablesAsync, ExpandGlobalsAsync, ExpandNodeAsync,
-//!   GetWatchNodeAsync, GetSourceAsync, TerminateSession, IsAlive
+//!   GetWatchNodeAsync (the full list: HubBasedDebuggerService.cs:34-79)
 //!
 //! Split into submodules along natural seams (was a single ~3,371-line file):
 //! `session_config` (DAP-args parsing + `BcDebugConfig`), `events` (`BcEvent` /
@@ -21,14 +21,19 @@
 
 pub mod automation;
 mod events;
+pub(crate) mod position;
 mod rest;
 mod session;
 mod session_config;
 pub mod snapshot_capture;
 pub mod snapshot_debugger;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
+mod version;
 mod wire;
 
 pub use events::{BcEvent, BreakLocation};
+pub use position::object_line_shift;
 pub use rest::{get_metadata, get_web_endpoint, publish_app};
 pub use session::BcDebugSession;
 pub use session_config::{BcDebugConfig, BreakOnError, BreakOnRecordWrite};

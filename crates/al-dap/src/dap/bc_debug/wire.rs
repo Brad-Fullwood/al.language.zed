@@ -42,14 +42,12 @@ pub(super) struct SignalRMessage {
 pub(super) fn default_invoke_timeout(target: &str) -> tokio::time::Duration {
     use tokio::time::Duration;
     match target {
-        "IsAlive" => Duration::from_secs(5),
-        "GetVariables" | "GetStackTrace" | "ExpandGlobals" | "ExpandNode" | "GetWatchNode"
-        | "GetSource" => Duration::from_secs(30),
+        "GetVariables" | "ExpandGlobals" | "ExpandNode" | "GetWatchNode" => Duration::from_secs(30),
         "Attach" | "DebugAdapterConfigurationDone" => Duration::from_secs(120),
         "AddBreakpoint" | "RemoveBreakpoint" | "UpdateBreakpoint" | "SetBreakpointResponse" => {
             Duration::from_secs(30)
         }
-        "StopDebugging" | "TerminateSession" => Duration::from_secs(10),
+        "StopDebugging" => Duration::from_secs(10),
         _ => Duration::from_secs(60),
     }
 }
@@ -254,7 +252,7 @@ mod tests {
     fn invoke_timeout_variable_inspection_is_medium() {
         // Positive: variable / stack-frame inspection can be slow on deep
         // BC records but shouldn't take more than ~30s either.
-        for target in ["GetVariables", "GetStackTrace", "ExpandGlobals"] {
+        for target in ["GetVariables", "ExpandGlobals"] {
             let t = default_invoke_timeout(target);
             assert!(
                 t >= tokio::time::Duration::from_secs(15)
@@ -541,22 +539,11 @@ mod tests {
     }
 
     #[test]
-    fn invoke_timeout_isalive_is_5s() {
-        assert_eq!(
-            default_invoke_timeout("IsAlive"),
-            tokio::time::Duration::from_secs(5)
-        );
-    }
-
-    #[test]
     fn invoke_timeout_teardown_is_10s() {
-        for target in ["StopDebugging", "TerminateSession"] {
-            assert_eq!(
-                default_invoke_timeout(target),
-                tokio::time::Duration::from_secs(10),
-                "{target} should get the 10s teardown budget"
-            );
-        }
+        assert_eq!(
+            default_invoke_timeout("StopDebugging"),
+            tokio::time::Duration::from_secs(10)
+        );
     }
 
     #[test]
@@ -574,14 +561,6 @@ mod tests {
                 "{target} should get the 30s breakpoint budget"
             );
         }
-    }
-
-    #[test]
-    fn invoke_timeout_get_source_is_variable_bucket() {
-        assert_eq!(
-            default_invoke_timeout("GetSource"),
-            tokio::time::Duration::from_secs(30)
-        );
     }
 
     #[test]

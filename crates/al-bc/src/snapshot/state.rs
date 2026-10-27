@@ -80,6 +80,10 @@ pub struct SessionRecord {
     pub zip_path: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<u64>,
+    /// `Sampling` or `Instrumentation` when the session was attached for
+    /// profiling (ExecutionContext 2). `None` for a snapshot session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 impl SessionRecord {
@@ -221,8 +225,15 @@ impl SessionStore {
         Ok(records)
     }
 
+    /// The newest snapshot session. Profiling sessions are left out, they have
+    /// their own [`SessionStore::latest_profile`].
     pub fn latest(&self) -> std::io::Result<Option<SessionRecord>> {
-        Ok(self.list()?.into_iter().next())
+        Ok(self.list()?.into_iter().find(|r| r.profile.is_none()))
+    }
+
+    /// The newest profiling session.
+    pub fn latest_profile(&self) -> std::io::Result<Option<SessionRecord>> {
+        Ok(self.list()?.into_iter().find(|r| r.profile.is_some()))
     }
 
     /// Remove a record. `false` when there was none.
@@ -282,6 +293,7 @@ mod tests {
             started_at: None,
             zip_path: None,
             finished_at: None,
+            profile: None,
         }
     }
 

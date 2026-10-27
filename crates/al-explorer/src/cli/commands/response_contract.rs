@@ -872,13 +872,22 @@ fn validate_profiling(params: Option<&Value>, result: &Value) -> Result<(), Stri
         "start" => fields(
             result,
             "profiling.start",
-            &[("sessionId", Kind::String), ("status", Kind::String)],
+            &[("debuggingContext", Kind::String), ("status", Kind::String)],
         ),
-        "stop" => fields(
+        "status" => fields(
             result,
-            "profiling.stop",
-            &[("path", Kind::String), ("status", Kind::String)],
+            "profiling.status",
+            &[("debuggingContext", Kind::String), ("status", Kind::String)],
         ),
+        "stop" => {
+            fields(
+                result,
+                "profiling.stop",
+                &[("debuggingContext", Kind::String), ("status", Kind::String)],
+            )?;
+            optional_kind(result, "zipPath", Kind::String, true)?;
+            optional_kind(result, "profilePath", Kind::String, true)
+        }
         "analyze" => {
             fields(
                 result,

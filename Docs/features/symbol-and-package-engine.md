@@ -109,10 +109,18 @@ Two download backends:
   buffering a whole package in RAM. Version resolution is numeric and deterministic. A requested
   release line never silently falls forward to an unrelated major/minor. The inner `.app` is
   size-capped, identity/version-validated against the requested dependency, and atomically published.
+  Built-in feeds, in order: `MSSymbolsV2`, `AppSourceSymbols` (the two Microsoft's client uses,
+  `NuGetPackageDownloader.cs:47,49`), then `MSApps` and the older `MSSymbols`, which are not in
+  Microsoft's list. The first feed that serves the package wins.
+  NuGet serves Microsoft and published AppSource apps. An app published only to a tenant is a 404
+  there, and the run prints which dependencies need `--source server`. The two sources can resolve
+  different builds of the same app (symbol-only package on NuGet, full package on the server).
 - **BC server (`bc_server.rs`):** GETs `/dev/packages?publisher=…&appName=…&versionText=…` with auth,
   with four-request concurrency, same-package request dedupe, bounded retry/backoff for transient
   transport/429/502/503/504 failures, and a 200 MiB streaming cap. It verifies NAVX plus manifest
-  identity/minimum-version before atomically publishing a publisher/name/version-qualified filename.
+  identity/minimum-version before atomically publishing a file named `{publisher}_{name}_{version}.app` from the downloaded manifest
+  (the requested version can differ from the one served, so the name shows the real version).
+  A leftover file named after the requested version for the same app id is removed.
   It caches the access token in an `RwLock` and clears it on 401/403 before retrying.
 - **OAuth (`oauth/`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
   redirect) and a **device-code** fallback for headless environments, with disk-cached refresh
@@ -131,7 +139,7 @@ Freshly downloaded symbols are loaded into the workspace **without a daemon rest
 | Caching | disk cache validated by mtime/size/schema. Warm starts skip re-parse | server-side compile of system apps |
 | Composition | explicit composed-object view (base + extensions) | resolved internally by the compiler |
 | Download | native NuGet **and** BC-server backends, concurrent, deduped, no restart | extension's download-symbols command |
-| Auth | native Entra PKCE + device code, token zeroization | extension/VS Code auth |
+| Auth | native Entra PKCE + device code, token fields zeroized on drop | extension/VS Code auth |
 | Source-free/symbol-only packages | renders a public-API outline or identity-only target for navigation | navigates compiler symbols |
 
 ## Why this approach

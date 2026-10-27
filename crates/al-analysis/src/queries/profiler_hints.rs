@@ -12,7 +12,7 @@
 //!       "id": 1,
 //!       "callFrame": {
 //!         "functionName": "ProcessRecord",
-//!         "url": "MyCodeunit",
+//!         "url": "file:///work/app/src/MyCodeunit.al",
 //!         "lineNumber": 10
 //!       },
 //!       "hitCount": 42,
@@ -64,123 +64,11 @@ pub enum ProfilerHintError {
 // and hint-rendering logic below stays here.
 pub use al_types::{ProfilerHint, ProfilerSession};
 
-/// Aggregate per-node self time (in **microseconds**) from the profile's
-/// `samples` + `timeDeltas` arrays.
-///
-/// Chrome / V8 CPU-profile association convention: the `i`-th recorded sample
-/// (`samples[i]`, a node id) is charged the `i`-th time delta (`timeDeltas[i]`,
-/// microseconds). Summing those deltas per node yields the time the node was
-/// actually on-CPU rather than a raw sample count.
-///
-/// Returns an empty map when either array is absent or empty (caller falls back
-/// to the legacy hit-count estimate). Mismatched lengths are tolerated by
-/// iterating over the common prefix (`min(len)`) so a malformed profile can't
-/// panic.
-fn aggregate_self_time_us(json: &serde_json::Value) -> std::collections::HashMap<u64, f64> {
-    let mut by_node: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
-
-    let (Some(samples), Some(deltas)) = (
-        json.get("samples").and_then(|v| v.as_array()),
-        json.get("timeDeltas").and_then(|v| v.as_array()),
-    ) else {
-        return by_node;
-    };
-
-    let n = samples.len().min(deltas.len());
-    for i in 0..n {
-        if let Some(node_id) = samples[i].as_u64() {
-            // timeDeltas are integer microseconds; read as f64 defensively.
-            *by_node.entry(node_id).or_insert(0.0) += deltas[i].as_f64().unwrap_or(0.0);
-        }
-    }
-
-    by_node
-}
-
-/// Roll up per-node **total time** (self time + the total time of every
-/// descendant) in milliseconds, given each node's self time (ms,
-/// `self_ms_by_node`) and the `children` adjacency from the profile's `nodes`.
-///
-/// `total_time(node) = self_time(node) + Σ total_time(child)` over the subtree
-/// rooted at `node`. The parent→child tree is built from each node's
-/// `children:[childId, …]`; an iterative post-order DFS visits every node —
-/// handling a **forest** of multiple roots — memoizing each total so a shared
-/// subtree is summed only once.
-///
-/// Robustness: a Chrome CPU profile is a proper tree, but a malformed profile
-/// may carry **cycles** or **dangling child ids**. Both are guarded — a child id
-/// already on the current DFS path (a back edge) or that names no real node is
-/// absent from the memo table and contributes 0, so we can never loop forever or
-/// panic. The DFS stack is heap-allocated, so a deep call tree can't overflow
-/// the native stack.
-fn aggregate_total_time_ms(
-    nodes: &[serde_json::Value],
-    self_ms_by_node: &std::collections::HashMap<u64, f64>,
-) -> std::collections::HashMap<u64, f64> {
-    use std::collections::{HashMap, HashSet};
-
-    let mut children: HashMap<u64, Vec<u64>> = HashMap::new();
-    let mut order: Vec<u64> = Vec::with_capacity(nodes.len());
-    for node in nodes {
-        let Some(id) = node.get("id").and_then(|v| v.as_u64()) else {
-            continue;
-        };
-        order.push(id);
-        let kids: Vec<u64> = node
-            .get("children")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|c| c.as_u64()).collect())
-            .unwrap_or_default();
-        children.entry(id).or_default().extend(kids);
-    }
-
-    let mut total: HashMap<u64, f64> = HashMap::new();
-
-    for &start in &order {
-        if total.contains_key(&start) {
-            continue;
-        }
-        // Iterative post-order DFS; each frame is (node_id, children_expanded).
-        let mut stack: Vec<(u64, bool)> = vec![(start, false)];
-        let mut on_path: HashSet<u64> = HashSet::new();
-        while let Some((id, expanded)) = stack.pop() {
-            if expanded {
-                on_path.remove(&id);
-                let mut sum = self_ms_by_node.get(&id).copied().unwrap_or(0.0);
-                if let Some(kids) = children.get(&id) {
-                    for k in kids {
-                        // Back edges (cycles) and dangling ids add 0.
-                        if let Some(t) = total.get(k) {
-                            sum += *t;
-                        }
-                    }
-                }
-                total.insert(id, sum);
-            } else {
-                if total.contains_key(&id) || on_path.contains(&id) {
-                    continue;
-                }
-                on_path.insert(id);
-                stack.push((id, true));
-                if let Some(kids) = children.get(&id) {
-                    for &k in kids {
-                        if !total.contains_key(&k) && !on_path.contains(&k) {
-                            stack.push((k, false));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    total
-}
-
 /// Parse a `.alcpuprofile` JSON document into a list of hotspot nodes.
 ///
-/// Self time is the sum of each node's sampled `timeDeltas` (see
-/// `aggregate_self_time_us`); profiles lacking `samples`/`timeDeltas` fall
-/// back to a 1 ms-per-hit estimate. Nodes with no self time and no hits are
+/// Times come from `sampleExecutionTimes` (inclusive per node), with self time
+/// as inclusive minus children (see `al_types::profile_timing`). Profiles
+/// lacking those arrays fall back to a 1 ms-per-hit estimate. Nodes with no self time and no hits are
 /// skipped, as are internal nodes (`(root)`, `(idle)`, `(garbage collector)`,
 /// `(program)`).
 pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, ProfilerHintError> {
@@ -191,28 +79,7 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, ProfilerHi
         .and_then(|v| v.as_array())
         .ok_or(ProfilerHintError::ProfileWithoutNodes)?;
 
-    // Accurate per-node self time (µs) from samples + timeDeltas. Empty when the
-    // profile omits those arrays, in which case we keep the hit-count estimate.
-    let self_time_by_node = aggregate_self_time_us(&json);
-    let have_time = !self_time_by_node.is_empty();
-
-    // Per-node self time (ms) for *every* node — the input to the call-tree
-    // total-time roll-up. Mirrors the per-hint self-time rule used in the loop.
-    let self_ms_by_node: std::collections::HashMap<u64, f64> = nodes
-        .iter()
-        .filter_map(|node| {
-            let id = node.get("id").and_then(|v| v.as_u64())?;
-            let self_ms = if have_time {
-                self_time_by_node.get(&id).copied().unwrap_or(0.0) / 1000.0
-            } else {
-                node.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0) as f64
-            };
-            Some((id, self_ms))
-        })
-        .collect();
-    // Total time = self + all descendants, rolled up over the call tree.
-    // Keyed by node id; nodes outside the map fall back to self time.
-    let total_by_node = aggregate_total_time_ms(nodes, &self_ms_by_node);
+    let times = al_types::profile_timing::node_times(&json, nodes);
 
     let mut hints = Vec::new();
     for node_val in nodes {
@@ -222,16 +89,8 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, ProfilerHi
             .unwrap_or(0);
         let node_id = node_val.get("id").and_then(|v| v.as_u64());
 
-        // Self time: aggregated sampled timeDeltas (µs -> ms), or the legacy
-        // 1 ms-per-hit estimate when the profile has no samples/timeDeltas.
-        let self_time_ms = if have_time {
-            node_id
-                .and_then(|id| self_time_by_node.get(&id).copied())
-                .unwrap_or(0.0)
-                / 1000.0
-        } else {
-            hit_count as f64
-        };
+        let time = node_id.and_then(|id| times.get(&id).copied());
+        let self_time_ms = time.map_or(0.0, |t| t.self_ms);
 
         // Skip nodes that contributed neither time nor a hit. When the profile
         // has no samples/timeDeltas this reduces to the legacy `hitCount == 0`
@@ -263,12 +122,7 @@ pub fn parse_profile(profile_json: &str) -> Result<Vec<ProfilerHint>, ProfilerHi
             procedure: function_name,
             object: url,
             self_time_ms,
-            // Total time: self + the total time of every descendant, rolled up
-            // over the call tree (see `aggregate_total_time_ms`). Falls back to
-            // self time for an id-less node that can't appear in the tree.
-            total_time_ms: node_id
-                .and_then(|id| total_by_node.get(&id).copied())
-                .unwrap_or(self_time_ms),
+            total_time_ms: time.map_or(self_time_ms, |t| t.total_ms),
             hit_count,
             file: None,
             line: None,
@@ -424,7 +278,16 @@ fn resolve_source_locations(
         let proc_lc = hint.procedure.to_lowercase();
         let obj_lc = hint.object.to_lowercase();
 
-        let location = if !obj_lc.is_empty() {
+        // `callFrame.url` is the file URI of the source (CpuProfileGenerator.cs:
+        // 316-352), so the file plus the procedure name picks the right object
+        // even when other objects declare a procedure of the same name. A url that
+        // is an object name (older profiles, hand written ones) uses the object
+        // lookup. Only a name unique in the workspace may match without either.
+        let by_file = file_uri_path(&hint.object)
+            .and_then(|file| qualified.get(&(file_key(&file), proc_lc.clone())));
+        let location = if by_file.is_some() {
+            by_file
+        } else if !obj_lc.is_empty() && !obj_lc.contains("://") {
             qualified
                 .get(&(obj_lc, proc_lc.clone()))
                 .or_else(|| fallback.get(&proc_lc))
@@ -438,6 +301,17 @@ fn resolve_source_locations(
         }
     }
     Ok(())
+}
+
+fn file_key(path: &str) -> String {
+    format!("file:{path}")
+}
+
+/// The local path of a `file://` URI, or `None` for any other text.
+fn file_uri_path(text: &str) -> Option<String> {
+    let url = Url::parse(text).ok()?;
+    let path = url.to_file_path().ok()?;
+    Some(path.to_string_lossy().into_owned())
 }
 
 /// Record one procedure/trigger declaration's file and line under both the
@@ -469,6 +343,8 @@ fn collect_proc_location(
     if !object_name.is_empty() {
         qualified.insert((object_name.to_string(), name_key.clone()), loc.clone());
     }
+    // Keyed by the source file too: Microsoft's `callFrame.url` is that file's URI.
+    qualified.insert((file_key(file_path), name_key.clone()), loc.clone());
     if ambiguous.contains(&name_key) {
         return;
     }
@@ -820,7 +696,7 @@ mod tests {
 
     #[test]
     fn parse_profile_time_based_beats_hit_count() {
-        // the node with FEWER hits but LARGER aggregated timeDeltas must
+        // the node with FEWER hits but LARGER aggregated sampleExecutionTimes must
         // rank as the bigger hotspot — proving time-based beats count-based.
         //   ManyHits: hitCount 100, sampled once for 100µs  -> 0.1 ms
         //   FewHits:  hitCount  10, sampled once for 5000µs -> 5.0 ms
@@ -830,7 +706,7 @@ mod tests {
                 {"id":3,"callFrame":{"functionName":"FewHits","url":"b"},"hitCount":10}
             ],
             "samples":[2,3],
-            "timeDeltas":[100,5000],
+            "sampleExecutionTimes":[100,5000],
             "startTime":0,"endTime":1000000
         }"#;
 
@@ -855,7 +731,7 @@ mod tests {
 
     #[test]
     fn parse_profile_mismatched_array_lengths_handled_gracefully() {
-        // samples/timeDeltas of different lengths must not panic; only the
+        // samples/sampleExecutionTimes of different lengths must not panic; only the
         // common prefix is aggregated. samples[0]=node 2 charged 1000µs=1.0 ms;
         // node 3 gets nothing.
         let profile_json = r#"{
@@ -864,7 +740,7 @@ mod tests {
                 {"id":3,"callFrame":{"functionName":"Uncharged","url":"b"},"hitCount":1}
             ],
             "samples":[2,2,3],
-            "timeDeltas":[1000],
+            "sampleExecutionTimes":[1000],
             "startTime":0,"endTime":1000000
         }"#;
 
@@ -885,91 +761,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_profile_total_time_rolls_up_the_call_tree() {
-        // total_time(node) = self + Σ total_time(descendants).
-        // 3-node chain root -> child -> grandchild with distinct self times:
-        //   root(1): 1000µs=1.0ms, child(2): 2000µs=2.0ms, grandchild(3): 4000µs=4.0ms
-        // => total(root)=7.0, total(child)=6.0, total(grandchild)=4.0.
+    fn parse_profile_self_time_is_inclusive_minus_children() {
+        // Built from CpuProfile / CpuProfileGenerator, not captured: replace with a
+        // real CDX capture. timeDeltas are differences of inclusive times
+        // (CpuProfileGenerator.cs:190-197) and must not be read as per node time.
         let profile_json = r#"{
             "nodes": [
-                {"id":1,"callFrame":{"functionName":"Root","url":"a"},"hitCount":1,"children":[2]},
-                {"id":2,"callFrame":{"functionName":"Child","url":"b"},"hitCount":1,"children":[3]},
-                {"id":3,"callFrame":{"functionName":"Grandchild","url":"c"},"hitCount":1,"children":[]}
+                {"id":1,"callFrame":{"functionName":"(root)","url":""},"hitCount":0,"children":[2]},
+                {"id":2,"callFrame":{"functionName":"A","url":"a"},"hitCount":2,"children":[3]},
+                {"id":3,"callFrame":{"functionName":"B","url":"b"},"hitCount":3,"children":[]}
             ],
             "samples":[1,2,3],
-            "timeDeltas":[1000,2000,4000],
-            "startTime":0,"endTime":7000
+            "timeDeltas":[10000,2000,5000],
+            "sampleExecutionTimes":[10000,8000,3000],
+            "startTime":0,"endTime":10000
         }"#;
-
         let hints = parse_profile(profile_json).expect("should parse");
-        assert_eq!(hints.len(), 3);
-
-        let find = |name: &str| {
-            hints
-                .iter()
-                .find(|h| h.procedure == name)
-                .unwrap_or_else(|| panic!("missing hint {name}"))
-        };
-        let root = find("Root");
-        let child = find("Child");
-        let grandchild = find("Grandchild");
-
-        // Self times unchanged by the roll-up.
-        assert!((root.self_time_ms - 1.0).abs() < 1e-9);
-        assert!((child.self_time_ms - 2.0).abs() < 1e-9);
-        assert!((grandchild.self_time_ms - 4.0).abs() < 1e-9);
-
-        assert!(
-            (root.total_time_ms - 7.0).abs() < 1e-9,
-            "root total should be 7.0, got {}",
-            root.total_time_ms
-        );
-        assert!(
-            (child.total_time_ms - 6.0).abs() < 1e-9,
-            "child total should be 6.0, got {}",
-            child.total_time_ms
-        );
-        assert!(
-            (grandchild.total_time_ms - grandchild.self_time_ms).abs() < 1e-9,
-            "leaf total should equal its self time, got {}",
-            grandchild.total_time_ms
-        );
-    }
-
-    #[test]
-    fn parse_profile_total_time_handles_cycle_and_dangling_child() {
-        // a cycle (1 -> 2 -> 1) and a dangling child id (99) must
-        // not loop forever or panic.
-        //   A(1): 3000µs=3.0ms, children [2, 99]
-        //   B(2): 5000µs=5.0ms, children [1]  (back edge -> contributes 0)
-        // total(B)=5.0; total(A)=3.0 + total(B) + 0(dangling) = 8.0.
-        let profile_json = r#"{
-            "nodes": [
-                {"id":1,"callFrame":{"functionName":"A","url":"a"},"hitCount":1,"children":[2,99]},
-                {"id":2,"callFrame":{"functionName":"B","url":"b"},"hitCount":1,"children":[1]}
-            ],
-            "samples":[1,2],
-            "timeDeltas":[3000,5000],
-            "startTime":0,"endTime":8000
-        }"#;
-
-        let hints = parse_profile(profile_json).expect("should parse");
-        assert_eq!(hints.len(), 2);
-
         let a = hints.iter().find(|h| h.procedure == "A").unwrap();
         let b = hints.iter().find(|h| h.procedure == "B").unwrap();
-
-        assert!(
-            (b.total_time_ms - 5.0).abs() < 1e-9,
-            "B total should be 5.0, got {}",
-            b.total_time_ms
-        );
-        assert!(
-            (a.total_time_ms - 8.0).abs() < 1e-9,
-            "A total should be 8.0, got {}",
-            a.total_time_ms
-        );
-        assert!(a.total_time_ms.is_finite() && b.total_time_ms.is_finite());
+        assert!((a.self_time_ms - 5.0).abs() < 1e-9, "{}", a.self_time_ms);
+        assert!((a.total_time_ms - 8.0).abs() < 1e-9, "{}", a.total_time_ms);
+        assert!((b.self_time_ms - 3.0).abs() < 1e-9);
+        assert!((b.total_time_ms - 3.0).abs() < 1e-9);
+        assert_eq!(hints[0].procedure, "A");
     }
 
     #[test]
@@ -1082,6 +896,34 @@ mod tests {
             profiler_hints(&ws, &[make_hotspot("OnAfterValidate", "", 5.0, 5.0, 5)]).unwrap();
         assert_eq!(unqualified[0].file, None);
         assert_eq!(unqualified[0].line, None);
+    }
+
+    #[test]
+    fn file_uri_url_maps_to_that_file_even_when_another_object_has_the_same_procedure() {
+        // `callFrame.url` is the file URI of the source (CpuProfileGenerator.cs:
+        // 316-352). Built from the decompiled generator, not captured: replace
+        // with a real CDX capture when one exists.
+        let file_a = "codeunit 50100 \"Alpha\"\n{\n    procedure OnRun()\n    begin\n    end;\n}";
+        let file_b = "codeunit 50101 \"Beta\"\n{\n\n    procedure OnRun()\n    begin\n    end;\n}";
+        let ws = workspace_with(vec![("/src/Alpha.al", file_a), ("/src/Beta.al", file_b)]);
+        let hints = profiler_hints(
+            &ws,
+            &[
+                make_hotspot("OnRun", "file:///src/Beta.al", 9.0, 9.0, 9),
+                make_hotspot("OnRun", "file:///src/Alpha.al", 8.0, 8.0, 8),
+                make_hotspot("OnRun", "file:///src/Gamma.al", 7.0, 7.0, 7),
+            ],
+        )
+        .unwrap();
+        let beta = hints.iter().find(|h| h.self_time_ms == 9.0).unwrap();
+        let alpha = hints.iter().find(|h| h.self_time_ms == 8.0).unwrap();
+        let gamma = hints.iter().find(|h| h.self_time_ms == 7.0).unwrap();
+        assert_eq!(beta.file.as_deref(), Some("/src/Beta.al"));
+        assert_eq!(beta.line, Some(4));
+        assert_eq!(alpha.file.as_deref(), Some("/src/Alpha.al"));
+        assert_eq!(alpha.line, Some(3));
+        // A file the workspace does not hold must not borrow another object's line.
+        assert_eq!(gamma.file, None);
     }
 
     #[test]

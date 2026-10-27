@@ -61,7 +61,7 @@ fn build_state(
     NativeDapState<
         impl Fn(String) -> TokenFut + Send + Sync + 'static,
         impl Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-        impl Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+        impl Fn(i32, i32) -> Option<crate::dap::native_dap::ResolvedSource> + Send + Sync + 'static,
         impl Fn(PathBuf) -> super::test_support::CompileFut + Send + Sync + 'static,
         impl Fn(&Path) -> Result<Option<PathBuf>, String> + Send + Sync + 'static,
     >,
@@ -77,6 +77,7 @@ fn build_state(
         breakpoints: Arc::new(Mutex::new(HashMap::new())),
         pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
         configured: Arc::new(Mutex::new(false)),
+        client_base: Arc::default(),
         variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
         cancel_tx,
         cancel_rx,
@@ -154,7 +155,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<crate::dap::native_dap::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -240,9 +241,10 @@ async fn a_capture_arms_polls_and_finishes_into_the_project_snapshots_folder() {
     .await;
 
     let (_, frames) = send(&state, "initialize", json!({})).await;
-    assert!(frames.iter().any(|f| f["event"] == "initialized"));
+    assert!(frames.iter().all(|f| f["event"] != "initialized"));
     let (_, frames) = send(&state, "attach", attach_args(&rig, json!({}))).await;
     assert_eq!(response(&frames)["success"], true, "{frames:?}");
+    assert!(frames.iter().any(|f| f["event"] == "initialized"));
 
     let (_, frames) = send(
         &state,

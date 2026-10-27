@@ -1,15 +1,15 @@
 //! Initialize, configurationDone, launch, attach and disconnect.
 //!
 //! Launch and attach share one handler because the only difference is whether
-//! a compile and publish runs first. `configurationDone` can be rejected by BC
-//! until the client has attached, so `try_configuration_done` is what the
-//! event forwarder retries with.
+//! a compile and publish runs first, and that only attach calls the hub's
+//! `Attach`. The `initialized` event follows BC's `OnAttachedToConnection`,
+//! and `configurationDone` is one call after it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::dap::bc_debug::{get_web_endpoint, publish_app, BcDebugConfig, BcDebugSession};
 use crate::dap::DapError;
@@ -23,7 +23,7 @@ where
     F: Fn(String) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     R: Fn(&str, i64) -> Option<ResolvedObject> + Send + Sync + 'static,
-    P: Fn(i32, i32) -> Option<PathBuf> + Send + Sync + 'static,
+    P: Fn(i32, i32) -> Option<crate::dap::native_dap::ResolvedSource> + Send + Sync + 'static,
     C: Fn(PathBuf) -> CompileFut + Send + Sync + 'static,
     CompileFut: std::future::Future<Output = std::result::Result<String, String>> + Send + 'static,
     A: Fn(&Path) -> std::result::Result<Option<PathBuf>, String> + Send + Sync + 'static,
@@ -33,7 +33,9 @@ where
         out: &mut W,
         request_seq: i64,
         command: &str,
+        arguments: &serde_json::Value,
     ) -> Result<()> {
+        self.client_base.set_from_initialize(arguments);
         let resp = make_response(
             &self.seq,
             request_seq,
@@ -55,7 +57,19 @@ where
             None,
         );
         write_dap(out, &resp).await?;
+        // `initialized` is not sent here. Microsoft's adapter emits it when
+        // the hub reports OnAttachedToConnection (DebuggerService.cs:119-122,
+        // HubBasedDebuggerService.cs:148), so the client's configurationDone
+        // arrives with BC already attached. The live path sends it from the
+        // event forwarder, the replay and capture paths after their setup.
+        Ok(())
+    }
 
+    /// Send the DAP `initialized` event.
+    pub(super) async fn send_initialized<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        out: &mut W,
+    ) -> Result<()> {
         let evt = make_event(&self.seq, "initialized", None);
         write_dap(out, &evt).await?;
         Ok(())
@@ -71,15 +85,21 @@ where
         // guard across the async invoke() call.
         let session_arc = self.session.lock().await.clone();
         if let Some(s) = session_arc {
-            // Current BC online rejects DebugAdapterConfigurationDone until
-            // OnAttachedToConnection fires — which for break-on-next
-            // web-client launches happens only after the browser attaches,
-            // i.e. after the client already sent this very request. Attempt
-            // immediately when already attached (fast path); otherwise the
-            // background event-forwarding task retries on every poll once
-            // `is_attached()` flips true (same retry the MCP path performs
-            // in `NativeDebugSession::drain_events`).
-            try_configuration_done(&s, &self.debug_config, &self.configured).await;
+            // One call. The client sends configurationDone after `initialized`,
+            // which is sent once BC reports OnAttachedToConnection, so BC is
+            // attached when it arrives. A rejection is an error response.
+            if let Err(error) =
+                run_configuration_done(&s, &self.debug_config, &self.configured).await
+            {
+                return self
+                    .reply_failure(
+                        out,
+                        request_seq,
+                        command,
+                        format!("configurationDone failed: {error}"),
+                    )
+                    .await;
+            }
         }
         self.reply_ok(out, request_seq, command).await?;
         Ok(())
@@ -288,12 +308,24 @@ where
         self.emit_output(out, "console", "Connecting to debug hub...\r\n")
             .await?;
 
-        match BcDebugSession::connect(&config, &token).await {
+        match BcDebugSession::connect(&config, &token, command == "attach").await {
             Ok(debug_session) => {
-                if let Err(e) = debug_session.attach(&config).await {
-                    self.reply_failure(out, request_seq, command, format!("Attach failed: {e}"))
+                // Launch makes no Attach call: Microsoft's launch handler
+                // passes attachOptions = null (DebugAdapterLaunchRequestHandlerBase.cs:~89)
+                // and the browser URL's debuggingcontext and sk bind the
+                // session (HubBasedDebuggerService.cs:245-248). Only an attach
+                // request calls Attach (DebugAdapterAttachRequestHandler.cs).
+                if command == "attach" {
+                    if let Err(e) = debug_session.attach(&config).await {
+                        self.reply_failure(
+                            out,
+                            request_seq,
+                            command,
+                            format!("Attach failed: {e}"),
+                        )
                         .await?;
-                    return Ok(());
+                        return Ok(());
+                    }
                 }
 
                 // Capture connection ID before moving session into Arc+mutex
@@ -391,44 +423,27 @@ where
     }
 }
 
-/// Attempt `DebugAdapterConfigurationDone` if it hasn't already succeeded
-/// and BC reports the client has attached. Shared by `handle_configuration_done`
-/// (the fast path, attempted the moment the client's request arrives) and
-/// the background event-forwarding task (the retry path, polled every cycle
-/// until it succeeds) — mirrors the retry the MCP path performs in
-/// `NativeDebugSession::drain_events` (native_debug.rs:222): current BC
-/// online rejects the RPC until `OnAttachedToConnection` fires, which for
-/// break-on-next web-client launches happens only after the browser
-/// attaches, i.e. often after the DAP client already sent `configurationDone`
-/// once and got rejected.
-///
-/// Returns `true` if an attempt (successful or not) was made, `false` if
-/// skipped (already configured, no config stored yet, or not yet attached) —
-/// mainly useful for tests.
-pub(super) async fn try_configuration_done(
+/// Send `DebugAdapterConfigurationDone` once. Later calls after a success
+/// return `Ok` without another RPC. A rejection is returned to the caller,
+/// which answers the client's configurationDone request with an error.
+pub(super) async fn run_configuration_done(
     session: &BcDebugSession,
     debug_config: &Mutex<Option<BcDebugConfig>>,
     configured: &Mutex<bool>,
-) -> bool {
+) -> std::result::Result<(), String> {
     if *configured.lock().await {
-        return false;
-    }
-    if !session.is_attached().await {
-        return false;
+        return Ok(());
     }
     let Some(cfg) = debug_config.lock().await.clone() else {
-        return false;
+        return Ok(());
     };
-    match session.configuration_done(&cfg).await {
-        Ok(()) => {
-            *configured.lock().await = true;
-            info!("DAP configurationDone accepted after client attach");
-        }
-        Err(error) => {
-            warn!(%error, "configurationDone rejected; will retry");
-        }
-    }
-    true
+    session
+        .configuration_done(&cfg)
+        .await
+        .map_err(|error| error.to_string())?;
+    *configured.lock().await = true;
+    info!("DAP configurationDone accepted");
+    Ok(())
 }
 
 #[cfg(test)]
@@ -449,7 +464,11 @@ mod tests {
     async fn initialize_reports_capabilities_and_initialized_event() {
         let (term, frames) = run_request("initialize", serde_json::json!({})).await;
         assert!(!term);
-        assert_eq!(frames.len(), 2, "response + initialized event: {frames:?}");
+        assert_eq!(
+            frames.len(),
+            1,
+            "response only, `initialized` follows OnAttachedToConnection: {frames:?}"
+        );
         assert_eq!(frames[0]["type"], "response");
         assert_eq!(frames[0]["success"], true);
         assert_eq!(
@@ -469,41 +488,10 @@ mod tests {
                 "{capability} must stay false until the native adapter has a real implementation"
             );
         }
-        assert_eq!(frames[1]["event"], "initialized");
-        // Monotonic seq across both messages.
-        assert!(frames[0]["seq"].as_u64() < frames[1]["seq"].as_u64());
     }
 
     #[tokio::test]
-    async fn configuration_done_skips_rpc_when_client_not_yet_attached() {
-        // Current BC online rejects DebugAdapterConfigurationDone before
-        // OnAttachedToConnection fires; the handler must not even attempt
-        // the RPC while unattached (it defers to the event-forwarder retry
-        // instead of burning a doomed call).
-        let state = test_state();
-        let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
-        *state.session.lock().await = Some(Arc::new(session));
-        *state.debug_config.lock().await = Some(BcDebugConfig::default());
-
-        let (_, frames) = run_request_on(&state, "configurationDone", serde_json::json!({})).await;
-        assert_eq!(
-            frames[0]["success"], true,
-            "response always acks: {frames:?}"
-        );
-        assert!(
-            fake.sent_frames()
-                .iter()
-                .all(|f| f["target"] != "DebugAdapterConfigurationDone"),
-            "must not attempt the RPC while BC reports not attached"
-        );
-        assert!(
-            !*state.configured.lock().await,
-            "must not mark configured when no attempt was made"
-        );
-    }
-
-    #[tokio::test]
-    async fn configuration_done_succeeds_immediately_when_already_attached() {
+    async fn configuration_done_makes_one_call_and_acks() {
         let state = test_state();
         let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
         // Drive OnAttachedToConnection through the session before wrapping
@@ -529,31 +517,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_configuration_done_retries_after_attach_and_only_configures_once() {
-        // Models the background event-forwarder's retry loop directly:
-        // first call while unattached does nothing; once BC reports
-        // attached, the same helper succeeds; a third call is a no-op
-        // because it's already configured (BC must only see one call).
+    async fn run_configuration_done_sends_one_call_and_is_idempotent() {
         let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
         let debug_config = Mutex::new(Some(BcDebugConfig::default()));
         let configured = Mutex::new(false);
-
-        let attempted = try_configuration_done(&session, &debug_config, &configured).await;
-        assert!(!attempted, "must skip while not attached");
-        assert!(!*configured.lock().await);
-
-        fake.push_callback("OnAttachedToConnection", serde_json::Value::Null);
-        session.try_drain_push_events().await;
         fake.reply_ok("DebugAdapterConfigurationDone", serde_json::json!(null));
 
-        let attempted = try_configuration_done(&session, &debug_config, &configured).await;
-        assert!(attempted, "must attempt once attached");
+        run_configuration_done(&session, &debug_config, &configured)
+            .await
+            .unwrap();
+        run_configuration_done(&session, &debug_config, &configured)
+            .await
+            .unwrap();
         assert!(*configured.lock().await);
-
-        // A further call (e.g. the forwarder's next 50ms poll) must not
-        // re-invoke BC now that configuration succeeded.
-        let attempted_again = try_configuration_done(&session, &debug_config, &configured).await;
-        assert!(!attempted_again);
         assert_eq!(
             fake.sent_frames()
                 .iter()
@@ -565,32 +541,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_configuration_done_keeps_retrying_after_a_rejection() {
-        // BC rejects the first attempt (still not really ready) — the next
-        // call must retry rather than giving up permanently.
+    async fn configuration_done_rejection_is_an_error_response_without_retry() {
+        let state = test_state();
         let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
-        let debug_config = Mutex::new(Some(BcDebugConfig::default()));
-        let configured = Mutex::new(false);
+        fake.reply_err("DebugAdapterConfigurationDone", "rejected");
+        *state.session.lock().await = Some(Arc::new(session));
+        *state.debug_config.lock().await = Some(BcDebugConfig::default());
 
-        fake.push_callback("OnAttachedToConnection", serde_json::Value::Null);
-        session.try_drain_push_events().await;
-
-        // `configuration_done` itself retries once with no args if the
-        // debug-options form is rejected (older-BC compat); queue a
-        // rejection for both attempts so the overall call fails.
-        fake.reply_err("DebugAdapterConfigurationDone", "not ready");
-        fake.reply_err("DebugAdapterConfigurationDone", "still not ready");
-        let attempted = try_configuration_done(&session, &debug_config, &configured).await;
-        assert!(attempted);
-        assert!(
-            !*configured.lock().await,
-            "a rejected attempt must not mark configured"
+        let (_, frames) = run_request_on(&state, "configurationDone", serde_json::json!({})).await;
+        assert_eq!(frames[0]["success"], false, "{frames:?}");
+        assert!(!*state.configured.lock().await);
+        assert_eq!(
+            fake.sent_frames()
+                .iter()
+                .filter(|f| f["target"] == "DebugAdapterConfigurationDone")
+                .count(),
+            1
         );
-
-        fake.reply_ok("DebugAdapterConfigurationDone", serde_json::json!(null));
-        let attempted = try_configuration_done(&session, &debug_config, &configured).await;
-        assert!(attempted);
-        assert!(*configured.lock().await, "retry must succeed");
     }
 
     #[tokio::test]
@@ -644,6 +611,7 @@ mod tests {
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
             pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
             configured: Arc::new(Mutex::new(false)),
+            client_base: Arc::default(),
             variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
             cancel_tx,
             cancel_rx,
@@ -658,7 +626,9 @@ mod tests {
                 std::future::ready(Ok("test-token".to_string()))
             }),
             resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
-            resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            resolve_path: |_: i32, _: i32| -> Option<crate::dap::native_dap::ResolvedSource> {
+                None
+            },
             package_source: std::sync::Arc::new(|_, _| None),
             compile: move |_: PathBuf| {
                 compiled_by_hook.store(true, Ordering::SeqCst);
@@ -740,6 +710,7 @@ mod tests {
             breakpoints: Arc::new(Mutex::new(HashMap::new())),
             pending_breakpoints: Arc::new(Mutex::new(HashMap::new())),
             configured: Arc::new(Mutex::new(false)),
+            client_base: Arc::default(),
             variable_handles: Arc::new(Mutex::new(VariableHandleStore::default())),
             cancel_tx,
             cancel_rx,
@@ -748,7 +719,9 @@ mod tests {
             authorize_target: allow_every_target(),
             acquire_token: Arc::new(|_: String| std::future::ready(Ok("test-token".to_string()))),
             resolve_object: |_: &str, _: i64| -> Option<ResolvedObject> { None },
-            resolve_path: |_: i32, _: i32| -> Option<PathBuf> { None },
+            resolve_path: |_: i32, _: i32| -> Option<crate::dap::native_dap::ResolvedSource> {
+                None
+            },
             package_source: std::sync::Arc::new(|_, _| None),
             compile: move |_: PathBuf| {
                 compiled_by_hook.store(true, std::sync::atomic::Ordering::SeqCst);

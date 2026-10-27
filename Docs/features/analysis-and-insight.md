@@ -60,7 +60,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 | **Permission audit** | `queries/audit.rs` | Permission-set coverage plus unused object grants (`overBroad`) and granted I/M/D rights without a corresponding observed write (`overGrantedRights`). |
 | **Dependency graph** | `queries/deps.rs` | GUID-keyed transitive tree from the typed current `app.json` and loaded `.app` manifests. Implicit dependencies, missing packages, duplicate versions, unsatisfied minimum versions, deterministic JSON/DOT export. |
 | **Duplicates** | (daemon `duplicates`) | Repeated AL code blocks (configurable min tokens/similarity, clamped to safe bounds). |
-| **Profiler hints** | `queries/profiler_hints.rs` | Map `.alcpuprofile` (Chrome DevTools) hotspots to AL procedure declaration lines. |
+| **Profiler hints** | `queries/profiler_hints.rs` | Map `.alcpuprofile` (Chrome DevTools) hotspots to AL procedure declaration lines, by the `callFrame.url` file URI plus procedure name. |
 | **Complexity metrics** | `syntax/complexity.rs` | Cyclomatic + cognitive complexity per procedure with thresholds. |
 | **Bulk fixes** | `queries/bulk_fix.rs` | Project-wide: add `ApplicationArea`, add `ToolTip` (from base-app field data), add `DataClassification` (skips FlowFields). Idempotent, dry-run supported. |
 
@@ -92,7 +92,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 - **Breaking changes** diffs `(kind, name)` maps of a baseline vs current `SymbolEntry` set, comparing
   public methods, fields, and enum values.
 - **Profiler analysis** parses Chrome profiles, skips synthetic nodes (`(root)`/`(idle)`/GC),
-  aggregates sampled `timeDeltas`, and rolls total time up the call tree. The `profiler-hints`
+  reads the inclusive time of each node from `sampleExecutionTimes` (self time is inclusive minus children), The `profiler-hints`
   command maps supplied procedure hotspots to workspace declarations.
 - **Architecture lint** validates `.alarch.json` before running. Naming conventions accept one Rust
   regular expression. Forbidden patterns are case-insensitive literals by default and become Rust
@@ -160,4 +160,4 @@ an MCP allow-list. The TUI surfaces event chains, call-graph/impact, and profile
   project-specific literal or regex-backed rules.
 - Permission over-grant analysis cannot prove dynamic `RecordRef`/`FieldRef` writes, unresolved
   interface dispatch, or writes inside dependency packages without source bodies.
-- Profiler data without `samples` and `timeDeltas` falls back to the legacy hit-count estimate.
+- Profiler data without `samples` and `sampleExecutionTimes` falls back to the legacy hit-count estimate.
