@@ -9,8 +9,13 @@
     "target": "Cloud",
     "idRanges": [
         {
-            "from": 50100,
-            "to": 50100
+            "from": 98100,
+            "to": 98101
         }
-    ]
+    ],
+    "resourceExposurePolicy": {
+        "allowDebugging": true,
+        "allowDownloadingSource": true,
+        "includeSourceInSymbolFile": true
+    }
 }

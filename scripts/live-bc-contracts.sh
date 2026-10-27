@@ -54,7 +54,7 @@ prepare_repository_fixture() {
     revision="$((epoch % 43200))"
     ((build <= 65535)) ||
         unavailable "generated fixture version no longer fits an AL version component"
-    fixture_version="1.0.${build}.${revision}"
+    fixture_version="1.1.${build}.${revision}"
     local app_json="$generated_project/app.json"
     local app_json_tmp
     app_json_tmp="$(mktemp "$generated_project/.app.json.XXXXXX")" ||
@@ -87,7 +87,7 @@ prepare_repository_fixture() {
 
     export AL_LIVE_BC_PROJECT="$generated_project"
     export AL_LIVE_BC_CONFIG="Live BC Contract"
-    export AL_LIVE_BC_TEST_CODEUNIT_ID="50100"
+    export AL_LIVE_BC_TEST_CODEUNIT_ID="98100"
     export AL_LIVE_BC_TEST_CODEUNIT_NAME="Live Contract Tests"
     export AL_LIVE_BC_TEST_METHOD="PublishDebugAndSnapshot"
     export AL_LIVE_BC_BREAKPOINT_FILE="$breakpoint_file"
