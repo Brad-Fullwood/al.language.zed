@@ -219,6 +219,7 @@ fn result_schema(tool_name: &str) -> serde_json::Value {
                 "failed": {"type": "integer"},
                 "skipped": {"type": "integer"},
                 "loaded_into_index": {"type": "integer"},
+                "hint": {"type": ["string", "null"]},
                 "results": {"type": "array", "items": {"type": "object"}},
             }),
             &["source", "downloaded", "failed", "results"],

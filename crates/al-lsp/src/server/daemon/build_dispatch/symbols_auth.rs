@@ -381,6 +381,39 @@ async fn download_dependency_wave(
     }
 }
 
+/// Tell the caller which NuGet failures need the BC server route.
+///
+/// The NuGet feeds hold Microsoft and published AppSource apps. An app that only
+/// exists in a tenant (a per-tenant extension) is a 404 there. Standard route
+/// checked: Microsoft's client does the same split, feeds first
+/// (`NuGetPackageDownloader.cs`) and the server `dev/packages` route for the
+/// rest (`PackagesApiClient.cs`). A retry on the server inside one run was not
+/// added, because it would send the user's BC credential to a server they did
+/// not name on the command line. The hint names the dependencies instead.
+fn server_route_hint(source: &str, results: &[serde_json::Value]) -> Option<String> {
+    if source != "nuget" {
+        return None;
+    }
+    let names: Vec<&str> = results
+        .iter()
+        .filter(|r| r.get("status").and_then(|v| v.as_str()) == Some("error"))
+        .filter(|r| {
+            r.get("error")
+                .and_then(|v| v.as_str())
+                .is_some_and(|e| e.contains("404"))
+        })
+        .filter_map(|r| r.get("name").and_then(|v| v.as_str()))
+        .collect();
+    if names.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Not found on the NuGet feeds: {}. Apps published only to a tenant are not on NuGet. \
+         Download them with --source server and a cloud or on-premises launch.json configuration.",
+        names.join(", ")
+    ))
+}
+
 pub(in crate::server::daemon) async fn dispatch_download_symbols(
     workspace: &Workspace,
     id: u64,
@@ -635,6 +668,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
             "failed": failed,
             "skipped": skipped_count,
             "loaded_into_index": loaded,
+            "hint": server_route_hint(source, &result),
             "results": result,
         })),
         error: None,
@@ -704,6 +738,32 @@ fn refresh_workspace_after_download(
 mod tests {
     use super::*;
     use al_workspace::Workspace;
+
+    // fixture source: audit run publish-symbols/nuget-run.json (Sandbox project,
+    // `download-symbols --source nuget --json`), the first failed row.
+    fn recorded_nuget_404() -> serde_json::Value {
+        serde_json::json!({
+            "name": "Carrier Integration Core",
+            "status": "error",
+            "error": "HTTP request failed: HTTP status client error (404 Not Found) for url (https://dynamicssmb2.pkgs.visualstudio.com/571e802d-b44b-45fc-bd41-4cfddec73b44/_packaging/9c5cd71f-8d45-40bf-8fde-4ac4d924365a/nuget/v3/flat2/advaniauk.carrierintegrationcore.symbols.1bb27b84-65fb-49f8-a7a7-bd33f8e8e86f/index.json)"
+        })
+    }
+
+    #[test]
+    fn a_nuget_404_points_at_the_server_route() {
+        let ok = serde_json::json!({"name": "System", "status": "ok", "path": "a.app"});
+        let hint = server_route_hint("nuget", &[ok, recorded_nuget_404()]).expect("hint");
+        assert!(hint.contains("Carrier Integration Core"), "{hint}");
+        assert!(!hint.contains("System"), "{hint}");
+        assert!(hint.contains("--source server"), "{hint}");
+    }
+
+    #[test]
+    fn no_hint_for_the_server_source_or_without_a_404() {
+        assert!(server_route_hint("server", &[recorded_nuget_404()]).is_none());
+        let other = serde_json::json!({"name": "X", "status": "error", "error": "timeout"});
+        assert!(server_route_hint("nuget", &[other]).is_none());
+    }
 
     #[test]
     fn a_server_failure_carries_the_status_the_failed_count_sums() {
