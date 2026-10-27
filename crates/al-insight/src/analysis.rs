@@ -28,6 +28,10 @@ pub enum TableOperationKind {
     Extends,
     /// A page, report, query or XMLport whose `SourceTable` is this table.
     SourceTable,
+    /// A FlowField whose `CalcFormula` reads this table (count, sum, lookup,
+    /// exist, average, min, max). The hint names the field, the method and
+    /// the filter fields.
+    CalcFormula,
 }
 
 impl std::fmt::Display for TableOperationKind {
@@ -38,6 +42,7 @@ impl std::fmt::Display for TableOperationKind {
             TableOperationKind::Relation => write!(f, "relation"),
             TableOperationKind::Extends => write!(f, "extends"),
             TableOperationKind::SourceTable => write!(f, "source_table"),
+            TableOperationKind::CalcFormula => write!(f, "calc_formula"),
         }
     }
 }
@@ -141,6 +146,16 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
         if matches!(entry.kind, ObjectKind::Table | ObjectKind::TableExtension) {
             for field in &entry.fields {
                 for prop in &field.properties {
+                    if prop.name.eq_ignore_ascii_case("CalcFormula") {
+                        if let Some(formula) = parse_calc_formula(&prop.value) {
+                            if formula.table.eq_ignore_ascii_case(table_name) {
+                                impacts.push(TableImpact {
+                                    operation: TableOperationKind::CalcFormula,
+                                    location_hint: Some(formula.hint(&field.name)),
+                                });
+                            }
+                        }
+                    }
                     if prop.name.eq_ignore_ascii_case("TableRelation") {
                         // The conditional form names one table per branch;
                         // every branch is a relation to that table.
@@ -481,6 +496,93 @@ pub fn extract_table_relation_tables(value: &str) -> Vec<&str> {
     let mut seen = std::collections::HashSet::new();
     tables.retain(|table| seen.insert(table.to_ascii_lowercase()));
     tables
+}
+
+/// The parts of a FlowField `CalcFormula` that table impact needs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalcFormula<'a> {
+    /// `count`, `sum`, `lookup`, `exist`, `average`, `min` or `max`, lowercased.
+    pub method: String,
+    /// The table the formula reads.
+    pub table: &'a str,
+    /// Fields of that table the formula filters on (left side of `WHERE`).
+    pub filter_fields: Vec<&'a str>,
+}
+
+impl CalcFormula<'_> {
+    /// `field X: sum (filter A, B)` for a table impact location hint.
+    pub fn hint(&self, field_name: &str) -> String {
+        if self.filter_fields.is_empty() {
+            format!("field {field_name}: CalcFormula {}", self.method)
+        } else {
+            format!(
+                "field {field_name}: CalcFormula {} (filter {})",
+                self.method,
+                self.filter_fields.join(", ")
+            )
+        }
+    }
+}
+
+/// Parse `CalcFormula = <method>("<Table>"[.<Field>] [WHERE(<Field> = ..., ...)])`.
+///
+/// The grammar has no node for the formula: it is a plain property value, so
+/// this reads the text with the same table-name helper as `TableRelation`.
+/// A leading `-` (`-Sum(...)`) is allowed. Returns `None` for any other shape.
+pub fn parse_calc_formula(value: &str) -> Option<CalcFormula<'_>> {
+    const METHODS: [&str; 7] = ["count", "sum", "lookup", "exist", "average", "min", "max"];
+    let text = value.trim().trim_start_matches('-').trim_start();
+    let open = text.find('(')?;
+    let method = text[..open].trim().to_ascii_lowercase();
+    if !METHODS.contains(&method.as_str()) {
+        return None;
+    }
+    let inner_end = matching_paren(&text[open..])? + open;
+    let inner = &text[open + 1..inner_end];
+    let (table, rest) = take_table_name(inner);
+    let table = table?;
+    let filter_fields = match find_keyword(rest, "where") {
+        Some(position) => {
+            let after = rest[position + "where".len()..].trim_start();
+            match matching_paren(after) {
+                Some(close) => split_top_level_commas(&after[1..close])
+                    .into_iter()
+                    .filter_map(|condition| {
+                        let name = condition.split('=').next()?.trim();
+                        let name = name.trim_matches('"');
+                        (!name.is_empty()).then_some(name)
+                    })
+                    .collect(),
+                None => Vec::new(),
+            }
+        }
+        None => Vec::new(),
+    };
+    Some(CalcFormula {
+        method,
+        table,
+        filter_fields,
+    })
+}
+
+/// Split on commas outside parentheses and double quotes.
+fn split_top_level_commas(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut depth, mut quoted, mut start) = (0i32, false, 0usize);
+    for (index, byte) in text.bytes().enumerate() {
+        match byte {
+            b'"' => quoted = !quoted,
+            b'(' if !quoted => depth += 1,
+            b')' if !quoted => depth -= 1,
+            b',' if !quoted && depth == 0 => {
+                parts.push(&text[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
 }
 
 /// Byte offset of the first whole-word, case-insensitive occurrence of `keyword`.
@@ -1109,5 +1211,66 @@ mod tests {
             vec!["Sales Header"]
         );
         assert!(extract_table_relation_tables("").is_empty());
+    }
+
+    #[test]
+    fn parse_calc_formula_reads_table_method_and_filters() {
+        let f = parse_calc_formula(
+            r#"count("PTE Log" where("Doc No." = field("No."), Type = const(Order), "Line" = filter(1,2)))"#,
+        )
+        .unwrap();
+        assert_eq!(f.method, "count");
+        assert_eq!(f.table, "PTE Log");
+        assert_eq!(f.filter_fields, vec!["Doc No.", "Type", "Line"]);
+        let g = parse_calc_formula(r#"-Sum(Ledger.Amount where (Code = field(Code)))"#).unwrap();
+        assert_eq!((g.method.as_str(), g.table), ("sum", "Ledger"));
+        assert_eq!(g.filter_fields, vec!["Code"]);
+        let e = parse_calc_formula(r#"exist("Cust. Ledger Entry")"#).unwrap();
+        assert!(e.filter_fields.is_empty());
+        assert!(parse_calc_formula("something(\"X\")").is_none());
+    }
+
+    #[test]
+    fn table_impact_lists_calc_formula_fields_in_tables_and_extensions() {
+        let calc_field = |name: &str, formula: &str| FieldSymbol {
+            id: 1,
+            name: name.to_string(),
+            type_name: "Integer".to_string(),
+            properties: vec![PropertyValue {
+                name: "CalcFormula".to_string(),
+                value: formula.to_string(),
+            }],
+        };
+        let mut table = base_entry(ObjectKind::Table, 50000, "Header");
+        table.fields = vec![calc_field(
+            "Lines",
+            r#"count("Target Log" where("Doc" = field("No.")))"#,
+        )];
+        let mut ext = base_entry(ObjectKind::TableExtension, 50001, "Header Ext");
+        ext.extends = Some("Header".to_string());
+        ext.fields = vec![
+            calc_field(
+                "Total",
+                r#"sum("Target Log".Amount where(Kind = const(A)))"#,
+            ),
+            calc_field("Other", r#"count("Elsewhere")"#),
+        ];
+        let index = SymbolIndex::new();
+        index.add_entries(&[table, ext]);
+        let result = table_impact(&index, "Target Log");
+        let hints: Vec<_> = result
+            .objects
+            .iter()
+            .flat_map(|o| o.impacts.iter())
+            .filter(|i| i.operation == TableOperationKind::CalcFormula)
+            .filter_map(|i| i.location_hint.clone())
+            .collect();
+        assert_eq!(
+            hints,
+            vec![
+                "field Lines: CalcFormula count (filter Doc)",
+                "field Total: CalcFormula sum (filter Kind)"
+            ]
+        );
     }
 }

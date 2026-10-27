@@ -167,6 +167,45 @@ fields
 }
 
 #[test]
+fn workspace_enrichment_keeps_field_calc_formula_and_table_relation() {
+    let source = r#"tableextension 50100 "Ext" extends "Header"
+{
+    fields
+    {
+        field(50100; Changes; Integer)
+        {
+            FieldClass = FlowField;
+            CalcFormula = count("Change Log" where(DocumentType = const("Sales Order"), DocumentNo = field("Document No.")));
+        }
+        field(50101; Ref; Code[20])
+        {
+            TableRelation = Customer."No.";
+        }
+    }
+}
+"#;
+    let result = al_syntax::AlParser::parse_quick(source);
+    let fields = extract_fields_from_tree(result.tree.root_node(), source.as_bytes());
+    let prop = |f: usize, n: &str| {
+        fields[f]
+            .properties
+            .iter()
+            .find(|p| p.name == n)
+            .map(|p| p.value.clone())
+    };
+    assert_eq!(
+        prop(0, "CalcFormula").as_deref(),
+        Some(
+            r#"count("Change Log" where(DocumentType = const("Sales Order"), DocumentNo = field("Document No.")))"#
+        )
+    );
+    assert_eq!(
+        prop(1, "TableRelation").as_deref(),
+        Some(r#"Customer."No.""#)
+    );
+}
+
+#[test]
 fn extends_target_extracted_from_extension_header() {
     let source = r#"tableextension 50100 "Test Customer Ext" extends "Test Customer"
 {

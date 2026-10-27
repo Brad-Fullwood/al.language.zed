@@ -657,6 +657,21 @@ impl InsightGraph {
         if matches!(entry.kind, ObjectKind::Table | ObjectKind::TableExtension) {
             for field in &entry.fields {
                 for prop in &field.properties {
+                    // A FlowField reads another table through its CalcFormula, which
+                    // is a relation between the two objects as well.
+                    if prop.name.eq_ignore_ascii_case("CalcFormula") {
+                        if let Some(formula) = crate::analysis::parse_calc_formula(&prop.value) {
+                            let src_key = NodeKey::Object(entry.kind, entry.name.to_lowercase());
+                            let target_key =
+                                NodeKey::Object(ObjectKind::Table, formula.table.to_lowercase());
+                            if let (Some(src_idx), Some(target_idx)) = (
+                                self.get_node_in_package(&src_key, &entry.package),
+                                self.get_node_in_package(&target_key, &entry.package),
+                            ) {
+                                self.add_edge(src_idx, target_idx, InsightEdge::RelatesTo);
+                            }
+                        }
+                    }
                     if prop.name.eq_ignore_ascii_case("TableRelation") && !prop.value.is_empty() {
                         // Extract the table name from the TableRelation value.
                         // AL syntax supports trailing WHERE/FIELD/IF clauses and
@@ -1371,6 +1386,48 @@ mod tests {
             .is_none(),
             "filter expression must not leak into a table node key"
         );
+    }
+
+    #[test]
+    fn calc_formula_adds_a_relates_to_edge() {
+        let index = SymbolIndex::new();
+        let log = SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 50001,
+            name: "Change Log".to_string(),
+            package: "TestPkg".to_string(),
+            ..Default::default()
+        };
+        let line = SymbolEntry {
+            kind: ObjectKind::Table,
+            id: 50002,
+            name: "Line".to_string(),
+            package: "TestPkg".to_string(),
+            fields: vec![FieldSymbol {
+                id: 2,
+                name: "Changes".to_string(),
+                type_name: "Integer".to_string(),
+                properties: vec![PropertyValue {
+                    name: "CalcFormula".to_string(),
+                    value: "count(\"Change Log\" where(\"Doc\" = field(\"No.\")))".to_string(),
+                }],
+            }],
+            ..Default::default()
+        };
+        index.add_entries(&[log, line]);
+        let mut g = InsightGraph::new();
+        g.build_from_index(&index);
+        let from = g
+            .get_node(&NodeKey::Object(ObjectKind::Table, "line".to_string()))
+            .unwrap();
+        let to = g
+            .get_node(&NodeKey::Object(
+                ObjectKind::Table,
+                "change log".to_string(),
+            ))
+            .unwrap();
+        let edge = g.graph.find_edge(from, to).expect("CalcFormula edge");
+        assert_eq!(*g.graph.edge_weight(edge).unwrap(), InsightEdge::RelatesTo);
     }
 
     #[test]

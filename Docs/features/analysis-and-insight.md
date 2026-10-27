@@ -41,7 +41,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 | Analysis | File | Question it answers |
 | --- | --- | --- |
 | **Impact** | `queries/impact.rs` | "If I change this object/member, what breaks?": extensions, pages/reports sourced from a table, record variables/parameters, callers, TableRelation filters, event subscribers. `--table` groups all consumers of a table. |
-| **Table impact** | `insight/analysis.rs` | Record variables, parameters, relations, extensions touching a table, grouped by object. |
+| **Table impact** | `insight/analysis.rs` | Record variables, parameters, relations, FlowField `CalcFormula` sources (with their filter fields), source tables, extensions touching a table, grouped by object. |
 | **Event tracing** | `insight/search.rs` | `trace` lists all subscribers of an event and follows only the events a subscriber's body actually raises (each publisher of a same-named event is traced independently). `trace --tree` follows the full multi-hop publisher→subscriber→call chain. A node already expanded elsewhere in the traversal is marked `cycle` with its children omitted. That covers both real back-edges and diamond fan-ins, which the flag does not distinguish. |
 | **Subscriber/source resolution** | `symbols/events.rs`, `insight/discovery.rs` | Find subscribers of an event. Resolve the publisher behind an `[EventSubscriber]`. Full interception map incl. orphan subscribers. |
 | **Suggest event** | `queries/suggest_event.rs` | "What integration events can I subscribe to along this path?" with ready-to-paste `[EventSubscriber(...)]` examples. Flags `partial` when source is unindexed. |
