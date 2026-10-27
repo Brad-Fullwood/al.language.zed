@@ -31,10 +31,11 @@ stage_09() {
   # Daemons read BC_ACCESS_TOKEN from their own environment: start a fresh one that has it.
   run_step "$s" daemon-restart 60 env -C "$PROJ" "$ALX" daemon-shutdown --json > /dev/null 2>&1
   local attach="Attach: CDX Sandbox" bpfile=src/JourneyMgt.Codeunit.al
+  # Line 19 is the SetRange statement in CountForCustomer (stage05), line 21 is its end;.
 
   # --- debugger: attach, breakpoint, state, history, stop ---
   if journey_try "$s" debug-start 60 debug start --config "$attach"; then
-    journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 21 || true
+    journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 19 || true
     # Stage 8 leaves its app installed until journey_cleanup runs before stage 10. A run of
     # stage 9 alone has no app on the server, so an unverified breakpoint is expected there.
     if grep -q 'unverified' "$(step_log $s debug-breakpoint)"; then
@@ -44,13 +45,13 @@ stage_09() {
         record "$s" breakpoint-verified NIGGLE "breakpoint stays unverified with the app installed: $(journey_msg "$s" debug-breakpoint)"
       fi
     else
-      record "$s" breakpoint-verified PASS "breakpoint verified on $bpfile line 21"
+      record "$s" breakpoint-verified PASS "breakpoint verified on $bpfile line 19"
     fi
     journey_try "$s" debug-state 60 debug state || true
     journey_try "$s" debug-history 60 debug history || true
   else
     # Without a session the breakpoint call still shows whether it needs one.
-    journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 21 || true
+    journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 19 || true
   fi
   journey_try "$s" debug-stop 60 debug stop || true
 
