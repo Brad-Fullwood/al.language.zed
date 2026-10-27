@@ -314,3 +314,8 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   code (BaseApp, other apps) is reported `verified:false`, and frames in dependency code have no
   source because the `source` request is not served. The adapter calls `AddBreakpoint` only and never
   `AddBreakpointByName`. See audit finding `dap-30-dependency-source-breakpoints`.
+- `evaluate` sends the expression to BC unchanged. Microsoft rewrites array element access (`arr[2]`
+  becomes `arr."[2]"`) and passes `AllowLargeStrings` for the debug console. Neither is done here, so
+  array element watches and strings over the normal limit may fail. A failed evaluation is also sent
+  to BC twice (3-argument call, then 2-argument retry). See audit finding
+  `dap-31-evaluate-array-index-and-large-strings`.
