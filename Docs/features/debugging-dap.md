@@ -295,8 +295,9 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
 - MCP exposes structured equivalents of the native runtime control and inspection loop rather than
   raw DAP request/event frames.
 - `sessionId`, `breakOnNext` and `userId` are forwarded to the BC `Attach` payload (`userId` as the
-  string `AttachOptions.UserId`). An attach also sends `userid` and `sessionId` on the hub URL (see above). `Agent` maps to the
-  decompiled `ClientService` value (3). Fields with no native
+  string `AttachOptions.UserId`). An attach also sends `userid` and `sessionId` on the hub URL (see above). `Agent` is sent as
+  `ClientService` (3): `BreakOnNext.cs` has the values 0 to 3 and Microsoft's VS Code client maps
+  `Agent` to `ClientService` too. Fields with no native
   behavior (`useMcpServerForDebugging`, `mcpServicePort`,
   `useVsCodeAuthentication`, `primaryTenantDomain`, profiling config) were **removed** from
   `debug_adapter_schemas/al.json`. The snapshot fields are back, because the native adapter now
