@@ -1298,7 +1298,10 @@ pub fn syntax_error_to_diagnostic(err: &al_syntax::SyntaxError, source: &[u8]) -
     Diagnostic {
         range: crate::syntax_lsp::ts_range_to_lsp(&err.range, source),
         severity: Some(DiagnosticSeverity::ERROR),
-        code: Some(NumberOrString::String("syntax".to_string())),
+        // One mapping table (al_syntax): alc's code where the condition is the same, else "syntax".
+        code: Some(NumberOrString::String(
+            err.code.unwrap_or("syntax").to_string(),
+        )),
         source: Some("al".to_string()),
         message: err.message.clone(),
         ..Default::default()
@@ -1664,6 +1667,7 @@ mod tests {
                 .tree
                 .root_node()
                 .range(),
+            code: None,
         };
 
         let diag = syntax_error_to_diagnostic(&err, src.as_bytes());

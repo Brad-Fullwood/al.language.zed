@@ -483,7 +483,8 @@ pub fn build_verified_app_from_project_with_packages(
                 end_line: range.end.line.saturating_add(1),
                 end_column: range.end.character.saturating_add(1),
                 severity: VerificationSeverity::Error,
-                code: "ALN0001",
+                // alc's code where al_syntax maps the same condition, else the generic native code.
+                code: error.code.unwrap_or("ALN0001"),
                 message: error.message.clone(),
             });
         }
@@ -1001,6 +1002,62 @@ mod tests {
             "the error must not be attributed to app.json: {:?}",
             result.diagnostics
         );
+    }
+
+    #[test]
+    fn missing_semicolon_reports_the_alc_code_message_and_range() {
+        // Source and expected values come from an alc 18.1.43 errorlog (AL0111,
+        // 8:9 to 8:20), see crates/al-syntax/tests/fixtures/alc.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"aaaaaaaa-1111-2222-3333-444444444444","name":"App","publisher":"P",
+                "version":"1.0.0.0","runtime":"15.0","idRanges":[{"from":50100,"to":50199}]}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/JourneyMgt.Codeunit.al"),
+            include_str!("../../al-syntax/tests/fixtures/alc/semi.al"),
+        )
+        .unwrap();
+
+        let result =
+            build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
+
+        let syntax: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.file == "src/JourneyMgt.Codeunit.al")
+            .filter(|diagnostic| diagnostic.code.starts_with("AL") && diagnostic.code != "ALN2209")
+            .collect();
+        let log: serde_json::Value = serde_json::from_str(include_str!(
+            "../../al-syntax/tests/fixtures/alc/semi.errorlog.json"
+        ))
+        .unwrap();
+        let issue = &log["issues"][0];
+        let region = &issue["locations"][0]["analysisTarget"][0]["region"];
+        let n = |key: &str| region[key].as_u64().unwrap() as u32;
+        let diagnostic = syntax
+            .iter()
+            .find(|diagnostic| diagnostic.code == issue["ruleId"].as_str().unwrap())
+            .unwrap_or_else(|| panic!("no alc code in {syntax:?}"));
+        assert_eq!(diagnostic.message, issue["fullMessage"].as_str().unwrap());
+        assert_eq!(
+            (
+                diagnostic.line,
+                diagnostic.column,
+                diagnostic.end_line,
+                diagnostic.end_column
+            ),
+            (
+                n("startLine"),
+                n("startColumn"),
+                n("endLine"),
+                n("endColumn")
+            )
+        );
+        assert!(!result.diagnostics.iter().any(|d| d.code == "ALN0001"));
     }
 
     #[test]

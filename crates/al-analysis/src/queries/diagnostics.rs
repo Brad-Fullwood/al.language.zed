@@ -565,7 +565,7 @@ fn collect_diagnostics_from_tree(
             message: err.message,
             range: ts_range_to_query_range(ts_range, &lines),
             severity: SyntaxDiagnosticSeverity::Error,
-            code: "syntax".to_string(),
+            code: err.code.unwrap_or("syntax").to_string(),
             source: "al".to_string(),
         });
     }
