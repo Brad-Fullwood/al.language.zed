@@ -171,6 +171,10 @@ pub struct BcDebugConfig {
     /// `break_on_next` selector decides which upcoming session to break into.
     /// Only consumed by `attach`.
     pub session_id: Option<i64>,
+    /// `userId`: the user (name or GUID) whose session `attach` waits for.
+    /// Sent as `AttachOptions.UserId` (AttachOptions.cs:27). The snapshot
+    /// `capture` request reads the same launch field on its own path.
+    pub user_id: Option<String>,
     pub startup_object_type: String,
     pub startup_object_id: i64,
     pub startup_company: Option<String>,
@@ -202,6 +206,7 @@ impl Default for BcDebugConfig {
             break_on_record_write: BreakOnRecordWrite::None,
             break_on_next: None,
             session_id: None,
+            user_id: None,
             startup_object_type: "Page".to_string(),
             startup_object_id: 22,
             startup_company: None,
@@ -277,6 +282,9 @@ impl BcDebugConfig {
         }
         if let Some(value) = optional_string(args, "breakOnNext", &mut cfg.validation_errors) {
             cfg.break_on_next = Some(value);
+        }
+        if let Some(value) = optional_string(args, "userId", &mut cfg.validation_errors) {
+            cfg.user_id = Some(value).filter(|id| !id.is_empty());
         }
         // `sessionId` selects one specific BC client session to attach to. The
         // schema default is `-1` ("no specific session" → use breakOnNext), so
@@ -718,6 +726,16 @@ mod tests {
         assert_eq!(cfg.number_of_sql_statements, 25);
         assert!(cfg.accept_invalid_certs);
         assert!(cfg.validate_native().is_ok());
+    }
+
+    #[test]
+    fn from_dap_args_parses_user_id_as_a_string() {
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({ "userId": "BRAD" }));
+        assert_eq!(cfg.user_id.as_deref(), Some("BRAD"));
+        assert!(cfg.validation_errors.is_empty());
+        let bad = BcDebugConfig::from_dap_args(&serde_json::json!({ "userId": 5 }));
+        assert!(bad.user_id.is_none());
+        assert!(!bad.validation_errors.is_empty());
     }
 
     #[test]

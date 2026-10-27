@@ -254,8 +254,10 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   `ExpandNode` requests. MCP clients can also expand values explicitly by `path`.
 - MCP exposes structured equivalents of the native runtime control and inspection loop rather than
   raw DAP request/event frames.
-- `sessionId` and `breakOnNext` are forwarded to the BC `Attach` payload. Fields with no native
-  behavior (`useMcpServerForDebugging`, `mcpServicePort`, `userId`,
+- `sessionId`, `breakOnNext` and `userId` are forwarded to the BC `Attach` payload (`userId` as the
+  string `AttachOptions.UserId`). The `userid` hub query parameter is not sent yet. `Agent` maps to the
+  decompiled `ClientService` value (3). Fields with no native
+  behavior (`useMcpServerForDebugging`, `mcpServicePort`,
   `useVsCodeAuthentication`, `primaryTenantDomain`, profiling config) were **removed** from
   `debug_adapter_schemas/al.json`. The snapshot fields are back, because the native adapter now
   consumes them.

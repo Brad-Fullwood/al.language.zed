@@ -948,3 +948,20 @@ async fn attach_agent_maps_to_client_service() {
     let frame = next_frame(&mut ws_rx);
     assert_eq!(frame["arguments"][0]["breakOnNextClient"], 3);
 }
+
+#[tokio::test]
+async fn attach_forwards_user_id_as_a_string() {
+    // fixture source: AttachOptions.cs:27 (UserId is a string)
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", Some(serde_json::json!(null)), None))
+        .await
+        .unwrap();
+    let cfg = BcDebugConfig {
+        user_id: Some("BRAD".to_string()),
+        ..BcDebugConfig::default()
+    };
+    session.attach(&cfg).await.expect("attach ok");
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"][0]["userId"], "BRAD");
+}

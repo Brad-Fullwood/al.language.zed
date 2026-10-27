@@ -627,7 +627,8 @@ impl BcDebugSession {
         let args = serde_json::json!({
             "breakOnNextClient": break_on_next_client,
             "sessionId": session_id,
-            "userId": null,
+            // AttachOptions.UserId (AttachOptions.cs:27), a string or null.
+            "userId": config.user_id,
         });
         self.invoke("Attach", vec![args]).await?;
         info!("Attached to BC debug session");

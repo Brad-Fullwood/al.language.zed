@@ -236,7 +236,7 @@
     },
     "userId": {
       "type": "string",
-      "description": "With snapshot `capture`: record only this user's session, given as a user security ID (GUID) or a user name. Without it the next session of any user on the tenant is recorded."
+      "description": "With snapshot `capture`: record only this user's session, given as a user security ID (GUID) or a user name. Without it the next session of any user on the tenant is recorded. With `attach`: sent as `AttachOptions.UserId`."
     },
     "snapshotVerbosity": {
       "type": "string",
