@@ -110,6 +110,12 @@ fn analyze_proc_text(
     // meant `Customer.SetRange(...); Vendor.FindSet();` suppressed the warning
     // for the unrelated `Vendor`.
     let mut filtered_records: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // A `var` Record parameter keeps the filters its caller set, so an
+    // unfiltered-looking `FindSet` on it is not evidence of a full scan.
+    // Only `Reset` on the parameter ends that assumption.
+    let mut caller_filtered: std::collections::HashSet<String> = var_record_parameters(proc_text);
+    // Record variables that already called `SetAutoCalcFields` in this procedure.
+    let mut auto_calc_records: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (offset, line) in proc_text.lines().enumerate() {
         let line_num = start_line + offset as u32;
@@ -177,6 +183,10 @@ fn analyze_proc_text(
                 // `Reset` clears every filter on the record variable.
                 "reset" => {
                     filtered_records.remove(receiver);
+                    caller_filtered.remove(receiver);
+                }
+                "setautocalcfields" => {
+                    auto_calc_records.insert(receiver.to_string());
                 }
                 _ => {}
             }
@@ -205,7 +215,11 @@ fn analyze_proc_text(
                     line_num,
                 ));
             }
-            if contains_record_method(&lower, "calcfields") {
+            // The hint says to use SetAutoCalcFields, which this record
+            // variable already did.
+            if record_method_calls(&lower).any(|(receiver, name)| {
+                name == "calcfields" && !auto_calc_records.contains(receiver)
+            }) {
                 violations.push(make_violation(
                     SqlAntiPattern::CalcFieldsInLoop,
                     "CalcFields() in loop is expensive — use SetAutoCalcFields() instead",
@@ -221,7 +235,7 @@ fn analyze_proc_text(
             if method != "findset" {
                 continue;
             }
-            if !filtered_records.contains(receiver) {
+            if !filtered_records.contains(receiver) && !caller_filtered.contains(receiver) {
                 violations.push(make_violation(
                     SqlAntiPattern::FindSetWithoutFilters,
                     "FindSet() without filters causes full table scan",
@@ -240,6 +254,63 @@ fn analyze_proc_text(
             stack.pop();
         }
     }
+}
+
+/// Lowercased names of the `var` Record parameters of the procedure whose full
+/// text is `proc_text`.
+///
+/// Reads the text between the parentheses after the `procedure` or `trigger`
+/// keyword, so attribute arguments before it are skipped. Parameters split on
+/// `;` outside quotes. Only `var` parameters qualify: a `var` Record is the
+/// caller's own record, filters included.
+fn var_record_parameters(proc_text: &str) -> std::collections::HashSet<String> {
+    let lower = proc_text.to_lowercase();
+    let mut names = std::collections::HashSet::new();
+    let Some(keyword) = ["procedure ", "trigger "]
+        .iter()
+        .filter_map(|keyword| lower.find(keyword))
+        .min()
+    else {
+        return names;
+    };
+    let Some(open) = lower[keyword..].find('(').map(|index| index + keyword) else {
+        return names;
+    };
+    let (mut depth, mut quoted, mut start, mut close) = (0i32, false, open + 1, None);
+    let mut params: Vec<&str> = Vec::new();
+    for (index, byte) in lower.bytes().enumerate().skip(open) {
+        match byte {
+            b'"' => quoted = !quoted,
+            b'(' if !quoted => depth += 1,
+            b')' if !quoted => {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(index);
+                    break;
+                }
+            }
+            b';' if !quoted && depth == 1 => {
+                params.push(&lower[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if let Some(close) = close {
+        params.push(&lower[start..close]);
+    }
+    for param in params {
+        let Some(rest) = param.trim().strip_prefix("var ") else {
+            continue;
+        };
+        let Some((name, type_text)) = rest.split_once(':') else {
+            continue;
+        };
+        if type_text.trim_start().starts_with("record ") {
+            names.insert(name.trim().to_string());
+        }
+    }
+    names
 }
 
 /// Pop the innermost real block, discarding any unresolved single-statement
@@ -703,5 +774,74 @@ codeunit 50101 "Second CU"
         // distinct in the per-variable filter set.
         assert_eq!(receiver_before("\"my rec\".setrange(", 8), "\"my rec\"");
         assert_eq!(receiver_before("salesline.findset()", 9), "salesline");
+    }
+
+    fn violations_for(body: &str) -> Vec<SqlPatternViolation> {
+        let source = format!("codeunit 50100 \"T\"\n{{\n{body}\n}}");
+        detect_sql_patterns(&workspace_with(vec![("/src/T.al", source.as_str())])).unwrap()
+    }
+
+    #[test]
+    fn findset_on_a_var_record_parameter_is_not_reported() {
+        let violations = violations_for(
+            r#"    procedure Build(var Entry: Record "Item Ledger Entry"; Copy: Record Item; Count: Integer)
+    begin
+        if Entry.FindSet() then
+            repeat
+            until Entry.Next() = 0;
+        if Copy.FindSet() then;
+    end;"#,
+        );
+        let sets: Vec<_> = violations
+            .iter()
+            .filter(|v| v.kind == SqlAntiPattern::FindSetWithoutFilters)
+            .collect();
+        assert_eq!(
+            sets.len(),
+            1,
+            "only the by-value Copy is reported: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn reset_of_a_var_record_parameter_makes_findset_reportable_again() {
+        let violations = violations_for(
+            r#"    procedure Build(var Entry: Record Item)
+    begin
+        Entry.Reset();
+        if Entry.FindSet() then;
+    end;"#,
+        );
+        assert!(violations
+            .iter()
+            .any(|v| v.kind == SqlAntiPattern::FindSetWithoutFilters));
+    }
+
+    #[test]
+    fn earlier_set_auto_calc_fields_silences_the_calc_fields_hint() {
+        let violations = violations_for(
+            r#"    procedure Run()
+    var
+        Line: Record "Sales Line";
+        Other: Record "Sales Line";
+    begin
+        Line.SetAutoCalcFields("Reserved Quantity");
+        Line.SetRange(Type, Line.Type::Item);
+        Other.SetRange(Type, Other.Type::Item);
+        if Line.FindSet() then
+            repeat
+                Line.CalcFields("Reserved Quantity");
+            until Line.Next() = 0;
+        if Other.FindSet() then
+            repeat
+                Other.CalcFields("Reserved Quantity");
+            until Other.Next() = 0;
+    end;"#,
+        );
+        let calc: Vec<_> = violations
+            .iter()
+            .filter(|v| v.kind == SqlAntiPattern::CalcFieldsInLoop)
+            .collect();
+        assert_eq!(calc.len(), 1, "only Other is reported: {violations:?}");
     }
 }

@@ -79,7 +79,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
   loop's `end;` pops the loop and a single-statement loop body (`for … do stmt;`) is popped after
   its one statement. Both the parenthesised (`Item.FindFirst()`) and bare (`Item.FindFirst;`) call
   forms are matched. The "unfiltered" state is tracked **per record variable**, so
-  `Customer.SetRange(…)` does not suppress the warning for an unrelated `Vendor.FindSet()`.
+  `Customer.SetRange(…)` does not suppress the warning for an unrelated `Vendor.FindSet()`. A `var` Record parameter counts as filtered by the caller until it is reset, and a `CalcFields` on a record variable that already called `SetAutoCalcFields` gets no hint.
 - **Whole-workspace queries** (dead code, SQL scan, impact, duplicates, complexity, both audits) take
   a coherent snapshot of the indexed sources. A file with a syntax error or no object declaration is
   skipped individually with a warning. Only *incoherence* (an indexed path missing from the parse
