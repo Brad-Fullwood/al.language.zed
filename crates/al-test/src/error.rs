@@ -15,7 +15,8 @@ pub enum TestRunnerError {
     #[error("invalid BC test-runner response: {0}")]
     InvalidResponse(String),
     #[error(
-        "Missing credentials: set BC_ACCESS_TOKEN (or BC_TOKEN) for AAD, or BC_USERNAME and BC_PASSWORD for UserPassword"
+        "Missing credentials: set BC_ACCESS_TOKEN (or BC_TOKEN) for AAD, or BC_USERNAME and BC_PASSWORD for UserPassword{}",
+        al_bc::http_auth::daemon_missing_credentials_hint()
     )]
     MissingCredentials,
     #[error("Invalid bearer-token environment: {0}")]

@@ -1299,6 +1299,59 @@ mod acquire_bc_token_tests {
         .expect("a fixed Microsoft endpoint is always authorised");
         assert_eq!(token, "caller-token");
     }
+
+    fn request_credentials() -> al_bc::http_auth::Credentials {
+        al_bc::http_auth::Credentials {
+            access_token: Some("request-token".to_string()),
+            basic: None,
+        }
+    }
+
+    /// A daemon started without `BC_ACCESS_TOKEN` spends the token the CLI
+    /// sent with the request (journey-07).
+    #[tokio::test]
+    async fn a_token_carried_by_the_request_is_spent_on_an_online_target() {
+        let (_dir, workspace) = untrusted_project();
+        let config = BcDebugConfig {
+            environment_type: "Sandbox".to_string(),
+            environment_name: Some("SANDBOX".to_string()),
+            authentication: "AAD".to_string(),
+            tenant: al_bc::tenant_guard::install_test_registry().to_string(),
+            ..BcDebugConfig::default()
+        };
+        let token = al_bc::http_auth::scope(request_credentials(), async {
+            acquire_bc_token(
+                &workspace,
+                &config,
+                "",
+                al_project::trust::TargetSource::Repository,
+            )
+            .await
+        })
+        .await
+        .expect("an online target needs no project trust");
+        assert_eq!(token, "request-token");
+    }
+
+    /// The request's token does not stand in for the project trust check: an
+    /// untrusted repository still cannot name a server that receives it.
+    #[tokio::test]
+    async fn a_token_carried_by_the_request_does_not_skip_the_trust_check() {
+        let (_dir, workspace) = untrusted_project();
+        let (_code, message) = al_bc::http_auth::scope(request_credentials(), async {
+            acquire_bc_token(
+                &workspace,
+                &repository_config(),
+                "",
+                al_project::trust::TargetSource::Repository,
+            )
+            .await
+        })
+        .await
+        .expect_err("an untrusted repository target must not receive the request token");
+        assert!(message.contains("not trusted"), "{message}");
+        assert!(!message.contains("request-token"), "{message}");
+    }
 }
 
 #[cfg(test)]

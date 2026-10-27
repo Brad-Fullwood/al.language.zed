@@ -118,7 +118,8 @@ pub enum BcClientError {
     NoConfig,
     #[error(
         "Missing credentials: set BC_ACCESS_TOKEN (or BC_TOKEN) for AAD, or BC_USERNAME and BC_PASSWORD for UserPassword. \
-         (AAD has no interactive sign-in flow here; a pre-provisioned token is required.)"
+         (AAD has no interactive sign-in flow here; a pre-provisioned token is required.){}",
+        crate::http_auth::daemon_missing_credentials_hint()
     )]
     MissingCredentials,
     #[error("Invalid bearer-token environment: {0}")]

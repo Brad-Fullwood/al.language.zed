@@ -1000,6 +1000,34 @@ mod dispatch_tests {
         }
     }
 
+    /// Credentials in the request are taken out of the parameters before
+    /// dispatch and do not change the trust refusal (journey-07). The answer
+    /// does not carry the secret either.
+    #[tokio::test]
+    async fn request_credentials_keep_the_trust_refusal_and_stay_out_of_the_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let workspace = std::sync::Arc::new(untrusted_project_with_a_launch_file(&root));
+        let shutdown = Notify::new();
+        let mut params = serde_json::json!({ "config": "Local" });
+        al_bc::http_auth::Credentials {
+            access_token: Some("secret-token-value".to_string()),
+            basic: Some(("alice".to_string(), "secret-password-value".to_string())),
+        }
+        .insert_into(&mut params);
+
+        let response = dispatch_request(
+            &workspace,
+            Request::new(1, "publish", Some(params)),
+            &shutdown,
+        )
+        .await;
+
+        let text = serde_json::to_string(&response).unwrap();
+        assert!(text.contains("not trusted"), "{text}");
+        assert!(!text.contains("secret-"), "{text}");
+    }
+
     /// `downloadSymbols` renames packages into `.alpackages`, so a clone that
     /// ships it as a link out of the project would have the daemon write
     /// there. It is refused before any download, NuGet or server.

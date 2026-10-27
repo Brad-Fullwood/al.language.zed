@@ -1086,6 +1086,34 @@ async fn dispatch_while_loading(
 
 pub(crate) async fn dispatch_request(
     workspace: &std::sync::Arc<Workspace>,
+    mut req: Request,
+    shutdown: &Notify,
+) -> Response {
+    // Credentials the caller holds travel in the request (journey-07). Take
+    // them out of the parameters first, so no later log line, clone or echo
+    // can carry them, and scope them to this one dispatch. The trust, tenant
+    // and path checks in `dispatch_method` run unchanged.
+    let credentials = req
+        .params
+        .as_mut()
+        .and_then(al_bc::http_auth::Credentials::take_from);
+    let spends_credential = DISPATCHERS.iter().any(|dispatcher| {
+        dispatcher.method == req.method && dispatcher.credential == CredentialUse::Authorized
+    });
+    if spends_credential {
+        return al_bc::http_auth::scope(
+            credentials.unwrap_or_default(),
+            // Boxed: the dispatch future is large and a debug build's test
+            // thread stack overflows when it is nested inline a second time.
+            Box::pin(dispatch_request_inner(workspace, req, shutdown)),
+        )
+        .await;
+    }
+    Box::pin(dispatch_request_inner(workspace, req, shutdown)).await
+}
+
+async fn dispatch_request_inner(
+    workspace: &std::sync::Arc<Workspace>,
     req: Request,
     shutdown: &Notify,
 ) -> Response {
