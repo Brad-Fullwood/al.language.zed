@@ -63,6 +63,51 @@ pub enum AnalyzerDiscoveryError {
     },
 }
 
+/// First and last object ID of the AppSource ranges: the RSP range
+/// (1,000,000 to 69,999,999) and the app object range (70,000,000 to
+/// 74,999,999) are adjacent.
+const APPSOURCE_RANGE: (u64, u64) = (1_000_000, 74_999_999);
+
+/// Whether the project at `project_root` targets AppSource rather than a
+/// single tenant.
+///
+/// It does when the root holds `AppSourceCop.json`, or when `app.json` declares
+/// at least one ID range and every range lies inside the AppSource ranges. The
+/// per-tenant range is 50,000 to 99,999. Microsoft documents no other
+/// `app.json` signal: `target` only takes `Cloud` or `OnPrem` and a per-tenant
+/// extension is `Cloud` too.
+///
+/// - AppSourceCop.json: https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/analyzers/appsourcecop#configuration
+/// - Object ranges: https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-object-ranges
+/// - PTE range 50,000-99,999: https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/analyzers/pertenantextensioncop-pte0001
+/// - app.json `target`: https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-json-files#appjson-file
+#[must_use]
+pub fn is_appsource_project(project_root: &Path) -> bool {
+    if project_root.join("AppSourceCop.json").is_file() {
+        return true;
+    }
+    crate::project::load_id_ranges(project_root).is_some_and(|ranges| {
+        !ranges.is_empty()
+            && ranges
+                .iter()
+                .all(|&(from, to)| from >= APPSOURCE_RANGE.0 && to <= APPSOURCE_RANGE.1)
+    })
+}
+
+/// The analyzers to run when `al.codeAnalyzers` is not set, chosen by the
+/// project's target. Microsoft's AL extension has no default and runs none, so
+/// this is a choice of ours: AppSourceCop fails every per-tenant app with
+/// AS0016, AS0051 and AS0054.
+#[must_use]
+pub fn default_code_analyzers(project_root: &Path) -> Vec<String> {
+    let target_cop = if is_appsource_project(project_root) {
+        "AppSourceCop"
+    } else {
+        "PerTenantExtensionCop"
+    };
+    ["CodeCop", target_cop, "UICop"].map(String::from).to_vec()
+}
+
 /// Whether `name` denotes one of Microsoft's analyzer assemblies shipped with
 /// the AL toolchain, in either the bare (`CodeCop`) or the `${Name}` token
 /// spelling AL settings use (`al.codeAnalyzers`, `app.json` `ruleSets`).

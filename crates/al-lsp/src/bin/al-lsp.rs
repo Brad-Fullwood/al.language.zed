@@ -476,14 +476,14 @@ async fn run() {
                 } else {
                     None
                 };
+                let analyzers = config.effective_code_analyzers(&project_root);
                 let result = al_compile::build(al_compile::BuildRequest {
                     project_root: &project_root,
                     backend,
                     toolchain: toolchain.as_ref(),
                     dependency_packages: Some(project.packages.as_slice()),
                     package_cache: Some(project.packages_dir.as_path()),
-                    analyzers: (!config.code_analyzers.is_empty())
-                        .then_some(config.code_analyzers.as_slice()),
+                    analyzers: Some(analyzers.as_slice()),
                     config: al_compile::CompilationConfigOptions::from(&config),
                 })
                 .await

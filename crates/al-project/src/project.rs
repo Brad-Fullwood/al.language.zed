@@ -450,6 +450,36 @@ pub fn load_app_manifest(project_root: &Path) -> Result<AppManifest, DiscoveryEr
     serde_json::from_str(&content).map_err(|error| invalid(error.to_string()))
 }
 
+/// The object ID ranges `app.json` in `project_root` declares, from `idRanges`
+/// and the single `idRange`, as inclusive `(from, to)` pairs.
+///
+/// `None` when `app.json` cannot be read as JSON under the same size and
+/// regular file rules as [`load_app_manifest`]. Standard route checked:
+/// `load_app_manifest` has no ID range field and its full schema rejects
+/// manifests that only lack unrelated keys, so the ranges are read separately.
+pub fn load_id_ranges(project_root: &Path) -> Option<Vec<(u64, u64)>> {
+    let path = project_root.join("app.json");
+    let metadata = std::fs::metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_APP_JSON_BYTES {
+        return None;
+    }
+    let file = crate::trust::open_regular_file(&path)?;
+    let text = read_text_up_to(file, MAX_APP_JSON_BYTES).ok()??;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let pair = |range: &serde_json::Value| {
+        Some((range.get("from")?.as_u64()?, range.get("to")?.as_u64()?))
+    };
+    let mut ranges: Vec<(u64, u64)> = value
+        .get("idRanges")
+        .and_then(|ranges| ranges.as_array())
+        .map(|ranges| ranges.iter().filter_map(pair).collect())
+        .unwrap_or_default();
+    if let Some(range) = value.get("idRange").and_then(pair) {
+        ranges.push(range);
+    }
+    Some(ranges)
+}
+
 /// Read the debug configuration of the project at `project_root` into the
 /// pair [`AlProject::server_configs`] and [`AlProject::launch_config_error`]
 /// hold: its AL server configurations, or none and the reason the file could
