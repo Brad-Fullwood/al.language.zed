@@ -64,10 +64,7 @@ pub struct SymbolCache {
 
 impl SymbolCache {
     pub fn default_location() -> Self {
-        let cache_dir = dirs::cache_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("al-lsp")
-            .join("index");
+        let cache_dir = al_types::cache_root_or_tmp().join("index");
         Self { cache_dir }
     }
 

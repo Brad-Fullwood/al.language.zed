@@ -260,6 +260,7 @@ pub async fn run_daemon(
     // on disk, so a rebuild cannot make this process claim the new build.
     let identity = al_protocol::identity::current_identity();
     tracing::info!(build = %identity, "daemon: build identity");
+    tracing::info!(cache_root = %al_types::cache_root_or_tmp().display(), "daemon: cache root");
 
     let endpoint = socket_path(&project_root).ok_or(
         "Cannot determine a local daemon endpoint: no per-user runtime directory is available",

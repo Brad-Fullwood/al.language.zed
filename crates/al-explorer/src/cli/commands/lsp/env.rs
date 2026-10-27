@@ -176,9 +176,7 @@ pub fn cmd_daemon_shutdown(json: bool) -> ExitCode {
 }
 
 fn al_lsp_index_dir() -> PathBuf {
-    dirs::cache_dir()
-        .map(|d| d.join("al-lsp").join("index"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/al-lsp/index"))
+    al_types::cache_root_or_tmp().join("index")
 }
 
 fn cache_clear_exit_code(existed: bool, deleted: bool, has_error: bool) -> ExitCode {

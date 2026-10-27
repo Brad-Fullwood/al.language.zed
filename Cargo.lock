@@ -311,6 +311,7 @@ dependencies = [
 name = "al-semantic"
 version = "0.1.0"
 dependencies = [
+ "al-types",
  "dirs",
  "netcorehost",
  "serde",
@@ -452,6 +453,7 @@ dependencies = [
 name = "al-types"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
