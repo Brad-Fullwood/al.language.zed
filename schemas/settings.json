@@ -61,7 +61,7 @@
     "al.outputAnalyzerStatistics": {
       "type": "boolean",
       "default": false,
-      "description": "Output analyzer performance statistics in diagnostics."
+      "description": "Language server option in the VS Code AL extension. alc has no such switch, so this setting has no effect on the alc build here."
     },
     "al.enableCodeActions": {
       "type": "boolean",
@@ -170,12 +170,12 @@
       },
       "default": [],
       "description": "Additional command-line options passed to the AL compiler (alc).",
-      "examples": [["/analyzers+", "/parallel+"]]
+      "examples": [["/parallel+", "/nowarn:AL0432"]]
     },
     "al.incrementalBuild": {
       "type": "boolean",
       "default": false,
-      "description": "Use incremental build when compiling."
+      "description": "Language server option in the VS Code AL extension. alc has no incremental switch, so this setting has no effect on the alc build here."
     },
     "al.useOfficialCompiler": {
       "type": "boolean",

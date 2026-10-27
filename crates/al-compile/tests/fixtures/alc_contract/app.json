@@ -1,0 +1,1 @@
+{ "id": "7c1f0a52-3d4e-4b6a-9a7e-2f5d8c1b4e90", "name": "AlcContract", "publisher": "AL", "version": "1.0.0.0", "runtime": "14.0", "target": "Cloud", "idRanges": [{ "from": 50100, "to": 50149 }], "dependencies": [] }
