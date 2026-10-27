@@ -181,6 +181,13 @@ identical and only `AL_TOOL_PATH`'s build differs from the pinned one. Point
 it at the pinned toolchain, or move the pin deliberately with
 `make record-methods`.
 
+Supported toolchain for `make microsoft-contracts`: the build pinned in
+`record_methods.json` (18.0.43.1464, the `dotnet tool` net8.0 directory).
+AL 18.1 (2842859, the Cursor extension `bin/`) loads in the bridge: the five
+`live_bridge` tests pass on it (82 s). The profile still exits 2 on 18.1
+because the pin check reports `PROVENANCE DRIFT` (the 82 Record methods are
+identical). The steps after the pin check were not run on 18.1.
+
 Do not treat that external profile alone as complete. After bridge or lifecycle
 changes, also run the consumer finish gate:
 
