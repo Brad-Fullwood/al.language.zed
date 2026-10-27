@@ -504,8 +504,8 @@ Examples:
     Entrypoints,
     /// Export insight graph
     Graph {
-        /// Export format: "json" (default) or "dot"
-        #[arg(short, long, default_value = "json")]
+        /// Export format: "json" (the full graph), "dot", or "summary" (default: node and edge counts)
+        #[arg(short, long, default_value = "summary")]
         format: String,
     },
     /// Show insight graph statistics

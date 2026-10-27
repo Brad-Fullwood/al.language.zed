@@ -61,7 +61,7 @@ cli.graph	cli	graph	cli-commands.md:130; analysis-and-insight.md:135; README.md:
 cli.insight-stats	cli	insight-stats	cli-commands.md:131; cli-and-tui.md:27; README.md:363	insight-stats	out	n
 cli.impact	cli	impact	cli-commands.md:132; analysis-and-insight.md:132; README.md:363	impact "$TBL" --table	rc=0,1;out	n
 cli.suggest-event	cli	suggest-event	cli-commands.md:133; analysis-and-insight.md:134; README.md:363	suggest-event --table "$TBL"	rc=0,1;out	n
-cli.metrics	cli	metrics	cli-commands.md:134; analysis-and-insight.md:142; parsing-and-syntax.md:135; README.md:364	metrics	rc=0,1;noerr;out	n
+cli.metrics	cli	metrics	cli-commands.md:134; analysis-and-insight.md:142; parsing-and-syntax.md:135; README.md:364	metrics --all	rc=0,1;noerr;out	n
 cli.dead-code	cli	dead-code	cli-commands.md:135; analysis-and-insight.md:132; README.md:364	dead-code	rc=0,1;noerr;out	n
 cli.sql-scan	cli	sql-scan	cli-commands.md:136; analysis-and-insight.md:136; README.md:364	sql-scan	rc=0,1;noerr;out	n
 cli.duplicates	cli	duplicates	cli-commands.md:137; analysis-and-insight.md:136; README.md:364	duplicates --min-tokens 20 --min-similarity 0.8	rc=0,1;noerr;out	n

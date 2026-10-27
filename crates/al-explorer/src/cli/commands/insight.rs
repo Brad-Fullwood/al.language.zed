@@ -97,7 +97,9 @@ pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
         Err(e) => return report_error(&e, json),
     };
 
-    let params = serde_json::json!({ "format": format });
+    // "summary" is the CLI's own counts view, the daemon is asked for json.
+    let wire_format = if format == "dot" { "dot" } else { "json" };
+    let params = serde_json::json!({ "format": wire_format });
     let mut outcome = request_checked(&mut client, "graphExport", Some(params));
     // Without --scope the daemon exports every loaded package, which is over its
     // cap for a project with Base Application. Fall back to the workspace part
@@ -112,7 +114,7 @@ pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
             "graph: the full graph has {size} nodes+edges, over the cap of {cap}. \
              Exporting scope workspace instead (use --scope packages to choose another scope)."
         );
-        let params = serde_json::json!({ "format": format, "scope": "workspace" });
+        let params = serde_json::json!({ "format": wire_format, "scope": "workspace" });
         outcome = request_checked(&mut client, "graphExport", Some(params));
     }
     match outcome {
@@ -121,7 +123,7 @@ pub fn cmd_graph(format: &str, json: bool) -> ExitCode {
                 if let Some(content) = result.get("content").and_then(|v| v.as_str()) {
                     println!("{}", terminal_lines(content));
                 }
-            } else if json {
+            } else if json || format == "json" {
                 print_json(&result);
             } else {
                 let node_count = result

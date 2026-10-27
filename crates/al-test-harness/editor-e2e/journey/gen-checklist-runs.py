@@ -104,7 +104,7 @@ CLI = {
     "insight-stats": ("insight-stats", "out"),
     "impact": ('impact "$TBL" --table', "rc=0,1;out"),
     "suggest-event": ('suggest-event --table "$TBL"', "rc=0,1;out"),
-    "metrics": ("metrics", FIND),
+    "metrics": ("metrics --all", FIND),
     "dead-code": ("dead-code", FIND),
     "sql-scan": ("sql-scan", FIND),
     "duplicates": ("duplicates --min-tokens 20 --min-similarity 0.8", FIND),

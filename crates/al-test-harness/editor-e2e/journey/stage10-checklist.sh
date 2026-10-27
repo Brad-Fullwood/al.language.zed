@@ -73,7 +73,7 @@ s10_discover() {
   OUTSIDE="$OUT/10/outside/Foo.al"
   if [[ -n "$F_CU" ]]; then cp "$F_CU" "$OUTSIDE"; else OUTSIDE=""; fi
   CDX_TENANT=1b7a9471-d313-4aa4-99e8-7a6c762c8e7d
-  export PROJ ALX F_CU F_TBL F_PEXT F_SUB SUBLN TBLID TBL CU LN COL LN0 CH0 APP DEPAPP SNAP SNAPZIP OUTSIDE CDX_TENANT
+  export PROJ ALX F_CU F_TBL F_PEXT F_SUB SUBLN SUBLN0 F_PUB PUBLN0 TBLID TBL CU LN COL LN0 CH0 APP DEPAPP SNAP SNAPZIP OUTSIDE CDX_TENANT
 }
 
 # s10_expand TEXT: replaces the placeholder variables in TEXT. Prints the result.

@@ -127,7 +127,7 @@ and writes paths only inside the project it has loaded. See
 | `trace <event>` | `--depth N (10) --tree` | Event propagation chain (`--tree` = full multi-hop) |
 | `intercept` | | Full event interception map + orphans |
 | `entrypoints` | | Procedures with no incoming calls |
-| `graph` | `--format json\|dot`, global `--scope workspace\|packages\|all` | Insight graph export. The daemon exports every loaded package by default, and an explicit scope over 50000 nodes plus edges is refused with an error that names the size and the cap. Without `--scope`, a graph over the cap falls back to scope workspace, prints one stderr line with the counts and exits 0. An explicit `--scope all` over the cap keeps the error and exit 1. `--scope workspace` keeps the workspace's objects and the nodes one edge away |
+| `graph` | `--format json\|dot\|summary` (summary, the default, prints node and edge counts), global `--scope workspace\|packages\|all` | Insight graph export. The daemon exports every loaded package by default, and an explicit scope over 50000 nodes plus edges is refused with an error that names the size and the cap. Without `--scope`, a graph over the cap falls back to scope workspace, prints one stderr line with the counts and exits 0. An explicit `--scope all` over the cap keeps the error and exit 1. `--scope workspace` keeps the workspace's objects and the nodes one edge away |
 | `insight-stats` | | Node/edge counts |
 | `impact <symbol>` | `--table` | Who consumes this symbol/table |
 | `suggest-event` | `--object <x> [--kind <k>] [--procedure/--event <x>]`, or `--table <x> [--field <x>]` | Integration-point discovery (`--event` needs `--object`, `--kind` picks one object when the name exists in more than one kind) |
