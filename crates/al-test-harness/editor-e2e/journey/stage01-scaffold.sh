@@ -8,7 +8,10 @@ JOURNEY_PUBLISHER="Journey Test"
 stage_01() {
   local s=01
   mkdir -p "$OUT/$s"
-  if run_step "$s" new 60 "$ALX" new "$PROJ" --name "$JOURNEY_APP_NAME" --publisher "$JOURNEY_PUBLISHER" --runtime 17.0; then
+  # `new` takes the app id, the CDX tenant and the environment name as flags. It writes the id into
+  # app.json and the tenant and environment into .vscode/launch.json and .zed/debug.json.
+  if run_step "$s" new 60 "$ALX" new "$PROJ" --name "$JOURNEY_APP_NAME" --publisher "$JOURNEY_PUBLISHER" --runtime 17.0 \
+    --app-id "$JOURNEY_APP_ID" --tenant "$CDX_TENANT" --environment "$CDX_ENV"; then
     record "$s" new PASS "exit 0"
   else
     record "$s" new FAIL "al-explorer new exit $(cat "$OUT/$s/new.rc"), see $s/new.log"
@@ -20,14 +23,15 @@ stage_01() {
     if [[ -s "$PROJ/$f" ]]; then record "$s" "file.$f" PASS "present"; else record "$s" "file.$f" FAIL "missing or empty"; fi
   done
 
-  # `new` has no flag for the app id (checked with `new --help`), so set it afterwards.
-  if "$ALX" new --help 2>&1 | grep -q -- '--id'; then
-    record "$s" app-id-flag PASS "new has an id flag"
+  # The id is checked straight after `new`, before the idRanges rewrite below. `new --help` has no
+  # id-range flag, so idRanges is still set afterwards.
+  if [[ "$(jq -r .id "$PROJ/app.json" 2>/dev/null)" == "$JOURNEY_APP_ID" ]]; then
+    record "$s" app-id-flag PASS "new --app-id set the id"
   else
-    record "$s" app-id-flag NIGGLE "new has no flag for the app id, set in app.json afterwards"
+    record "$s" app-id-flag FAIL "new --app-id set the id: app.json has '$(jq -r .id "$PROJ/app.json" 2>/dev/null)', expected $JOURNEY_APP_ID"
   fi
   local tmp="$PROJ/app.json.tmp"
-  jq --arg id "$JOURNEY_APP_ID" '.id=$id | .idRanges=[{"from":50100,"to":50149}]' "$PROJ/app.json" > "$tmp" && mv "$tmp" "$PROJ/app.json"
+  jq '.idRanges=[{"from":50100,"to":50149}]' "$PROJ/app.json" > "$tmp" && mv "$tmp" "$PROJ/app.json"
   [[ "$(jq -r .id "$PROJ/app.json")" == "$JOURNEY_APP_ID" ]] && record "$s" app-json.id PASS "$JOURNEY_APP_ID" || record "$s" app-json.id FAIL "id not set"
   [[ "$(jq -r .name "$PROJ/app.json")" == "$JOURNEY_APP_NAME" ]] && record "$s" app-json.name PASS "$JOURNEY_APP_NAME" || record "$s" app-json.name FAIL "name is $(jq -r .name "$PROJ/app.json")"
   [[ "$(jq -r .publisher "$PROJ/app.json")" == "$JOURNEY_PUBLISHER" ]] && record "$s" app-json.publisher PASS "$JOURNEY_PUBLISHER" || record "$s" app-json.publisher FAIL "publisher is $(jq -r .publisher "$PROJ/app.json")"
@@ -39,11 +43,24 @@ stage_01() {
   sed -i 's/^codeunit 50100 /codeunit 50146 /' "$PROJ/src/HelloWorld.Codeunit.al"
   grep -q '^codeunit 50146 ' "$PROJ/src/HelloWorld.Codeunit.al" && record "$s" starter-id PASS "starter codeunit renumbered 50100 -> 50146 (50100 is taken on CDX)" || record "$s" starter-id FAIL "starter codeunit not renumbered"
 
-  # `new` writes .zed/debug.json and no .vscode/launch.json (observed). Its cloud entries carry
-  # no tenant and the OnPrem entries use tenant "default", so write the CDX target ourselves.
-  [[ -f "$PROJ/.vscode/launch.json" ]] || record "$s" launch-json NIGGLE "new writes .zed/debug.json only, no .vscode/launch.json"
-  if ! grep -q "$CDX_TENANT" "$PROJ/.zed/debug.json" 2>/dev/null; then
-    record "$s" launch-tenant NIGGLE "new cannot set a tenant or environment name: debug.json has no CDX tenant (OnPrem entries say tenant default)"
+  # The launch checks read what `new` wrote. The heredoc below replaces both launch files: the stages
+  # after this one need the labels "Publish: CDX Sandbox" and "Attach: CDX Sandbox" (stages 8 and 9 pass
+  # them to --config), startupObjectId 50141 and launchBrowser false, and `new` writes other values.
+  # Its OnPrem entries also carry tenant "default".
+  local lj="$PROJ/.vscode/launch.json"
+  if [[ ! -f "$lj" ]]; then
+    record "$s" launch-json FAIL "new wrote no .vscode/launch.json"
+  elif ! grep -q "$CDX_TENANT" "$lj"; then
+    record "$s" launch-json FAIL "launch.json has no CDX tenant"
+  elif ! grep -Eq "\"environmentName\"[[:space:]]*:[[:space:]]*\"$CDX_ENV\"" "$lj"; then
+    record "$s" launch-json FAIL "launch.json has no $CDX_ENV environment"
+  else
+    record "$s" launch-json PASS "launch.json has the CDX tenant and $CDX_ENV"
+  fi
+  if grep -q "$CDX_TENANT" "$PROJ/.zed/debug.json" 2>/dev/null; then
+    record "$s" launch-tenant PASS "debug.json has the CDX tenant"
+  else
+    record "$s" launch-tenant FAIL "debug.json has no CDX tenant"
   fi
   mkdir -p "$PROJ/.vscode" "$PROJ/.zed"
   cat > "$PROJ/.vscode/launch.json" <<JSON
