@@ -1330,6 +1330,7 @@ fn validate_mutation(result: &Value) -> Result<(), String> {
             ("unscored", Kind::Unsigned),
         ],
     )?;
+    optional_kind(result, "baselineFailed", Kind::Array, false)?;
     optional_kind(result, "mutationScore", Kind::Number, true)
 }
 

@@ -1631,6 +1631,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_mutate(
             | al_test::mutate::MutationError::NoSelectedReachableFiles { .. }
             | al_test::mutate::MutationError::NoMutationFiles
             | al_test::mutate::MutationError::NoMutationVariants
+            | al_test::mutate::MutationError::OnlyTestCodeunits
             | al_test::mutate::MutationError::ParseError { .. }),
         ) => {
             return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &e.to_string());

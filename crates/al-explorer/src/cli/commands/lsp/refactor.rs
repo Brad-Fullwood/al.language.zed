@@ -425,6 +425,20 @@ pub fn cmd_test_mutate(
                 return exit_code;
             }
 
+            if let Some(failed) = baseline_failed(&result).filter(|f| !f.is_empty()) {
+                eprintln!(
+                    "Baseline test run failed, so no mutants were run and there is no mutation score. Failing tests:"
+                );
+                for test in failed {
+                    eprintln!(
+                        "  {}::{}",
+                        text_field(test, "file", "?"),
+                        text_field(test, "procedure", "?")
+                    );
+                }
+                return exit_code;
+            }
+
             let killed = result.get("killed").and_then(|v| v.as_u64()).unwrap_or(0);
             let survived = result.get("survived").and_then(|v| v.as_u64()).unwrap_or(0);
             let errored = result.get("errored").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -566,6 +580,10 @@ fn survivors_text(survivors: &[&serde_json::Value]) -> String {
     out
 }
 
+fn baseline_failed(result: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+    result.get("baselineFailed").and_then(|v| v.as_array())
+}
+
 fn mutation_exit_code(result: &serde_json::Value) -> Result<ExitCode, String> {
     let count = |field: &str| {
         result
@@ -575,6 +593,10 @@ fn mutation_exit_code(result: &serde_json::Value) -> Result<ExitCode, String> {
                 format!("validated mutation response has no non-negative integer '{field}' count")
             })
     };
+    // A failing baseline run means no mutant ran and there is no score.
+    if baseline_failed(result).is_some_and(|failed| !failed.is_empty()) {
+        return Ok(ExitCode::FAILURE);
+    }
     let survived = count("survived")?;
     let errored = count("errored")?;
     let unscored = count("unscored")?;

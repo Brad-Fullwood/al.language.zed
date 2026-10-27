@@ -41,6 +41,12 @@ pub enum MutationError {
     WorkspaceFileUnavailable { file: String, reason: String },
     #[error("No mutation variants were generated from the reachable executable code")]
     NoMutationVariants,
+    #[error(
+        "Every file reachable from the tests is a test codeunit (Subtype = Test), so there is no code under test to mutate. Pass --files to mutate test codeunits anyway"
+    )]
+    OnlyTestCodeunits,
+    #[error("The baseline test run failed before any mutation: {0}")]
+    BaselineRunFailed(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,6 +129,11 @@ pub struct MutationReport {
     /// isn't taken as a real signal.
     #[serde(default = "default_executor_phase")]
     pub executor_phase: MutationExecutorPhase,
+    /// Tests that failed (or errored) in the unmutated baseline run. When this
+    /// is not empty no mutant was run and there is no score, because a mutant
+    /// "killed" by an already failing test says nothing about the suite.
+    #[serde(default)]
+    pub baseline_failed: Vec<TestId>,
 }
 
 fn default_executor_phase() -> MutationExecutorPhase {
@@ -137,7 +148,7 @@ impl MutationReport {
     /// real test execution ran (stub phase) OR when no variants were
     /// generated — both cases produce a meaningless 0% under the prior API.
     pub fn mutation_score(&self) -> Option<f64> {
-        if self.executor_phase == MutationExecutorPhase::Stub {
+        if self.executor_phase == MutationExecutorPhase::Stub || !self.baseline_failed.is_empty() {
             return None;
         }
         let (killed, survived) = if self.variants.is_empty() {
@@ -622,6 +633,26 @@ pub async fn run_mutation_testing(
         return Err(MutationError::NoTestFiles);
     }
 
+    // A failing baseline makes every kill meaningless (the failing test "kills"
+    // every mutant it covers), so refuse to mutate and report the failures.
+    let baseline_failed = run_baseline(workspace, opts.timeout_ms).await?;
+    if !baseline_failed.is_empty() {
+        let report = MutationReport {
+            variants: Vec::new(),
+            killed: 0,
+            survived: 0,
+            errored: 0,
+            executor_phase: MutationExecutorPhase::Interpreter,
+            baseline_failed,
+        };
+        tx.send(MutationEvent::Done {
+            report: report.clone(),
+        })
+        .await
+        .map_err(|_| MutationError::EventChannelClosed)?;
+        return Ok(report);
+    }
+
     // Flatten every variant up front, in a deterministic order: files are
     // already sorted by path (`collect_mutation_files`), and `generate_variants`
     // walks each tree deterministically. This single ordered list is the stable
@@ -661,6 +692,7 @@ pub async fn run_mutation_testing(
         // signal for code covered by interpreter-runnable tests. Mutants covered
         // only by live-BC tests still survive because they have no offline path.
         executor_phase: MutationExecutorPhase::Interpreter,
+        baseline_failed: Vec::new(),
     };
 
     tx.send(MutationEvent::Done {
@@ -924,6 +956,7 @@ fn collect_mutation_files(
         None
     };
 
+    let mut skipped_test_file = false;
     for entry in workspace.file_index.files.iter() {
         let path = entry.key();
         let path_str = path.to_string_lossy().to_string();
@@ -953,6 +986,13 @@ fn collect_mutation_files(
             continue;
         }
 
+        // Mutating assertions and test data inflates the score, so the default
+        // set leaves test codeunits out. An explicit file list is honoured as given.
+        if opts.files.is_none() && excluded_as_test_file(workspace, path, cached.as_ref()) {
+            skipped_test_file = true;
+            continue;
+        }
+
         files.push((path_str, cached));
     }
 
@@ -968,12 +1008,145 @@ fn collect_mutation_files(
             Some(selected) => Err(MutationError::NoSelectedReachableFiles {
                 files: selected.clone(),
             }),
+            None if skipped_test_file => Err(MutationError::OnlyTestCodeunits),
             None if opts.affected_only => Err(MutationError::NoTestFiles),
             None => Err(MutationError::NoMutationFiles),
         };
     }
 
     Ok(files)
+}
+
+/// True when the file declares a codeunit with `Subtype = Test`.
+///
+/// Standard route checked: `al_analysis::queries::tests::has_test_subtype`
+/// reads the `Subtype` property from the parse tree. It takes one object's
+/// node, so this walks the file's top-level object declarations.
+fn excluded_as_test_file(
+    workspace: &Workspace,
+    path: &std::path::Path,
+    cached: Option<&(String, tree_sitter::Tree)>,
+) -> bool {
+    let fetched;
+    let (text, tree) = match cached {
+        Some((text, tree)) => (text, tree),
+        None => match workspace.file_index.get_cached_parse(path) {
+            Some(parse) => {
+                fetched = parse;
+                (&fetched.0, &fetched.1)
+            }
+            None => return false,
+        },
+    };
+    let source = text.as_bytes();
+    let root = tree.root_node();
+    let mut cursor = root.walk();
+    let found = root.children(&mut cursor).any(|object| {
+        object.kind() == "object_declaration"
+            && object
+                .child_by_field_name("kind")
+                .and_then(|kind| kind.utf8_text(source).ok())
+                .is_some_and(al_syntax::language_data::is_test_container_kind)
+            && al_analysis::queries::tests::has_test_subtype(object, source)
+    });
+    found
+}
+
+/// Run every interpreter-routed test once on the unmutated workspace and
+/// return the tests that failed or errored. Live-BC tests are not run here,
+/// the mutation runs skip them too.
+async fn run_baseline(
+    workspace: &std::sync::Arc<Workspace>,
+    timeout_ms: Option<u64>,
+) -> Result<Vec<TestId>, MutationError> {
+    use crate::backends::interp::InterpMode;
+    use crate::router::RoutingDecision;
+    use crate::session::{RunOptions, TestEvent, TestSession};
+
+    let discovered = al_analysis::queries::tests::discover_tests(workspace)?;
+    let classifications = crate::router::classify_codeunits(workspace, &discovered)
+        .map_err(|e| MutationError::BaselineRunFailed(format!("test routing failed: {e}")))?;
+    let mut pure_tests = Vec::new();
+    let mut record_tests = Vec::new();
+    for result in classifications {
+        let id = crate::session::TestId {
+            codeunit_id: result.codeunit_id,
+            codeunit_name: discovered
+                .iter()
+                .find(|cu| cu.id == result.codeunit_id)
+                .map(|cu| cu.name.clone())
+                .unwrap_or_default(),
+            method_name: Some(result.method_name.clone()),
+        };
+        match result.decision {
+            RoutingDecision::Interp => pure_tests.push(id),
+            RoutingDecision::InterpRecord => record_tests.push(id),
+            RoutingDecision::LiveBc => {}
+        }
+    }
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<TestEvent>(256);
+    let opts = RunOptions {
+        timeout_ms,
+        ..Default::default()
+    };
+    let mut run_handles = Vec::new();
+    if !pure_tests.is_empty() {
+        let mode = InterpMode::new(std::sync::Arc::clone(workspace));
+        let (tx, opts) = (tx.clone(), opts.clone());
+        run_handles.push(tokio::spawn(
+            async move { mode.run(pure_tests, opts, tx).await },
+        ));
+    }
+    if !record_tests.is_empty() {
+        let mode = InterpMode::with_records(std::sync::Arc::clone(workspace));
+        let tx = tx.clone();
+        run_handles.push(tokio::spawn(async move {
+            mode.run(record_tests, opts, tx).await
+        }));
+    }
+    drop(tx);
+
+    let file_by_id: std::collections::HashMap<i32, String> = discovered
+        .iter()
+        .map(|cu| (cu.id, cu.file.clone()))
+        .collect();
+    let mut failed = Vec::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            TestEvent::SuiteComplete { summary, .. } => {
+                let file = file_by_id
+                    .get(&summary.id)
+                    .cloned()
+                    .unwrap_or_else(|| summary.name.clone());
+                for method in summary
+                    .methods
+                    .iter()
+                    .filter(|m| matches!(m.status, crate::TestStatus::Fail))
+                {
+                    failed.push(TestId {
+                        file: file.clone(),
+                        procedure: method.name.clone(),
+                    });
+                }
+            }
+            TestEvent::Error { message } => failed.push(TestId {
+                file: String::new(),
+                procedure: format!("(run error) {message}"),
+            }),
+            _ => {}
+        }
+    }
+    for handle in run_handles {
+        match handle.await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(MutationError::BaselineRunFailed(e.to_string())),
+            Err(e) => return Err(MutationError::BaselineRunFailed(format!("panicked: {e}"))),
+        }
+    }
+    failed.sort_by(|a, b| (&a.file, &a.procedure).cmp(&(&b.file, &b.procedure)));
+    failed.dedup();
+    Ok(failed)
 }
 
 /// Run a single variant: apply mutation, run tests, return outcome.
@@ -1264,6 +1437,15 @@ mod tests {
 }
 "#;
 
+    /// Options that name a fixture file explicitly. Fixtures that are a single
+    /// test codeunit need this, because the default set leaves test codeunits out.
+    fn test_codeunit_only(path: &str) -> MutationOptions {
+        MutationOptions {
+            files: Some(vec![path.to_string()]),
+            ..Default::default()
+        }
+    }
+
     fn parse(source: &str) -> tree_sitter::Tree {
         AlParser::parse_quick(source).tree
     }
@@ -1291,9 +1473,13 @@ mod tests {
             source.to_string(),
         );
         let (tx, _rx) = tokio::sync::mpsc::channel(256);
-        let report = run_mutation_testing(&ws, MutationOptions::default(), tx)
-            .await
-            .expect("mutation run");
+        let report = run_mutation_testing(
+            &ws,
+            test_codeunit_only("/proj/src/PureLogicTest.Codeunit.al"),
+            tx,
+        )
+        .await
+        .expect("mutation run");
         assert_eq!(
             report.executor_phase,
             MutationExecutorPhase::Interpreter,
@@ -1337,9 +1523,10 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         drop(rx);
 
-        let error = run_mutation_testing(&workspace, MutationOptions::default(), tx)
-            .await
-            .expect_err("a dropped result consumer must fail the operation");
+        let error =
+            run_mutation_testing(&workspace, test_codeunit_only("/proj/ClosedChannel.al"), tx)
+                .await
+                .expect_err("a dropped result consumer must fail the operation");
         assert!(matches!(error, MutationError::EventChannelClosed));
     }
 
@@ -1360,7 +1547,7 @@ mod tests {
         );
         let (tx, _rx) = tokio::sync::mpsc::channel(1);
 
-        let error = run_mutation_testing(&workspace, MutationOptions::default(), tx)
+        let error = run_mutation_testing(&workspace, test_codeunit_only("/proj/NoMutants.al"), tx)
             .await
             .expect_err("an empty mutant set must be explicit");
         assert!(matches!(error, MutationError::NoMutationVariants));
@@ -1421,11 +1608,97 @@ mod tests {
             paths.contains(&"/proj/Subject.al"),
             "covered production file must be mutated: {paths:?}"
         );
-        assert!(paths.contains(&"/proj/SubjectTests.al"));
+        assert!(
+            !paths.contains(&"/proj/SubjectTests.al"),
+            "a Subtype = Test codeunit is not mutated by default: {paths:?}"
+        );
         assert!(
             !paths.contains(&"/proj/Unused.al"),
             "uncovered production file must remain out of affected-only scope"
         );
+    }
+
+    const SUBJECT_AL: &str = r#"codeunit 50100 Subject
+{
+    procedure Classify(Amount: Integer): Boolean
+    begin
+        exit(Amount > 100);
+    end;
+}"#;
+
+    fn subject_workspace(test_body: &str) -> std::sync::Arc<Workspace> {
+        let workspace = std::sync::Arc::new(Workspace::new());
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/Subject.al"),
+            SUBJECT_AL.to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/proj/SubjectTests.al"),
+            format!(
+                "codeunit 50101 SubjectTests\n{{\n    Subtype = Test;\n\n    [Test]\n    procedure Check()\n    var\n        Subject: Codeunit Subject;\n    begin\n{test_body}\n    end;\n}}"
+            ),
+        );
+        workspace
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn failing_baseline_refuses_to_mutate_and_reports_no_score() {
+        // The first assertion is wrong against the unmutated code.
+        let workspace = subject_workspace(
+            "        if Subject.Classify(150) = true then\n            Error('deliberately failing');",
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(256);
+        let report = run_mutation_testing(&workspace, MutationOptions::default(), tx)
+            .await
+            .expect("a failing baseline is a report, not a panic");
+        assert_eq!(
+            report.baseline_failed,
+            vec![TestId {
+                file: "/proj/SubjectTests.al".to_string(),
+                procedure: "Check".to_string()
+            }]
+        );
+        assert!(report.variants.is_empty(), "no mutant may run");
+        assert_eq!(report.mutation_score(), None);
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["baselineFailed"][0]["procedure"], "Check");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn default_run_locates_no_mutant_in_the_test_codeunit() {
+        let workspace = subject_workspace(
+            "        if Subject.Classify(150) = false then\n            Error('150 is above 100');\n        if Subject.Classify(50) = true then\n            Error('50 is below 100');",
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel(256);
+        let report = run_mutation_testing(&workspace, MutationOptions::default(), tx)
+            .await
+            .expect("mutation run");
+        assert!(report.baseline_failed.is_empty());
+        assert!(!report.variants.is_empty(), "Subject.al has mutants");
+        assert!(
+            report
+                .variants
+                .iter()
+                .all(|o| o.variant.file == "/proj/Subject.al"),
+            "mutants located in the test codeunit: {:?}",
+            report
+                .variants
+                .iter()
+                .map(|o| o.variant.file.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn explicit_file_list_may_still_include_the_test_codeunit() {
+        let workspace = subject_workspace("        Subject.Classify(1);");
+        let opts = MutationOptions {
+            files: Some(vec!["/proj/SubjectTests.al".to_string()]),
+            ..Default::default()
+        };
+        let files = collect_mutation_files(&workspace, &opts).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].0, "/proj/SubjectTests.al");
     }
 
     /// `--parallel` must run variants concurrently yet produce the exact
@@ -1466,6 +1739,9 @@ mod tests {
             let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
             let opts = MutationOptions {
                 parallel,
+                files: Some(vec![
+                    "/proj/src/ParallelMutateSubject.Codeunit.al".to_string()
+                ]),
                 ..MutationOptions::default()
             };
             let report = run_mutation_testing(&ws, opts, tx)
@@ -1758,6 +2034,7 @@ mod tests {
             survived: 0,
             errored: 0,
             executor_phase: MutationExecutorPhase::Interpreter,
+            baseline_failed: Vec::new(),
         };
         assert_eq!(report.mutation_score(), None);
     }
@@ -1770,6 +2047,7 @@ mod tests {
             survived: 0,
             errored: 0,
             executor_phase: MutationExecutorPhase::Interpreter,
+            baseline_failed: Vec::new(),
         };
         let score = report
             .mutation_score()
@@ -1785,6 +2063,7 @@ mod tests {
             survived: 5,
             errored: 0,
             executor_phase: MutationExecutorPhase::Interpreter,
+            baseline_failed: Vec::new(),
         };
         let score = report
             .mutation_score()
@@ -1800,6 +2079,7 @@ mod tests {
             survived: 100,
             errored: 0,
             executor_phase: MutationExecutorPhase::Stub,
+            baseline_failed: Vec::new(),
         };
         assert_eq!(report.mutation_score(), None);
     }
@@ -1836,6 +2116,7 @@ mod tests {
             survived: 3,
             errored: 0,
             executor_phase: MutationExecutorPhase::Interpreter,
+            baseline_failed: Vec::new(),
         };
 
         assert_eq!(report.mutation_score(), Some(50.0));
