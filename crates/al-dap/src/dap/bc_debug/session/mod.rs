@@ -18,6 +18,10 @@ use crate::dap::{DapError, Result};
 
 use super::events::{fatal_exception_message, signalr_to_bc_event, BcEvent};
 use super::session_config::BcDebugConfig;
+use super::version::{
+    configuration_done_takes_options, debug_options, debugger_major_from_metadata,
+    get_watch_node_takes_option, ATTACH_MIN_MAJOR,
+};
 use super::wire::{
     default_invoke_timeout, percent_encode_url, redact_connection_token,
     resolve_negotiate_connection, validate_signalr_handshake_response, SignalRMessage,
@@ -145,6 +149,11 @@ pub struct BcDebugSession {
     /// unbounded so events are never lost even if they arrive before the
     /// receiver calls `wait_for_break_event`.
     break_event_rx: Mutex<mpsc::UnboundedReceiver<bool>>,
+    /// Major part of `ServerInfo.DebuggerVersion` from `GET dev/metadata`
+    /// (ServerInfo.cs:11-12). Microsoft stores it as `Version` on the service
+    /// (DebugAdapterStartRequestHandler.cs:69-72) and branches on it. `None`
+    /// when the metadata names no parsable version: the newest call shapes are used.
+    debugger_major: Option<u32>,
 }
 
 impl BcDebugSession {
@@ -179,6 +188,15 @@ impl BcDebugSession {
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .build()
             .map_err(|e| DapError::ConnectionFailed(format!("HTTP client error: {e}")))?;
+
+        // Microsoft reads the server info before it opens the hub and fails the
+        // start when the request fails (DebugAdapterStartRequestHandler.cs:169-176,
+        // ServerInfoApiClient.cs:27-29).
+        let metadata = super::rest::get_metadata(&http, config, access_token).await?;
+        let debugger_major = debugger_major_from_metadata(&metadata);
+        if debugger_major.is_none() {
+            warn!("dev/metadata has no parsable debuggerVersion, using the newest hub call shapes");
+        }
 
         // The query holds the bearer token, so only the path is logged.
         info!("SignalR negotiate: {hub_url}/negotiate");
@@ -407,6 +425,7 @@ impl BcDebugSession {
             expecting_step: Mutex::new(false),
             last_break_frames: Mutex::new(Vec::new()),
             break_event_rx: Mutex::new(break_event_rx),
+            debugger_major,
         })
     }
 
@@ -635,6 +654,16 @@ impl BcDebugSession {
     }
 
     pub async fn attach(&self, config: &BcDebugConfig) -> Result<()> {
+        if self
+            .debugger_major
+            .is_some_and(|major| major < ATTACH_MIN_MAJOR)
+        {
+            // DebugAdapterAttachRequestHandler.cs:33-36 refuses an attach below major 3.
+            return Err(DapError::ConnectionFailed(format!(
+                "The server's debugger version {} does not support attach requests (major 3 or later is needed)",
+                self.debugger_major.unwrap_or_default()
+            )));
+        }
         // This is EditorServices' AttachOptions wire type (AttachOptions.cs:15-27).
         // Break flags belong to DebugOptions/configurationDone. The hub uses
         // Newtonsoft with DefaultContractResolver (AspNetCoreSignalRFactory.cs:24-27),
@@ -677,48 +706,19 @@ impl BcDebugSession {
         Ok(())
     }
 
-    /// BC hub method: `DebugAdapterConfigurationDone(debugOptions)`
-    /// Newer BC versions (>1.0) require debug options argument.
+    /// BC hub method: `DebugAdapterConfigurationDone`. Major 1 or lower takes no
+    /// arguments, later versions take `DebugOptions`
+    /// (HubBasedDebuggerService.cs:264-269), normalised for the version as in
+    /// DebugAdapterStartRequestHandler.cs:69-119. The failure of a call is the
+    /// caller's error, there is no second form to try.
     pub async fn configuration_done(&self, config: &BcDebugConfig) -> Result<()> {
-        // DebugOptions.cs:19-44 property names, PascalCase like every hub
-        // payload (AspNetCoreSignalRFactory.cs:24-27). Enum values are
-        // Unspecified=0, None=1, All=2, ExcludeTry=3 (and the record write
-        // equivalents).
-        let debug_options = serde_json::json!({
-            "BreakOnError": config.break_on_error.enabled(),
-            "BreakOnErrorBehaviour": config.break_on_error.wire_value(),
-            "BreakOnRecordWrite": config.break_on_record_write.enabled(),
-            "BreakOnRecordWriteBehaviour": config.break_on_record_write.wire_value(),
-            "SkipSystemTriggers": true,
-            "EnableSqlInformationDebugger": config.enable_sql_information_debugger,
-            "EnableLongRunningSqlStatements": config.enable_long_running_sql_statements,
-            "LongRunningSqlStatementsThreshold": config.long_running_sql_statements_threshold,
-            "NumberOfSqlStatements": config.number_of_sql_statements,
-        });
-        // Try with debug options first (newer BC >=2.0), fall back to empty args
-        match self
-            .invoke("DebugAdapterConfigurationDone", vec![debug_options])
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(first_err) => {
-                // Older BC: no args. If this also fails, both forms were
-                // rejected — surface the second error instead of silently
-                // returning Ok, so the caller (which uses `?`) can abort the
-                // debug session rather than proceeding with an unconfigured
-                // adapter that will misbehave on later operations.
-                match self.invoke("DebugAdapterConfigurationDone", vec![]).await {
-                    Ok(_) => Ok(()),
-                    Err(second_err) => {
-                        tracing::warn!(
-                            "configurationDone failed both with debug options ({first_err}) \
-                             and with no args ({second_err})"
-                        );
-                        Err(second_err)
-                    }
-                }
-            }
-        }
+        let args = if configuration_done_takes_options(self.debugger_major) {
+            vec![debug_options(config, self.debugger_major)]
+        } else {
+            vec![]
+        };
+        self.invoke("DebugAdapterConfigurationDone", args).await?;
+        Ok(())
     }
 
     /// BC hub method: `AddBreakpoint(ApplicationObjectIdWrapper, SourcePosition, string condition)`
@@ -848,28 +848,16 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::json!([])))
     }
 
-    /// BC hub method: `GetWatchNode(int frameId, string expression, WatchOption)` → `LocalNode`
+    /// BC hub method: `GetWatchNode(int frameId, string expression[, WatchOption])` → `LocalNode`.
+    /// The `WatchOption` argument exists from debugger major 4 (HubBasedDebuggerService.cs:349-353).
+    /// Microsoft sends `AllowLargeStrings` (1) for the console context and `None` (0) otherwise
+    /// (DebugAdapterEvaluateRequestHandler.cs:92). This client does not tell the contexts apart and sends 0.
     pub async fn evaluate(&self, frame_id: i64, expression: &str) -> Result<serde_json::Value> {
-        let result = match self
-            .invoke(
-                "GetWatchNode",
-                vec![
-                    serde_json::json!(frame_id),
-                    serde_json::json!(expression),
-                    serde_json::json!(0),
-                ],
-            )
-            .await
-        {
-            Ok(result) => result,
-            Err(_) => {
-                self.invoke(
-                    "GetWatchNode",
-                    vec![serde_json::json!(frame_id), serde_json::json!(expression)],
-                )
-                .await?
-            }
-        };
+        let mut args = vec![serde_json::json!(frame_id), serde_json::json!(expression)];
+        if get_watch_node_takes_option(self.debugger_major) {
+            args.push(serde_json::json!(0));
+        }
+        let result = self.invoke("GetWatchNode", args).await?;
         Ok(result.unwrap_or(serde_json::Value::Null))
     }
 
@@ -958,6 +946,7 @@ impl BcDebugSession {
             expecting_step: Mutex::new(false),
             last_break_frames: Mutex::new(Vec::new()),
             break_event_rx: Mutex::new(break_event_rx),
+            debugger_major: None,
         };
         (
             session,

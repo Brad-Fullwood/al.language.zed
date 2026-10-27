@@ -67,14 +67,15 @@ pub(crate) fn attach_options(break_on_next: i32, session_id: i32, user_id: Optio
     json!({ "BreakOnNextClient": break_on_next, "SessionId": session_id, "UserId": user_id })
 }
 
-/// `DebugOptions` as sent to `DebugAdapterConfigurationDone` for the config's break settings.
+/// `DebugOptions` as sent to `DebugAdapterConfigurationDone` for debugger major 5 or later:
+/// the legacy booleans are null, the behaviour enums carry the setting.
 // fixture source: Microsoft.Dynamics.Nav.EditorServices.Protocol/Microsoft.Dynamics.Nav.EditorServices.Protocol.DebugAdapter/DebugOptions.cs:19-44
-// (nine JsonProperty members, enums as int)
+// (nine JsonProperty members, enums as int) and DebugAdapterStartRequestHandler.cs:98-118 (major >= 5 sets only the behaviours)
 pub(crate) fn debug_options(config: &super::BcDebugConfig) -> Value {
     json!({
-        "BreakOnError": config.break_on_error.enabled(),
+        "BreakOnError": null,
         "BreakOnErrorBehaviour": config.break_on_error.wire_value(),
-        "BreakOnRecordWrite": config.break_on_record_write.enabled(),
+        "BreakOnRecordWrite": null,
         "BreakOnRecordWriteBehaviour": config.break_on_record_write.wire_value(),
         "SkipSystemTriggers": true,
         "EnableSqlInformationDebugger": config.enable_sql_information_debugger,

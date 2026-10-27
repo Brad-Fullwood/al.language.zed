@@ -322,7 +322,7 @@ async fn attach_explicit_web_service_client_matches_default() {
 }
 
 #[tokio::test]
-async fn configuration_done_sends_debug_options_on_first_attempt() {
+async fn configuration_done_sends_one_debug_options_argument() {
     let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
     event_tx
         .send(completion("1", Some(serde_json::json!(null)), None))
@@ -344,79 +344,98 @@ async fn configuration_done_sends_debug_options_on_first_attempt() {
 
     let frame = next_frame(&mut ws_rx);
     assert_eq!(frame["target"], "DebugAdapterConfigurationDone");
-    let args = frame["arguments"].as_array().unwrap();
-    assert_eq!(args.len(), 1, "debug options arg present on first attempt");
-    assert_eq!(args[0]["BreakOnError"], true);
-    assert_eq!(args[0]["BreakOnErrorBehaviour"], 3);
-    assert_eq!(args[0]["BreakOnRecordWrite"], true);
-    assert_eq!(args[0]["BreakOnRecordWriteBehaviour"], 3);
-    assert_eq!(args[0]["EnableSqlInformationDebugger"], false);
-    assert_eq!(args[0]["EnableLongRunningSqlStatements"], false);
-    assert_eq!(args[0]["LongRunningSqlStatementsThreshold"], 900);
-    assert_eq!(args[0]["NumberOfSqlStatements"], 37);
-    // A successful first attempt must NOT send the no-args fallback frame.
-    assert!(
-        ws_rx.try_recv().is_err(),
-        "no fallback invoke when the first attempt succeeds"
+    assert_eq!(
+        frame["arguments"],
+        serde_json::json!([crate::dap::bc_debug::test_fixtures::debug_options(&cfg)])
     );
+    assert!(ws_rx.try_recv().is_err(), "exactly one invoke");
 }
 
 #[tokio::test]
-async fn configuration_done_falls_back_to_no_args_when_options_rejected() {
-    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
-    // First attempt (id "1") rejected by an older BC; second (id "2") ok.
+async fn configuration_done_sends_legacy_booleans_below_major_5() {
+    let (mut session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    session.debugger_major = Some(4);
     event_tx
-        .send(completion(
-            "1",
-            None,
-            Some("Method does not accept debugOptions"),
-        ))
+        .send(completion("1", Some(serde_json::json!(null)), None))
         .await
         .unwrap();
+    let cfg = BcDebugConfig {
+        break_on_error: crate::dap::bc_debug::BreakOnError::All,
+        ..BcDebugConfig::default()
+    };
+    session.configuration_done(&cfg).await.unwrap();
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"][0]["BreakOnError"], true);
+    assert_eq!(frame["arguments"][0]["BreakOnErrorBehaviour"], 2);
+}
+
+#[tokio::test]
+async fn configuration_done_has_no_arguments_for_major_1() {
+    // HubBasedDebuggerService.cs:264-269
+    let (mut session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    session.debugger_major = Some(1);
     event_tx
-        .send(completion("2", Some(serde_json::json!(null)), None))
+        .send(completion("1", Some(serde_json::json!(null)), None))
         .await
         .unwrap();
     session
         .configuration_done(&BcDebugConfig::default())
         .await
-        .expect("fallback path succeeds");
-
-    let first = next_frame(&mut ws_rx);
-    let second = next_frame(&mut ws_rx);
-    assert_eq!(first["target"], "DebugAdapterConfigurationDone");
-    assert_eq!(
-        first["arguments"].as_array().unwrap().len(),
-        1,
-        "first attempt carries debug options"
-    );
-    assert_eq!(second["target"], "DebugAdapterConfigurationDone");
-    assert_eq!(
-        second["arguments"].as_array().unwrap().len(),
-        0,
-        "fallback attempt carries no args"
-    );
+        .unwrap();
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"].as_array().unwrap().len(), 0);
 }
 
 #[tokio::test]
-async fn configuration_done_surfaces_second_error_when_both_attempts_fail() {
-    let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+async fn configuration_done_error_is_returned_without_a_second_form() {
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
     event_tx
-        .send(completion("1", None, Some("first fail")))
-        .await
-        .unwrap();
-    event_tx
-        .send(completion("2", None, Some("second fail")))
+        .send(completion("1", None, Some("rejected")))
         .await
         .unwrap();
     let err = session
         .configuration_done(&BcDebugConfig::default())
         .await
-        .expect_err("both attempts failing must error");
+        .expect_err("a rejected call is an error");
     assert!(
-        matches!(&err, DapError::ServerError(m) if m.contains("second fail")),
-        "must surface the second error, got {err:?}"
+        matches!(&err, DapError::ServerError(m) if m.contains("rejected")),
+        "{err:?}"
     );
+    let _ = next_frame(&mut ws_rx);
+    assert!(ws_rx.try_recv().is_err(), "no retry with another shape");
+}
+
+#[tokio::test]
+async fn get_watch_node_has_two_arguments_below_major_4() {
+    // HubBasedDebuggerService.cs:349-353
+    let (mut session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    session.debugger_major = Some(3);
+    event_tx
+        .send(completion("1", Some(serde_json::json!(null)), None))
+        .await
+        .unwrap();
+    session.evaluate(7, "x").await.unwrap();
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"], serde_json::json!([7, "x"]));
+}
+
+#[tokio::test]
+async fn get_watch_node_error_is_not_swallowed() {
+    let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", None, Some("watch failed")))
+        .await
+        .unwrap();
+    assert!(session.evaluate(7, "x").await.is_err());
+}
+
+#[tokio::test]
+async fn attach_is_refused_below_major_3() {
+    // DebugAdapterAttachRequestHandler.cs:33-36
+    let (mut session, _e, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    session.debugger_major = Some(2);
+    assert!(session.attach(&BcDebugConfig::default()).await.is_err());
+    assert!(ws_rx.try_recv().is_err(), "nothing is sent");
 }
 
 #[tokio::test]
@@ -991,6 +1010,7 @@ async fn hub_requests_serialise_to_the_decompiled_pascal_case_frames() {
 /// (HubBasedDebuggerService.cs:176-200) and the WebSocket gets the cookie
 /// negotiate set (HubBasedService.cs:57-58).
 #[tokio::test]
+#[allow(clippy::result_large_err)] // tungstenite's accept_hdr_async callback fixes the Err type
 async fn connect_sends_the_hub_query_on_both_requests_and_forwards_the_cookie() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -998,9 +1018,22 @@ async fn connect_sends_the_hub_query_on_both_requests_and_forwards_the_cookie() 
     let port = listener.local_addr().unwrap().port();
 
     let server = tokio::spawn(async move {
-        // 1. negotiate: plain HTTP POST.
+        // 0. dev/metadata: ServerInfo with DebuggerVersion.
         let (mut stream, _) = listener.accept().await.unwrap();
         let mut buf = vec![0u8; 8192];
+        let n = stream.read(&mut buf).await.unwrap();
+        assert!(String::from_utf8_lossy(&buf[..n]).starts_with("GET /BC/dev/metadata"));
+        // fixture source: Deployment/Microsoft.Dynamics.Nav.Deployment.ApiClients/ServerInfo.cs:9-12
+        let body = r#"{"RuntimeVersion":"16.0.0.0","WebApiVersion":"2.0.0.0","DebuggerVersion":"9.0.0.0"}"#;
+        let reply = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        stream.write_all(reply.as_bytes()).await.unwrap();
+        drop(stream);
+
+        // 1. negotiate: plain HTTP POST.
+        let (mut stream, _) = listener.accept().await.unwrap();
         let n = stream.read(&mut buf).await.unwrap();
         let negotiate_request = String::from_utf8_lossy(&buf[..n]).to_string();
         // fixture source: shape of the ASP.NET Core negotiate v1 reply that
@@ -1058,6 +1091,7 @@ async fn connect_sends_the_hub_query_on_both_requests_and_forwards_the_cookie() 
         .await
         .expect("connect succeeds against the local hub");
     assert_eq!(session.connection_id, "cid");
+    assert_eq!(session.debugger_major, Some(9));
 
     let (negotiate_request, (ws_uri, ws_cookie), _ws) = server.await.unwrap();
     let request_line = negotiate_request.lines().next().unwrap();

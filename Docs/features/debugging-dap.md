@@ -131,6 +131,17 @@ add 1 when the client sent `linesStartAt1` (or `columnsStartAt1`) and the value 
 lines go the other way with `Position.Create` (subtract 1). The MCP path treats its clients as
 one-based.
 
+**Debugger version.** `connect` reads `debuggerVersion` from `GET dev/metadata` (`ServerInfo.cs:11-12`,
+`ServerInfoApiClient.cs:27-29`) and keeps its major part, as Microsoft does
+(`DebugAdapterStartRequestHandler.cs:69-72`). It selects the call shape, with no second try: `Attach` is refused
+below major 3 (`DebugAdapterAttachRequestHandler.cs:33-36`), `DebugAdapterConfigurationDone` has no
+arguments up to major 1 and sends `DebugOptions` after (`HubBasedDebuggerService.cs:264-269`), `GetWatchNode`
+has the `WatchOption` argument from major 4 (`:349-353`), and `DebugOptions` carries the legacy
+`BreakOnError`/`BreakOnRecordWrite` booleans below major 5 and only the behaviour values from major 5
+(`DebugAdapterStartRequestHandler.cs:69-119`). `SkipSystemTriggers` is always sent as true, the
+`DebugOptions` default, and has no launch.json field. A metadata body without a parsable version uses the newest
+shapes with a warning. Live check on CDX pending in the lead's contract run.
+
 ### Engineering details worth knowing
 
 - **Breakpoint serialization:** the breakpoint mutex is held across remove→add→store so

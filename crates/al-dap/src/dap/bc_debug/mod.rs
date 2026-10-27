@@ -29,6 +29,7 @@ pub mod snapshot_capture;
 pub mod snapshot_debugger;
 #[cfg(test)]
 pub(crate) mod test_fixtures;
+mod version;
 mod wire;
 
 pub use events::{BcEvent, BreakLocation};

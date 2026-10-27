@@ -577,11 +577,7 @@ mod tests {
         fake.push_callback("OnAttachedToConnection", serde_json::Value::Null);
         session.try_drain_push_events().await;
 
-        // `configuration_done` itself retries once with no args if the
-        // debug-options form is rejected (older-BC compat); queue a
-        // rejection for both attempts so the overall call fails.
         fake.reply_err("DebugAdapterConfigurationDone", "not ready");
-        fake.reply_err("DebugAdapterConfigurationDone", "still not ready");
         let attempted = try_configuration_done(&session, &debug_config, &configured).await;
         assert!(attempted);
         assert!(
