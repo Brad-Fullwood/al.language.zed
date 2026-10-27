@@ -583,47 +583,17 @@ async fn read_error_body_capped(response: reqwest::Response) -> String {
     al_bc::bc_client::read_error_body_capped(response).await
 }
 
-/// Build a safe `.app` filename from a dependency's publisher and name.
+/// The `.app` file name for a package: `<Publisher>_<Name>_<Version>.app` with the spaces kept,
+/// for example `Microsoft_Base Application_28.5.54151.55594.app`.
 ///
-/// Publisher/name come from `app.json`, which can be authored or corrupted by
-/// third parties. Path separators and parent-directory components in those
-/// fields would otherwise let `dest.join(filename)` escape the destination
-/// directory (`../../evil`, `..\\pwned`, absolute paths, drive letters). We
-/// replace every character that isn't ASCII-alphanumeric, `.`, `-` or `_`
-/// with `_`, and additionally collapse any `..` sequence so no parent-dir
-/// component can survive.
+/// Microsoft's client does not build this name. It takes the server's Content-Disposition file
+/// name (`PackagesApiClient.cs:128`) and, for NuGet, the entry name inside the package
+/// (`NuGetPackageDownloader.cs:754-757`). The server's names keep the spaces, as the files in a
+/// real `.alpackages` folder show. The shared `al_types::app_package_filename` builds that form
+/// and also makes each component a single safe path component, so `app.json` text cannot make
+/// `dest.join(filename)` leave the destination.
 fn package_filename(publisher: &str, name: &str, version: &str) -> String {
-    format!(
-        "{}_{}_{}.app",
-        sanitize_path_component(publisher),
-        sanitize_path_component(name),
-        sanitize_path_component(version)
-    )
-}
-
-/// Sanitize a single filename component: keep only ASCII alphanumerics and
-/// `.`, `-`, `_`; map everything else (including `/`, `\\`, `:`) to `_`; then
-/// neutralise any remaining `..` so the result can never be a parent-dir ref.
-fn sanitize_path_component(input: &str) -> String {
-    let mut out: String = input
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    // `..` can only appear via retained dots; collapse it so no component is a
-    // parent-directory reference even after the char-class filter above.
-    while out.contains("..") {
-        out = out.replace("..", "_");
-    }
-    if out.is_empty() {
-        out.push('_');
-    }
-    out
+    al_types::app_package_filename(publisher, name, version)
 }
 
 #[cfg(test)]
@@ -633,7 +603,8 @@ mod tests {
     #[test]
     fn test_app_filename() {
         let filename = package_filename("Microsoft", "System Application", "27.4.0.0");
-        assert_eq!(filename, "Microsoft_System_Application_27.4.0.0.app");
+        // Same form as the files in a real .alpackages folder: spaces kept.
+        assert_eq!(filename, "Microsoft_System Application_27.4.0.0.app");
     }
 
     #[test]
@@ -641,7 +612,6 @@ mod tests {
         // Parent-directory components and path separators in publisher/name
         // must not survive into the filename.
         let filename = package_filename("../../evil", "..\\pwned", "1.0/../../bad");
-        assert!(!filename.contains(".."), "got {filename}");
         assert!(!filename.contains('/'), "got {filename}");
         assert!(!filename.contains('\\'), "got {filename}");
         assert!(filename.ends_with(".app"));
@@ -660,16 +630,6 @@ mod tests {
             "joined path has a ParentDir component: {}",
             joined.display()
         );
-    }
-
-    #[test]
-    fn test_sanitize_path_component_keeps_safe_chars() {
-        assert_eq!(sanitize_path_component("Foo.Bar-Baz_1"), "Foo.Bar-Baz_1");
-        assert_eq!(sanitize_path_component("a/b\\c:d"), "a_b_c_d");
-        assert_eq!(sanitize_path_component(".."), "_");
-        assert_eq!(sanitize_path_component(""), "_");
-        // A drive-letter style prefix is neutralised.
-        assert_eq!(sanitize_path_component("C:\\x"), "C__x");
     }
 
     #[test]
@@ -809,7 +769,7 @@ mod tests {
             .expect("download succeeds");
 
         // Named after the manifest in the package (Publisher="Test"), not the request.
-        assert_eq!(out, tmp.join("Test_System_Application_1.0.0.0.app"));
+        assert_eq!(out, tmp.join("Test_System Application_1.0.0.0.app"));
         assert_eq!(std::fs::read(&out).unwrap(), body);
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -843,11 +803,11 @@ mod tests {
 
         assert_eq!(
             out.file_name().unwrap().to_str().unwrap(),
-            "Test_Base_Application_28.5.54151.55799.app"
+            "Test_Base Application_28.5.54151.55799.app"
         );
         assert!(!tmp
             .path()
-            .join("Microsoft_Base_Application_26.0.0.0.app")
+            .join("Microsoft_Base Application_26.0.0.0.app")
             .exists());
     }
 
@@ -865,7 +825,7 @@ mod tests {
             .mount(&server)
             .await;
         let tmp = tempfile::tempdir().unwrap();
-        let legacy = tmp.path().join("Microsoft_Base_Application_26.0.0.0.app");
+        let legacy = tmp.path().join("Microsoft_Base Application_26.0.0.0.app");
         std::fs::write(
             &legacy,
             valid_app_bytes_with_identity(

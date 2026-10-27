@@ -33,8 +33,8 @@ stage_02() {
   echo "${route:-none}" > "$OUT/$s/route.txt"
   record "$s" route PASS "symbols route: ${route:-none}"
 
-  # The NuGet route names files Microsoft_System Application_<ver>.app (space kept), the server route
-  # names them Microsoft_System_Application_<ver>.app (underscores, version taken from app.json). Accept both.
+  # Both routes name files <Publisher>_<Name>_<ver>.app with the spaces kept, like Microsoft's client.
+  # A file with underscores for the spaces is the old server-route name and is flagged below.
   local pkg found under route_names=""
   for pkg in System "System Application" "Base Application" Application; do
     under="${pkg// /_}"
@@ -48,7 +48,7 @@ stage_02() {
     [[ "$pkg" == "Base Application" && -n "$found" ]] && base="$found"
   done
   if [[ "$route_names" == underscore ]]; then
-    record "$s" pkg.naming NIGGLE "the server route writes Microsoft_System_Application_<ver>.app, the NuGet route writes Microsoft_System Application_<ver>.app: the two routes name files differently"
+    record "$s" pkg.naming FAIL "a route wrote Microsoft_System_Application_<ver>.app, Microsoft names these Microsoft_System Application_<ver>.app with the spaces kept"
   fi
   if [[ -n "${base:-}" ]]; then
     local real fname
