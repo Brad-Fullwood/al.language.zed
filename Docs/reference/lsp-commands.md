@@ -7,9 +7,9 @@ Quick lookup for the native language server (`al-lsp --stdio`). Behavior is docu
 
 `textDocument/`: `hover`, `completion`, `definition`, `implementation`, `references`,
 `documentSymbol`, `formatting`, `rangeFormatting`, `foldingRange`, `rename`, `prepareRename`,
-`semanticTokens/full`, `signatureHelp`, `codeAction`, `codeLens`, `inlayHint`, `diagnostic` (pull),
+`semanticTokens/full`, `signatureHelp`, `codeAction`, `codeLens`, `inlayHint`, `diagnostic` (pull, handled but not advertised),
 plus the document lifecycle (`didOpen`, `didChange`, `didClose`, `didSave`). `workspace/`: `symbol`,
-`diagnostic`, `executeCommand`, `didChangeConfiguration`, `didChangeWatchedFiles`. Lifecycle:
+`diagnostic` (handled but not advertised), `executeCommand`, `didChangeConfiguration`, `didChangeWatchedFiles`. Lifecycle:
 `initialize`, `initialized`, `shutdown`. On `initialized` the server registers file watchers for
 `**/*.al`, `**/app.json`, `**/.zed/debug.json` and `**/.vscode/launch.json` when the client
 supports dynamic registration of `workspace/didChangeWatchedFiles`. The handler re-reads `.al`
