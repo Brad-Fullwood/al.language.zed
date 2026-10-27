@@ -99,6 +99,21 @@ mod tests {
         w.finish().unwrap().into_inner()
     }
 
+    /// The zip a CDX Sandbox returned for a sampling profile with web service
+    /// activity (2026-10-27). The server sent no ETag and the profile was
+    /// `{"kind":1}`, an empty profile.
+    #[tokio::test]
+    async fn recorded_cdx_sampling_zip_yields_its_alcpuprofile() {
+        let bytes = include_bytes!("../../tests/fixtures/cdx-sampling-profile-empty.zip").to_vec();
+        let ctx = "468b5f81-7e1f-46ea-9827-9c5a5cef4728";
+        let dir = tempfile::tempdir().unwrap();
+        let saved = save_finished_snapshot(dir.path(), ctx, bytes, true)
+            .await
+            .unwrap();
+        let profile = saved.cpu_profile.expect("entry extracted");
+        assert_eq!(std::fs::read_to_string(profile).unwrap(), "{\"kind\":1}");
+    }
+
     #[tokio::test]
     async fn save_finished_snapshot_writes_zip_and_extracts_profile() {
         let dir = tempfile::tempdir().unwrap();

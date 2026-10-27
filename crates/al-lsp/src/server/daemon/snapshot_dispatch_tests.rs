@@ -861,6 +861,27 @@ async fn profile_status_and_stop_extract_the_alcpuprofile_from_the_zip() {
     assert!(PathBuf::from(stop["zipPath"].as_str().unwrap()).exists());
 }
 
+/// The CDX Sandbox sends no ETag on finish (recorded 2026-10-27), so a sampling
+/// profile is recognised from the session record.
+#[tokio::test]
+async fn profile_stop_extracts_the_alcpuprofile_when_the_server_sends_no_etag() {
+    let env = env().await;
+    mock_metadata(&env, "3.0").await;
+    mock_attach(&env, "UserSession").await;
+    let context = profiling_ok(&env, profile_start_params(json!({}))).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    mock_op(
+        &env,
+        "finish",
+        ResponseTemplate::new(200).set_body_bytes(profile_zip(&context, Some(".alcpuprofile"))),
+    )
+    .await;
+    let stop = profiling_ok(&env, json!({ "cmd": "stop", "accessToken": TOKEN })).await;
+    assert!(stop["profilePath"].is_string(), "{stop}");
+}
+
 #[tokio::test]
 async fn profile_stop_keeps_a_zip_without_the_profile_entry_and_reports_an_empty_body() {
     let env = env().await;
