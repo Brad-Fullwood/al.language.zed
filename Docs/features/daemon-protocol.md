@@ -86,7 +86,7 @@ path uses LSP handlers directly and does not go through the daemon. See
     daemon, and deleted git worktrees left the most daemons running. The second poll keeps a
     momentary filesystem failure from stopping a live daemon.
 - **Memory:** `status` reports `memory.residentBytes` and `memory.peakResidentBytes`, and
-  `diag/summary` the same pair under `process`. These are what the operating system sees, which is
+  `diag` with `{"cmd":"summary"}` the same pair under `process`. These are what the operating system sees, which is
   the number that decides whether a daemon is worth restarting. The per-structure totals beside
   them count only allocations the workspace owns. Current resident size comes from `/proc/self/status`
   on Linux and is null elsewhere. The peak comes from `getrusage` on every Unix.
