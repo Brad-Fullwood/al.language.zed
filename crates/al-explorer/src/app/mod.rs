@@ -75,6 +75,10 @@ pub(crate) struct App {
     // Human-readable init state shown in the object browser while loading,
     // or the error if init failed.
     pub(crate) init_status: Option<String>,
+    // Last daemon notice from al-protocol (for example a daemon replaced
+    // because it was built from other code). Shown in the objects pane title
+    // and under the loading status.
+    pub(crate) daemon_notice: Option<String>,
 
     // Project root resolved once at startup. Subsequent code paths must use
     // this field rather than calling current_dir() again — the user can `cd`
@@ -113,6 +117,7 @@ impl App {
             daemon_client: None,
             init_rx: None,
             init_status: None,
+            daemon_notice: None,
             project_root,
         }
     }
@@ -181,6 +186,9 @@ impl App {
     /// event loop. Populates the browser on success, records the error on
     /// failure (shown in the objects pane).
     pub(crate) fn poll_init(&mut self) {
+        if let Some(notice) = crate::tui::take_daemon_notice() {
+            self.daemon_notice = Some(notice);
+        }
         let Some(rx) = self.init_rx.as_ref() else {
             return;
         };

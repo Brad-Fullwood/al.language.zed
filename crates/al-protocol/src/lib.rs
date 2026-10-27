@@ -13,6 +13,8 @@ pub mod jsonrpc;
 pub mod methods;
 pub mod socket;
 
-pub use client::{wait_for_endpoint_closed, DaemonClient};
+pub use client::{
+    notice_sink_is_set, set_notice_sink, wait_for_endpoint_closed, DaemonClient, NoticeSink,
+};
 pub use identity::BuildIdentity;
 pub use socket::{socket_path, socket_path_with_runtime_dir};
