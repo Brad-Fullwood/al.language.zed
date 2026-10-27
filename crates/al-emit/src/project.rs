@@ -176,12 +176,31 @@ fn parse_external_symbols(package_paths: &[PathBuf]) -> Result<ExternalSymbols, 
             .insert(pkg.app_id.trim_matches(['{', '}']).to_lowercase());
         for obj in &pkg.objects {
             ext.object_kinds.insert((obj.kind, obj.name.to_lowercase()));
-            ext.resolver
-                .entry(obj.name.to_lowercase())
-                .or_insert_with(|| ObjectRef {
-                    id: obj.id,
-                    module_id: Some(pkg.app_id.clone()),
-                });
+            // The resolver answers "which app declares this object", for
+            // `TargetObject`, `Subtype.ModuleId` and referenced ids. An
+            // extension is named independently of its target and often
+            // repeats it ("Customer Card" extends "Customer Card"), and no AL
+            // reference names an extension, so only declaring kinds register.
+            // Otherwise a dependency's extension, met first in package order,
+            // takes the Base Application's name (emitter-02).
+            let declares_name = !matches!(
+                obj.kind,
+                ObjectKind::TableExtension
+                    | ObjectKind::PageExtension
+                    | ObjectKind::ReportExtension
+                    | ObjectKind::EnumExtension
+                    | ObjectKind::PermissionSetExtension
+                    | ObjectKind::ProfileExtension
+                    | ObjectKind::PageCustomization
+            );
+            if declares_name {
+                ext.resolver
+                    .entry(obj.name.to_lowercase())
+                    .or_insert_with(|| ObjectRef {
+                        id: obj.id,
+                        module_id: Some(pkg.app_id.clone()),
+                    });
+            }
             if obj.kind == ObjectKind::Table {
                 table_id_to_name
                     .entry(obj.id)
