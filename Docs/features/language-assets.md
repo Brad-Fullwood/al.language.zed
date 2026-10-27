@@ -58,6 +58,7 @@ same operations are also available without `PATH` through LSP commands (`al.down
 - `snippets/al.json`: 78 AL code snippets with tab stops: procedures, triggers, events and event
   subscribers, control flow (if/case/for/foreach/while/repeat), assertions, `with…do`, error handling,
   test attributes, integration/business events, test setup/teardown.
+  Zed offers them from this file. al-lsp does not send snippet completion items.
 - `snippets/json.json`: launch/attach debug configurations for on-premises and cloud Business
   Central environments. Every emitted field is checked against `debug_adapter_schemas/al.json`.
 

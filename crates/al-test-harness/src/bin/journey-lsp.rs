@@ -321,14 +321,32 @@ async fn run(project: PathBuf, out: PathBuf) {
         .filter(|i| is_snippet(i))
         .filter_map(|i| i["label"].as_str().map(str::to_string))
         .collect();
-    if snippets_here + snippets_obj.len() > 0 {
+    // Snippets are shipped as the extension's snippets/al.json (Docs/features/language-assets.md),
+    // which Zed offers itself. al-lsp serves no snippet items, so the row checks the file and
+    // reports any snippet-format items the server did send.
+    let snippet_file =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../snippets/al.json");
+    let parsed: Option<Value> = std::fs::read_to_string(&snippet_file)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok());
+    let prefixes: Vec<String> = parsed
+        .as_ref()
+        .and_then(Value::as_object)
+        .map(|o| {
+            o.values()
+                .filter_map(|v| v["prefix"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    if prefixes.iter().any(|p| p == "tprocedure") {
         r.line(
             "PASS",
             "lsp.snippets",
             format!(
-                "{snippets_here} snippet items in a body, {} at object level (e.g. {:?}), {dur2} ms",
-                snippets_obj.len(),
-                snippets_obj.iter().take(3).collect::<Vec<_>>()
+                "snippets/al.json defines {} snippets incl. tprocedure (Zed serves them, the server sends {} snippet items in a body and {} at object level, {dur2} ms)",
+                prefixes.len(),
+                snippets_here,
+                snippets_obj.len()
             ),
         );
     } else {
@@ -336,9 +354,9 @@ async fn run(project: PathBuf, out: PathBuf) {
             "FAIL",
             "lsp.snippets",
             format!(
-                "no completion item is a snippet (insertTextFormat 2 or kind 15) ({} items in body, {} at object level)",
-                items.len(),
-                items2.len()
+                "snippets/al.json missing or has no tprocedure snippet ({} prefixes read from {})",
+                prefixes.len(),
+                snippet_file.display()
             ),
         );
     }
