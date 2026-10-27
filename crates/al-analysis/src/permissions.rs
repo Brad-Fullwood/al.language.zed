@@ -153,10 +153,46 @@ pub fn render_al(entries: &[PermissionEntry], id: i64, name: &str) -> String {
 /// AL writes a literal `"` inside a quoted identifier as `""`.
 pub(crate) use al_project::scaffold::al_escape_name;
 
-/// Render a permission set as the XML the BC dev tools import.
+/// The longest RoleID Business Central accepts in a permission set XML file.
+/// A longer one fails schema validation (Microsoft Learn, "Export permission
+/// sets to XML"), so [`render_xml`] refuses it.
+pub const MAX_ROLE_ID_CHARS: usize = 20;
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum PermissionXmlError {
+    #[error(
+        "role id '{role_id}' is {len} characters, Business Central allows at most \
+         {MAX_ROLE_ID_CHARS} in a permission set XML file"
+    )]
+    RoleIdTooLong { role_id: String, len: usize },
+}
+
+/// Render a permission set as the XML file Microsoft's AL command "Generate
+/// permission set as XML file containing current extension objects" writes.
 ///
-/// Takes (entries, id, name) to match [`render_al`].
-pub fn render_xml(entries: &[PermissionEntry], role_id: &str, role_name: &str) -> String {
+/// Takes (entries, id, name) to match [`render_al`]. The layout follows
+/// `PermissionSetGenerator.GenerateXmlFile` of AL 18.1: per permission
+/// `ObjectID`, numeric `ObjectType`, the five flags, then `SecurityFilter`. A
+/// table writes a TableData row (type 0, RIMD) and a Table row (type 1, X),
+/// the defaults of `PermissionHelper.DefaultPermissions`. Rows come in
+/// Microsoft's kind order (table, codeunit, page, report, query, xmlport) and
+/// ascending object id inside a kind. Microsoft orders a kind by the order the
+/// compiler enumerates source files, which is not stable, so ids stand in.
+/// Standard route checked: no XML crate is in this crate and the file is flat,
+/// so it is written directly. Microsoft writes a UTF-8 byte order mark that
+/// this string leaves to the writer.
+pub fn render_xml(
+    entries: &[PermissionEntry],
+    role_id: &str,
+    role_name: &str,
+) -> Result<String, PermissionXmlError> {
+    let len = role_id.chars().count();
+    if len > MAX_ROLE_ID_CHARS {
+        return Err(PermissionXmlError::RoleIdTooLong {
+            role_id: role_id.to_string(),
+            len,
+        });
+    }
     let mut out = String::new();
     writeln!(out, r#"<?xml version="1.0" encoding="utf-8"?>"#).unwrap();
     writeln!(out, "<PermissionSets>").unwrap();
@@ -168,32 +204,36 @@ pub fn render_xml(entries: &[PermissionEntry], role_id: &str, role_name: &str) -
     )
     .unwrap();
 
+    let mut rows: Vec<XmlRow> = Vec::new();
     for e in entries {
-        writeln!(out, "    <Permission>").unwrap();
-        writeln!(
-            out,
-            "      <ObjectType>{}</ObjectType>",
-            xml_object_type(&e.object_type)
-        )
-        .unwrap();
-        if let Some(id) = e.object_id {
-            writeln!(out, "      <ObjectID>{id}</ObjectID>").unwrap();
-        } else {
-            writeln!(out, "      <ObjectID>0</ObjectID>").unwrap();
+        let Some(kind_rank) = xml_kind_rank(&e.object_type) else {
+            continue;
+        };
+        let id = e.object_id.unwrap_or(0);
+        let number = xml_object_type(&e.object_type);
+        rows.push((kind_rank, id, number, xml_permission_flags(&e.permissions)));
+        if number == XML_TABLE_DATA {
+            rows.push((kind_rank, id, XML_TABLE, (0, 0, 0, 0, 1)));
         }
+    }
+    rows.sort_by_key(|(rank, id, number, _)| (*rank, *id, *number));
 
-        let (r, i, m, d, x) = xml_permission_flags(&e.permissions);
+    for (_, id, number, (r, i, m, d, x)) in rows {
+        writeln!(out, "    <Permission>").unwrap();
+        writeln!(out, "      <ObjectID>{id}</ObjectID>").unwrap();
+        writeln!(out, "      <ObjectType>{number}</ObjectType>").unwrap();
         writeln!(out, "      <ReadPermission>{r}</ReadPermission>").unwrap();
         writeln!(out, "      <InsertPermission>{i}</InsertPermission>").unwrap();
         writeln!(out, "      <ModifyPermission>{m}</ModifyPermission>").unwrap();
         writeln!(out, "      <DeletePermission>{d}</DeletePermission>").unwrap();
         writeln!(out, "      <ExecutePermission>{x}</ExecutePermission>").unwrap();
+        writeln!(out, "      <SecurityFilter />").unwrap();
         writeln!(out, "    </Permission>").unwrap();
     }
 
     writeln!(out, "  </PermissionSet>").unwrap();
     writeln!(out, "</PermissionSets>").unwrap();
-    out
+    Ok(out)
 }
 
 fn permission_for_kind(kind: &str) -> Option<(&'static str, &'static str)> {
@@ -221,21 +261,41 @@ fn xml_escape_attr(s: &str) -> String {
     out
 }
 
-/// Convert an internal permission type (e.g. `"tabledata"`, `"page"`) to the BC
-/// permission-set XML `ObjectType` schema name (e.g. `"TableData"`, `"Page"`).
-/// The XML names are fixed BC schema constants — not AL keywords — but the *set*
-/// of permission types that must be covered is an AL language fact, verified
-/// against `language_data` by the `xml_object_type_covers_*` test so a new
-/// permission type can't silently fall through to a schema-invalid lowercase name.
-fn xml_object_type(perm_type: &str) -> &str {
+/// (kind rank, object id, object type number, R/I/M/D/X flags)
+type XmlRow = (u8, i64, u8, (u8, u8, u8, u8, u8));
+
+const XML_TABLE_DATA: u8 = 0;
+const XML_TABLE: u8 = 1;
+
+/// The BC `PermissionObjectType` number for an internal permission type:
+/// TableData 0, Table 1, Report 3, Codeunit 5, XMLport 6, Page 8, Query 9
+/// (Microsoft Learn, "Export permission sets to XML"). The *set* of permission
+/// types that must be covered is an AL language fact, verified against
+/// `language_data` by the `xml_object_type_covers_*` test so a new permission
+/// type cannot silently fall through to the wrong number.
+fn xml_object_type(perm_type: &str) -> u8 {
     match perm_type {
-        "tabledata" => "TableData",
-        "page" => "Page",
-        "codeunit" => "Codeunit",
-        "report" => "Report",
-        "xmlport" => "XMLport",
-        "query" => "Query",
-        other => other,
+        "tabledata" => XML_TABLE_DATA,
+        "report" => 3,
+        "codeunit" => 5,
+        "xmlport" => 6,
+        "page" => 8,
+        "query" => 9,
+        _ => u8::MAX,
+    }
+}
+
+/// Position of an object kind in Microsoft's output: table, codeunit, page,
+/// report, query, xmlport (observed from the AL 18.1 language server).
+fn xml_kind_rank(perm_type: &str) -> Option<u8> {
+    match perm_type {
+        "tabledata" => Some(0),
+        "codeunit" => Some(1),
+        "page" => Some(2),
+        "report" => Some(3),
+        "query" => Some(4),
+        "xmlport" => Some(5),
+        _ => None,
     }
 }
 
@@ -277,21 +337,21 @@ mod tests {
     #[test]
     fn xml_object_type_covers_every_permission_type_in_language_data() {
         // Data-driven completeness guard: every permission_type language_data
-        // declares must map to a CamelCase BC schema name. A new permission_type
+        // declares must map to a BC object type number. A new permission_type
         // added to the data without a mapping here fails this test instead of
-        // emitting a lowercase, schema-invalid <Object Type="..."> in the XML.
+        // emitting a row with no valid ObjectType in the XML.
         for ot in al_syntax::language_data::object_types() {
             let Some(pt) = ot.permission_type.as_deref() else {
                 continue;
             };
-            let xml = xml_object_type(pt);
             assert_ne!(
-                xml, pt,
+                xml_object_type(pt),
+                u8::MAX,
                 "permission_type '{pt}' falls through xml_object_type unmapped"
             );
             assert!(
-                xml.chars().next().is_some_and(|c| c.is_ascii_uppercase()),
-                "xml_object_type('{pt}') = '{xml}' must be a CamelCase BC schema name"
+                xml_kind_rank(pt).is_some(),
+                "permission_type '{pt}' has no place in Microsoft's kind order"
             );
         }
     }
@@ -477,25 +537,31 @@ mod tests {
             },
         ];
 
-        let output = render_xml(&entries, "MY EXT", "My Extension Permissions");
+        let output = render_xml(&entries, "MY EXT", "My Extension Permissions").unwrap();
 
-        assert!(output.contains(r#"<?xml version="1.0" encoding="utf-8"?>"#));
         assert!(output.contains(r#"RoleID="MY EXT""#));
         assert!(output.contains(r#"RoleName="My Extension Permissions""#));
-        assert!(output.contains("<ObjectType>TableData</ObjectType>"));
-        assert!(output.contains("<ObjectID>50100</ObjectID>"));
-        assert!(output.contains("<ReadPermission>1</ReadPermission>"));
-        assert!(output.contains("<InsertPermission>1</InsertPermission>"));
-        assert!(output.contains("<ModifyPermission>1</ModifyPermission>"));
-        assert!(output.contains("<DeletePermission>1</DeletePermission>"));
-        assert!(output.contains("<ObjectType>Codeunit</ObjectType>"));
-        assert!(output.contains("<ObjectID>50101</ObjectID>"));
-        assert!(output.contains("<ExecutePermission>1</ExecutePermission>"));
+        // Table row: TableData (0) RIMD, then Table (1) X, then the codeunit (5).
+        let squashed: String = output.split_whitespace().collect();
+        let expected_rows = [
+            "<ObjectID>50100</ObjectID><ObjectType>0</ObjectType><ReadPermission>1</ReadPermission><InsertPermission>1</InsertPermission><ModifyPermission>1</ModifyPermission><DeletePermission>1</DeletePermission><ExecutePermission>0</ExecutePermission><SecurityFilter/>",
+            "<ObjectID>50100</ObjectID><ObjectType>1</ObjectType><ReadPermission>0</ReadPermission><InsertPermission>0</InsertPermission><ModifyPermission>0</ModifyPermission><DeletePermission>0</DeletePermission><ExecutePermission>1</ExecutePermission><SecurityFilter/>",
+            "<ObjectID>50101</ObjectID><ObjectType>5</ObjectType><ReadPermission>0</ReadPermission><InsertPermission>0</InsertPermission><ModifyPermission>0</ModifyPermission><DeletePermission>0</DeletePermission><ExecutePermission>1</ExecutePermission><SecurityFilter/>",
+        ]
+        .join("</Permission><Permission>");
+        assert!(squashed.contains(&expected_rows), "{output}");
+    }
+
+    #[test]
+    fn render_xml_refuses_a_role_id_over_twenty_characters() {
+        let error = render_xml(&[], "THIS_ROLE_ID_IS_FAR_TOO_LONG_FOR_BC", "X").unwrap_err();
+        assert!(error.to_string().contains("at most 20"), "{error}");
+        assert!(render_xml(&[], "EXACTLY_TWENTY_CHARS", "X").is_ok());
     }
 
     #[test]
     fn render_xml_empty_entries() {
-        let output = render_xml(&[], "EMPTY", "Empty");
+        let output = render_xml(&[], "EMPTY", "Empty").unwrap();
         assert!(output.contains(r#"<?xml version="1.0" encoding="utf-8"?>"#));
         assert!(output.contains(r#"RoleID="EMPTY""#));
     }
@@ -513,7 +579,7 @@ mod tests {
 
     #[test]
     fn render_xml_escapes_role_id_and_name() {
-        let output = render_xml(&[], "A&B", "Name \"Quoted\" <Here>");
+        let output = render_xml(&[], "A&B", "Name \"Quoted\" <Here>").unwrap();
         assert!(output.contains(r#"RoleID="A&amp;B""#));
         assert!(output.contains(r#"RoleName="Name &quot;Quoted&quot; &lt;Here&gt;""#));
     }

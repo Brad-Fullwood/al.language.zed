@@ -86,10 +86,12 @@ pub(in crate::server::daemon) fn dispatch_permissions(
         .collect();
 
     let (format_name, output) = match format {
-        "xml" => (
-            "xml",
-            al_analysis::permissions::render_xml(&entries, role_id, name),
-        ),
+        "xml" => match al_analysis::permissions::render_xml(&entries, role_id, name) {
+            Ok(xml) => ("xml", xml),
+            Err(error) => {
+                return rpc_error(id, error_codes::INVALID_PARAMS, &error.to_string());
+            }
+        },
         _ => (
             "al",
             al_analysis::permissions::render_al(&entries, perm_id, name),

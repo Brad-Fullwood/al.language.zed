@@ -50,8 +50,14 @@ Scans the workspace for object declarations and renders a permission set, mappin
 permission: tables → `tabledata "Name" = RIMD`. Pages/codeunits/reports/xmlports/queries →
 `type "Name" = X` (Execute). Extension objects and non-permissioned objects (enum, interface,
 profile…) are skipped. Output is **AL** (`permissionset <id> "Name" { Assignable = true, Permissions
-= … }`) or **XML** (BC permission-set schema), with proper AL/XML escaping and deterministic ordering
-(sorted by type then name).
+= … }`) or **XML**. The AL output is sorted by type then name. The XML follows the file Microsoft's
+AL command "Generate permission set as XML file containing current extension objects" writes
+(`al/generatePermissionSet` of AL 18.1): `ObjectID`, numeric `ObjectType`, the five flags, an empty
+`SecurityFilter`, a TableData row (0, RIMD) and a Table row (1, X) per table, and the kinds in
+Microsoft's order. Within a kind the ids ascend, where Microsoft follows source file order. A
+RoleID over 20 characters is refused, as BC's schema allows 20. A test compares the full file with one
+the real language server wrote for a synthetic project. The UTF-8 byte order mark Microsoft writes is
+not added, and importing the file into Business Central was not tried.
 
 ## Shell completion generation
 
