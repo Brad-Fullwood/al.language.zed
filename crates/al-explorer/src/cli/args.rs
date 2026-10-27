@@ -476,6 +476,11 @@ Examples:
         /// Subcommand: login (default), status, clear
         #[arg(value_enum, default_value_t = AuthenticateCommand::Login)]
         cmd: AuthenticateCommand,
+        /// Sign in with a device code only. The code and URL are printed to
+        /// stderr and no browser is opened, which suits SSH, CI and remote
+        /// hosts. Applies to `login`.
+        #[arg(long)]
+        device_code: bool,
     },
     /// Trace event propagation chain
     Trace {

@@ -61,6 +61,45 @@ pub async fn acquire_token(
     tenant: &str,
     on_message: impl Fn(&str),
 ) -> Result<String, OAuthError> {
+    acquire_token_with_mode(client, tenant, SignInMode::Auto, on_message).await
+}
+
+/// How an interactive sign-in is started when no cached token works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignInMode {
+    /// Browser with a localhost redirect first, device code if that fails.
+    Auto,
+    /// Device code only. No browser is opened, so it works on a headless host.
+    /// Microsoft's AL client also defaults to device code
+    /// (AccessTokenManager.cs:131).
+    DeviceCode,
+}
+
+/// [`acquire_token_with_mode`] for synchronous callers such as the CLI: builds
+/// its own HTTP client and a current-thread runtime.
+pub fn acquire_token_blocking(
+    tenant: &str,
+    mode: SignInMode,
+    on_message: impl Fn(&str),
+) -> Result<String, OAuthError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(acquire_token_with_mode(
+        &reqwest::Client::new(),
+        tenant,
+        mode,
+        on_message,
+    ))
+}
+
+/// [`acquire_token`] with an explicit sign-in mode.
+pub async fn acquire_token_with_mode(
+    client: &reqwest::Client,
+    tenant: &str,
+    mode: SignInMode,
+    on_message: impl Fn(&str),
+) -> Result<String, OAuthError> {
     // Reject obviously-malformed tenants before interpolating into the OAuth
     // URLs. A typical tenant is a GUID, an `*.onmicrosoft.com` domain, or one
     // of the well-known reserved names. Anything else — slashes, query
@@ -100,7 +139,7 @@ pub async fn acquire_token(
         }
     }
 
-    let tok = interactive_sign_in(client, tenant, &client_id, &on_message).await?;
+    let tok = interactive_sign_in(client, tenant, &client_id, mode, &on_message).await?;
     save_cached_token(&cache_path, tenant, &tok);
     info!(tenant, "Acquired BC access token");
     // Clone so `tok` drops intact (Drop scrubs the secrets).
@@ -133,8 +172,12 @@ pub(super) async fn interactive_sign_in(
     client: &reqwest::Client,
     tenant: &str,
     client_id: &str,
+    mode: SignInMode,
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
+    if mode == SignInMode::DeviceCode {
+        return device_code_flow(client, tenant, client_id, false, on_message).await;
+    }
     match browser_auth_flow(client, tenant, client_id, on_message).await {
         Ok(tok) => return Ok(tok),
         Err(e) => {
@@ -143,7 +186,7 @@ pub(super) async fn interactive_sign_in(
         }
     }
 
-    device_code_flow(client, tenant, client_id, on_message).await
+    device_code_flow(client, tenant, client_id, true, on_message).await
 }
 
 pub(super) async fn browser_auth_flow(
@@ -236,10 +279,30 @@ struct TokenErrorResponse {
     error_description: String,
 }
 
+/// The text shown to the user for a device code. With `open_window` false the
+/// text never claims a browser was opened.
+fn device_code_prompt(dc: &DeviceCodeResponse, open_window: bool) -> String {
+    match (&dc.verification_uri_complete, open_window) {
+        (Some(_), true) => format!(
+            "Browser opened for sign-in. Code {} is pre-filled, just click Continue and sign in.",
+            dc.user_code
+        ),
+        (Some(uri), false) => format!(
+            "Open {uri} and sign in. The code {} is pre-filled.",
+            dc.user_code
+        ),
+        (None, _) => format!(
+            "Open {} and enter code: {}",
+            dc.verification_uri, dc.user_code
+        ),
+    }
+}
+
 pub(super) async fn device_code_flow(
     client: &reqwest::Client,
     tenant: &str,
     client_id: &str,
+    open_window: bool,
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
     let device_url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/devicecode");
@@ -253,19 +316,14 @@ pub(super) async fn device_code_flow(
         .json()
         .await?;
 
-    if let Some(ref uri) = dc.verification_uri_complete {
+    if open_window {
+        let uri = dc
+            .verification_uri_complete
+            .as_deref()
+            .unwrap_or(&dc.verification_uri);
         open_browser(uri);
-        on_message(&format!(
-            "Browser opened for sign-in. Code {} is pre-filled — just click Continue and sign in.",
-            dc.user_code
-        ));
-    } else {
-        open_browser(&dc.verification_uri);
-        on_message(&format!(
-            "Open {} and enter code: {}",
-            dc.verification_uri, dc.user_code
-        ));
     }
+    on_message(&device_code_prompt(&dc, open_window));
 
     // `expires_in` / `interval` are server-controlled. Clamp both before they
     // reach `SystemTime::add` / `tokio::time::sleep`: `SystemTime + Duration`
@@ -389,6 +447,47 @@ pub(super) fn parse_token_error<T>(body: &str) -> Result<T, OAuthError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn device_code(complete: Option<&str>) -> DeviceCodeResponse {
+        DeviceCodeResponse {
+            device_code: "opaque".into(),
+            user_code: "ABCD1234".into(),
+            verification_uri: "https://login.microsoft.com/device".into(),
+            verification_uri_complete: complete.map(str::to_string),
+            expires_in: 900,
+            interval: 5,
+        }
+    }
+
+    #[test]
+    fn device_prompt_names_the_url_and_code_when_no_window_is_opened() {
+        let text = device_code_prompt(&device_code(None), false);
+        assert!(
+            text.contains("https://login.microsoft.com/device"),
+            "{text}"
+        );
+        assert!(text.contains("ABCD1234"), "{text}");
+        assert!(!text.contains("Browser opened"), "{text}");
+    }
+
+    #[test]
+    fn device_prompt_with_complete_uri_does_not_claim_a_browser_on_a_headless_host() {
+        let text = device_code_prompt(&device_code(Some("https://x/d?otc=1")), false);
+        assert!(text.contains("https://x/d?otc=1"), "{text}");
+        assert!(!text.contains("Browser opened"), "{text}");
+    }
+
+    #[test]
+    fn announce_writes_the_device_code_line_to_the_writer() {
+        let mut out = Vec::new();
+        let text = device_code_prompt(&device_code(None), false);
+        crate::oauth::announce_to(&mut out, &text);
+        let written = String::from_utf8(out).unwrap();
+        assert!(
+            written.contains("ABCD1234") && written.ends_with('\n'),
+            "{written}"
+        );
+    }
 
     #[test]
     fn slow_down_interval_bumps_by_five_seconds() {

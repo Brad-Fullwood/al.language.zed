@@ -316,14 +316,19 @@ pub fn cmd_fix(file: Option<&str>, dry_run: bool, rule: Option<&str>, json: bool
     }
 }
 
-pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode {
+pub fn cmd_authenticate(
+    cmd: &str,
+    tenant: Option<&str>,
+    json: bool,
+    device_code: bool,
+) -> ExitCode {
     let mut client = match connect(None) {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
 
     if cmd == "login" {
-        client.set_request_timeout(std::time::Duration::from_secs(120));
+        return login_in_process(&mut client, tenant, json, device_code);
     }
 
     let mut params = serde_json::json!({ "cmd": cmd });
@@ -360,6 +365,74 @@ pub fn cmd_authenticate(cmd: &str, tenant: Option<&str>, json: bool) -> ExitCode
             }
         }
         Err(e) => report_error(&e, json),
+    }
+}
+
+/// `authenticate login` runs the sign-in in this process. The daemon answers
+/// one request with one response, so a device code it printed would reach the
+/// user only after the flow ended. Here the prompt goes to stderr as it arrives.
+/// The token cache is shared on disk (or the keyring), so the daemon finds the
+/// token afterwards. The daemon is asked only for the project's tenants.
+fn login_in_process(
+    client: &mut DaemonClient,
+    tenant: Option<&str>,
+    json: bool,
+    device_code: bool,
+) -> ExitCode {
+    let tenant = match tenant {
+        Some(t) => t.to_string(),
+        None => {
+            let status = request_checked(
+                client,
+                "authenticate",
+                Some(serde_json::json!({ "cmd": "status" })),
+            );
+            let first = status.ok().and_then(|v| {
+                v.get("tenants")?
+                    .as_array()?
+                    .first()?
+                    .get("tenant")?
+                    .as_str()
+                    .map(str::to_string)
+            });
+            match first {
+                Some(t) => t,
+                None => {
+                    return report_error(
+                        "No tenant found. Specify --tenant or configure a launch config with a tenant.",
+                        json,
+                    );
+                }
+            }
+        }
+    };
+    let mode = if device_code {
+        al_symbols::oauth::SignInMode::DeviceCode
+    } else {
+        al_symbols::oauth::SignInMode::Auto
+    };
+    let messages = std::sync::Mutex::new(Vec::<String>::new());
+    let result = al_symbols::oauth::acquire_token_blocking(&tenant, mode, |msg| {
+        al_symbols::oauth::announce(&terminal_text(msg));
+        if let Ok(mut guard) = messages.lock() {
+            guard.push(msg.to_string());
+        }
+    });
+    match result {
+        Ok(_token) => {
+            let result = serde_json::json!({
+                "status": "authenticated",
+                "tenant": tenant,
+                "messages": messages.into_inner().unwrap_or_default(),
+            });
+            if json {
+                print_json(&result);
+            } else {
+                eprintln!("Authenticated to tenant {tenant}.");
+            }
+            ExitCode::SUCCESS
+        }
+        Err(e) => report_error(&format!("Authentication failed: {e}"), json),
     }
 }
 

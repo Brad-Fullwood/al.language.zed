@@ -427,7 +427,9 @@ async fn run() {
                     None => {
                         let client = reqwest::Client::new();
                         al_symbols::oauth::acquire_token(&client, &tenant, |msg| {
-                            tracing::info!("{msg}");
+                            // stderr, so the device code shows in the editor's
+                            // adapter log (stdout carries the DAP stream).
+                            al_symbols::oauth::announce(msg);
                         })
                         .await
                         .map_err(|e| e.to_string())

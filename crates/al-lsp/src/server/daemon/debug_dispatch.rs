@@ -352,6 +352,7 @@ pub(super) async fn acquire_bc_token(
             let client = reqwest::Client::new();
             al_symbols::oauth::acquire_token(&client, &config.tenant, |message| {
                 tracing::info!("Business Central authentication: {message}");
+                al_symbols::oauth::announce(message);
             })
             .await
             .map_err(|error| {

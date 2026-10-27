@@ -181,6 +181,7 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
                     guard.push(msg.to_string());
                 }
                 tracing::info!("{msg}");
+                al_symbols::oauth::announce(msg);
             })
             .await
             {
