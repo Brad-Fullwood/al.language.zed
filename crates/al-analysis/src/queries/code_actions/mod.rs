@@ -235,6 +235,16 @@ pub fn quick_fix_for_diagnostic(
         });
     }
 
+    if diag.code.as_deref() == Some(al_syntax::ALC_MISSING_SEMICOLON_CODE) {
+        let edit = missing_semicolon_edit(text, diag)?;
+        return Some(CodeActionEntry {
+            title: "Add missing ';'".to_string(),
+            kind: CodeActionKind::QuickFix,
+            edit: Some(single_edit_ws(uri, vec![edit])),
+            is_preferred: true,
+        });
+    }
+
     let (title, property) = match diag.code.as_deref()? {
         "AL-NL002" => (
             "Add DataClassification = CustomerContent",
@@ -249,6 +259,40 @@ pub fn quick_fix_for_diagnostic(
         kind: CodeActionKind::QuickFix,
         edit: Some(single_edit_ws(uri, vec![edit])),
         is_preferred: true,
+    })
+}
+
+/// Insert `;` at the end of the token before the AL0111 error.
+///
+/// Standard route checked: Microsoft's AL extension has no code fix provider for
+/// AL0111 (no match in the decompiled tooling), so there is nothing to reuse.
+/// The edit is offered only when the native parse tree gives the same shape that
+/// produced the diagnostic, so a stale or foreign AL0111 does not get a guessed edit.
+fn missing_semicolon_edit(text: &str, diag: &DiagnosticInfo) -> Option<TextEdit> {
+    let line_start: usize = text
+        .split_inclusive('\n')
+        .take(diag.range.start.line as usize)
+        .map(str::len)
+        .sum();
+    let line = text[line_start..].split('\n').next()?;
+    let error_start =
+        line_start + al_syntax::utf16_col_to_byte_offset(line, diag.range.start.character as usize);
+    let parsed = al_syntax::AlParser::parse_quick(text);
+    let insert = al_syntax::missing_semicolon_insert_byte_at(&parsed.tree, error_start)?;
+    let before = &text[..insert];
+    let insert_line = before.matches('\n').count();
+    let insert_line_start = before.rfind('\n').map_or(0, |index| index + 1);
+    let character = before[insert_line_start..].encode_utf16().count();
+    let position = Position {
+        line: insert_line as u32,
+        character: character as u32,
+    };
+    Some(TextEdit {
+        range: Range {
+            start: position,
+            end: position,
+        },
+        new_text: ";".to_string(),
     })
 }
 
@@ -668,6 +712,61 @@ mod tests {
             message: diagnostic.message,
             code: Some(diagnostic.code),
         }
+    }
+
+    /// Fixture recorded with alc 18.1.43: journey project, `JourneyItem.Init();`
+    /// changed to `JourneyItem.Init()`. alc reported AL0111 at 8:9 to 8:20 (1 based).
+    const ALC_AL0111_ERRORLOG: &str =
+        include_str!("../../../../al-syntax/tests/fixtures/alc/semi.errorlog.json");
+    const ALC_AL0111_SOURCE: &str =
+        include_str!("../../../../al-syntax/tests/fixtures/alc/semi.al");
+
+    fn alc_al0111_diagnostic() -> DiagnosticInfo {
+        let log: serde_json::Value = serde_json::from_str(ALC_AL0111_ERRORLOG).unwrap();
+        let issue = &log["issues"][0];
+        let region = &issue["locations"][0]["analysisTarget"][0]["region"];
+        let n = |key: &str| region[key].as_u64().unwrap() as u32 - 1;
+        DiagnosticInfo {
+            range: Range {
+                start: Position {
+                    line: n("startLine"),
+                    character: n("startColumn"),
+                },
+                end: Position {
+                    line: n("endLine"),
+                    character: n("endColumn"),
+                },
+            },
+            message: issue["fullMessage"].as_str().unwrap().to_string(),
+            code: Some(issue["ruleId"].as_str().unwrap().to_string()),
+        }
+    }
+
+    #[test]
+    fn missing_semicolon_quick_fix_uses_the_recorded_alc_range() {
+        let diag = alc_al0111_diagnostic();
+        assert_eq!(diag.code.as_deref(), Some("AL0111"));
+        let edit = missing_semicolon_edit(ALC_AL0111_SOURCE, &diag).expect("edit");
+        assert_eq!(edit.new_text, ";");
+        // End of `JourneyItem.Init()` on line 7 (0 based 6), after the `)`.
+        assert_eq!(
+            edit.range.start,
+            Position {
+                line: 6,
+                character: 26
+            }
+        );
+        assert_eq!(edit.range.start, edit.range.end);
+        let fixed = apply_edit(ALC_AL0111_SOURCE, &edit);
+        assert!(fixed.contains("        JourneyItem.Init();\n"));
+        assert!(al_syntax::AlParser::parse_quick(&fixed).errors.is_empty());
+    }
+
+    #[test]
+    fn missing_semicolon_quick_fix_refuses_a_range_that_is_not_the_error() {
+        let mut diag = alc_al0111_diagnostic();
+        diag.range.start.line = 2;
+        assert!(missing_semicolon_edit(ALC_AL0111_SOURCE, &diag).is_none());
     }
 
     fn apply_edit(source: &str, edit: &TextEdit) -> String {
