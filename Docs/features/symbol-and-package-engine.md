@@ -109,6 +109,12 @@ Two download backends:
   buffering a whole package in RAM. Version resolution is numeric and deterministic. A requested
   release line never silently falls forward to an unrelated major/minor. The inner `.app` is
   size-capped, identity/version-validated against the requested dependency, and atomically published.
+  Built-in feeds, in order: `MSSymbolsV2`, `AppSourceSymbols` (the two Microsoft's client uses,
+  `NuGetPackageDownloader.cs:47,49`), then `MSApps` and the older `MSSymbols`, which are not in
+  Microsoft's list. The first feed that serves the package wins.
+  NuGet serves Microsoft and published AppSource apps. An app published only to a tenant is a 404
+  there, and the run prints which dependencies need `--source server`. The two sources can resolve
+  different builds of the same app (symbol-only package on NuGet, full package on the server).
 - **BC server (`bc_server.rs`):** GETs `/dev/packages?publisher=…&appName=…&versionText=…` with auth,
   with four-request concurrency, same-package request dedupe, bounded retry/backoff for transient
   transport/429/502/503/504 failures, and a 200 MiB streaming cap. It verifies NAVX plus manifest

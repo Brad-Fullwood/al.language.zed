@@ -1113,7 +1113,7 @@ pub(crate) fn map_nuget_feeds(
 
 /// Resolve the EFFECTIVE NuGet feed list from user config + built-in defaults
 /// Custom feeds (`al.nugetFeeds`) are tried
-/// first; the public Microsoft feeds (MSSymbols/AppSourceSymbols/MSApps)
+/// first; the public Microsoft feeds (MSSymbolsV2/AppSourceSymbols/MSApps/MSSymbols)
 /// are appended unless `al.useOnlyCustomFeeds` is set.
 ///
 /// A feed that is neither https nor http to loopback is dropped here, named in
