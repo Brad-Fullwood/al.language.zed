@@ -930,3 +930,21 @@ async fn is_alive_true_on_completion_false_on_error() {
         .unwrap();
     assert!(!session2.is_alive().await, "a server error => not alive");
 }
+
+#[tokio::test]
+async fn attach_agent_maps_to_client_service() {
+    // BreakOnNext.cs: WebServiceClient=0, WebClient=1, Background=2,
+    // ClientService=3. The VS Code client maps "Agent" to ClientService.
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    event_tx
+        .send(completion("1", Some(serde_json::json!(null)), None))
+        .await
+        .unwrap();
+    let cfg = BcDebugConfig {
+        break_on_next: Some("Agent".to_string()),
+        ..BcDebugConfig::default()
+    };
+    session.attach(&cfg).await.expect("attach ok");
+    let frame = next_frame(&mut ws_rx);
+    assert_eq!(frame["arguments"][0]["breakOnNextClient"], 3);
+}

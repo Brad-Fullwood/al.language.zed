@@ -613,7 +613,11 @@ impl BcDebugSession {
             "webclient" => 1,
             "background" => 2,
             "clientservice" => 3,
-            "agent" => 4,
+            // `Agent` exists only in the VS Code client's own enum (Agent=4).
+            // BreakOnNext.cs has four values (WebServiceClient=0 .. ClientService=3)
+            // and the Microsoft client sends ClientService for Agent
+            // (dist/extension.js: `"Agent"===r.breakOnNext&&(e=F.ClientService)`).
+            "agent" => 3,
             _ => 0, // WebServiceClient
         };
         let session_id = config
