@@ -35,7 +35,17 @@ stage_09() {
   # --- debugger: attach, breakpoint, state, history, stop ---
   if journey_try "$s" debug-start 60 debug start --config "$attach"; then
     journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 21 || true
-    if grep -q 'unverified' "$(step_log $s debug-breakpoint)"; then record "$s" breakpoint-verified NIGGLE "breakpoint stays unverified after attach: $(journey_msg "$s" debug-breakpoint)"; fi
+    # Stage 8 leaves its app installed until journey_cleanup runs before stage 10. A run of
+    # stage 9 alone has no app on the server, so an unverified breakpoint is expected there.
+    if grep -q 'unverified' "$(step_log $s debug-breakpoint)"; then
+      if [[ -z "${JOURNEY_CLEANUP_APPID:-}" ]]; then
+        record "$s" breakpoint-verified SKIP "stage 8 did not run in this invocation, the app is not installed: $(journey_msg "$s" debug-breakpoint)"
+      else
+        record "$s" breakpoint-verified NIGGLE "breakpoint stays unverified with the app installed: $(journey_msg "$s" debug-breakpoint)"
+      fi
+    else
+      record "$s" breakpoint-verified PASS "breakpoint verified on $bpfile line 21"
+    fi
     journey_try "$s" debug-state 60 debug state || true
     journey_try "$s" debug-history 60 debug history || true
   else

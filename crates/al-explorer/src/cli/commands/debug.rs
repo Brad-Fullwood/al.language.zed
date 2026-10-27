@@ -68,13 +68,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                         let bps = result.get("breakpoints").and_then(|v| v.as_array());
                         if let Some(bps) = bps {
                             for bp in bps {
-                                let bp_line = bp.get("line").and_then(|v| v.as_u64()).unwrap_or(0);
-                                let verified = bp
-                                    .get("verified")
-                                    .and_then(|v| v.as_bool())
-                                    .unwrap_or(false);
-                                let status = if verified { "verified" } else { "unverified" };
-                                println!("Breakpoint at line {bp_line}: {status}");
+                                println!("{}", breakpoint_line(bp));
                             }
                         }
                     }
@@ -528,6 +522,23 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
     }
 }
 
+/// One `debug breakpoint` result row. An unverified row carries the server's
+/// reason in `message` (journey-08).
+fn breakpoint_line(bp: &Value) -> String {
+    let line = bp.get("line").and_then(Value::as_u64).unwrap_or(0);
+    let verified = bp.get("verified").and_then(Value::as_bool).unwrap_or(false);
+    if verified {
+        return format!("Breakpoint at line {line}: verified");
+    }
+    match bp.get("message").and_then(Value::as_str) {
+        Some(_) => format!(
+            "Breakpoint at line {line}: unverified ({})",
+            text_field(bp, "message", "")
+        ),
+        None => format!("Breakpoint at line {line}: unverified"),
+    }
+}
+
 /// The string at `key` without escaping, for text escaped line by line at the print site.
 fn text_field_raw(result: &Value, key: &str) -> String {
     result
@@ -736,13 +747,26 @@ mod debug_stop_exit_code_tests {
 #[cfg(test)]
 mod terminal_text_tests {
     use super::{
-        debug_eval_line, debug_state_text, debug_step_text, hotspots_text, snapshot_sessions_text,
-        snapshot_start_text,
+        breakpoint_line, debug_eval_line, debug_state_text, debug_step_text, hotspots_text,
+        snapshot_sessions_text, snapshot_start_text,
     };
 
     const COLOURED: &str = "Bad\u{1b}[31m Name\u{1b}[0m";
     const TITLE: &str = "Sec7 Caller\u{1b}]0;pwned\u{7}";
     const CLEAR: &str = "Sec7 Tests\u{1b}[2J";
+
+    #[test]
+    fn unverified_breakpoint_prints_its_reason() {
+        let bp =
+            serde_json::json!({"line": 21, "verified": false, "message": "no object\u{1b}[31m"});
+        let text = breakpoint_line(&bp);
+        assert!(text.starts_with("Breakpoint at line 21: unverified (no object"));
+        assert!(!text.contains('\u{1b}'));
+        assert_eq!(
+            breakpoint_line(&serde_json::json!({"line": 3, "verified": true})),
+            "Breakpoint at line 3: verified"
+        );
+    }
 
     fn assert_escaped(text: &str) {
         assert!(
