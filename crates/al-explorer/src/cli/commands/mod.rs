@@ -184,7 +184,9 @@ pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
             client
         })
         .map_err(|e| {
-            if e.contains("No such file") || e.contains("Connection refused") {
+            if e.contains("no daemon was started") {
+                e
+            } else if e.contains("No such file") || e.contains("Connection refused") {
                 format!(
                     "{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}",
                     root.display()

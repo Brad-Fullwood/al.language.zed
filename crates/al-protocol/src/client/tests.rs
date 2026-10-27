@@ -276,3 +276,35 @@ mod deadline_extension_tests {
         );
     }
 }
+
+/// A fresh empty directory under the system temp dir, removed by the OS later.
+/// al-protocol has no `tempfile` dependency and a test needs only this.
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("al-protocol-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn connect_to_a_directory_without_app_json_starts_no_daemon() {
+    let dir = scratch_dir("no-app-json");
+    let error = match DaemonClient::connect(&dir) {
+        Ok(_) => panic!("connect must not succeed for a directory without app.json"),
+        Err(error) => error,
+    };
+    assert!(error.contains("no daemon was started"), "{error}");
+    assert!(error.contains("--project"), "{error}");
+    assert!(error.contains(&dir.display().to_string()), "{error}");
+    let endpoint = socket_path(&dir).expect("endpoint path");
+    assert!(connect_stream(&endpoint).is_err(), "a daemon is listening");
+}
+
+#[test]
+fn project_dir_check_accepts_a_subdirectory_of_a_project() {
+    let dir = scratch_dir("subdir");
+    std::fs::write(dir.join("app.json"), "{}").unwrap();
+    let sub = dir.join("src").join("deep");
+    std::fs::create_dir_all(&sub).unwrap();
+    assert!(require_project_dir(&sub).is_ok());
+}

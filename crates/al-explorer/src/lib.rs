@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn search_query_is_length_capped() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         for _ in 0..(MAX_INPUT_LEN + 500) {
             handle_object_browser_key(&mut app, KeyEvent::from(KeyCode::Char('a')));
         }
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn profiler_file_path_is_length_capped() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.profiler.input_focused = true;
         for _ in 0..(MAX_INPUT_LEN + 500) {
             handle_profiler_key(&mut app, KeyEvent::from(KeyCode::Char('x')));
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn event_chain_and_call_graph_queries_are_length_capped() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.event_chain.input_focused = true;
         app.call_graph.input_focused = true;
         for _ in 0..(MAX_INPUT_LEN + 100) {
@@ -265,7 +265,7 @@ mod tests {
 
     #[test]
     fn update_objects_list_empty_query_keeps_all_package_objects() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.symbols.load(vec![
             sym(ObjectKind::Table, 1, "Customer", "Base"),
             sym(ObjectKind::Codeunit, 2, "Mgt", "Base"),
@@ -283,7 +283,7 @@ mod tests {
 
     #[test]
     fn update_objects_list_filters_by_query_in_package() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.symbols.load(vec![
             sym(ObjectKind::Table, 1, "Customer", "Base"),
             sym(ObjectKind::Table, 2, "Vendor", "Base"),

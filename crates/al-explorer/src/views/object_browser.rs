@@ -526,7 +526,7 @@ mod mouse_hit_testing_tests {
 
     #[test]
     fn click_uses_the_last_rendered_area_not_live_terminal_size() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.packages = vec!["Pkg1".to_string(), "Pkg2".to_string(), "Pkg3".to_string()];
         // Simulate a render at a small, atypical area — deliberately distinct
         // from whatever the real (headless test-process) terminal size is,
@@ -553,7 +553,7 @@ mod mouse_hit_testing_tests {
 
     #[test]
     fn mouse_event_before_any_render_is_a_noop() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         assert!(app.object_browser_area.is_none());
         let event = crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -578,7 +578,7 @@ mod terminal_output_tests {
     /// a package name's escape sequence is never written to the terminal.
     #[test]
     fn a_control_character_in_a_package_name_does_not_reach_a_terminal_cell() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.packages = vec!["Pkg\u{1b}]0;pwned\u{7}\u{1b}[2J Name".to_string()];
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 30)).unwrap();

@@ -1079,6 +1079,7 @@ impl DaemonClient {
     }
 
     fn start_daemon(project_root: &Path) -> Result<std::process::Child, String> {
+        require_project_dir(project_root)?;
         let al_lsp = find_al_lsp_binary()?;
         // Windows hands every inheritable handle to a child, and this
         // process's own standard handles are inheritable when a caller
@@ -1216,6 +1217,29 @@ pub fn wait_for_endpoint_closed(endpoint: &Path, timeout: Duration) -> bool {
 /// the daemon on one build. Falling back to PATH is what let a client start a
 /// daemon weeks older than itself, silently, so a PATH binary is reported at
 /// warn level and refused when its version differs from this build's.
+/// Refuse to start a daemon for a directory outside any AL project.
+///
+/// A daemon for such a directory indexes whatever it finds there and keeps
+/// running. Test runs and shell sessions in a non-project directory left
+/// several of them behind. `al-project::find_project` is the full discovery,
+/// but al-protocol does not depend on it and the daemon only needs to know
+/// that an `app.json` exists at or above the directory, so this walks up the
+/// ancestors the same way.
+pub fn require_project_dir(project_root: &Path) -> Result<(), String> {
+    let absolute = std::path::absolute(project_root).unwrap_or_else(|_| project_root.to_path_buf());
+    if absolute
+        .ancestors()
+        .any(|dir| dir.join("app.json").is_file())
+    {
+        return Ok(());
+    }
+    Err(format!(
+        "No AL project: there is no app.json in {} or any parent directory, so no daemon was started. \
+         Run the command from an AL project directory or pass --project <dir>.",
+        absolute.display()
+    ))
+}
+
 pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
     let binary_name = format!("al-lsp{}", std::env::consts::EXE_SUFFIX);
     if let Ok(exe) = std::env::current_exe() {
