@@ -262,6 +262,11 @@ pub fn set_registry_override(path: &Path) {
 #[cfg(any(test, feature = "test-support"))]
 pub const TEST_DEMO_TENANT: &str = "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d";
 
+/// A second demo tenant in the test registry that no machine has a sign-in for,
+/// for tests that must find no cached token.
+#[cfg(any(test, feature = "test-support"))]
+pub const TEST_UNSIGNED_TENANT: &str = "0d1f5c7e-3b2a-4c6d-9e8f-1a2b3c4d5e6f";
+
 /// Write a throwaway registry with the CDX demo tenant, point the guard at it
 /// and return the CDX GUID. Safe to call from every test, it runs once.
 #[cfg(any(test, feature = "test-support"))]
@@ -271,7 +276,9 @@ pub fn install_test_registry() -> &'static str {
         let path =
             std::env::temp_dir().join(format!("al-bc-test-tenants-{}.json", std::process::id()));
         let body =
-            format!(r#"{{"tenants":{{"{TEST_DEMO_TENANT}":{{"name":"CDX","kind":"demo"}}}}}}"#);
+            format!(
+            r#"{{"tenants":{{"{TEST_DEMO_TENANT}":{{"name":"CDX","kind":"demo"}},"{TEST_UNSIGNED_TENANT}":{{"name":"Unsigned","kind":"demo"}}}}}}"#
+        );
         std::fs::write(&path, body).expect("write the test registry");
         path
     });

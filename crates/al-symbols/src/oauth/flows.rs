@@ -79,6 +79,9 @@ pub enum SignInMode {
     /// Microsoft's AL client also defaults to device code
     /// (AccessTokenManager.cs:131).
     DeviceCode,
+    /// No sign-in. The cached token and its refresh token are tried and a
+    /// failure is returned. For a background process that nobody can answer.
+    CachedOnly,
 }
 
 /// [`acquire_token_with_mode`] for synchronous callers such as the CLI: builds
@@ -203,6 +206,12 @@ pub(super) async fn interactive_sign_in(
     mode: SignInMode,
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
+    if mode == SignInMode::CachedOnly {
+        return Err(OAuthError::Other(
+            "no cached Business Central sign-in and interactive sign-in is not allowed here"
+                .to_string(),
+        ));
+    }
     if mode == SignInMode::DeviceCode {
         return device_code_flow(client, tenant, auth, false, on_message).await;
     }

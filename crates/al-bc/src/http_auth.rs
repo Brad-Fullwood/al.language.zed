@@ -183,6 +183,15 @@ pub async fn scope<F: std::future::Future>(credentials: Credentials, future: F) 
     REQUEST_CREDENTIALS.scope(credentials, future).await
 }
 
+/// True inside a daemon request that carried no credentials. False outside a
+/// daemon request and when the request did carry credentials.
+#[must_use]
+pub fn daemon_request_lacks_credentials() -> bool {
+    REQUEST_CREDENTIALS
+        .try_with(Credentials::is_empty)
+        .unwrap_or(false)
+}
+
 /// Text for `MissingCredentials` errors raised while a daemon request carried
 /// no credentials. A daemon keeps the environment it was started with, so the
 /// message names the two ways out. Empty outside a daemon request and when the

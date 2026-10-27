@@ -355,6 +355,16 @@ pub(super) async fn acquire_bc_token(
     match al_bc::http_auth::access_token_from_env() {
         Ok(Some(token)) => Ok(token),
         Ok(None) => {
+            // A daemon request that carried no credentials has nobody to answer
+            // a browser or device code prompt: it waited out the CLI's 30 s
+            // deadline. Standard route checked: the OAuth cache
+            // with Auto sign-in. It is kept for the cached token and its
+            // refresh, and sign-in is switched off for this case.
+            let sign_in = if al_bc::http_auth::daemon_request_lacks_credentials() {
+                al_symbols::oauth::SignInMode::CachedOnly
+            } else {
+                al_symbols::oauth::SignInMode::Auto
+            };
             let client = reqwest::Client::new();
             let settings = match workspace.project.try_read() {
                 Ok(guard) => guard.as_ref().map_or_else(
@@ -378,7 +388,7 @@ pub(super) async fn acquire_bc_token(
                 &client,
                 &config.tenant,
                 &settings,
-                al_symbols::oauth::SignInMode::Auto,
+                sign_in,
                 |message| {
                     tracing::info!("Business Central authentication: {message}");
                     al_symbols::oauth::announce(message);
@@ -386,10 +396,17 @@ pub(super) async fn acquire_bc_token(
             )
             .await
             .map_err(|error| {
-                (
-                    error_codes::INTERNAL_ERROR,
-                    format!("Business Central authentication failed: {error}"),
-                )
+                if sign_in == al_symbols::oauth::SignInMode::CachedOnly {
+                    (
+                        error_codes::INVALID_PARAMS,
+                        al_bc::bc_client::BcClientError::MissingCredentials.to_string(),
+                    )
+                } else {
+                    (
+                        error_codes::INTERNAL_ERROR,
+                        format!("Business Central authentication failed: {error}"),
+                    )
+                }
             })
         }
         Err(error) => Err((
@@ -1331,6 +1348,68 @@ mod acquire_bc_token_tests {
         .await
         .expect("an online target needs no project trust");
         assert_eq!(token, "request-token");
+    }
+
+    /// A daemon request with no credentials, no environment token and no cached
+    /// sign-in is answered with MissingCredentials at once. It used to start a
+    /// browser sign-in nobody could answer and ran into the CLI's 30 s deadline
+    ///.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_request_without_credentials_and_without_a_cached_sign_in_fails_at_once() {
+        /// No bearer token in the environment.
+        struct NoEnvToken(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl NoEnvToken {
+            fn new() -> Self {
+                let saved = ["BC_ACCESS_TOKEN", "BC_TOKEN"]
+                    .map(|name| (name, std::env::var_os(name)))
+                    .to_vec();
+                for (name, _) in &saved {
+                    std::env::remove_var(name);
+                }
+                Self(saved)
+            }
+        }
+        impl Drop for NoEnvToken {
+            fn drop(&mut self) {
+                for (name, value) in &self.0 {
+                    if let Some(value) = value {
+                        std::env::set_var(name, value);
+                    }
+                }
+            }
+        }
+        let _no_token = NoEnvToken::new();
+        let (_dir, workspace) = untrusted_project();
+        let config = BcDebugConfig {
+            environment_type: "Sandbox".to_string(),
+            environment_name: Some("SANDBOX".to_string()),
+            authentication: "AAD".to_string(),
+            // The OS secret store holds a sign-in for the real CDX tenant, so
+            // this test names a registered tenant nobody signed in to.
+            tenant: {
+                al_bc::tenant_guard::install_test_registry();
+                al_bc::tenant_guard::TEST_UNSIGNED_TENANT.to_string()
+            },
+            ..BcDebugConfig::default()
+        };
+        let started = std::time::Instant::now();
+        let (code, message) =
+            al_bc::http_auth::scope(al_bc::http_auth::Credentials::default(), async {
+                acquire_bc_token(
+                    &workspace,
+                    &config,
+                    "",
+                    al_project::trust::TargetSource::Repository,
+                )
+                .await
+            })
+            .await
+            .expect_err("no credential anywhere");
+        assert_eq!(code, al_protocol::jsonrpc::error_codes::INVALID_PARAMS);
+        assert!(message.contains("Missing credentials"), "{message}");
+        assert!(message.contains("daemon-shutdown"), "{message}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     /// The request's token does not stand in for the project trust check: an
