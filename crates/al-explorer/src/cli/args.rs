@@ -204,12 +204,15 @@ Examples:
     Packages,
     /// Show dependency graph
     Deps,
-    /// Compile the AL project (native by default; alc with al.useOfficialCompiler)
-    #[command(after_help = "\
+    /// Compile the AL project (alc when the toolchain is found, else native; see al.useOfficialCompiler)
+    #[command(
+        alias = "build",
+        after_help = "\
 Examples:
   al-explorer compile
   al-explorer compile --project /path/to/project
-  al-explorer compile --json")]
+  al-explorer compile --json"
+    )]
     Compile {
         /// Project directory (default: current dir)
         #[arg(short, long)]

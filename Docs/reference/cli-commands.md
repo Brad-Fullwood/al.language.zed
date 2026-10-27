@@ -72,9 +72,9 @@ and writes paths only inside the project it has loaded. See
 | `events <name>` | | Event publishers matching name (+ subscriber counts) |
 | `subscribers <event>` | | Subscribers of an event, from workspace source and from the AL source embedded in loaded packages |
 | `event-source` | `--file <p> --line <n>` | Resolve publisher behind an `[EventSubscriber]` |
-| `builtins` | | Built-in types + method counts |
+| `builtins` | | Built-in types + method counts. Needs the semantic bridge (`AlBridge.dll`, next to al-lsp or in `AL_BRIDGE_DIR`) and ALTool, and exits 1 with a message when no catalog loads |
 | `rules` | | Registered native file, project-semantic, and transaction-stack lint rules |
-| `error-codes` | | AL compiler error codes |
+| `error-codes` | | AL compiler error codes. Same need as `builtins`, and exits 1 when no catalog loads |
 | `generate-completions <shell>` | | Generate shell completions for bash, zsh, fish, elvish, or PowerShell. `--json` returns `{ shell, script }` |
 
 ## LSP-style queries
@@ -97,7 +97,7 @@ and writes paths only inside the project it has loaded. See
 
 | Command | Flags | Purpose |
 | --- | --- | --- |
-| `compile` | `--project <dir>` | Compile (native default, `al.useOfficialCompiler` → `alc`) |
+| `compile` | `--project <dir>` | Compile (alias `build`). `alc` when the toolchain is found, else native. `al.useOfficialCompiler` forces either |
 | `package` | | Package compiled app into `.app` |
 | `publish` | `--config <name> [--incremental]` | Compile and publish the `.app` to the BC dev endpoint named in `.vscode/launch.json` or `.zed/debug.json`. `--incremental` uses the RAD API |
 | `pack-native` | `--project <dir> --out <path> [--validate [--analyzers <list>]]` | Verified pure-Rust `.app` build. Rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure. Global `--json` returns exact native ranges. `--validate` adds `alc` after native checks, with the project's `al.codeAnalyzers` or the `--analyzers` list (a custom analyzer file the repository supplies, found in its own folders or named by a path into it, is refused unless the project is trusted and its trust record lists that file) |
@@ -127,11 +127,11 @@ and writes paths only inside the project it has loaded. See
 | `trace <event>` | `--depth N (10) --tree` | Event propagation chain (`--tree` = full multi-hop) |
 | `intercept` | | Full event interception map + orphans |
 | `entrypoints` | | Procedures with no incoming calls |
-| `graph` | `--format json\|dot`, global `--scope workspace\|packages\|all` | Insight graph export. `--scope workspace` keeps the workspace's objects and the nodes one edge away |
+| `graph` | `--format json\|dot`, global `--scope workspace\|packages\|all` | Insight graph export. The default scope covers every loaded package, and a response over 50000 nodes plus edges is refused with an error that names the size and the cap. Pass `--scope workspace` to keep the workspace's objects and the nodes one edge away |
 | `insight-stats` | | Node/edge counts |
 | `impact <symbol>` | `--table` | Who consumes this symbol/table |
 | `suggest-event` | `--object <x> [--kind <k>] [--procedure/--event <x>]`, or `--table <x> [--field <x>]` | Integration-point discovery (`--event` needs `--object`, `--kind` picks one object when the name exists in more than one kind) |
-| `metrics [file]` | `--all --threshold-cyclomatic N --threshold-cognitive N` | Complexity |
+| `metrics <file>` or `metrics --all` | `--all --threshold-cyclomatic N --threshold-cognitive N` | Complexity. Needs a file or `--all`, otherwise the daemon answers that it needs a `uri`/`file` parameter or `all: true` |
 | `dead-code` | | Unused procedures/fields/subscribers (with confidence) |
 | `sql-scan` | | SQL anti-patterns |
 | `duplicates` | `--min-tokens N --min-similarity R` | Duplicate code blocks |

@@ -75,7 +75,7 @@ live in [ROADMAP.md](../ROADMAP.md).
   `CalcFormula` text, method parameter `Temporary`, XLIFF units and entry names for folders with
   spaces are dropped or wrong. The `TargetObject` app id of extensions and manifest `Features` were
   fixed after that measurement (emitter-02).
-  Use `al.useOfficialCompiler: true` for any package that goes to Business Central. The native
+  Builds use `alc` by default when the toolchain is found, so this applies to the native fallback and `al.useOfficialCompiler: false`. The native
   verifier's text checks for procedure calls, return values, overloads, `Continue` and record fields
   only warn. Findings `emitter-01-native-verifier-rejects-valid-dms-project` and
   `emitter-02-native-app-differs-from-alc-on-dms`.

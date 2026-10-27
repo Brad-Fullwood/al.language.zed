@@ -468,11 +468,19 @@ async fn run() {
                 // diagnostics, and handoff to `al_compile::build`.
                 let (config, project) =
                     al_lsp::server::dap_mode::package_source::load_dap_project(&project_root)?;
+                let found = al_lsp::toolchain::find_toolchain();
                 let backend = al_compile::BuildBackend::from_use_official_compiler(
                     config.use_official_compiler,
+                    found.is_ok(),
                 );
+                if al_compile::BuildBackend::is_auto_fallback(
+                    config.use_official_compiler,
+                    found.is_ok(),
+                ) {
+                    tracing::info!("{}", al_compile::BuildBackend::NATIVE_FALLBACK_NOTE);
+                }
                 let toolchain = if backend == al_compile::BuildBackend::Alc {
-                    Some(al_lsp::toolchain::find_toolchain().map_err(|error| error.to_string())?)
+                    Some(found.map_err(|error| error.to_string())?)
                 } else {
                     None
                 };

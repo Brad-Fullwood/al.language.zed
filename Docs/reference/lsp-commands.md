@@ -23,8 +23,14 @@ test at the cursor).
 Incremental text sync. Save (no text). Hover. Completion (triggers `.` `:`). Definition.
 Implementation. References. Document symbols. Document + range formatting. Folding. Rename
 (+ prepare). Semantic tokens (full + legend). CodeLens. Inlay hints. Signature help (triggers `(`
-`,`). Workspace symbols. Code actions. Pull diagnostics (`identifier: "al-lsp"`, inter-file
-dependencies, workspace diagnostics). Execute commands.
+`,`). Workspace symbols. Code actions. Execute commands.
+
+Diagnostics are pushed (`textDocument/publishDiagnostics`). The server advertises neither pull
+(`textDocument/diagnostic`) nor workspace diagnostics, because Zed pulls on every edit when a server
+offers it and each pulled answer replaced the pushed set with a different subset
+(`server/lsp/mod.rs`, `diagnostic_provider: None`). The pull handlers remain for clients that call
+them without the capability. With `al.diagnosticsScope: project` the server pushes for every indexed
+file.
 
 `textDocument/codeAction` honours `context.only`: a request restricted to `quickfix` does not
 receive the `source` actions (*AL: Format File*, *AL: Lint File*).
@@ -49,13 +55,17 @@ receive the `source` actions (*AL: Format File*, *AL: Lint File*).
 | `al.lintFile` | re-publish diagnostics for a file |
 | `al.getStatus` | health snapshot JSON |
 | `al.reindex` | re-run workspace init in background |
-| `al.compile` | verified native build with structured diagnostics, or `alc` if `al.useOfficialCompiler` |
+| `al.compile` | build with `alc` when the toolchain is found, else the verified native emitter with structured diagnostics (`al.useOfficialCompiler` forces either) |
 | `al.applyRecommendedSettings` | apply recommended Zed AL workspace settings |
+| `al.findReferences` | references of the symbol at a position. Argument: one object `{ "uri": "file:///...", "position": {"line": 0, "character": 0} }`. Returns `Location[]` |
+| `al.showSubscribers` | go to the subscribers of the event publisher at a position. Argument: `{ uri, position }` as for `al.findReferences`. Errors when the position is not on an event publisher |
+| `al.showEventSource` | go to the publisher of the `[EventSubscriber]` at a position. Argument: `{ uri, position }` |
+| `al.showReport` | run an `al-explorer` report and open its output. Argument: `{ "report": "composed" \| "impact" \| "suggest-event" \| "metrics", "object": "<object name>", "uri": "file:///..." }`. `uri` must be a local file, an unknown `report` is an error |
 
 ## CodeLens command IDs
 
-The CodeLens provider emits `al.findReferences`, `al.showProfiler`, and `al.runTest`. All three are
-registered through `workspace/executeCommand`.
+The CodeLens provider emits `al.findReferences`, `al.showProfiler`, `al.runTest`, `al.showSubscribers` and `al.showEventSource`, and the code actions use `al.showReport`. All are
+registered through `workspace/executeCommand`. The required arguments of the four commands that take them are in the table above.
 
 ## Delegation
 

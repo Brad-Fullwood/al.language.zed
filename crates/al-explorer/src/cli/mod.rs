@@ -156,7 +156,7 @@ pub fn run(cli: Cli) -> ExitCode {
                     "lint runs the native rules only and cannot run Microsoft's analyzers \
                      (earlier versions accepted --analyzers and ignored it). Microsoft's cops \
                      run under alc: use `al-explorer pack-native --validate --analyzers <list>`, \
-                     or set al.codeAnalyzers and `al-explorer compile` with al.useOfficialCompiler.",
+                     or set al.codeAnalyzers and `al-explorer compile` (alc is used when found).",
                     cli.json,
                 );
             }

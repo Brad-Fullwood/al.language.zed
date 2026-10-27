@@ -1,5 +1,6 @@
-//! Compile/package dispatchers: native-first `.app` build (default) and the
-//! opt-in Microsoft `dotnet alc` subprocess path.
+//! Compile/package dispatchers: Microsoft `dotnet alc` when the toolchain is
+//! found, the native `.app` emitter as the fallback, `al.useOfficialCompiler`
+//! forces either.
 
 use al_protocol::jsonrpc::{error_codes, Response, RpcError};
 use al_workspace::Workspace;
@@ -47,6 +48,17 @@ fn build_result_json(
             serde_json::Value::Null
         },
     })
+}
+
+/// Add the one-line backend note to a native result when auto mode fell back
+/// to the native emitter because the toolchain is missing, so the caller sees
+/// which backend ran and why.
+fn with_fallback_note(mut value: serde_json::Value, fallback: bool) -> serde_json::Value {
+    if fallback {
+        value["backendNote"] =
+            serde_json::Value::String(al_compile::BuildBackend::NATIVE_FALLBACK_NOTE.to_string());
+    }
+    value
 }
 
 /// Run the workspace-native semantic and call/event-stack analyzers used by
@@ -131,30 +143,56 @@ pub(in crate::server::daemon) async fn dispatch_compile(
     // Drop the read guard before acquiring async locks
     drop(project);
 
-    // Native-first compile policy. Default keeps compilation on the pure-Rust
-    // `.app` emitter; `al.useOfficialCompiler: true` opts into
-    // Microsoft's `dotnet alc` subprocess. There is no silent fallback.
+    // Backend policy. Unset `al.useOfficialCompiler` builds with Microsoft's
+    // `dotnet alc` when the toolchain is found and with the native emitter
+    // otherwise (the fallback is named in the result). `true` forces alc and
+    // errors without a toolchain, `false` forces native.
     let config_snapshot = workspace.config.read().await.clone();
-    let use_official_compiler = config_snapshot.use_official_compiler;
+    let tc = match workspace.toolchain.try_read() {
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: ERR_INITIALIZING.to_string(),
+                }),
+                ..Default::default()
+            };
+        }
+    };
+    let backend = al_compile::BuildBackend::from_use_official_compiler(
+        config_snapshot.use_official_compiler,
+        tc.is_some(),
+    );
+    let fallback = al_compile::BuildBackend::is_auto_fallback(
+        config_snapshot.use_official_compiler,
+        tc.is_some(),
+    );
+    if fallback {
+        tracing::info!("{}", al_compile::BuildBackend::NATIVE_FALLBACK_NOTE);
+    }
 
     let result: Result<serde_json::Value, (i32, String)> = async {
-        // Native-first: the pure-Rust native `.app` emitter is the default — no
-        // `alc`, no C# bridge. `al.useOfficialCompiler: true` opts into the
-        // Microsoft `dotnet alc` subprocess. The native path performs its own
-        // syntax/project/binding verification and returns structured diagnostics.
-        if !use_official_compiler {
+        // The native path performs its own syntax/project/binding verification
+        // and returns structured diagnostics.
+        if backend == al_compile::BuildBackend::Native {
             let (workspace_diagnostics, has_workspace_errors) =
                 workspace_diagnostics_json(workspace, &config_snapshot, &project_root);
             if has_workspace_errors {
-                return Ok(serde_json::json!({
-                    "success": false,
-                    "diagnostics": workspace_diagnostics,
-                    "appPath": serde_json::Value::Null,
-                    "output": "native workspace semantic validation failed; .app was not emitted",
-                    "backend": "native",
-                    "validated": true,
-                    "verificationLevel": "native-syntax-project-binding-symbol-graph",
-                }));
+                return Ok(with_fallback_note(
+                    serde_json::json!({
+                        "success": false,
+                        "diagnostics": workspace_diagnostics,
+                        "appPath": serde_json::Value::Null,
+                        "output": "native workspace semantic validation failed; .app was not emitted",
+                        "backend": "native",
+                        "validated": true,
+                        "verificationLevel": "native-syntax-project-binding-symbol-graph",
+                    }),
+                    fallback,
+                ));
             }
             // Route through the shared build service.
             let compile_result = al_compile::build(al_compile::BuildRequest {
@@ -168,31 +206,18 @@ pub(in crate::server::daemon) async fn dispatch_compile(
             })
             .await
             .map_err(|e| (error_codes::CODE_ANALYSIS_ERROR, e.to_string()))?;
-            return Ok(build_result_json(
-                &compile_result,
-                "native",
-                workspace_diagnostics,
+            return Ok(with_fallback_note(
+                build_result_json(&compile_result, "native", workspace_diagnostics),
+                fallback,
             ));
         }
 
-        // Opted into Microsoft's compiler subprocess (non-native). Warn so this
-        // is never mistaken for the native `.app` emitter.
-        tracing::warn!(
-            "al.useOfficialCompiler=true - compiling via the NON-NATIVE Microsoft \
-             `dotnet alc` subprocess instead of the native `.app` emitter"
-        );
-        // The toolchain is only required for this opt-in Microsoft `dotnet alc`
-        // path; acquire it lazily here so a native compile (the default,
-        // handled above) never contends with it.
-        let tc = match workspace.toolchain.try_read() {
-            Ok(guard) => guard.clone(),
-            Err(_) => return Err((error_codes::INTERNAL_ERROR, ERR_INITIALIZING.to_string())),
-        };
+        tracing::info!("Building with Microsoft alc");
         let Some(toolchain) = tc.as_ref() else {
             return Err((
                 error_codes::CODE_ANALYSIS_ERROR,
                 "al.useOfficialCompiler=true but no AL toolchain is installed. Install \
-                 ALTool, or unset al.useOfficialCompiler to use the native `.app` emitter."
+                 ALTool, or set al.useOfficialCompiler to false to use the native `.app` emitter."
                     .to_string(),
             ));
         };
@@ -279,28 +304,52 @@ pub(in crate::server::daemon) async fn dispatch_package(
         .map(|project| project.packages.clone())
         .unwrap_or_default();
 
-    // Native-first packaging policy, mirroring `dispatch_compile`. The default
-    // builds the `.app` with the pure-Rust emitter — no `alc`, no C# bridge, no
-    // analyzers — so an unset `al.codeAnalyzers` never silently runs the full
-    // Microsoft analyzer set (e.g. AppSourceCop AS0016) and gates packaging.
-    // `al.useOfficialCompiler: true` opts into Microsoft's `dotnet alc`.
+    // Same backend policy as `dispatch_compile`.
     let config_snapshot = workspace.config.read().await.clone();
-    let use_official_compiler = config_snapshot.use_official_compiler;
-    if !use_official_compiler {
+    let found_toolchain = match workspace.toolchain.try_read() {
+        // Recover from RwLock poison.
+        Ok(guard) => guard.clone(),
+        Err(_) => {
+            return Response {
+                id,
+                result: None,
+                error: Some(RpcError {
+                    code: error_codes::INTERNAL_ERROR,
+                    message: ERR_INITIALIZING.to_string(),
+                }),
+                ..Default::default()
+            };
+        }
+    };
+    let backend = al_compile::BuildBackend::from_use_official_compiler(
+        config_snapshot.use_official_compiler,
+        found_toolchain.is_some(),
+    );
+    let fallback = al_compile::BuildBackend::is_auto_fallback(
+        config_snapshot.use_official_compiler,
+        found_toolchain.is_some(),
+    );
+    if fallback {
+        tracing::info!("{}", al_compile::BuildBackend::NATIVE_FALLBACK_NOTE);
+    }
+    if backend == al_compile::BuildBackend::Native {
         let (workspace_diagnostics, has_workspace_errors) =
             workspace_diagnostics_json(workspace, &config_snapshot, &project_root);
         if has_workspace_errors {
             return Response {
                 id,
-                result: Some(serde_json::json!({
-                    "success": false,
-                    "diagnostics": workspace_diagnostics,
-                    "appPath": serde_json::Value::Null,
-                    "output": "native workspace semantic validation failed; .app was not emitted",
-                    "backend": "native",
-                    "validated": true,
-                    "verificationLevel": "native-syntax-project-binding-symbol-graph",
-                })),
+                result: Some(with_fallback_note(
+                    serde_json::json!({
+                        "success": false,
+                        "diagnostics": workspace_diagnostics,
+                        "appPath": serde_json::Value::Null,
+                        "output": "native workspace semantic validation failed; .app was not emitted",
+                        "backend": "native",
+                        "validated": true,
+                        "verificationLevel": "native-syntax-project-binding-symbol-graph",
+                    }),
+                    fallback,
+                )),
                 error: None,
                 ..Default::default()
             };
@@ -332,37 +381,17 @@ pub(in crate::server::daemon) async fn dispatch_package(
         };
         return Response {
             id,
-            result: Some(build_result_json(
-                &compile_result,
-                "native",
-                workspace_diagnostics,
+            result: Some(with_fallback_note(
+                build_result_json(&compile_result, "native", workspace_diagnostics),
+                fallback,
             )),
             error: None,
             ..Default::default()
         };
     }
 
-    // Opted into Microsoft's compiler subprocess (non-native). Warn so this is
-    // never mistaken for the native `.app` emitter.
-    tracing::warn!(
-        "al.useOfficialCompiler=true - packaging via the NON-NATIVE Microsoft \
-         `dotnet alc` subprocess instead of the native `.app` emitter"
-    );
-    let tc = match workspace.toolchain.try_read() {
-        // Recover from RwLock poison.
-        Ok(guard) => guard.clone(),
-        Err(_) => {
-            return Response {
-                id,
-                result: None,
-                error: Some(RpcError {
-                    code: error_codes::INTERNAL_ERROR,
-                    message: ERR_INITIALIZING.to_string(),
-                }),
-                ..Default::default()
-            };
-        }
-    };
+    tracing::info!("Packaging with Microsoft alc");
+    let tc = found_toolchain;
     let toolchain = match tc {
         Some(tc) => tc,
         None => {
@@ -499,7 +528,7 @@ mod tests {
 
     #[tokio::test]
     async fn compile_without_toolchain_uses_native_emitter() {
-        // Native-first is the documented default: a loaded project with NO
+        // Native is the fallback when alc is absent: a loaded project with NO
         // toolchain must still compile via the pure-Rust `.app` emitter and
         // succeed. Previously an early toolchain guard fired before the native
         // branch and failed `compile` with "No toolchain loaded" even though
@@ -581,7 +610,7 @@ mod tests {
         assert!(syntax["endColumn"].is_number());
     }
 
-    /// Native-first compile policy: the default `compile` path uses the pure-Rust
+    /// With `al.useOfficialCompiler=false` the `compile` path uses the pure-Rust
     /// native `.app` emitter — no C# bridge, no `dotnet alc`. It must succeed and
     /// produce an `appPath` from project source alone (no bridge available here).
     #[tokio::test]
@@ -624,6 +653,8 @@ mod tests {
             let mut g = ws.toolchain.write().await;
             *g = Some(tc);
         }
+        // The fixture toolchain is not a real alc, so force the native backend.
+        ws.config.write().await.use_official_compiler = Some(false);
         let resp = dispatch_compile(&ws, 3).await;
         assert!(
             resp.error.is_none(),
@@ -663,6 +694,14 @@ mod tests {
 
         let compile = dispatch_compile(&ws, 40).await.result.unwrap();
         let package = dispatch_package(&ws, 41).await.result.unwrap();
+        // No toolchain and the setting unset: auto picks native and says why.
+        for result in [&compile, &package] {
+            assert_eq!(result["backend"], "native");
+            assert_eq!(
+                result["backendNote"],
+                al_compile::BuildBackend::NATIVE_FALLBACK_NOTE
+            );
+        }
         for key in [
             "success",
             "diagnostics",
@@ -715,7 +754,7 @@ mod tests {
         // official path and load a project so the toolchain guard — not the
         // project guard — is what fires.
         let ws = empty_ws();
-        ws.config.write().await.use_official_compiler = true;
+        ws.config.write().await.use_official_compiler = Some(true);
         let proj = tempfile::TempDir::new().unwrap();
         {
             let mut g = ws.project.write().await;
@@ -774,7 +813,7 @@ mod tests {
         // propagate that error verbatim as an INTERNAL_ERROR (exercising the
         // real build wiring + empty analyzer-filter branch, with no subprocess).
         let ws = empty_ws();
-        ws.config.write().await.use_official_compiler = true;
+        ws.config.write().await.use_official_compiler = Some(true);
         let tc_dir = tempfile::TempDir::new().unwrap();
         write_fixture_toolchain(tc_dir.path());
         let tc = {

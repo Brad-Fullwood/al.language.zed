@@ -3,13 +3,16 @@
 **Modules:** `crates/al-emit/src/` (verification + emitter), `crates/al-compile/src/lib.rs`,
 `crates/al-publish/src/lib.rs`, `crates/al-project/src/{toolchain,config}.rs`,
 `crates/al-bc/src/{launch,bc_client}.rs`. **Status:** shipped, with limits.
-The native build is the default, but on a real customer project the package differs from `alc`
+Builds use Microsoft's `alc` when the toolchain is found and fall back to the native emitter when it
+is not. `al.useOfficialCompiler` forces either: `true` is `alc` (an error without a toolchain),
+`false` is native. The native package still drops page extension variables, `ActionChanges`,
+`DocComments.xml` and option members, so on a real customer project it differs from the `alc` package
 (see the coverage boundary below and the audit finding `emitter-02-native-app-differs-from-alc-on-dms`).
-Use `al.useOfficialCompiler: true` for any package that goes to Business Central.
+Every build result names the backend that ran. When auto mode fell back to native it also says why.
 
 The pure-Rust compiler back end produces a Business Central `.app` directly from source without
-`alc`, .NET, or the C# bridge. It is the default for daemon `compile`, LSP `al.compile`, publish, and
-native DAP launch. Microsoft's `alc` remains available for full compiler semantics and compatibility
+`alc`, .NET, or the C# bridge. It is the fallback for daemon `compile`, LSP `al.compile`, publish, and
+DAP launch when no toolchain is found, and the backend of `pack-native`. Microsoft's `alc` remains available for full compiler semantics and compatibility
 validation.
 
 The default native path parses and verifies the project, returns structured file/range diagnostics,
@@ -154,9 +157,9 @@ lower, always-on `native-syntax-project-binding` gate.
 
 | Profile | Default? | Microsoft dependency | Intended use |
 | --- | --- | --- | --- |
-| **Native verified** | Yes | None | Run the shipped syntax/project/declaration/binding/integrity checks, then emit. |
+| **Native verified** | Fallback | None | Run the shipped syntax/project/declaration/binding/integrity checks, then emit. |
 | **Native + compatibility** | No | Required for the extra check | `al-explorer pack-native --validate`: run native verification first, then ask `alc` for authoritative compatibility diagnostics before writing the native artifact. |
-| **Official build** | No | Required | Existing `al.useOfficialCompiler: true` path where `alc` both validates and emits. |
+| **Official build** | Yes, when the toolchain is found | Required | `al.useOfficialCompiler` unset or `true`: `alc` both validates and emits. |
 
 Microsoft compatibility checking does not sit on the default critical path:
 
@@ -236,7 +239,7 @@ package-semantic-equivalence check.
 > entry names for source folders with
 > spaces (`alc` writes `%2520`, native writes a raw space). The `TargetObject` app id of extensions
 > (wrong in 13 cases) and manifest `Features` were fixed after that measurement. Do not give a native package to Business
-> Central. Recommended: `al.useOfficialCompiler: true`. Details: finding
+> Central. Builds therefore use `alc` by default when it is installed. Details: finding
 > `emitter-02-native-app-differs-from-alc-on-dms`.
 >
 > **The verifier warns, it does not prove.** The text checks for local procedure calls, return
@@ -255,7 +258,7 @@ package-semantic-equivalence check.
 | Build-time validation | partial: native syntax/project/declaration/declared-binding checks block the build, heuristic body checks only warn | **yes**: authoritative Microsoft semantics |
 | Optional parity | `pack-native --validate` runs native first, then `alc` | reference |
 | Output fidelity | Archive/manifest/symbol parity is measured on the self-contained, dependency, small-through-XL, and focused Base Application fixtures only. Byte-identical XLIFF on translatable fixtures. A real customer project differs from `alc` (see the coverage boundary) | reference |
-| Availability | default. Runs anywhere | `al.useOfficialCompiler: true` |
+| Availability | fallback when `alc` is absent. Runs anywhere | default when found, or `al.useOfficialCompiler: true` |
 
 ## Why this approach
 
@@ -275,7 +278,8 @@ repeated verified builds reproducible without weakening the verification gate.
 - **LSP:** the `al.compile` execute command.
 - **MCP:** `al_build` is the named compile alias. The other shared build dispatcher methods, including
   `package`, are available through `al_call`.
-- **Force Microsoft `alc`:** set `al.useOfficialCompiler: true`.
+- **Backend:** `al-explorer compile` (alias `build`) uses `alc` when the toolchain is found. Set
+  `al.useOfficialCompiler: true` to require `alc` or `false` to force the native emitter.
 
 ## Compatibility boundaries
 

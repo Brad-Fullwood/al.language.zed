@@ -77,7 +77,7 @@ setting for it.
 | --- | --- | --- | --- |
 | `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only, 🔒. A repository entry that names a file alc loads from (`/analyzer:`, `/assemblyprobingpaths:`, `/ruleset:`, `/packagecachepath:`, an `@` response file) keeps the project from being trusted |
 | `al.incrementalBuild` | boolean | `false` | ⛔ read so a shared `.vscode/settings.json` still loads. A VS Code language server option, `alc` has no incremental switch (it answers AL1009), so it changes nothing here |
-| `al.useOfficialCompiler` | boolean | `false` | ✅ builds with Microsoft's `dotnet alc` |
+| `al.useOfficialCompiler` | boolean\|null | unset (auto) | ✅ three states. Unset builds with Microsoft's `dotnet alc` when the toolchain is found and with the native emitter otherwise. `true` requires `alc` and fails without a toolchain. `false` forces the native emitter, which still drops page extension variables, `ActionChanges`, `DocComments` and option members |
 | `al.dotnetPath` | string\|null | `null` | ✅ the `dotnet` executable for every .NET and `alc` process the toolchain spawns, the setting form of `AL_DOTNET_PATH`, 🔒. A program inside the project, or reached through a link written inside it, is checked again before each spawn |
 
 ## Resource limits & escape hatches
@@ -122,6 +122,31 @@ BC credentials (secrets, prefer OAuth/keyring): `BC_CLIENT_ID`, canonical `BC_AC
 (`BC_TOKEN` is a compatibility alias), and `BC_USERNAME`/`BC_PASSWORD`. When both bearer-token
 variables are set they must match. A blank, non-UTF-8, or conflicting override is rejected before
 network access.
+
+## Recommended settings prompt
+
+After the workspace is ready, the server asks "Apply recommended AL development settings? (Updates Zed
+settings.json)" with Yes and No (`window/showMessageRequest`). It is skipped when the sentinel file
+`<user data dir>/al-lsp/.settings-prompt-shown` exists (`$XDG_DATA_HOME`, else `~/.local/share`), or when
+Zed's `settings.json` already holds `lsp.al-lsp` and a `languages.AL.language_servers` list containing
+`al-lsp`. Any answer, including a dismissed notification, writes the sentinel, so the prompt appears once per
+machine. Delete the file to see it again. A request that fails to reach the client leaves no sentinel.
+
+Yes deep merges these values into Zed's `settings.json` (the command `al.applyRecommendedSettings` does the same):
+
+- `lsp.al-lsp.settings`: `al.enableCodeAnalysis` true, `al.backgroundCodeAnalysis` true,
+  `al.diagnosticsScope` `project`, `al.diagnosticsTrigger` `continuous`, `al.codeAnalyzers`
+  `["CodeCop", "AppSourceCop", "UICop", "PerTenantCop"]`, `al.enableNativeLint` true,
+  `al.enableCodeActions` true, `al.inlayHints.parameterNames` true.
+- `languages.AL`: `document_symbols` `on`, `document_folding_ranges` `on`, `completions.words` `fallback`,
+  `debuggers` `["al"]`, `language_servers` `["al-lsp"]`, `semantic_tokens` `combined`, `colorize_brackets`
+  true, `inlay_hints.enabled` true.
+
+The file is parsed with comments removed and written back with `serde_json::to_string_pretty`, so Yes drops
+every comment in the user's `settings.json`. Arrays in the recommended set replace the user's arrays
+(`language_servers`, `debuggers`, `al.codeAnalyzers`) and are not merged. Back up a commented
+`settings.json` before answering Yes. The editor end to end harness pre-creates the sentinel
+(`drive.sh --no-settings-prompt`) so the prompt does not cover screenshots.
 
 ## Project-file schemas
 
