@@ -112,7 +112,9 @@ Two download backends:
 - **BC server (`bc_server.rs`):** GETs `/dev/packages?publisher=…&appName=…&versionText=…` with auth,
   with four-request concurrency, same-package request dedupe, bounded retry/backoff for transient
   transport/429/502/503/504 failures, and a 200 MiB streaming cap. It verifies NAVX plus manifest
-  identity/minimum-version before atomically publishing a publisher/name/version-qualified filename.
+  identity/minimum-version before atomically publishing a file named `{publisher}_{name}_{version}.app` from the downloaded manifest
+  (the requested version can differ from the one served, so the name shows the real version).
+  A leftover file named after the requested version for the same app id is removed.
   It caches the access token in an `RwLock` and clears it on 401/403 before retrying.
 - **OAuth (`oauth/`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
   redirect) and a **device-code** fallback for headless environments, with disk-cached refresh

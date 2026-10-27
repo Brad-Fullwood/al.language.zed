@@ -150,6 +150,9 @@ impl BcServerClient {
         dep: &AppDependency,
         dest: &Path,
     ) -> Result<PathBuf, BcServerError> {
+        // Key for the lock and the completed-download cache: one entry per
+        // requested package. The file written is named after the downloaded
+        // manifest, see `stream_package_to_file`.
         let output_path = dest.join(package_filename(&dep.publisher, &dep.name, &dep.version));
         let lock = self.lock_for(&output_path)?;
         // Held across the download: a second caller for the same package waits
@@ -173,9 +176,7 @@ impl BcServerClient {
                 .remove(&output_path);
         }
 
-        let downloaded = self
-            .download_one_locked(url, dep, dest, &output_path)
-            .await?;
+        let downloaded = self.download_one_locked(url, dep, dest).await?;
         self.completed_downloads
             .lock()
             .map_err(|_| BcServerError::StatePoisoned("completed downloads"))?
@@ -188,7 +189,6 @@ impl BcServerClient {
         url: &str,
         dep: &AppDependency,
         dest: &Path,
-        output_path: &Path,
     ) -> Result<PathBuf, BcServerError> {
         debug!(url = %url, package = %dep.name, "Downloading from BC server");
         let response = self.send_with_retry(url, dep).await?;
@@ -208,14 +208,14 @@ impl BcServerClient {
                         });
                     }
                 }
-                let size = stream_package_to_file(response, dep, dest, output_path).await?;
+                let (size, saved_path) = stream_package_to_file(response, dep, dest).await?;
                 info!(
                     package = %dep.name,
-                    path = %output_path.display(),
+                    path = %saved_path.display(),
                     size,
                     "Downloaded symbol package from BC server"
                 );
-                Ok(output_path.to_path_buf())
+                Ok(saved_path)
             }
             401 | 403 => {
                 // The cached OAuth token (if any) is now known-stale —
@@ -421,19 +421,15 @@ async fn stream_package_to_file(
     mut response: reqwest::Response,
     dep: &AppDependency,
     dest: &Path,
-    output_path: &Path,
-) -> Result<u64, BcServerError> {
+) -> Result<(u64, PathBuf), BcServerError> {
     use tokio::io::AsyncWriteExt;
 
     tokio::fs::create_dir_all(dest).await?;
     static TEMP_SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let sequence = TEMP_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let filename = output_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("package.app");
+    let requested_filename = package_filename(&dep.publisher, &dep.name, &dep.version);
     let temp_path = dest.join(format!(
-        ".{filename}.{}.{}.tmp",
+        ".{requested_filename}.{}.{}.tmp",
         std::process::id(),
         sequence
     ));
@@ -521,19 +517,38 @@ async fn stream_package_to_file(
         )));
     }
 
-    if let Err(error) = tokio::fs::rename(&temp_path, output_path).await {
+    // Name the file after the package that arrived, so the name shows the real
+    // version. Microsoft's client names it from the server's Content-Disposition
+    // (`PackagesApiClient.cs:128`), which carries the same identity. The
+    // manifest is used here because it is already verified above.
+    let output_path = dest.join(package_filename(
+        &manifest.publisher,
+        &manifest.name,
+        &manifest.version,
+    ));
+    if let Err(error) = tokio::fs::rename(&temp_path, &output_path).await {
         // Windows cannot atomically replace an existing destination. The full
         // temp file is durable at this point, so fall back to remove+rename.
-        if tokio::fs::try_exists(output_path).await.unwrap_or(false) {
-            tokio::fs::remove_file(output_path).await?;
-            tokio::fs::rename(&temp_path, output_path).await?;
+        if tokio::fs::try_exists(&output_path).await.unwrap_or(false) {
+            tokio::fs::remove_file(&output_path).await?;
+            tokio::fs::rename(&temp_path, &output_path).await?;
         } else {
             let _ = tokio::fs::remove_file(&temp_path).await;
             return Err(error.into());
         }
     }
 
-    Ok(received)
+    // Earlier builds named the file after the requested version. Remove that
+    // file when it holds the same app, so two files do not claim one package.
+    let legacy_path = dest.join(requested_filename);
+    if legacy_path != output_path
+        && crate::app_reader::read_app_manifest_file(&legacy_path)
+            .is_ok_and(|legacy| legacy.app_id.eq_ignore_ascii_case(&dep.id))
+    {
+        let _ = tokio::fs::remove_file(&legacy_path).await;
+    }
+
+    Ok((received, output_path))
 }
 
 fn manifest_satisfies(path: &Path, dep: &AppDependency) -> bool {
@@ -778,9 +793,84 @@ mod tests {
             .await
             .expect("download succeeds");
 
-        assert_eq!(out, tmp.join("Microsoft_System_Application_1.0.0.0.app"));
+        // Named after the manifest in the package (Publisher="Test"), not the request.
+        assert_eq!(out, tmp.join("Test_System_Application_1.0.0.0.app"));
         assert_eq!(std::fs::read(&out).unwrap(), body);
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // fixture source: the manifest version below is BaseApplication 28.5.54151.55799 as
+    // recorded in the audit's Sandbox run (publish-symbols-03), served for a request
+    // of 26.0.0.0. Microsoft names the file from the server response
+    // (PackagesApiClient.cs:128), so the name must show 28.5, not 26.0.
+    #[tokio::test]
+    async fn saved_file_name_uses_the_downloaded_manifest_version() {
+        let body = valid_app_bytes_with_identity(
+            "Base Application",
+            "00000000-0000-0000-0000-000000000000",
+            "28.5.54151.55799",
+        );
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let out = no_auth_client()
+            .download_one(
+                &server.uri(),
+                &dep("Base Application", "Microsoft", "26.0.0.0"),
+                tmp.path(),
+            )
+            .await
+            .expect("download succeeds");
+
+        assert_eq!(
+            out.file_name().unwrap().to_str().unwrap(),
+            "Test_Base_Application_28.5.54151.55799.app"
+        );
+        assert!(!tmp
+            .path()
+            .join("Microsoft_Base_Application_26.0.0.0.app")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn legacy_requested_version_file_of_the_same_app_is_replaced() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_bytes(
+                valid_app_bytes_with_identity(
+                    "Base Application",
+                    "00000000-0000-0000-0000-000000000000",
+                    "28.5.54151.55799",
+                ),
+            ))
+            .mount(&server)
+            .await;
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy = tmp.path().join("Microsoft_Base_Application_26.0.0.0.app");
+        std::fs::write(
+            &legacy,
+            valid_app_bytes_with_identity(
+                "Base Application",
+                "00000000-0000-0000-0000-000000000000",
+                "28.5.54151.55799",
+            ),
+        )
+        .unwrap();
+
+        no_auth_client()
+            .download_one(
+                &server.uri(),
+                &dep("Base Application", "Microsoft", "26.0.0.0"),
+                tmp.path(),
+            )
+            .await
+            .expect("download succeeds");
+
+        assert!(!legacy.exists(), "old misnamed file must be removed");
     }
 
     #[tokio::test]
