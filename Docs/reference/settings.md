@@ -81,7 +81,7 @@ takes the same four keys plus `tabSize`, `insertSpaces` and `keywordCasing`.
 | Setting | Type | Default | Status |
 | --- | --- | --- | --- |
 | `al.maxDocumentSizeBytes` | integer\|null | `null` | ✅ |
-| `al.useOfficialLsp` | boolean | `false` | ✅ delegate to Microsoft AL LSP (ALTool v17+) |
+| `al.useOfficialLsp` | boolean | `false` | 🟡 run altool `launchlspserver` instead of al-lsp (ALTool v17+). Hover, definition, references, rename, formatting and completion only. See [language-server](../features/language-server.md#microsoft-comparison) |
 | `al.useOfficialDap` | boolean | `false` | ✅ use Microsoft `EditorServices.Host` (extension-side toggle) |
 
 > `al.useOfficialLsp` / `al.useOfficialDap` are extension-side launch toggles (resolved in

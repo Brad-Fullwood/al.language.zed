@@ -36,7 +36,7 @@ The table shows what is native and what still uses Microsoft components.
 | --- | --- | --- |
 | Editor language package | Zed language config, queries, snippets, themes, grammar metadata | None at runtime, apart from source data used by the generator |
 | Parsing | Tree-sitter AL grammar and Rust syntax helpers | Microsoft TextMate grammar is used as generator input |
-| Language server | `al-lsp` LSP transport, workspace indexing, document store, completions, hover, definitions, references, rename, formatting, folding, symbols, semantic tokens, inlay hints, CodeLens, code actions, diagnostics plumbing | Optional official AL LSP via `al.useOfficialLsp` |
+| Language server | `al-lsp` LSP transport, workspace indexing, document store, completions, hover, definitions, references, rename, formatting, folding, symbols, semantic tokens, inlay hints, CodeLens, code actions, diagnostics plumbing | Optional altool `launchlspserver` via `al.useOfficialLsp` (partial) |
 | Semantic compiler checks | Native bridge host, daemon plumbing, caching, command surfaces | .NET AL CodeAnalysis bridge and Microsoft compiler semantics |
 | Build/package | Pure-Rust verifier + `.app` emitter in `crates/al-emit`: syntax, project/dependency, declaration, declared-symbol binding and package-integrity diagnostics. Atomic artifact handoff. Native defaults for daemon `compile`, LSP `al.compile`, publish, and DAP launch | `pack-native --validate` adds an explicit `alc` compatibility gate. `al.useOfficialCompiler=true` opts into Microsoft emission and full compiler semantics |
 | `.app` inspection and emit fidelity | Native NAVX/ZIP inspection, manifest parsing, generated `SymbolReference.json`, profile symbol references, supported-subset XLIFF/navigation/resources, control-add-in bundles, entitlements, permissions, and ALC golden tests | Broader real-world resource shapes still require `pack-native --validate` or official `alc`. Business Central publish/runtime behavior is the final compatibility validator |
@@ -495,7 +495,7 @@ Common AL settings:
 }
 ```
 
-`al.useOfficialLsp` hands the session to Microsoft's official AL LSP. By default the extension runs
+`al.useOfficialLsp` replaces `al-lsp` with altool's `launchlspserver` (altool v17 or later). It is not the server VS Code runs. It gives hover, go to definition, references, rename, formatting and completion, and no diagnostics, code actions, code lens or inlay hints. By default the extension runs
 this project's native `al-lsp`. Set `AL_DOTNET_PATH` to select a specific executable
 for Microsoft .NET-hosted AL tools. Otherwise the toolchain resolves `dotnet` from `PATH`.
 
