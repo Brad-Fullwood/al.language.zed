@@ -1205,6 +1205,25 @@ mod subcommand_exit_code_tests {
                 )),
             ),
             (
+                "dead-code, low and medium confidence",
+                // Low confidence findings alone pass the gate.
+                is_success(dead_code_exit_code(&serde_json::json!([
+                    { "n": "Reflected", "confidence": "Low" },
+                    { "n": "Subscriber", "confidence": "low" },
+                ]))),
+                // One medium finding among low ones fails it.
+                is_success(dead_code_exit_code(&serde_json::json!([
+                    { "n": "Reflected", "confidence": "Low" },
+                    { "n": "Unused", "confidence": "Medium" },
+                ]))),
+            ),
+            (
+                "dead-code, no confidence field",
+                is_success(dead_code_exit_code(&serde_json::json!([]))),
+                // A finding without confidence counts as high.
+                is_success(dead_code_exit_code(&serde_json::json!([{ "n": "Unused" }]))),
+            ),
+            (
                 "setup",
                 is_success(doctor_exit_code(&serde_json::json!({
                     "altoolInstalled": true,

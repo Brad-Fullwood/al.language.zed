@@ -153,20 +153,27 @@ pub fn cmd_insight_stats(json: bool) -> ExitCode {
     })
 }
 
-/// Any finding fails the `dead-code` gate.
+/// A medium or high confidence finding fails the `dead-code` gate.
 ///
-/// Gating on high confidence alone let a workspace whose findings are all
-/// `Confidence::Medium` — what al-analysis emits for an unreferenced object —
-/// print the whole "possibly unused" table and exit 0, against the contract in
-/// `Docs/reference/cli-commands.md`.
+/// Low confidence findings are symbols reached by reflection or other channels
+/// static analysis cannot see. They are printed but do not fail the gate.
+/// Medium is what al-analysis emits for an unreferenced object, so it fails.
+/// A finding without a `confidence` field counts as high, as in the printed
+/// tables.
 pub(crate) fn dead_code_exit_code(result: &serde_json::Value) -> ExitCode {
-    let empty = list_rows(result)
-        .as_array()
-        .is_none_or(|findings| findings.is_empty());
-    if empty {
-        ExitCode::SUCCESS
-    } else {
+    let blocking = list_rows(result).as_array().is_some_and(|findings| {
+        findings.iter().any(|item| {
+            !item
+                .get("confidence")
+                .and_then(|v| v.as_str())
+                .unwrap_or("high")
+                .eq_ignore_ascii_case("low")
+        })
+    });
+    if blocking {
         ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
