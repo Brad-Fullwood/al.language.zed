@@ -105,7 +105,20 @@ pub(in crate::server::daemon) async fn dispatch_xlf_generate(
 /// refresh base arbitrary whenever a directory held more than one `.g.xlf`.
 /// Sort by file name and take the first, so repeated refreshes agree; warn when
 /// the choice was ambiguous.
-fn pick_generated_xlf(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+///
+/// The file named for the app.json name (`preferred`) wins when it exists. An
+/// older extension version wrote `<name without spaces>.g.xlf`, and a project
+/// can hold both after an upgrade.
+fn pick_generated_xlf(
+    dir: &std::path::Path,
+    preferred: Option<&str>,
+) -> Option<std::path::PathBuf> {
+    if let Some(preferred) = preferred {
+        let path = dir.join(preferred);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
     let mut candidates: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
         .ok()?
         .filter_map(|entry| entry.ok())
@@ -263,12 +276,15 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
         );
     }
 
+    let preferred_name = require_project_root(workspace, id)
+        .ok()
+        .and_then(|root| al_analysis::xliff::project_generated_xlf_name(&root));
     let generated_path = if let Some(g) = params.get("generated").and_then(|v| v.as_str()) {
         std::path::PathBuf::from(g)
     } else {
         xlf_path
             .parent()
-            .and_then(|dir| blocking(|| pick_generated_xlf(dir)))
+            .and_then(|dir| blocking(|| pick_generated_xlf(dir, preferred_name.as_deref())))
             .unwrap_or_else(|| xlf_path.with_extension("g.xlf"))
     };
     let generated_path =
@@ -571,12 +587,25 @@ mod tests {
         for name in ["Zeta.g.xlf", "Alpha.g.xlf", "Middle.g.xlf", "de-DE.xlf"] {
             std::fs::write(dir.path().join(name), "x").unwrap();
         }
-        let first = pick_generated_xlf(dir.path()).expect("a generated base exists");
+        let first = pick_generated_xlf(dir.path(), None).expect("a generated base exists");
         assert_eq!(first.file_name().unwrap(), "Alpha.g.xlf");
         // Repeated calls must agree regardless of read_dir order.
         for _ in 0..5 {
-            assert_eq!(pick_generated_xlf(dir.path()).unwrap(), first);
+            assert_eq!(pick_generated_xlf(dir.path(), None).unwrap(), first);
         }
+    }
+
+    #[test]
+    fn generated_base_pick_prefers_the_file_named_for_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["Alpha.g.xlf", "My App.g.xlf"] {
+            std::fs::write(dir.path().join(name), "x").unwrap();
+        }
+        let picked = pick_generated_xlf(dir.path(), Some("My App.g.xlf")).unwrap();
+        assert_eq!(picked.file_name().unwrap(), "My App.g.xlf");
+        // Without the preferred file the sorted first one is used.
+        let fallback = pick_generated_xlf(dir.path(), Some("Other.g.xlf")).unwrap();
+        assert_eq!(fallback.file_name().unwrap(), "Alpha.g.xlf");
     }
 
     #[test]
