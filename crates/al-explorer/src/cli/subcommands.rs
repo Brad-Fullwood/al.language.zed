@@ -168,44 +168,46 @@ pub enum SnapshotCommands {
 
 #[derive(Subcommand)]
 pub enum ProfileCommands {
-    /// Begin CPU profiling on the connected BC server
+    /// Attach a profiling session for the next matching session (snapshot debugger, ExecutionContext Profiling)
     Start {
-        /// BC server URL
-        #[arg(long, default_value = "http://localhost:7049/BC")]
-        server: String,
-        /// Company name
-        #[arg(long, required = true)]
-        company: String,
-        /// Username for BC Basic auth
+        /// Name of the launch.json configuration to profile. Default: the first one.
         #[arg(long)]
-        username: Option<String>,
-        /// Password for BC Basic auth
+        config: Option<String>,
+        /// Client type whose next session is profiled
+        #[arg(long = "break-on-next", default_value = "WebClient",
+            value_parser = ["WebClient", "WebServiceClient", "Background", "ClientService"])]
+        break_on_next: String,
+        /// Profile kind. Sampling needs snapshot API 3.0 and gives a .alcpuprofile.
+        /// Instrumentation gives a snapshot zip that `analyze` cannot read.
+        #[arg(long, default_value = "sampling", value_parser = ["sampling", "instrumentation"])]
+        kind: String,
+        /// Sampling interval in milliseconds
+        #[arg(long, value_parser = ["50", "100", "150"])]
+        interval: Option<u64>,
+        /// User to profile, as a user security id (GUID) or a user name
         #[arg(long)]
-        password: Option<String>,
-        /// Directory to store profile files
-        #[arg(long)]
-        output_dir: Option<String>,
+        user: Option<String>,
+        /// Profile one session by its session id
+        #[arg(long = "session-id")]
+        session_id: Option<i64>,
+        /// Allow a Production environment
+        #[arg(long = "allow-production")]
+        allow_production: bool,
     },
-    /// Stop profiling and download the results
+    /// Show the status of a started profiling session
+    Status {
+        /// Debugging context (GUID). Default: the latest profiling session.
+        #[arg(long)]
+        context: Option<String>,
+    },
+    /// Finish the profiling session, save the zip and extract the .alcpuprofile
     Stop {
-        /// Session ID returned by `profile start`
+        /// Debugging context (GUID). Default: the latest profiling session.
         #[arg(long)]
-        session_id: Option<String>,
-        /// BC server URL
-        #[arg(long, default_value = "http://localhost:7049/BC")]
-        server: String,
-        /// Company name
-        #[arg(long, required = true)]
-        company: String,
-        /// Username for BC Basic auth
+        context: Option<String>,
+        /// Folder for the files, inside the project. Default: `.snapshots`.
         #[arg(long)]
-        username: Option<String>,
-        /// Password for BC Basic auth
-        #[arg(long)]
-        password: Option<String>,
-        /// Directory to store profile files
-        #[arg(long)]
-        output_dir: Option<String>,
+        out: Option<String>,
     },
     /// Parse a .alcpuprofile file and show hotspots
     Analyze {

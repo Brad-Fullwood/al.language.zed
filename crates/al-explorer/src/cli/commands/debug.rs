@@ -9,8 +9,8 @@ use serde_json::Value;
 use super::super::{DebugCommands, ProfileCommands, SnapshotCommands};
 
 use super::{
-    absolutize_path, bc_server_params, connect, file_to_uri, print_json, report_error,
-    request_checked, terminal_lines, terminal_text, text_field,
+    absolutize_path, connect, file_to_uri, print_json, report_error, request_checked,
+    terminal_lines, terminal_text, text_field,
 };
 
 pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
@@ -537,39 +537,78 @@ fn text_field_raw(result: &Value, key: &str) -> String {
         .to_string()
 }
 
+/// What `profile stop` prints.
+fn profile_stop_text(result: &Value) -> String {
+    let mut out = String::new();
+    if result.get("empty").and_then(Value::as_bool) == Some(true) {
+        let _ = writeln!(out, "{}", text_field(result, "message", "No profile."));
+        return out;
+    }
+    let _ = writeln!(
+        out,
+        "Profiling stopped. Zip: {}",
+        text_field(result, "zipPath", "?")
+    );
+    match result.get("profilePath").and_then(Value::as_str) {
+        Some(path) => {
+            let path = terminal_text(path);
+            let _ = writeln!(out, "Profile: {path}");
+            let _ = writeln!(out, "Analyze with: al-explorer profile analyze {path}");
+        }
+        None => {
+            let _ = writeln!(
+                out,
+                "{}",
+                text_field(result, "message", "No .alcpuprofile.")
+            );
+        }
+    }
+    out.push_str(&warning_lines(result));
+    out
+}
+
 pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
     match subcmd {
         ProfileCommands::Start {
-            server,
-            company,
-            username,
-            password,
-            output_dir,
+            config,
+            break_on_next,
+            kind,
+            interval,
+            user,
+            session_id,
+            allow_production,
         } => {
             let mut client = match connect(None) {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            let params = match bc_server_params(
+            let params = snapshot_params(
                 "start",
-                server,
-                company,
-                username.as_deref(),
-                password.as_deref(),
-                output_dir.as_deref(),
-            ) {
-                Ok(params) => params,
-                Err(error) => return report_error(&error, json),
-            };
+                vec![
+                    ("config", config.as_ref().map(|c| serde_json::json!(c))),
+                    ("breakOnNext", Some(serde_json::json!(break_on_next))),
+                    ("kind", Some(serde_json::json!(kind))),
+                    ("interval", interval.map(|i| serde_json::json!(i))),
+                    ("userId", user.as_ref().map(|u| serde_json::json!(u))),
+                    ("sessionId", session_id.map(|id| serde_json::json!(id))),
+                    (
+                        "allowProduction",
+                        allow_production.then(|| serde_json::json!(true)),
+                    ),
+                ],
+            );
             match request_checked(&mut client, "profiling", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
                     } else {
-                        let session_id = text_field(&result, "sessionId", "?");
-                        let status = text_field(&result, "status", "?");
-                        println!("Profiling started: session={session_id} ({status})");
-                        eprintln!("Run `al profile stop --session-id {session_id}` when done.");
+                        let context = text_field(&result, "debuggingContext", "?");
+                        let profile = text_field(&result, "profile", "?");
+                        println!("Profiling started: context={context} ({profile})");
+                        eprintln!("Run `al-explorer profile stop --context {context}` when done.");
+                        let mut out = String::new();
+                        out.push_str(&warning_lines(&result));
+                        print!("{out}");
                     }
                     ExitCode::SUCCESS
                 }
@@ -577,41 +616,53 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
             }
         }
 
-        ProfileCommands::Stop {
-            session_id,
-            server,
-            company,
-            username,
-            password,
-            output_dir,
-        } => {
+        ProfileCommands::Status { context } => {
             let mut client = match connect(None) {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            let mut params = match bc_server_params(
-                "stop",
-                server,
-                company,
-                username.as_deref(),
-                password.as_deref(),
-                output_dir.as_deref(),
-            ) {
-                Ok(params) => params,
-                Err(error) => return report_error(&error, json),
-            };
-            if let Some(sid) = session_id {
-                params["sessionId"] = serde_json::json!(sid);
-            }
+            let params = snapshot_params(
+                "status",
+                vec![("context", context.as_ref().map(|c| serde_json::json!(c)))],
+            );
             match request_checked(&mut client, "profiling", Some(params)) {
                 Ok(result) => {
                     if json {
                         print_json(&result);
                     } else {
-                        let path = text_field(&result, "path", "?");
-                        let status = text_field(&result, "status", "?");
-                        println!("Profiling {status}. Profile saved: {path}");
-                        eprintln!("Analyze with: al profile analyze {path}");
+                        print!("{}", snapshot_status_text(&result));
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(e) => report_error(&e, json),
+            }
+        }
+
+        ProfileCommands::Stop { context, out } => {
+            let mut client = match connect(None) {
+                Ok(c) => c,
+                Err(e) => return report_error(&e, json),
+            };
+            let out_dir = match out {
+                Some(dir) => match absolutize_path(dir) {
+                    Ok(dir) => Some(serde_json::json!(dir)),
+                    Err(error) => return report_error(&error, json),
+                },
+                None => None,
+            };
+            let params = snapshot_params(
+                "stop",
+                vec![
+                    ("context", context.as_ref().map(|c| serde_json::json!(c))),
+                    ("outputDir", out_dir),
+                ],
+            );
+            match request_checked(&mut client, "profiling", Some(params)) {
+                Ok(result) => {
+                    if json {
+                        print_json(&result);
+                    } else {
+                        print!("{}", profile_stop_text(&result));
                     }
                     ExitCode::SUCCESS
                 }

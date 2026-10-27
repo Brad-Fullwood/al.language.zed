@@ -1,6 +1,5 @@
 //! Build, package, metrics, snapshot/profiling, sort/organize, and BC-server dispatchers.
 
-mod bc_server_params;
 mod compile;
 mod file_refresh;
 mod metrics;

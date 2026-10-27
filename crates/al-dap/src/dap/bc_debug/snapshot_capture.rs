@@ -23,9 +23,11 @@ use al_bc::snapshot::state::{now_secs, SessionRecord, SessionStore, SnappointRec
 
 use super::automation;
 use super::snapshot_debugger::{
-    new_debugging_context, snapshot_attach, snapshot_finish, snapshot_status, SnapshotAttachKind,
-    SnapshotAttachRequest, SnapshotBreakpointLocation, SnapshotClientType, SnapshotDebuggerError,
-    SnapshotLine, SnapshotObjectType, SnapshotVerbosity,
+    new_debugging_context, snapshot_attach, snapshot_endpoint_metadata, snapshot_finish,
+    snapshot_status, SnapshotAttachKind, SnapshotAttachRequest, SnapshotBreakpointLocation,
+    SnapshotClientType, SnapshotDebuggerError, SnapshotLine, SnapshotObjectType, SnapshotProfile,
+    SnapshotProfileKind, SnapshotVerbosity, EXECUTION_CONTEXT_PROFILING,
+    SAMPLE_PROFILING_MIN_API_VERSION,
 };
 use super::BcDebugConfig;
 
@@ -263,6 +265,8 @@ pub struct StartRequest<'a> {
     pub user_id: Option<String>,
     pub snappoints: Vec<SnappointRecord>,
     pub allow_production: bool,
+    /// Attach for profiling (ExecutionContext 2) instead of debugging.
+    pub profile: Option<SnapshotProfile>,
 }
 
 pub struct Started {
@@ -282,7 +286,40 @@ fn attach_kind_text(kind: SnapshotAttachKind) -> &'static str {
     }
 }
 
-/// Attach the snappoints and remember the session.
+/// Sampling profiling needs `webApiVersion` 3.0. Mirrors
+/// SnapshotDebuggerAttachInitializeRequestHandler.cs:60-68: the attach is refused
+/// only when the server reported a version below 3.0, and goes ahead when the
+/// metadata is unavailable (the host's `serverInfo != null` test).
+async fn ensure_sampling_supported(
+    http: &reqwest::Client,
+    config: &BcDebugConfig,
+    token: &str,
+    allow_production: bool,
+) -> Result<()> {
+    let Ok((metadata, _)) = snapshot_endpoint_metadata(http, config, token, allow_production).await
+    else {
+        return Ok(());
+    };
+    let Some(version) = metadata.web_api_version.as_deref() else {
+        return Ok(());
+    };
+    let (mut have, mut need) = (
+        version_key(version),
+        version_key(SAMPLE_PROFILING_MIN_API_VERSION),
+    );
+    let width = have.len().max(need.len());
+    have.resize(width, 0);
+    need.resize(width, 0);
+    if have < need {
+        return Err(invalid(format!(
+            "sampling profiling needs snapshot API version {SAMPLE_PROFILING_MIN_API_VERSION} or later, this environment reports {version}. Use --kind instrumentation"
+        )));
+    }
+    Ok(())
+}
+
+/// Attach the snappoints and remember the session. With `profile` set it
+/// attaches a profiling session (no snappoints) instead.
 pub async fn start(
     http: &reqwest::Client,
     token: &str,
@@ -296,8 +333,22 @@ pub async fn start(
     let (verbosity, verbosity_name) = parse_verbosity(request.verbosity).map_err(invalid)?;
     let locations = group_snappoints(&request.snappoints)?;
 
+    if matches!(
+        request.profile,
+        Some(SnapshotProfile {
+            kind: SnapshotProfileKind::Sampling,
+            ..
+        })
+    ) {
+        ensure_sampling_supported(http, request.config, token, request.allow_production).await?;
+    }
+
     let debugging_context = new_debugging_context();
     let mut attach = SnapshotAttachRequest::new(debugging_context.clone());
+    if let Some(profile) = request.profile {
+        attach.execution_context = EXECUTION_CONTEXT_PROFILING;
+        attach.profile = Some(profile);
+    }
     attach.client_type = client;
     attach.user_id = request.user_id.clone();
     attach.locations = locations;
@@ -337,6 +388,7 @@ pub async fn start(
         started_at: None,
         zip_path: None,
         finished_at: None,
+        profile: request.profile.map(|p| format!("{:?}", p.kind)),
     };
     let save_error = store.save(&record).err().map(|error| {
         format!(

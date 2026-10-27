@@ -6,6 +6,7 @@ pub mod browser;
 pub mod filename;
 pub mod jsonc;
 pub mod procedure;
+pub mod profile_timing;
 pub mod profiler;
 pub mod test_result;
 

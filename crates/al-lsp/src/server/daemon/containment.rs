@@ -867,7 +867,7 @@ mod tests {
             ),
             (
                 "profiling",
-                serde_json::json!({ "cmd": "analyze", "outputDir": at(""), "path": at("secret") }),
+                serde_json::json!({ "cmd": "stop", "outputDir": at("") }),
             ),
             (
                 "tests.run_batch",

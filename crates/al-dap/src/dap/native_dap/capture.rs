@@ -539,6 +539,7 @@ where
                 user_id: request.3,
                 snappoints: points,
                 allow_production: request.4,
+                profile: None,
             },
         )
         .await;

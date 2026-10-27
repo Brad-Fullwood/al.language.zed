@@ -684,3 +684,267 @@ async fn a_default_snapshots_dir_that_links_out_of_the_project_is_refused() {
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     assert_eq!(requests(&env).await.len(), 1, "no finish request was sent");
 }
+
+// Profiling over the snapshot debugger. The attach body and the sampling zip
+// below are built from the decompiled types (SnapshotDebuggerAttachPayloadWrapper,
+// CpuProfileGenerator, CpuProfile). No real profiling capture exists yet:
+// replace these fixtures with a CDX capture when one is recorded.
+
+use crate::server::daemon::build_dispatch::dispatch_profiling;
+
+fn profile_zip(ctx: &str, entry: Option<&str>) -> Vec<u8> {
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let name = entry.map_or_else(|| "other.txt".to_string(), |e| format!("{ctx}{e}"));
+    writer
+        .start_file(name, zip::write::SimpleFileOptions::default())
+        .unwrap();
+    writer
+        .write_all(br#"{"nodes":[],"samples":[],"timeDeltas":[],"sampleExecutionTimes":[]}"#)
+        .unwrap();
+    writer.finish().unwrap().into_inner()
+}
+
+async fn profiling_ok(env: &Env, params: Value) -> Value {
+    let response = dispatch_profiling(&env.workspace, 9, &params).await;
+    if let Some(error) = &response.error {
+        panic!("profiling call failed: {error:?}");
+    }
+    response.result.unwrap()
+}
+
+async fn profiling_err(env: &Env, params: Value) -> (i32, String) {
+    let error = dispatch_profiling(&env.workspace, 9, &params)
+        .await
+        .error
+        .expect("an error");
+    (error.code, error.message)
+}
+
+async fn mock_metadata(env: &Env, version: &str) {
+    Mock::given(method("GET"))
+        .and(path("/BC/snapshotdebugger/snapshotendpointmetadata"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "webApiVersion": version })))
+        .mount(&env.server)
+        .await;
+}
+
+async fn attach_body(env: &Env) -> Value {
+    let sent = requests(env).await;
+    let attach = sent
+        .iter()
+        .find(|r| r.url.path().ends_with("/attach"))
+        .expect("an attach request");
+    serde_json::from_slice(&attach.body).unwrap()
+}
+
+fn profile_start_params(extra: Value) -> Value {
+    let mut params = json!({ "cmd": "start", "config": "Local", "accessToken": TOKEN });
+    for (key, value) in extra.as_object().unwrap() {
+        params[key] = value.clone();
+    }
+    params
+}
+
+#[tokio::test]
+async fn profile_start_attaches_with_execution_context_2_and_sampling_kind() {
+    let env = env().await;
+    mock_metadata(&env, "3.0").await;
+    mock_attach(&env, "NextSessionOnTenant").await;
+    let result = profiling_ok(&env, profile_start_params(json!({}))).await;
+    let context = result["debuggingContext"].as_str().unwrap().to_string();
+    assert_eq!(result["status"], "profiling");
+    assert_eq!(result["profile"], "Sampling");
+    assert_eq!(result["samplingIntervalMs"], 100);
+    let body = attach_body(&env).await;
+    assert_eq!(
+        body,
+        json!({
+            "DebuggingContext": context,
+            "ClientType": 1,
+            "SourceBreakpointLocations": [],
+            "SessionId": -1,
+            "ExecutionContext": 2,
+            "Kind": 1,
+            "SamplingInterval": 100,
+        })
+    );
+    let saved = SessionStore::at(&env.store)
+        .load(&context)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.profile.as_deref(), Some("Sampling"));
+    assert!(!store_text(&env.store).contains(TOKEN), "token was stored");
+}
+
+#[tokio::test]
+async fn profile_start_instrumentation_sends_kind_0_without_an_interval() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    profiling_ok(
+        &env,
+        profile_start_params(json!({ "kind": "instrumentation" })),
+    )
+    .await;
+    let body = attach_body(&env).await;
+    assert_eq!(body["ExecutionContext"], 2);
+    assert_eq!(body["Kind"], 0);
+    assert!(body.get("SamplingInterval").is_none(), "{body}");
+    // Instrumentation does not need the sampling version, so no metadata call.
+    assert!(requests(&env)
+        .await
+        .iter()
+        .all(|r| !r.url.path().ends_with("snapshotendpointmetadata")));
+    let (code, _) = profiling_err(
+        &env,
+        profile_start_params(json!({ "kind": "instrumentation", "interval": 50 })),
+    )
+    .await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+}
+
+#[tokio::test]
+async fn profile_start_sampling_is_refused_below_api_version_3() {
+    let env = env().await;
+    mock_metadata(&env, "2.1").await;
+    mock_attach(&env, "UserSession").await;
+    let (code, message) = profiling_err(&env, profile_start_params(json!({}))).await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+    assert!(message.contains("3.0"), "{message}");
+    assert!(requests(&env)
+        .await
+        .iter()
+        .all(|r| !r.url.path().ends_with("/attach")));
+}
+
+#[tokio::test]
+async fn profile_status_and_stop_extract_the_alcpuprofile_from_the_zip() {
+    let env = env().await;
+    mock_metadata(&env, "3.0").await;
+    mock_attach(&env, "UserSession").await;
+    let context = profiling_ok(&env, profile_start_params(json!({ "interval": 50 }))).await
+        ["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(attach_body(&env).await["SamplingInterval"], 50);
+
+    mock_op(
+        &env,
+        "status",
+        ResponseTemplate::new(200).set_body_string("Initialized"),
+    )
+    .await;
+    let status = profiling_ok(&env, json!({ "cmd": "status", "accessToken": TOKEN })).await;
+    assert_eq!(status["debuggingContext"], context);
+    assert_eq!(status["status"], "Initialized");
+
+    mock_op(
+        &env,
+        "finish",
+        ResponseTemplate::new(200)
+            .insert_header("ETag", "\"Sampling\"")
+            .set_body_bytes(profile_zip(&context, Some(".alcpuprofile"))),
+    )
+    .await;
+    let stop = profiling_ok(&env, json!({ "cmd": "stop", "accessToken": TOKEN })).await;
+    assert_eq!(stop["empty"], false);
+    let profile = PathBuf::from(stop["profilePath"].as_str().unwrap());
+    assert_eq!(
+        profile,
+        env.root
+            .join(".snapshots")
+            .join(format!("{context}.alcpuprofile"))
+    );
+    assert!(std::fs::read_to_string(&profile)
+        .unwrap()
+        .contains("timeDeltas"));
+    assert!(PathBuf::from(stop["zipPath"].as_str().unwrap()).exists());
+}
+
+#[tokio::test]
+async fn profile_stop_keeps_a_zip_without_the_profile_entry_and_reports_an_empty_body() {
+    let env = env().await;
+    mock_metadata(&env, "3.0").await;
+    mock_attach(&env, "UserSession").await;
+    let context = profiling_ok(&env, profile_start_params(json!({}))).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    mock_op(
+        &env,
+        "finish",
+        ResponseTemplate::new(200)
+            .insert_header("ETag", "\"Sampling\"")
+            .set_body_bytes(profile_zip(&context, None)),
+    )
+    .await;
+    let stop = profiling_ok(&env, json!({ "cmd": "stop", "accessToken": TOKEN })).await;
+    assert!(stop["profilePath"].is_null());
+    assert!(stop["message"]
+        .as_str()
+        .unwrap()
+        .contains("no .alcpuprofile"));
+    assert!(PathBuf::from(stop["zipPath"].as_str().unwrap()).exists());
+
+    let env = env_with("OnPrem").await;
+    mock_metadata(&env, "3.0").await;
+    mock_attach(&env, "UserSession").await;
+    profiling_ok(&env, profile_start_params(json!({}))).await;
+    mock_op(&env, "finish", ResponseTemplate::new(200)).await;
+    let stop = profiling_ok(&env, json!({ "cmd": "stop", "accessToken": TOKEN })).await;
+    assert_eq!(stop["empty"], true);
+}
+
+#[tokio::test]
+async fn profile_stop_for_instrumentation_says_conversion_is_not_implemented() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    profiling_ok(
+        &env,
+        profile_start_params(json!({ "kind": "instrumentation" })),
+    )
+    .await;
+    mock_op(
+        &env,
+        "finish",
+        ResponseTemplate::new(200).set_body_bytes(SYNTHETIC_ZIP.to_vec()),
+    )
+    .await;
+    let stop = profiling_ok(&env, json!({ "cmd": "stop", "accessToken": TOKEN })).await;
+    assert!(stop["profilePath"].is_null());
+    assert!(stop["message"]
+        .as_str()
+        .unwrap()
+        .contains("not implemented"));
+}
+
+#[tokio::test]
+async fn snapshot_and_profile_commands_pick_their_own_kind_of_session() {
+    let env = env().await;
+    mock_metadata(&env, "3.0").await;
+    mock_attach(&env, "UserSession").await;
+    let snapshot = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let profile = profiling_ok(&env, profile_start_params(json!({}))).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    mock_op(
+        &env,
+        "status",
+        ResponseTemplate::new(200).set_body_string("Initialized"),
+    )
+    .await;
+    let status = profiling_ok(&env, json!({ "cmd": "status", "accessToken": TOKEN })).await;
+    assert_eq!(status["debuggingContext"], profile);
+    let status = ok(&env, json!({ "cmd": "status", "accessToken": TOKEN })).await;
+    assert_eq!(status["debuggingContext"], snapshot);
+    let (code, _) = err(
+        &env,
+        json!({ "cmd": "status", "context": profile, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+}

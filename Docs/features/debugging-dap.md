@@ -45,7 +45,7 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 | MCP tool | `server/mcp/mod.rs` (`al_debug`) | schema mapped to daemon method `debug` |
 | BC REST | `bc_client.rs` | publish `.app`, RAD delta, status (size caps + secret redaction) |
 | TLS helper | `http_auth.rs` | client builder. Warns loudly when cert validation is disabled |
-| Profiling | `profiling.rs` | start/stop CPU profiling, parse `.alcpuprofile` hotspots |
+| Profiling | `profiling.rs`, `bc_debug/snapshot_capture.rs` | start/status/stop through the snapshot debugger (ExecutionContext 2), parse `.alcpuprofile` hotspots |
 | Snapshots | `snapshot/` | snapshot debugger zip reader, session store and saved zips |
 
 ## DAP requests implemented
@@ -180,9 +180,15 @@ shapes with a warning. Live check on CDX pending in the lead's contract run.
 
 ## Profiling & snapshots
 
-- **Profiling (`profiling.rs`):** start/stop CPU profiling against the BC dev endpoint, download an
-  `.alcpuprofile` (Chrome DevTools format), and analyze hotspots using sampled `timeDeltas`, with
-  hit counts as a fallback when timing data is absent. See also
+- **Profiling (`profiling.rs`):** `profile start|status|stop` use the snapshot debugger REST API
+  (`snapshotdebugger/attach` with ExecutionContext 2, then `status` and `finish`), the same client as
+  snapshots. A sampling profile (`--kind sampling`, the default, interval 50, 100 or 150 ms) needs
+  snapshot API version 3.0 and `stop` saves `<context>.alcpuprofile` from the zip. An instrumentation
+  profile (`--kind instrumentation`) returns a snapshot zip that is saved but not converted to an
+  `.alcpuprofile`. `analyze` reads the file (Chrome DevTools format) and takes the time of a node from
+  `sampleExecutionTimes` (inclusive, self is inclusive minus children), with hit counts as a fallback
+  when timing data is absent. The time unit is assumed to be microseconds until a real capture
+  confirms it. See also
   [analysis-and-insight](./analysis-and-insight.md) for mapping hotspots to source.
 - **Snapshots (`snapshot/`):** the snapshot debugger zip reader, the session store that remembers a
   started session between commands, and `save_finished_snapshot`. The REST calls (attach, status,
@@ -283,7 +289,7 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   with `breakpoint`, `state`, `stack`, `variables`/`globals`/`expand`, `eval`, `continue`/`step`, and
   `stop` calls in the same MCP process.
 - **CLI:** `al-explorer debug start|breakpoint|state|eval|continue|step|history|stop`.
-  `al-explorer profile start|stop|analyze`. `al-explorer snapshot start|status|finish|list|show`
+  `al-explorer profile start|status|stop|analyze`. `al-explorer snapshot start|status|finish|list|show`
   ([snapshot-debugging](./snapshot-debugging.md)). `al-explorer init-debug` to scaffold `.zed/debug.json`.
 
 ## Limitations

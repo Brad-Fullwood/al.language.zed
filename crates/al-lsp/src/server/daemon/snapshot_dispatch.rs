@@ -22,7 +22,10 @@ use al_dap::dap::bc_debug::snapshot_capture::{
     self, environment_version_warnings, parse_client_type, parse_verbosity, CaptureError,
     FinishResult, StartRequest, VersionInfo,
 };
-use al_dap::dap::bc_debug::snapshot_debugger::{guard_production, SnapshotDebuggerError};
+use al_dap::dap::bc_debug::snapshot_debugger::{
+    guard_production, SnapshotDebuggerError, SnapshotProfile, SnapshotProfileKind,
+    SnapshotSamplingInterval,
+};
 use al_dap::dap::bc_debug::BcDebugConfig;
 use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
@@ -44,7 +47,7 @@ fn internal(message: impl Into<String>) -> Failure {
     (error_codes::INTERNAL_ERROR, message.into())
 }
 
-fn answer(id: u64, outcome: Result<Value, Failure>) -> Response {
+pub(in crate::server::daemon) fn answer(id: u64, outcome: Result<Value, Failure>) -> Response {
     match outcome {
         Ok(value) => Response::ok(id, value),
         Err((code, message)) => Response::error(id, code, message),
@@ -319,6 +322,7 @@ async fn start(workspace: &Workspace, params: &Value) -> Result<Value, Failure> 
             user_id,
             snappoints,
             allow_production,
+            profile: None,
         },
     )
     .await
@@ -355,22 +359,64 @@ async fn start(workspace: &Workspace, params: &Value) -> Result<Value, Failure> 
     }))
 }
 
-/// The record named by `context`, or the latest one.
-fn pick_record(params: &Value) -> Result<SessionRecord, Failure> {
+/// Which kind of remembered session a command works on. A snapshot command
+/// refuses a profiling session and the other way round, and "the latest one"
+/// means the latest of the same kind.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SessionKind {
+    Snapshot,
+    Profile,
+}
+
+impl SessionKind {
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Snapshot => "snapshot",
+            Self::Profile => "profiling",
+        }
+    }
+
+    fn matches(self, record: &SessionRecord) -> bool {
+        record.profile.is_some() == (self == Self::Profile)
+    }
+}
+
+/// The record named by `context`, or the latest one of this kind.
+fn pick_record(params: &Value, kind: SessionKind) -> Result<SessionRecord, Failure> {
     let store = session_store()?;
+    let noun = kind.noun();
     match opt_str(params, "context")? {
-        Some(context) => store
-            .load(context)
-            .map_err(|error| invalid(format!("context `{context}`: {error}")))?
-            .ok_or_else(|| {
-                invalid(format!(
-                    "no remembered snapshot session for context `{context}`"
-                ))
-            }),
-        None => store
-            .latest()
-            .map_err(|error| internal(format!("cannot read the snapshot session store: {error}")))?
-            .ok_or_else(|| invalid("no remembered snapshot session: run `snapshot start` first")),
+        Some(context) => {
+            let record = store
+                .load(context)
+                .map_err(|error| invalid(format!("context `{context}`: {error}")))?
+                .ok_or_else(|| {
+                    invalid(format!(
+                        "no remembered {noun} session for context `{context}`"
+                    ))
+                })?;
+            if kind.matches(&record) {
+                Ok(record)
+            } else {
+                Err(invalid(format!(
+                    "context `{context}` is not a {noun} session"
+                )))
+            }
+        }
+        None => match kind {
+            SessionKind::Snapshot => store.latest(),
+            SessionKind::Profile => store.latest_profile(),
+        }
+        .map_err(|error| internal(format!("cannot read the snapshot session store: {error}")))?
+        .ok_or_else(|| {
+            invalid(format!(
+                "no remembered {noun} session: run `{} start` first",
+                match kind {
+                    SessionKind::Snapshot => "snapshot",
+                    SessionKind::Profile => "profile",
+                }
+            ))
+        }),
     }
 }
 
@@ -407,9 +453,13 @@ fn config_for_record(
     Ok((root, config))
 }
 
-async fn status(workspace: &Workspace, params: &Value) -> Result<Value, Failure> {
+async fn status_session(
+    workspace: &Workspace,
+    params: &Value,
+    kind: SessionKind,
+) -> Result<(SessionRecord, snapshot_capture::StatusOutcome), Failure> {
     let allow_production = opt_bool(params, "allowProduction")?;
-    let mut record = pick_record(params)?;
+    let mut record = pick_record(params, kind)?;
     let (_, config) = config_for_record(workspace, &record)?;
     guard_production(&config, allow_production).map_err(snapshot_failure)?;
     let store = session_store()?;
@@ -425,6 +475,11 @@ async fn status(workspace: &Workspace, params: &Value) -> Result<Value, Failure>
     )
     .await
     .map_err(capture_failure)?;
+    Ok((record, outcome))
+}
+
+async fn status(workspace: &Workspace, params: &Value) -> Result<Value, Failure> {
+    let (record, outcome) = status_session(workspace, params, SessionKind::Snapshot).await?;
     let mut warnings = Vec::new();
     warnings.extend(outcome.save_error);
     warnings.extend(outcome.warning);
@@ -449,10 +504,14 @@ fn output_dir(workspace: &Workspace, params: &Value) -> Result<Option<PathBuf>, 
     }
 }
 
-async fn finish(workspace: &Workspace, params: &Value) -> Result<Value, Failure> {
+async fn finish_session(
+    workspace: &Workspace,
+    params: &Value,
+    kind: SessionKind,
+) -> Result<(SessionRecord, snapshot_capture::FinishOutcome), Failure> {
     let allow_production = opt_bool(params, "allowProduction")?;
     let dir = output_dir(workspace, params)?;
-    let mut record = pick_record(params)?;
+    let mut record = pick_record(params, kind)?;
     let (_, config) = config_for_record(workspace, &record)?;
     guard_production(&config, allow_production).map_err(snapshot_failure)?;
     let store = session_store()?;
@@ -469,6 +528,11 @@ async fn finish(workspace: &Workspace, params: &Value) -> Result<Value, Failure>
     )
     .await
     .map_err(capture_failure)?;
+    Ok((record, outcome))
+}
+
+async fn finish(workspace: &Workspace, params: &Value) -> Result<Value, Failure> {
+    let (record, outcome) = finish_session(workspace, params, SessionKind::Snapshot).await?;
     let mut warnings = Vec::new();
     warnings.extend(outcome.save_error);
     Ok(match outcome.result {
@@ -552,6 +616,178 @@ async fn show(workspace: &Workspace, params: &Value) -> Result<Value, Failure> {
     })
     .await
     .map_err(|error| internal(format!("snapshot reader stopped: {error}")))?
+}
+
+/// Profiling start: the daemon method `profiling` with `cmd` `start`. It is
+/// the snapshot attach with ExecutionContext 2 (Profiling), `Kind` and, for
+/// sampling, `SamplingInterval`, the payload Microsoft's AL host sends
+/// (SnapshotDebuggerAttachInitializeRequestHandler.cs:77-91). Nothing else
+/// differs from `snapshot start`, so the session is remembered in the same
+/// store with `profile` set.
+pub(in crate::server::daemon) async fn profile_start(
+    workspace: &Workspace,
+    params: &Value,
+) -> Result<Value, Failure> {
+    let root = project_root(workspace)?;
+    let allow_production = opt_bool(params, "allowProduction")?;
+    let client_text = opt_str(params, "breakOnNext")?.unwrap_or("WebClient");
+    let (_, client_name) = parse_client_type(client_text).map_err(invalid)?;
+    let kind = match opt_str(params, "kind")?.unwrap_or("sampling") {
+        text if text.eq_ignore_ascii_case("sampling") => SnapshotProfileKind::Sampling,
+        text if text.eq_ignore_ascii_case("instrumentation") => {
+            SnapshotProfileKind::Instrumentation
+        }
+        other => {
+            return Err(invalid(format!(
+                "'kind' must be sampling or instrumentation, got `{other}`"
+            )))
+        }
+    };
+    let sampling_interval = match (kind, params.get("interval")) {
+        (SnapshotProfileKind::Sampling, None | Some(Value::Null)) => {
+            Some(SnapshotSamplingInterval::Every100ms)
+        }
+        (SnapshotProfileKind::Sampling, Some(value)) => Some(
+            value
+                .as_u64()
+                .and_then(SnapshotSamplingInterval::from_millis)
+                .ok_or_else(|| invalid("'interval' must be 50, 100 or 150 (milliseconds)"))?,
+        ),
+        (SnapshotProfileKind::Instrumentation, None | Some(Value::Null)) => None,
+        (SnapshotProfileKind::Instrumentation, Some(_)) => {
+            return Err(invalid("'interval' only applies to sampling profiles"))
+        }
+    };
+    let session_id = match params.get("sessionId") {
+        None | Some(Value::Null) => -1,
+        Some(value) => value
+            .as_i64()
+            .filter(|n| *n >= 0)
+            .ok_or_else(|| invalid("'sessionId' must be a non negative integer"))?,
+    };
+    let user = opt_str(params, "userId")?;
+
+    let (config, config_name) = load_config(&root, opt_str(params, "config")?)?;
+    guard_production(&config, allow_production).map_err(snapshot_failure)?;
+    let store = session_store()?;
+    let token = token_for(workspace, &config, params).await?;
+    let http = http_client(&config)?;
+    let user_id = match user {
+        Some(user) => Some(
+            snapshot_capture::resolve_user(
+                &http,
+                &config,
+                &token,
+                automation_base_override().as_deref(),
+                user,
+            )
+            .await
+            .map_err(capture_failure)?,
+        ),
+        None => None,
+    };
+    let started = snapshot_capture::start(
+        &http,
+        &token,
+        &store,
+        StartRequest {
+            config: &config,
+            configuration_name: Some(config_name),
+            project_root: &root,
+            client_type: client_name,
+            verbosity: "SnapPoint",
+            session_id,
+            user_id,
+            snappoints: Vec::new(),
+            allow_production,
+            profile: Some(SnapshotProfile {
+                kind,
+                sampling_interval,
+            }),
+        },
+    )
+    .await
+    .map_err(capture_failure)?;
+    Ok(json!({
+        "cmd": "start",
+        "debuggingContext": started.record.debugging_context,
+        "attachKind": started.attach_kind,
+        "profile": started.record.profile,
+        "samplingIntervalMs": sampling_interval.map(|i| i as u8),
+        "status": "profiling",
+        "warnings": started.save_error.into_iter().collect::<Vec<_>>(),
+    }))
+}
+
+/// Profiling status: the snapshot status call for a profiling session.
+pub(in crate::server::daemon) async fn profile_status(
+    workspace: &Workspace,
+    params: &Value,
+) -> Result<Value, Failure> {
+    let (record, outcome) = status_session(workspace, params, SessionKind::Profile).await?;
+    let mut warnings = Vec::new();
+    warnings.extend(outcome.save_error);
+    warnings.extend(outcome.warning);
+    Ok(json!({
+        "cmd": "status",
+        "debuggingContext": record.debugging_context,
+        "status": outcome.status,
+        "secondsSinceStarted": outcome.seconds_since_started,
+        "warnings": warnings,
+    }))
+}
+
+/// Profiling stop: the snapshot finish call. A sampling profile comes back as
+/// a zip holding `<debuggingcontext>.alcpuprofile`, which is saved beside the
+/// zip and returned as `profilePath` for `analyze`. An instrumentation profile
+/// is a snapshot zip. Microsoft's host turns it into a `.alcpuprofile` with
+/// `al/generatecpuprofile` (CpuProfileGenerator.cs), which needs the AL
+/// compilation and is not implemented here, so `profilePath` is null for it.
+pub(in crate::server::daemon) async fn profile_stop(
+    workspace: &Workspace,
+    params: &Value,
+) -> Result<Value, Failure> {
+    let (record, outcome) = finish_session(workspace, params, SessionKind::Profile).await?;
+    let mut warnings = Vec::new();
+    warnings.extend(outcome.save_error);
+    let instrumentation = record.profile.as_deref() == Some("Instrumentation");
+    Ok(match outcome.result {
+        FinishResult::Empty => json!({
+            "cmd": "stop",
+            "debuggingContext": record.debugging_context,
+            "status": "stopped",
+            "zipPath": null,
+            "bytes": 0,
+            "profilePath": null,
+            "empty": true,
+            "message": "The server returned no profile: no matching session ran while the profile was attached.",
+            "warnings": warnings,
+        }),
+        FinishResult::Saved {
+            zip,
+            bytes,
+            cpu_profile,
+        } => {
+            let message = match (&cpu_profile, instrumentation) {
+                (Some(_), _) => None,
+                (None, true) => Some(
+                    "An instrumentation profile is a snapshot zip. Converting it to a .alcpuprofile is not implemented, use --kind sampling for a file `profile analyze` reads.",
+                ),
+                (None, false) => Some("The zip holds no .alcpuprofile."),
+            };
+            json!({
+                "cmd": "stop",
+                "debuggingContext": record.debugging_context,
+                "status": "stopped",
+                "zipPath": zip.display().to_string(),
+                "bytes": bytes,
+                "profilePath": cpu_profile.map(|p| p.display().to_string()),
+                "empty": false,
+                "message": message,
+                "warnings": warnings,
+            })
+        }
+    })
 }
 
 pub(super) async fn dispatch_snapshot(workspace: &Workspace, id: u64, params: &Value) -> Response {
