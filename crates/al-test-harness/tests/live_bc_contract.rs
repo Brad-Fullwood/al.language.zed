@@ -413,7 +413,7 @@ impl DapClient {
     }
 }
 
-async fn publish_with_completed_status(project: &Path, config_name: &str) -> AnyResult<()> {
+async fn publish_succeeds_on_http_status(project: &Path, config_name: &str) -> AnyResult<()> {
     let workspace = al_workspace::Workspace::new();
     *workspace.config.write().await = al_project::config::AlConfig::load_effective(project)?;
     al_workspace::initialize_core_workspace(&workspace, project).await?;
@@ -422,7 +422,7 @@ async fn publish_with_completed_status(project: &Path, config_name: &str) -> Any
     let result = al_publish::publish(&workspace, &config).await?;
     if !result.success {
         return Err(failure(format!(
-            "publish/install did not reach completed state: {}",
+            "publish did not get an HTTP success status from dev/apps: {}",
             serde_json::to_string_pretty(&result)?
         ))
         .into());
@@ -914,7 +914,7 @@ fn repository_live_fixture_rejects_an_unsafe_tenant_before_network() -> AnyResul
 #[ignore = "requires explicit live Business Central inputs; run via make live-bc-contracts"]
 async fn live_bc_publish_dap_test_and_snapshot_contract() -> AnyResult<()> {
     let contract = LiveContract::from_env()?;
-    publish_with_completed_status(&contract.project, &contract.config_name).await?;
+    publish_succeeds_on_http_status(&contract.project, &contract.config_name).await?;
     exercise_native_dap(&contract).await?;
     exercise_cli_live_test_and_snapshots(&contract)?;
     Ok(())

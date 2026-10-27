@@ -1,17 +1,17 @@
 //! Business Central Dev API REST client.
 //!
-//! Wraps the two BC server REST endpoints this crate actually implements:
-//! - `POST /dev/extensions` — upload + publish a `.app` file (see [`BcClient::publish_extension`])
-//! - `PATCH /dev/applications/{appId}` — RAD incremental delta deploy (see [`BcClient::rad_publish`])
+//! Wraps the BC server REST endpoint this crate implements:
+//! - `POST /dev/apps` — multipart upload + publish of a `.app` file, with `IsRad=true` for the RAD
+//!   incremental deploy (see [`BcClient::publish_extension`] and [`BcClient::rad_publish`]).
+//!   Shape and success rule follow Microsoft's client, `AppsApiClient.cs:38-72` in the decompiled
+//!   `Microsoft.Dynamics.Nav.Deployment.ApiClients`: success is the HTTP status code and the
+//!   response body is not read.
 //!
 //! Reference endpoint: `{server}:{port}/{serverInstance}/dev/...`
 //!
 //! This client does **not** implement extension install/uninstall
-//! (`POST /dev/extensions/{id}/install`, `DELETE /dev/extensions/{id}`) or an
-//! application-status query (`GET /dev/applications/{appId}`) — there is no
-//! caller in this codebase for them today, and no live BC dev endpoint to
-//! verify a guessed wire shape against. `PublishPhase` (in `al-publish`)
-//! correspondingly has no `Install` variant.
+//! or an application-status query. Microsoft's client has no such calls on `dev/apps`
+//! either. `PublishPhase` (in `al-publish`) correspondingly has no `Install` variant.
 //!
 //! Authentication:
 //! - `UserPassword` — HTTP Basic (username + password from env vars `BC_USERNAME` / `BC_PASSWORD`)
@@ -27,7 +27,6 @@ use std::path::Path;
 use std::time::Duration;
 
 use reqwest::{Client, StatusCode};
-use serde::Deserialize;
 use thiserror::Error;
 use tracing::{debug, warn};
 
@@ -295,26 +294,6 @@ pub async fn read_error_body_capped(response: reqwest::Response) -> String {
     }
 }
 
-/// Response from `POST /dev/extensions` — extension publish result.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ExtensionPublishResponse {
-    pub app_id: Option<String>,
-    pub name: Option<String>,
-    pub version: Option<String>,
-    /// "Completed", "InProgress", etc.
-    pub status: Option<String>,
-    pub operation_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ApplicationStateResponse {
-    pub app_id: Option<String>,
-    pub status: Option<String>,
-    pub version: Option<String>,
-}
-
 /// HTTP client for the BC Dev API.
 pub struct BcClient {
     client: Client,
@@ -343,12 +322,22 @@ impl BcClient {
         })
     }
 
-    /// Returns the publish response (may be async — check `status`).
-    pub async fn publish_extension(
-        &self,
-        app_path: &Path,
-    ) -> Result<ExtensionPublishResponse, BcClientError> {
-        let url = format!("{}/dev/extensions", self.base_url);
+    /// Publish a `.app` with `POST dev/apps`, as Microsoft's client does
+    /// (`AppsApiClient.cs:38-72`). Success is the HTTP status code. The body is
+    /// not read, because Microsoft's client does not read it either
+    /// (`AppsApiClient.cs:66` builds `PublishResult(response.IsSuccessStatusCode, ...)`).
+    pub async fn publish_extension(&self, app_path: &Path) -> Result<(), BcClientError> {
+        self.post_dev_apps(app_path, false).await
+    }
+
+    /// RAD incremental deploy: the same `POST dev/apps` with `IsRad=true`
+    /// (`AppsApiClient.cs:46-49`).
+    pub async fn rad_publish(&self, app_path: &Path) -> Result<(), BcClientError> {
+        self.post_dev_apps(app_path, true).await
+    }
+
+    async fn post_dev_apps(&self, app_path: &Path, is_rad: bool) -> Result<(), BcClientError> {
+        let url = format!("{}/dev/apps", self.base_url);
         let app_bytes = read_app_capped(app_path).await?;
         let file_name = app_path
             .file_name()
@@ -356,50 +345,29 @@ impl BcClient {
             .unwrap_or("extension.app")
             .to_string();
 
-        debug!(url = %url, file = %file_name, bytes = app_bytes.len(), "Publishing extension");
+        debug!(url = %url, file = %file_name, bytes = app_bytes.len(), is_rad, "Publishing app");
 
-        let mut req = self
-            .client
-            .post(&url)
-            .body(app_bytes)
-            .header("Content-Type", "application/octet-stream");
-        req = self.apply_auth(req)?;
-        req = self.apply_tenant_query(req);
-
-        let response = req.send().await?;
-        self.handle_response(response).await
-    }
-
-    pub async fn rad_publish(
-        &self,
-        app_id: &str,
-        app_path: &Path,
-    ) -> Result<ApplicationStateResponse, BcClientError> {
-        // `app_id` comes from the repository's own app.json. Unencoded it
-        // steers the authenticated PATCH: `../../../admin/SomeEndpoint`
-        // normalises away in `Url::parse` and a `?` or `#` truncates the path.
-        if !is_guid(app_id) {
-            return Err(BcClientError::InvalidAppId(app_id.to_string()));
+        // Microsoft names the form part after the file (`AppsApiClient.cs:61`).
+        // Query values are the lower-cased enum names (`AppsApiClient.cs:53,67`).
+        // The standard route (reqwest multipart) covers the body, no custom encoder.
+        let part = reqwest::multipart::Part::bytes(app_bytes).file_name(file_name.clone());
+        let form = reqwest::multipart::Form::new().part(file_name, part);
+        let mut query = vec![("SchemaUpdateMode", "synchronize")];
+        if is_rad {
+            query.push(("IsRad", "true"));
         }
-        let url = format!(
-            "{}/dev/applications/{}",
-            self.base_url,
-            urlencoding::encode(app_id)
-        );
-        let app_bytes = read_app_capped(app_path).await?;
+        query.push(("DependencyPublishingOption", "default"));
 
-        debug!(url = %url, app_id = %app_id, bytes = app_bytes.len(), "RAD incremental deploy");
-
-        let mut req = self
-            .client
-            .patch(&url)
-            .body(app_bytes)
-            .header("Content-Type", "application/octet-stream");
+        let mut req = self.client.post(&url).query(&query).multipart(form);
         req = self.apply_auth(req)?;
         req = self.apply_tenant_query(req);
 
         let response = req.send().await?;
-        self.handle_response(response).await
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        self.map_error_response(status, response).await
     }
 
     fn apply_auth(
@@ -458,22 +426,6 @@ impl BcClient {
             Some(t) if !t.is_empty() && t != "default" => req.query(&[("tenant", t.as_str())]),
             _ => req,
         }
-    }
-
-    async fn handle_response<T: for<'de> Deserialize<'de>>(
-        &self,
-        response: reqwest::Response,
-    ) -> Result<T, BcClientError> {
-        let status = response.status();
-        if status.is_success() {
-            // Use the capped reader so a hostile BC server cannot stream an
-            // arbitrarily large JSON body into the daemon's address space
-            // (hardening — enforces MAX_BC_JSON_RESPONSE_BYTES via
-            // a Content-Length pre-check plus a post-read size re-check).
-            let body = read_json_body_capped::<T>(response).await?;
-            return Ok(body);
-        }
-        self.map_error_response(status, response).await
     }
 
     async fn map_error_response<T>(
@@ -1070,39 +1022,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn handle_response_success_path_uses_capped_json_reader() {
-        // The success branch must route through `read_json_body_capped`, which requires a
-        // Content-Length so the 16 MB cap is enforceable. A chunked (no
-        // Content-Length) 200 JSON body is therefore refused.
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/BC/dev/extensions"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .insert_header("Transfer-Encoding", "chunked")
-                    .set_body_string(r#"{"appId":"abc","status":"Completed"}"#),
-            )
-            .mount(&server)
-            .await;
-
-        let client = client_for(&server.uri());
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("ext.app");
-        tokio::fs::write(&app, b"app-bytes").await.unwrap();
-
-        let res = client.publish_extension(&app).await;
-        match res {
-            Err(BcClientError::ServerError { message, .. }) => {
-                assert!(
-                    message.contains("Content-Length"),
-                    "success path must enforce the capped JSON reader: {message}"
-                );
-            }
-            other => panic!("expected capped-reader ServerError, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn handle_response_error_path_uses_capped_error_reader() {
         // The non-2xx branch routes through `map_error_response`, which must
         // use `read_error_body_capped`. An
@@ -1112,7 +1031,7 @@ mod tests {
         let oversize = (MAX_ERROR_BODY_BYTES + 1).to_string();
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
             .respond_with(
                 wiremock::ResponseTemplate::new(500)
                     .insert_header("Content-Length", oversize.as_str())
@@ -1141,16 +1060,61 @@ mod tests {
         }
     }
 
+    // fixture source: AppsApiClient.cs:38-72 (Microsoft.Dynamics.Nav.Deployment.ApiClients).
+    // Microsoft posts a multipart body whose part is named after the file to
+    // `dev/apps?SchemaUpdateMode=synchronize&DependencyPublishingOption=default`
+    // (plus `IsRad=true` for RAD) and treats `IsSuccessStatusCode` as success without
+    // reading the response body. No BC response body has been recorded, so the
+    // mocks below return an empty body and a body with an arbitrary `status`
+    // string to show that neither changes the outcome.
+
     #[tokio::test]
-    async fn handle_response_success_path_accepts_capped_json_with_length() {
-        let body = r#"{"appId":"abc","status":"Completed"}"#;
+    async fn publish_extension_posts_multipart_to_dev_apps_and_accepts_empty_body() {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
+            .and(wiremock::matchers::query_param(
+                "SchemaUpdateMode",
+                "synchronize",
+            ))
+            .and(wiremock::matchers::query_param(
+                "DependencyPublishingOption",
+                "default",
+            ))
+            .and(|req: &wiremock::Request| {
+                let content_type = req
+                    .headers
+                    .get("Content-Type")
+                    .map(|v| v.to_str().unwrap_or_default().to_string())
+                    .unwrap_or_default();
+                let body = String::from_utf8_lossy(&req.body);
+                content_type.starts_with("multipart/form-data")
+                    && body.contains("name=\"ext.app\"; filename=\"ext.app\"")
+                    && !req.url.query_pairs().any(|(k, _)| k == "IsRad")
+            })
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        client
+            .publish_extension(&app)
+            .await
+            .expect("an empty 200 is a successful publish");
+    }
+
+    #[tokio::test]
+    async fn publish_extension_success_does_not_depend_on_the_response_body() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
             .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .insert_header("Content-Length", body.len().to_string().as_str())
-                    .set_body_string(body),
+                wiremock::ResponseTemplate::new(200).set_body_string(r#"{"status":"InProgress"}"#),
             )
             .mount(&server)
             .await;
@@ -1160,8 +1124,10 @@ mod tests {
         let app = dir.path().join("ext.app");
         tokio::fs::write(&app, b"app-bytes").await.unwrap();
 
-        let resp = client.publish_extension(&app).await.expect("should parse");
-        assert_eq!(resp.app_id.as_deref(), Some("abc"));
+        client
+            .publish_extension(&app)
+            .await
+            .expect("the HTTP status alone decides success");
     }
 
     #[tokio::test]
@@ -1175,7 +1141,7 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         let body = r#"{"status":"Completed"}"#;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
             .and(wiremock::matchers::query_param("tenant", "contoso"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
@@ -1219,7 +1185,7 @@ mod tests {
         // the "default" and "" tenant sentinels, mirroring `apply_tenant_query`'s
         // skip condition.
         wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
                     .insert_header("Content-Length", body.len().to_string().as_str())
@@ -1268,7 +1234,7 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         let body = r#"{"status":"Completed"}"#;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
             .and(wiremock::matchers::header(
                 "Authorization",
                 // base64("alice:wonderland")
@@ -1314,7 +1280,7 @@ mod tests {
         let server = wiremock::MockServer::start().await;
         let body = r#"{"status":"Completed"}"#;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
-            .and(wiremock::matchers::path("/BC/dev/extensions"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
             .and(|req: &wiremock::Request| !req.headers.contains_key("Authorization"))
             .respond_with(
                 wiremock::ResponseTemplate::new(200)
@@ -1358,24 +1324,13 @@ mod tests {
         assert_eq!(out.matches("[REDACTED]").count(), 3);
     }
 
-    // `rad_publish` (PATCH /dev/applications/{id}) previously had zero test
-    // coverage: every wiremock test in this module exercised only
-    // `publish_extension`. These pin the RAD URL shape (method + path +
-    // tenant query param) and `ApplicationStateResponse` handling.
-
     #[tokio::test]
-    async fn rad_publish_uses_patch_and_application_id_path() {
-        let body = r#"{"appId":"11111111-2222-3333-4444-555555555542","status":"Completed","version":"3.0.0.0"}"#;
+    async fn rad_publish_posts_dev_apps_with_is_rad_flag() {
         let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
-            .and(wiremock::matchers::path(
-                "/BC/dev/applications/11111111-2222-3333-4444-555555555542",
-            ))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .insert_header("Content-Length", body.len().to_string().as_str())
-                    .set_body_string(body),
-            )
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
+            .and(wiremock::matchers::query_param("IsRad", "true"))
+            .respond_with(wiremock::ResponseTemplate::new(204))
             .expect(1)
             .mount(&server)
             .await;
@@ -1385,66 +1340,17 @@ mod tests {
         let app = dir.path().join("ext.app");
         tokio::fs::write(&app, b"app-bytes").await.unwrap();
 
-        let resp = client
-            .rad_publish("11111111-2222-3333-4444-555555555542", &app)
-            .await
-            .expect("PATCH to the app-id path must match the mock");
-        assert_eq!(
-            resp.app_id.as_deref(),
-            Some("11111111-2222-3333-4444-555555555542")
-        );
-        assert_eq!(resp.version.as_deref(), Some("3.0.0.0"));
-        assert_eq!(resp.status.as_deref(), Some("Completed"));
-    }
-
-    #[tokio::test]
-    async fn rad_publish_sends_tenant_as_query_param() {
-        let body = r#"{"appId":"11111111-2222-3333-4444-555555555507","status":"Completed"}"#;
-        let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
-            .and(wiremock::matchers::path(
-                "/BC/dev/applications/11111111-2222-3333-4444-555555555507",
-            ))
-            .and(wiremock::matchers::query_param("tenant", "contoso"))
-            .respond_with(
-                wiremock::ResponseTemplate::new(200)
-                    .insert_header("Content-Length", body.len().to_string().as_str())
-                    .set_body_string(body),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let config = BcServerConfig {
-            name: "mock".to_string(),
-            environment_type: EnvironmentType::OnPrem,
-            server: Some(server.uri()),
-            server_instance: Some("BC".to_string()),
-            port: None,
-            environment_name: None,
-            tenant: Some("contoso".to_string()),
-            authentication: AuthMethod::Windows,
-            accept_invalid_certs: false,
-            debug_args: serde_json::json!({}),
-        };
-        let client = BcClient::new(&config).unwrap();
-        let dir = tempfile::tempdir().unwrap();
-        let app = dir.path().join("ext.app");
-        tokio::fs::write(&app, b"app-bytes").await.unwrap();
-
         client
-            .rad_publish("11111111-2222-3333-4444-555555555507", &app)
+            .rad_publish(&app)
             .await
-            .expect("tenant must be sent as a query param the mock matches on");
+            .expect("POST dev/apps with IsRad=true must match the mock");
     }
 
     #[tokio::test]
     async fn rad_publish_server_error_maps_to_server_error() {
         let server = wiremock::MockServer::start().await;
-        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
-            .and(wiremock::matchers::path(
-                "/BC/dev/applications/11111111-2222-3333-4444-555555555509",
-            ))
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
             .respond_with(wiremock::ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&server)
             .await;
@@ -1454,10 +1360,7 @@ mod tests {
         let app = dir.path().join("ext.app");
         tokio::fs::write(&app, b"app-bytes").await.unwrap();
 
-        let err = client
-            .rad_publish("11111111-2222-3333-4444-555555555509", &app)
-            .await
-            .expect_err("500 must error");
+        let err = client.rad_publish(&app).await.expect_err("500 must error");
         match err {
             BcClientError::ServerError { status, message } => {
                 assert_eq!(status, 500);
