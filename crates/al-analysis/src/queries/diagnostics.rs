@@ -143,6 +143,33 @@ pub fn syntax_diagnostics_at_root(
     diagnostics
 }
 
+/// [`syntax_diagnostics_at_root`] without the transaction rules, which need
+/// the resolved call graph. Pair with [`transaction_diagnostics_for_uri`].
+pub fn syntax_diagnostics_fast_at_root(
+    workspace: &Workspace,
+    uri: &Url,
+    config: &AlConfig,
+    project_root: Option<&std::path::Path>,
+) -> Vec<SyntaxDiagnostic> {
+    let Some((text, tree)) = al_source::parsing::get_or_parse(&workspace.documents, uri) else {
+        return vec![analysis_failed(format!(
+            "Diagnostics could not be computed because document '{uri}' is not loaded"
+        ))];
+    };
+
+    let mut diagnostics = collect_diagnostics_from_tree(&tree, &text, config);
+    if let Ok(path) = uri.to_file_path() {
+        diagnostics.extend(
+            native_workspace_diagnostics_impl(workspace, config, project_root, false)
+                .into_iter()
+                .filter_map(|(finding_path, diagnostic)| {
+                    (finding_path == path).then_some(diagnostic)
+                }),
+        );
+    }
+    diagnostics
+}
+
 /// Compute syntax/lint diagnostics for every indexed workspace file.
 ///
 /// Walks the [`FileIndex`](al_source::file_index::FileIndex) cached parse trees
@@ -279,6 +306,89 @@ pub fn native_workspace_diagnostics_at_root(
     config: &AlConfig,
     project_root: Option<&std::path::Path>,
 ) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
+    native_workspace_diagnostics_impl(workspace, config, project_root, true)
+}
+
+/// `AL-NL003` and `AL-NL004` from the resolved call graph.
+///
+/// This is the one native pass whose cost does not follow the edit. It builds
+/// a fully resolved call graph that includes every dependency package's
+/// source summaries, so a project that loads BaseApp with source (9908 files
+/// in the journey project) pays seconds on each call in a debug build.
+fn native_transaction_diagnostics(
+    workspace: &Workspace,
+    config: &AlConfig,
+    project_root: Option<&std::path::Path>,
+) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
+    let mut diagnostics = Vec::new();
+    let transaction_rules_enabled = [
+        super::transaction_lint::COMMIT_AFTER_DATABASE_CHANGE,
+        super::transaction_lint::DATABASE_WRITE_IN_TRY_STACK,
+    ]
+    .iter()
+    .any(|code| config.is_lint_rule_enabled(code));
+    if transaction_rules_enabled {
+        match super::transaction_lint::transaction_lints(workspace) {
+            Ok(findings) => {
+                for finding in findings {
+                    if !config.is_lint_rule_enabled(finding.code) {
+                        continue;
+                    }
+                    let severity = SyntaxDiagnosticSeverity::from(finding.severity);
+                    diagnostics.push((
+                        finding.file,
+                        SyntaxDiagnostic {
+                            message: finding.message,
+                            range: finding.range,
+                            severity,
+                            code: finding.code.to_string(),
+                            source: "al-native".to_string(),
+                        },
+                    ));
+                }
+            }
+            Err(error) => {
+                diagnostics.push((
+                    diagnostic_anchor_path(workspace, project_root),
+                    analysis_failed(format!(
+                        "Resolved transaction analysis could not be completed: {error}"
+                    )),
+                ));
+            }
+        }
+    }
+
+    diagnostics
+}
+
+/// The transaction findings (`AL-NL003/4`) that belong to one document.
+/// [`syntax_diagnostics_fast_at_root`] leaves them out so a caller can publish
+/// the cheap findings first and these when they are ready.
+#[must_use]
+pub fn transaction_diagnostics_for_uri(
+    workspace: &Workspace,
+    uri: &Url,
+    config: &AlConfig,
+    project_root: Option<&std::path::Path>,
+) -> Vec<SyntaxDiagnostic> {
+    let Ok(path) = uri.to_file_path() else {
+        return Vec::new();
+    };
+    if !config.enable_native_lint {
+        return Vec::new();
+    }
+    native_transaction_diagnostics(workspace, config, project_root)
+        .into_iter()
+        .filter_map(|(finding_path, diagnostic)| (finding_path == path).then_some(diagnostic))
+        .collect()
+}
+
+fn native_workspace_diagnostics_impl(
+    workspace: &Workspace,
+    config: &AlConfig,
+    project_root: Option<&std::path::Path>,
+    transaction: bool,
+) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
     if !config.enable_native_lint {
         return Vec::new();
     }
@@ -320,41 +430,12 @@ pub fn native_workspace_diagnostics_at_root(
 
     diagnostics.extend(native_binding_diagnostics(workspace, config));
 
-    let transaction_rules_enabled = [
-        super::transaction_lint::COMMIT_AFTER_DATABASE_CHANGE,
-        super::transaction_lint::DATABASE_WRITE_IN_TRY_STACK,
-    ]
-    .iter()
-    .any(|code| config.is_lint_rule_enabled(code));
-    if transaction_rules_enabled {
-        match super::transaction_lint::transaction_lints(workspace) {
-            Ok(findings) => {
-                for finding in findings {
-                    if !config.is_lint_rule_enabled(finding.code) {
-                        continue;
-                    }
-                    let severity = SyntaxDiagnosticSeverity::from(finding.severity);
-                    diagnostics.push((
-                        finding.file,
-                        SyntaxDiagnostic {
-                            message: finding.message,
-                            range: finding.range,
-                            severity,
-                            code: finding.code.to_string(),
-                            source: "al-native".to_string(),
-                        },
-                    ));
-                }
-            }
-            Err(error) => {
-                diagnostics.push((
-                    diagnostic_anchor_path(workspace, project_root),
-                    analysis_failed(format!(
-                        "Resolved transaction analysis could not be completed: {error}"
-                    )),
-                ));
-            }
-        }
+    if transaction {
+        diagnostics.extend(native_transaction_diagnostics(
+            workspace,
+            config,
+            project_root,
+        ));
     }
 
     if config.is_lint_rule_enabled(super::obsolete_usage::OBSOLETE_USAGE) {
