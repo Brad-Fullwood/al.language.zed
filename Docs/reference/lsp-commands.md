@@ -59,6 +59,6 @@ registered through `workspace/executeCommand`.
 
 ## Delegation
 
-`al.useOfficialLsp: true` launches `al-lsp --official-lsp`, delegating the entire session to
-Microsoft's AL Language Server (requires ALTool v17+). It is the only setting that changes the
+`al.useOfficialLsp: true` launches `al-lsp --official-lsp`, replacing al-lsp with altool's
+`launchlspserver` (requires ALTool v17+). It is not the VS Code server and lacks diagnostics, code actions, code lens and inlay hints. It is the only setting that changes the
 server's command line: the extension ignores `binary.arguments`, which a worktree can write.

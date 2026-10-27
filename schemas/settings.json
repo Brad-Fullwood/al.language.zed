@@ -198,7 +198,7 @@
     "al.useOfficialLsp": {
       "type": "boolean",
       "default": false,
-      "description": "Escape hatch: delegate the session to Microsoft's official AL Language Server (al-lsp --official-lsp), instead of this project's native server. Requires ALTool v17+ on the machine. An explicit binary.arguments override takes precedence over this setting."
+      "description": "Run altool's launchlspserver (al-lsp --official-lsp) instead of this project's native server. It is not the server the VS Code AL extension runs. It gives hover, definition, references, rename, formatting and completion, and no diagnostics, code actions, code lens or inlay hints. Requires ALTool v17+ on the machine."
     },
     "al.useOfficialDap": {
       "type": "boolean",

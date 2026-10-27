@@ -23,7 +23,7 @@ feature pages for implementation details and limitations.
 | Diagnostics | ✅ syntax native + 🔷 CodeAnalysis bridge | 🔷 CodeAnalysis |
 | Code actions / refactorings | ✅ curated native set | ✅ full compiler code-fix catalog |
 | Complexity metrics | ✅ | ❌ |
-| Delegate to Microsoft LSP | ✅ `al.useOfficialLsp` | n/a |
+| Replace al-lsp with Microsoft's altool LSP | 🟡 `al.useOfficialLsp` (hover, definition, references, rename, formatting, completion only) | n/a |
 
 ## Build, symbols, packaging
 
@@ -98,7 +98,7 @@ The project does not replace these. The Microsoft path is one setting away:
   (`al.useOfficialCompiler`, and the semantic bridge for editor diagnostics).
 - **Authoritative AL runtime semantics:** the Business Central server executes AL, and publish/runtime is
   the final compatibility validator for emitted `.app`s and for record/DB/HTTP/UI/report tests.
-- **Official AL Language Server:** `al.useOfficialLsp` delegates the whole editor session.
+- **Microsoft's altool LSP:** `al.useOfficialLsp` replaces the al-lsp process with `altool launchlspserver`. It is not the server VS Code runs and it lacks diagnostics, code actions, code lens and inlay hints. See [language-server](./features/language-server.md#microsoft-comparison).
 - **Official debug adapter:** `al.useOfficialDap` uses `EditorServices.Host`.
 
 ## Summary

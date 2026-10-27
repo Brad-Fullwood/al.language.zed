@@ -129,12 +129,21 @@ entry points.
 | Implementation | Rust, in-process, on every OS Zed runs on | .NET AL Language Server, VS Code-coupled |
 | Interactive latency | native parse + cached workspace + debounced bridge | server round-trips. Bridge is the only diagnostics source |
 | Diagnostics source | native syntax + optional CodeAnalysis bridge | CodeAnalysis only |
-| Escape hatch | `al.useOfficialLsp` delegates the whole session to Microsoft | n/a |
+| Alternative server | `al.useOfficialLsp` starts altool's `launchlspserver` in place of al-lsp (partial, see below) | n/a |
 | Editor portability | reused across Zed/CLI/MCP/daemon | VS Code-specific |
 
-For *compiler-grade* semantics the official server is authoritative. That is why the project keeps
-the semantic bridge for diagnostics/hover/completions and `al.useOfficialLsp` as a one-setting
-delegation. See [semantic-bridge](./semantic-bridge.md).
+For compiler-grade semantics the project keeps the semantic bridge for diagnostics, hover and
+completions. See [semantic-bridge](./semantic-bridge.md).
+
+`al.useOfficialLsp` (and `al-lsp --official-lsp`) replaces the al-lsp process with altool's
+`launchlspserver`, Microsoft's AL Language Server for agentic AL development (altool v17 or
+later, found through `AL_TOOL_PATH`). It is a different server from the one the VS Code AL
+extension runs (`Microsoft.Dynamics.Nav.EditorServices.Host.dll`). It gives hover, go to
+definition, references, rename, formatting and completion. It does not give diagnostics, code
+actions, code lens or inlay hints, and the Zed extension does not forward `al.*` settings to it.
+
+Starting `Microsoft.Dynamics.Nav.EditorServices.Host` (the VS Code server) is queued as a
+follow-up, see finding `delegation-03-official-lsp-is-not-the-editor-server.md`.
 
 ## Why this approach
 
