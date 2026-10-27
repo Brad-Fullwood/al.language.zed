@@ -47,7 +47,7 @@ takes the same four keys plus `tabSize`, `insertSpaces` and `keywordCasing`.
 | --- | --- | --- | --- |
 | `al.formatting.blankLinesBetweenProcedures` | `preserve`\|`one`\|`two` | `preserve` | ✅ |
 | `al.formatting.maxLineLength` | integer | `0` (no wrapping) | ✅ |
-| `al.formatting.braceStyle` | `sameLine`\|`nextLine` | `nextLine` | ✅ |
+| `al.formatting.braceStyle` | `sameLine`\|`nextLine` | `nextLine` | ✅ `nextLine` moves a `{` that ends a header line onto its own line, `sameLine` merges it up. Affects `{` only, never `begin` (audit finding `formatting-01-brace-style-nextline-is-noop.md`) |
 | `al.formatting.sortProperties` | boolean | `false` | ✅ sorts contiguous object-level property runs |
 
 ## Native lint
