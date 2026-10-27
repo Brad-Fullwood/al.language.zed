@@ -202,13 +202,41 @@ pub(in crate::server::daemon) fn dispatch_new_project(
         return invalid(message);
     }
 
-    let config = al_analysis::scaffold::ScaffoldConfig {
+    let mut config = al_analysis::scaffold::ScaffoldConfig {
         name,
         publisher,
         runtime,
         template,
         ..al_analysis::scaffold::ScaffoldConfig::default()
     };
+    // `appId`, `tenant` and `environment` mirror the `new` flags.
+    let optional_guid = |key: &str, what: &str| -> Result<Option<String>, String> {
+        match params.get(key) {
+            None | Some(serde_json::Value::Null) => Ok(None),
+            Some(value) => {
+                let text = value
+                    .as_str()
+                    .ok_or_else(|| format!("'{key}' must be a string"))?;
+                al_analysis::scaffold::normalize_guid(text, what).map(Some)
+            }
+        }
+    };
+    match optional_guid("appId", "appId") {
+        Ok(Some(app_id)) => config.id = app_id,
+        Ok(None) => {}
+        Err(message) => return invalid(message),
+    }
+    match optional_guid("tenant", "tenant") {
+        Ok(tenant) => config.tenant = tenant,
+        Err(message) => return invalid(message),
+    }
+    match params.get("environment") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(value) => match value.as_str() {
+            Some(text) => config.environment = Some(text.to_string()),
+            None => return invalid("'environment' must be a string".to_string()),
+        },
+    }
 
     match al_analysis::scaffold::create_project(&dir, &config) {
         Ok(result) => serialized_response(id, &result, "new-project result"),
@@ -620,6 +648,47 @@ mod tests {
         let workspace = Workspace::new();
         crate::server::daemon::set_test_project_root(&workspace, root);
         workspace
+    }
+
+    #[test]
+    fn dispatch_new_project_takes_app_id_tenant_and_environment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = ws_rooted_at(tmp.path());
+        let dir = tmp.path().join("cloud");
+        let resp = dispatch_new_project(
+            &ws,
+            1,
+            &serde_json::json!({
+                "dir": dir.to_str().unwrap(),
+                "appId": "11111111-2222-3333-4444-555555555555",
+                "tenant": "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d",
+                "environment": "Sandbox",
+            }),
+        );
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        let app: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("app.json")).unwrap()).unwrap();
+        assert_eq!(app["id"], "11111111-2222-3333-4444-555555555555");
+        let launch: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join(".vscode/launch.json")).unwrap(),
+        )
+        .unwrap();
+        for entry in launch["configurations"].as_array().unwrap() {
+            assert_eq!(entry["tenant"], "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d");
+            assert_eq!(entry["environmentName"], "Sandbox");
+        }
+
+        let bad = dispatch_new_project(
+            &ws,
+            2,
+            &serde_json::json!({
+                "dir": tmp.path().join("bad").to_str().unwrap(),
+                "appId": "not-a-guid",
+            }),
+        );
+        let err = bad.error.expect("a malformed appId is rejected");
+        assert_eq!(err.code, error_codes::INVALID_PARAMS);
+        assert!(!tmp.path().join("bad").exists());
     }
 
     #[test]

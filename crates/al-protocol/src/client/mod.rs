@@ -1158,17 +1158,49 @@ impl DaemonClient {
     }
 }
 
+/// Where `notify` sends a notice. `None` means stderr.
+pub type NoticeSink = std::sync::Arc<dyn Fn(&str) + Send + Sync>;
+
+static NOTICE_SINK: std::sync::RwLock<Option<NoticeSink>> = std::sync::RwLock::new(None);
+
+/// Replace the destination of daemon notices, or restore stderr with `None`.
+///
+/// A client that owns the terminal (the al-explorer TUI in its alternate
+/// screen) installs a sink before it draws, because a line written to stderr
+/// there lands across the interface. Standard route checked: the `tracing`
+/// event alone reaches nobody here, since no subscriber is installed.
+pub fn set_notice_sink(sink: Option<NoticeSink>) {
+    let mut guard = NOTICE_SINK.write().unwrap_or_else(|e| e.into_inner());
+    *guard = sink;
+}
+
+/// Whether a sink replaces stderr for notices.
+pub fn notice_sink_is_set() -> bool {
+    NOTICE_SINK
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .is_some()
+}
+
 /// Tell the person running the command something about the daemon it is about
 /// to use.
 ///
 /// These notices explain a command that restarted a daemon or reached for a
-/// binary the caller did not expect, so they have to be seen. al-explorer is
-/// the only client of this module and installs no tracing subscriber, so the
-/// `tracing` event alone would reach nobody; it stays for anything that does
-/// install one. Stdout belongs to the command's own output.
+/// binary the caller did not expect, so they have to be seen. The CLI commands
+/// leave the sink unset and the notice goes to stderr. al-explorer installs no
+/// tracing subscriber, so the `tracing` event alone would reach nobody. It
+/// stays for anything that does install one. Stdout belongs to the command's
+/// own output.
 fn notify(message: &str) {
     tracing::warn!("{message}");
-    eprintln!("al-lsp: {message}");
+    let sink = NOTICE_SINK
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    match sink {
+        Some(sink) => sink(message),
+        None => eprintln!("al-lsp: {message}"),
+    }
 }
 
 /// The identity this client expects a daemon to report.
@@ -2257,6 +2289,50 @@ mod startup_error_tests {
         );
 
         drop(client);
+        drop(replacement);
+        let _ = std::fs::remove_file(&sock);
+    }
+
+    /// While a client owns the terminal, the replace notice goes to the
+    /// installed sink and not to stderr.
+    #[test]
+    fn the_replace_notice_goes_to_the_installed_sink() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let captured: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+        let sink_store = captured.clone();
+        set_notice_sink(Some(std::sync::Arc::new(move |message: &str| {
+            sink_store.lock().expect("test").push(message.to_string());
+        })));
+
+        let sock = unique_sock();
+        let lock = sock.with_extension("lock");
+        let _stale = FakeDaemon::start(&sock, test_identity("git:0000deadbeef"));
+        let replacement: std::sync::Mutex<Option<FakeDaemon>> = std::sync::Mutex::new(None);
+        let mut spawn = |_root: &Path, endpoint: &Path| {
+            *replacement.lock().expect("test") =
+                Some(FakeDaemon::start(endpoint, expected_for_test()));
+            let stream = UnixStream::connect(endpoint).map_err(|e| e.to_string())?;
+            Ok(test_stream(stream))
+        };
+        let result = DaemonClient::connect_checked(
+            &std::env::temp_dir(),
+            &sock,
+            &lock,
+            Some(&expected_for_test()),
+            &mut spawn,
+        );
+        // Restore stderr before asserting so a failure cannot leave the sink
+        // installed for the other tests in this process.
+        set_notice_sink(None);
+        result.expect("connect");
+
+        let notices = captured.lock().expect("test");
+        assert!(
+            notices
+                .iter()
+                .any(|n| n.contains("built from other code") && n.contains("git:0000deadbeef")),
+            "the sink must receive the mismatch notice, got {notices:?}"
+        );
         drop(replacement);
         let _ = std::fs::remove_file(&sock);
     }

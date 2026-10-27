@@ -5,6 +5,8 @@ mod build;
 mod codegen;
 mod fixes;
 mod free_ids;
+mod nuget_release;
+pub(in crate::server::daemon) use nuget_release::dispatch_environment_version;
 mod symbols_auth;
 mod tests_dispatch;
 mod xliff;

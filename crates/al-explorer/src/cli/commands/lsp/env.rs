@@ -378,6 +378,9 @@ pub fn cmd_download_symbols(
                 let failed = result.get("failed").and_then(|v| v.as_u64()).unwrap_or(0);
                 let source_name = text_field(&result, "source", "nuget");
                 eprint!("{}", download_results_text(&result));
+                if let Some(message) = result["versionChoice"]["message"].as_str() {
+                    eprintln!("{}", terminal_text(message));
+                }
                 let skipped = result.get("skipped").and_then(|v| v.as_u64()).unwrap_or(0);
                 eprintln!(
                     "\n{downloaded} downloaded, {skipped} already present, {failed} failed (source: {source_name})"

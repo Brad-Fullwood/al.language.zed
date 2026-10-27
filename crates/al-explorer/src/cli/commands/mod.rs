@@ -583,8 +583,9 @@ static CALLER_TENANT: std::sync::OnceLock<al_bc::tenant_guard::Declaration> =
 /// Daemon methods that open a connection to Business Central. The daemon
 /// refuses a cloud connection from any of them unless `cliTenant` matches the
 /// launch configuration.
-const CONNECTING_METHODS: [&str; 10] = [
+const CONNECTING_METHODS: [&str; 11] = [
     "downloadSymbols",
+    "environmentVersion",
     "publish",
     "debug",
     "snapshot",
@@ -1202,6 +1203,25 @@ mod subcommand_exit_code_tests {
                 is_success(dead_code_exit_code(
                     &serde_json::json!([{ "n": "Unused", "confidence": "Medium" }]),
                 )),
+            ),
+            (
+                "dead-code, low and medium confidence",
+                // Low confidence findings alone pass the gate.
+                is_success(dead_code_exit_code(&serde_json::json!([
+                    { "n": "Reflected", "confidence": "Low" },
+                    { "n": "Subscriber", "confidence": "low" },
+                ]))),
+                // One medium finding among low ones fails it.
+                is_success(dead_code_exit_code(&serde_json::json!([
+                    { "n": "Reflected", "confidence": "Low" },
+                    { "n": "Unused", "confidence": "Medium" },
+                ]))),
+            ),
+            (
+                "dead-code, no confidence field",
+                is_success(dead_code_exit_code(&serde_json::json!([]))),
+                // A finding without confidence counts as high.
+                is_success(dead_code_exit_code(&serde_json::json!([{ "n": "Unused" }]))),
             ),
             (
                 "setup",

@@ -71,11 +71,9 @@ Compatibility depends heavily on the shape and identifiers in `SymbolReference.j
   `AL_PACKAGE_CACHE_PATH` at an existing package-cache directory, then run
   `make microsoft-contracts` with `AL_TOOL_PATH` and
   `AL_PACKAGE_CACHE_PATH` set.
-  Known to pass on dotnet tool 18.0.43.1464 (`tools/net8.0/any`), checked on 2026-10-27. Under heavy
-  machine load the `zed_simulation` builtin tests need `AL_TEST_REQUEST_TIMEOUT_MS=120000` and
-  `AL_TEST_DIAG_TIMEOUT_MS=90000`. The Cursor extension 18.1.2842859 passes `emit_differential` and
-  `pack_native_validate`, but the profile stops at its first step there: the semantic bridge cannot
-  load that CodeAnalysis dll. Interface ids follow alc's `CalculateInterfaceId` except the step that
+  Known to pass on AL 18.1.2842859 (the Cursor extension `bin/`, the `record_methods.json` pin),
+  checked on 2026-10-27. Under heavy machine load the `zed_simulation` builtin tests need
+  `AL_TEST_REQUEST_TIMEOUT_MS=120000` and `AL_TEST_DIAG_TIMEOUT_MS=90000`. Interface ids follow alc's `CalculateInterfaceId` except the step that
   folds in extended interface ids, which is not ported.
   The fixture covers external page/table/report bindings, direct `modify`
   properties, page customization defaults, a report layout, and an app logo.
@@ -111,7 +109,7 @@ The shipped verifier performs:
 | Layer | Checks | Build behaviour |
 | --- | --- | --- |
 | Project input | parseable `app.json`. Non-empty identity fields. Valid app/dependency GUIDs and four-part versions. Valid `idRanges`. Unique dependency IDs. Readable source files. Declared dependency packages present in the exact configured package paths. Object IDs inside `idRanges` | `ALN01xx` and project diagnostics block before emission. |
-| Syntax | tree-sitter `ERROR` and missing nodes in every `.al` file, including truncated constructs | A statement without its `;` that is followed by another statement reports alc's `AL0111` "Semicolon expected. Add a semicolon (;) to terminate the statement." on the first token of the next statement, the range alc reports (checked against alc 18.1.43 errorlogs in `crates/al-syntax/tests/fixtures/alc`). Every other syntax error reports `ALN0001` with the parser's message: a missing `)` (alc `AL0104` "Syntax error, ')' expected" on the next token, native range has zero width), a missing `end` (alc `AL0104` twice, native reports a cascade of several errors), a missing `;` where the next statement spans more than one token in the tree (for example a following `if`), and all other shapes. Both carry file and exact 1-based UTF-16 start/end range and always block. The editor diagnostic uses the same table, so its code is `AL0111` for the mapped case and `syntax` otherwise (finding journey-15). A file that is not valid UTF-8 blocks with `ALN0002` on that file rather than failing the build. |
+| Syntax | tree-sitter `ERROR` and missing nodes in every `.al` file, including truncated constructs | Three shapes report alc's codes, checked against alc 18.1.43 errorlogs in `crates/al-syntax/tests/fixtures/alc`. A statement without its `;` that is followed by another statement reports `AL0111` "Semicolon expected. Add a semicolon (;) to terminate the statement." on the first token of the next statement (a following `if` included). A missing `)` reports `AL0104` "Syntax error, ')' expected" on the token that stands where it belongs. A missing `end` before the next `procedure` reports `AL0104` "Syntax error, 'end' expected" and "Syntax error, ';' expected", both on that `procedure` keyword. alc stops there, native then adds the errors tree-sitter raises while recovering as `ALN0001` "Syntax error", so a missing `end` gives more diagnostics than alc. Every other syntax error reports `ALN0001` with the parser's message. Both carry file and exact 1-based UTF-16 start/end range and always block. The editor diagnostic uses the same table, so its code is the alc code for the mapped cases and `syntax` otherwise (finding journey-15). A file that is not valid UTF-8 blocks with `ALN0002` on that file rather than failing the build. |
 | Declarations | duplicate object IDs/names. Duplicate field IDs/names. Duplicate enum ordinals/names. Duplicate procedure signatures/parameter names. Unknown key/field-group fields | `ALN1xxx` diagnostics point at the complete object declaration range and block emission. |
 | Declared bindings and contracts | extension targets, implemented interfaces, declared object subtypes (`Record`, `Page`, `Codeunit`, `Report`, `XmlPort`, `Query`, `Enum`, `Interface`) and `SourceTable` references resolve against project plus dependency symbols. Locally declared interface methods must be implemented | `ALN2xxx` diagnostics block emission. |
 | Permissions | permission object kinds/flags are validated and permission targets resolve against project plus dependency symbols | `ALN21xx` diagnostics block emission. |
@@ -137,7 +135,7 @@ remain `null`. Native diagnostics preserve both endpoints.
 | `ALN2201`–`ALN2211` | Local procedure contracts: no overload or more than one for the argument count, a Record passed to an Integer parameter, `Exit` with or without a value against the declared return, an incompatible literal return, a conditional `Exit(value)` with no unconditional return, `Break`/`Continue` outside a loop, an unknown local or Record method. |
 | `ALN2301` | An `[EventSubscriber]` whose parameters do not match a locally declared publisher. |
 | `ALN2401`, `ALN2403`, `ALN2405` | Body binding: unknown Record subtype, incompatible assignment, an unknown field property. |
-| `AL0118`, `AL0132` | Tree-based name and member binding (`crates/al-emit/src/binding.rs`), with the code and message text `alc` prints. `AL0118`: a bare name that no local, parameter, global, procedure, implicit variable, builtin or table field resolves. `AL0132`: a member of a `Record` variable (or `Rec`/`xRec`) that the table and its table extensions do not declare, quoted or not. Both are errors: the build fails and no `.app` is written. The editor publishes the same pass as native diagnostics without the bridge. |
+| `AL0118`, `AL0132` | Tree-based name and member binding (`crates/al-emit/src/binding.rs`), with the code and message text `alc` prints. `AL0118`: a bare name or bare call that no local, parameter, global, procedure, implicit variable, builtin or table field resolves. `AL0132`: a member of a `Record` variable (or `Rec`/`xRec`) that the table and its table extensions do not declare, quoted or not. Both are errors: the build fails and no `.app` is written. The editor publishes the same pass as native diagnostics without the bridge. |
 | `ALN2501` | A report layout that names a file outside the project. |
 | `ALN3001`–`ALN3006` | Unreadable/corrupt artifact, missing/empty or duplicate entries, source-snapshot mismatch, generated metadata parse failure, or package identity mismatch. |
 
@@ -252,10 +250,13 @@ package-semantic-equivalence check.
 > **What the binding pass checks (`AL0118`, `AL0132`).** It runs on the syntax tree of codeunits,
 > tables, table extensions and pages whose source table is known, and reports only what the
 > declarations prove. It skips files with syntax errors or preprocessor directives, code under
-> `with`, names that are called (`Foo(...)`, because the builtin catalog is incomplete), and report,
-> query, XMLport and page extension scopes. `AL0132` needs the table in the workspace or a loaded
-> package. Type mismatches, overload resolution, undeclared procedure calls and everything else
-> still need `alc` or the bridge. On the DMS project `alc` reports 0 errors and the native pass 0.
+> `with`, and report, query, XMLport and page extension scopes. A bare call to an undeclared
+> procedure (`NoSuchProc();`, `x := NoSuchFunc(1);`) reports `AL0118` in codeunits without
+> `TableNo` and in tables. The name is valid when the object declares it, when it is a builtin or
+> global function (a list taken from an `alc` probe) or, in a table, a Record method. Calls in
+> pages, table extensions and the other kinds are not checked, because the base object's procedures
+> are not loaded. `AL0132` needs the table in the workspace or a loaded package. Type mismatches,
+> overload resolution and everything else still need `alc` or the bridge. On the DMS project `alc` reports 0 errors and the native pass 0.
 > Findings: `journey-02-pack-native-accepts-unquoted-missing-field`,
 > `journey-03-lsp-undeclared-identifier-no-diagnostic`.
 

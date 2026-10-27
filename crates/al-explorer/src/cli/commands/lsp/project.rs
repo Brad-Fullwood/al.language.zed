@@ -678,16 +678,64 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
 /// yet. It used to go through the daemon, whose path containment refuses every
 /// path while no project is loaded, so `al-explorer new` failed everywhere
 /// except inside another AL project.
-pub fn cmd_new(
-    dir: &str,
-    name: &str,
-    publisher: &str,
-    template: &str,
-    runtime: &str,
-    json: bool,
-) -> ExitCode {
+/// What `al-explorer new` was asked for.
+pub struct NewOptions<'a> {
+    pub dir: &'a str,
+    pub name: &'a str,
+    pub publisher: &'a str,
+    pub template: &'a str,
+    pub runtime: &'a str,
+    pub app_id: Option<&'a str>,
+    pub tenant: Option<&'a str>,
+    pub environment: Option<&'a str>,
+}
+
+/// Ask the tenant for its BaseApp version and write app.json to its release.
+/// Standard route checked: the daemon's `environmentVersion` request reuses the
+/// call download-symbols makes. A failed lookup keeps the runtime table values.
+fn retarget_to_tenant(project_dir: &str) -> String {
+    let kept = |why: &str| {
+        format!("app.json keeps the application and platform versions of the AL runtime: {why}")
+    };
+    let mut client = match connect(Some(project_dir)) {
+        Ok(client) => client,
+        Err(error) => return kept(&error),
+    };
+    let answer = match request_checked(&mut client, "environmentVersion", None) {
+        Ok(answer) => answer,
+        Err(error) => return kept(&error),
+    };
+    let Some(version) = answer["version"].as_str() else {
+        return kept(
+            answer["reason"]
+                .as_str()
+                .unwrap_or("the tenant gave no version"),
+        );
+    };
+    match al_project::scaffold::retarget_app_json_to_environment(
+        std::path::Path::new(project_dir),
+        version,
+    ) {
+        Ok(target) => format!(
+            "The environment runs BaseApp {version}, so app.json application and platform are {target}."
+        ),
+        Err(error) => kept(&error),
+    }
+}
+
+pub fn cmd_new(options: NewOptions<'_>, json: bool) -> ExitCode {
     use al_project::scaffold;
 
+    let NewOptions {
+        dir,
+        name,
+        publisher,
+        template,
+        runtime,
+        app_id,
+        tenant,
+        environment,
+    } = options;
     let directory = match absolutize_path(dir) {
         Ok(directory) => directory,
         Err(error) => return report_error(&error, json),
@@ -699,16 +747,33 @@ pub fn cmd_new(
     if let Err(error) = scaffold::application_version_for_runtime(runtime) {
         return report_error(&error, json);
     }
-    let config = scaffold::ScaffoldConfig {
+    let mut config = scaffold::ScaffoldConfig {
         name: name.to_string(),
         publisher: publisher.to_string(),
         runtime: runtime.to_string(),
         template,
+        environment: environment.map(str::to_string),
         ..scaffold::ScaffoldConfig::default()
     };
+    if let Some(app_id) = app_id {
+        match scaffold::normalize_guid(app_id, "--app-id") {
+            Ok(id) => config.id = id,
+            Err(error) => return report_error(&error, json),
+        }
+    }
+    if let Some(tenant) = tenant {
+        match scaffold::normalize_guid(tenant, "--tenant") {
+            Ok(tenant) => config.tenant = Some(tenant),
+            Err(error) => return report_error(&error, json),
+        }
+    }
 
     match scaffold::create_project(std::path::Path::new(&directory), &config) {
         Ok(result) => {
+            let environment_note = config
+                .tenant
+                .as_deref()
+                .map(|_| retarget_to_tenant(&result.project_dir));
             if json {
                 println!(
                     "{}",
@@ -719,6 +784,9 @@ pub fn cmd_new(
                     "{}",
                     new_project_text(&result.project_dir, &result.files_created)
                 );
+                if let Some(note) = environment_note {
+                    println!("{}", terminal_text(&note));
+                }
             }
             ExitCode::SUCCESS
         }

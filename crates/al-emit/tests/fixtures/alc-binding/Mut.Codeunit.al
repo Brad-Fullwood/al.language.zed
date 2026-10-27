@@ -21,6 +21,8 @@ codeunit 50149 "AZJ Mutations"
         JourneyItem.SystemId := CreateGuid();
         JourneyItem.Insert(true);
         Local1 := Today() - Today + Local1;
+        NoSuchProc();
+        Local1 := NoSuchFunc(1) + 1;
         exit(Undeclared4 + 1);
     end;
 }

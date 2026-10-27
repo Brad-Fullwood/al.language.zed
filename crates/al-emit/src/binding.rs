@@ -21,10 +21,12 @@
 //!   page extensions and every other object kind are not checked, because
 //!   their scopes (dataitems, columns, nodes, the base page's controls) come
 //!   from declarations the pass does not read.
-//! * A bare name is checked only where it is not called (`Foo(...)`) and not
-//!   followed by `::`. The set of global system functions is not complete in
-//!   the catalogs this repository holds, so an undeclared call is left to
-//!   `alc`.
+//! * A bare name is not checked before `::`. A called bare name (`Foo(...)`)
+//!   is checked in codeunits without `TableNo` and in tables only. It is valid
+//!   when the object declares it, when it is a builtin or global function, or
+//!   (tables) a Record method. Calls in pages, page extensions, table
+//!   extensions, reports and the other kinds are left to `alc`, because the
+//!   base object's procedures or the source table's methods are not loaded.
 //! * Names that are direct arguments of a Record method (`SetRange(Field, ...)`)
 //!   are resolved by `alc` against the table's fields and are skipped.
 //! * Procedures that contain a `with` statement, and files with preprocessor
@@ -115,6 +117,132 @@ const SYSTEM_NAMES: &[&str] = &[
     "usersecurityid",
     "windowslanguage",
     "workdate",
+];
+
+/// Global system functions that `builtin_functions.json` does not list. Taken
+/// from a probe compiled with `alc` 18.1: every name here is a bare call that
+/// alc does not report as AL0118 in a codeunit. Only consulted for a called name.
+const GLOBAL_FUNCTIONS: &[&str] = &[
+    "abs",
+    "applicationpath",
+    "arraylen",
+    "canloadtype",
+    "changeuserpassword",
+    "clear",
+    "clearall",
+    "clearlasterror",
+    "closingdate",
+    "codecoverageinclude",
+    "codecoverageload",
+    "codecoveragelog",
+    "codecoveragerefresh",
+    "commit",
+    "companyname",
+    "compressarray",
+    "confirm",
+    "convertstr",
+    "copyarray",
+    "copystr",
+    "copystream",
+    "createdatetime",
+    "createencryptionkey",
+    "createguid",
+    "currentclienttype",
+    "currentdatetime",
+    "currentexecutionmode",
+    "date2dmy",
+    "date2dwy",
+    "decrypt",
+    "defaultclienttype",
+    "delchr",
+    "deleteencryptionkey",
+    "delstr",
+    "dmy2date",
+    "download",
+    "downloadfromstream",
+    "dt2date",
+    "dt2time",
+    "dwy2date",
+    "encrypt",
+    "encryptionenabled",
+    "encryptionkeyexists",
+    "error",
+    "evaluate",
+    "exportencryptionkey",
+    "format",
+    "getdefaulttableconnection",
+    "getdocumenturl",
+    "getlasterrorcallstack",
+    "getlasterrorcode",
+    "getlasterrorobject",
+    "getlasterrortext",
+    "geturl",
+    "globallanguage",
+    "guiallowed",
+    "hastableconnection",
+    "hyperlink",
+    "importencryptionkey",
+    "importstreamwithurlaccess",
+    "incstr",
+    "insstr",
+    "isinwritetransaction",
+    "isnull",
+    "isnullguid",
+    "isservicetier",
+    "issessionactive",
+    "locktimeout",
+    "lowercase",
+    "maxstrlen",
+    "message",
+    "normaldate",
+    "padstr",
+    "power",
+    "random",
+    "randomize",
+    "registertableconnection",
+    "round",
+    "selectlatestversion",
+    "selectstr",
+    "sendtracetag",
+    "serialnumber",
+    "serviceinstanceid",
+    "sessionid",
+    "setdefaulttableconnection",
+    "sleep",
+    "startsession",
+    "stopsession",
+    "strchecksum",
+    "strlen",
+    "strmenu",
+    "strpos",
+    "strsubstno",
+    "temporarypath",
+    "tenantid",
+    "time",
+    "today",
+    "unregistertableconnection",
+    "upload",
+    "uploadintostream",
+    "uppercase",
+    "userid",
+    "usersecurityid",
+    "variant2date",
+    "variant2time",
+    "windowslanguage",
+    "workdate",
+    "exit",
+    "asserterror",
+    "bindsubscription",
+    "unbindsubscription",
+    "calcdate",
+    "captionclasstranslate",
+    "clearcollectederrors",
+    "getcollectederrors",
+    "getdotnettype",
+    "hascollectederrors",
+    "rounddatetime",
+    "currenttransactiontype",
+    "break",
 ];
 
 /// What the pass knows about one table: the fields and procedures declared by
@@ -307,6 +435,12 @@ struct ObjectScope {
     table: Option<String>,
     /// Bare names are checked for this object.
     check_names: bool,
+    /// Bare calls (`Foo(...)`) are checked for this object. Only codeunits
+    /// without `TableNo` and tables qualify: their callable names are the
+    /// object's own procedures, the global functions and, for a table, the
+    /// Record methods. Page, report and extension objects also reach members
+    /// of a base object or a source table that this pass does not load.
+    check_calls: bool,
 }
 
 impl ObjectScope {
@@ -363,8 +497,15 @@ impl ObjectScope {
                 }
             }
         }
+        let check_calls = check_names
+            && match kind.as_str() {
+                "codeunit" => !has_property(object, src, "TableNo"),
+                "table" => true,
+                _ => false,
+            };
         Some(Self {
             kind,
+            check_calls,
             globals,
             procedures,
             section_names,
@@ -616,8 +757,12 @@ impl<'a> Checker<'a> {
         if !self.ctx.check_names {
             return;
         }
-        // A called name and a name before `::` are not variable references.
-        if first_suffix.is_some_and(|s| matches!(s.kind(), "call_suffix" | "scope_suffix")) {
+        // A name before `::` is not a variable reference.
+        if first_suffix.is_some_and(|s| s.kind() == "scope_suffix") {
+            return;
+        }
+        let is_call = first_suffix.is_some_and(|s| s.kind() == "call_suffix");
+        if is_call && !self.ctx.check_calls {
             return;
         }
         if self.ctx.procedures.contains(key)
@@ -644,6 +789,10 @@ impl<'a> Checker<'a> {
                     return;
                 }
             }
+        }
+        if is_call && (GLOBAL_FUNCTIONS.contains(&key) || key == "run") {
+            // `Run` is the instance method of a codeunit.
+            return;
         }
         if is_record_method_argument(postfix, self.src) {
             return;
@@ -898,11 +1047,49 @@ mod tests {
     }
 
     #[test]
-    fn called_names_and_names_before_a_scope_operator_are_left_alone() {
+    fn names_before_a_scope_operator_and_member_calls_are_left_alone() {
         let source = codeunit_body(
-            "        UnknownCall(1);\n        if Item.Code = Item.Code::Foo then;\n        Codeunit.Run(Codeunit::\"Anything\");",
+            "        if Item.Code = Item.Code::Foo then;\n        Codeunit.Run(Codeunit::\"Anything\");",
         );
         assert_eq!(codes(&[("t.al", TABLE), ("c.al", &source)]), vec![]);
+    }
+
+    #[test]
+    fn a_bare_call_to_an_undeclared_procedure_is_reported_like_alc() {
+        let source = codeunit_body("        NoSuchProc();\n        Glob := NoSuchFunc(1) + 1;");
+        assert_eq!(
+            codes(&[("t.al", TABLE), ("c.al", &source)]),
+            vec![
+                (
+                    "AL0118",
+                    "The name 'NoSuchProc' does not exist in the current context.".to_string()
+                ),
+                (
+                    "AL0118",
+                    "The name 'NoSuchFunc' does not exist in the current context.".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn bare_calls_that_resolve_are_not_reported() {
+        let source = codeunit_body(
+            "        Own();\n        Glob := Own() + StrLen('x');\n        Message('x');\n        Error('x');\n        Ret := StrLen(StrSubstNo('%1', 1));",
+        );
+        assert_eq!(codes(&[("t.al", TABLE), ("c.al", &source)]), vec![]);
+        let table = "table 50102 T2\n{\n    fields\n    {\n        field(1; Code; Code[20]) { }\n    }\n    procedure Mine()\n    begin\n    end;\n    trigger OnInsert()\n    begin\n        Mine();\n        Insert();\n        Message('x');\n    end;\n}\n";
+        assert_eq!(codes(&[("t2.al", table)]), vec![]);
+    }
+
+    #[test]
+    fn calls_in_objects_with_unloaded_members_are_left_alone() {
+        let with_table_no = "codeunit 50103 C3\n{\n    TableNo = \"My Item\";\n    trigger OnRun()\n    begin\n        Insert();\n    end;\n}\n";
+        assert_eq!(codes(&[("t.al", TABLE), ("c.al", with_table_no)]), vec![]);
+        let page = "page 50104 P3\n{\n    SourceTable = \"My Item\";\n    trigger OnOpenPage()\n    begin\n        Update();\n    end;\n}\n";
+        assert_eq!(codes(&[("t.al", TABLE), ("p.al", page)]), vec![]);
+        let ext = "tableextension 50105 E3 extends \"My Item\"\n{\n    trigger OnAfterInsert()\n    begin\n        BaseProc();\n    end;\n}\n";
+        assert_eq!(codes(&[("t.al", TABLE), ("e.al", ext)]), vec![]);
     }
 
     #[test]
@@ -956,8 +1143,7 @@ mod tests {
                 .collect();
         got.sort();
         assert!(!expected.is_empty());
-        // Undeclared calls are not reported natively (see the module comment),
-        // and the fixture has none. Everything alc reports must match.
+        // Everything alc reports must match, bare undeclared calls included.
         assert_eq!(got, expected);
     }
 }

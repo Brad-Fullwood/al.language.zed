@@ -63,6 +63,10 @@ pub const ALC_MISSING_SEMICOLON_CODE: &str = "AL0111";
 pub const ALC_MISSING_SEMICOLON_MESSAGE: &str =
     "Semicolon expected. Add a semicolon (;) to terminate the statement.";
 
+/// alc code for an expected token that is absent (AL0104, "Syntax error, 'x' expected").
+/// Code, message form and ranges come from alc 18.1.43 errorlogs (journey-15).
+pub const ALC_EXPECTED_TOKEN_CODE: &str = "AL0104";
+
 impl AlParser {
     pub fn new() -> Self {
         let mut parser = Parser::new();
@@ -77,7 +81,7 @@ impl AlParser {
             .parser
             .parse(text, None)
             .expect("tree-sitter parse must succeed without timeout or cancellation");
-        let errors = collect_errors(&tree);
+        let errors = collect_errors(&tree, text.as_bytes());
         ParseResult { tree, errors }
     }
 
@@ -86,15 +90,17 @@ impl AlParser {
             .parser
             .parse(text, Some(old_tree))
             .expect("tree-sitter incremental parse must succeed without timeout or cancellation");
-        let errors = collect_errors(&tree);
+        let errors = collect_errors(&tree, text.as_bytes());
         ParseResult { tree, errors }
     }
 
     /// Extract syntax errors from an already-parsed tree.
     ///
     /// Used to obtain errors from a cached tree without re-parsing the source.
-    pub fn errors_from_tree(tree: &Tree) -> Vec<SyntaxError> {
-        collect_errors(tree)
+    /// `source` is the text the tree was parsed from, the alc code mapping reads
+    /// keyword text from it.
+    pub fn errors_from_tree(tree: &Tree, source: &[u8]) -> Vec<SyntaxError> {
+        collect_errors(tree, source)
     }
 
     /// Parse using a thread-local parser, avoiding repeated `Parser::new()` + `set_language()`.
@@ -115,16 +121,12 @@ impl Default for AlParser {
     }
 }
 
-fn collect_errors(tree: &Tree) -> Vec<SyntaxError> {
+fn collect_errors(tree: &Tree, source: &[u8]) -> Vec<SyntaxError> {
     let mut errors = Vec::new();
     walk_tree(tree.root_node(), &mut |node| {
         if node.is_error() || node.is_missing() {
-            if missing_semicolon_insert_byte(node).is_some() {
-                errors.push(SyntaxError {
-                    message: ALC_MISSING_SEMICOLON_MESSAGE.to_string(),
-                    range: node.range(),
-                    code: Some(ALC_MISSING_SEMICOLON_CODE),
-                });
+            if let Some(mapped) = alc_errors(node, source) {
+                errors.extend(mapped);
                 return;
             }
             errors.push(SyntaxError {
@@ -141,56 +143,194 @@ fn collect_errors(tree: &Tree) -> Vec<SyntaxError> {
     errors
 }
 
+fn alc_error(code: &'static str, message: String, range: tree_sitter::Range) -> SyntaxError {
+    SyntaxError {
+        message,
+        range,
+        code: Some(code),
+    }
+}
+
+/// The alc errors for one tree-sitter error node, when its shape is one alc
+/// was recorded on (tests/alc_syntax_codes.rs). `None` keeps the generic error.
+fn alc_errors(node: tree_sitter::Node, source: &[u8]) -> Option<Vec<SyntaxError>> {
+    if let Some((_, range)) = missing_semicolon_shape(node) {
+        return Some(vec![alc_error(
+            ALC_MISSING_SEMICOLON_CODE,
+            ALC_MISSING_SEMICOLON_MESSAGE.to_string(),
+            range,
+        )]);
+    }
+    // Missing `)`: tree-sitter inserts a zero width MISSING node, alc reports
+    // the token that stands where `)` belongs.
+    if node.is_missing() && node.kind() == ")" {
+        let next = first_token_from(root_of(node), node.start_byte())?;
+        return Some(vec![alc_error(
+            ALC_EXPECTED_TOKEN_CODE,
+            "Syntax error, ')' expected".to_string(),
+            next.range(),
+        )]);
+    }
+    // Missing `end`: a `procedure` keyword read as an identifier where a
+    // statement starts, after a `;`. alc reports 'end' and ';' expected, both on
+    // that keyword. The errors tree-sitter raises further on while recovering
+    // stay generic.
+    if lone_token_error_after(node, &["semicolon"]).is_some()
+        && node.child(0)?.kind() == "identifier"
+        && node
+            .child(0)?
+            .utf8_text(source)
+            .ok()?
+            .eq_ignore_ascii_case("procedure")
+    {
+        let range = node.range();
+        return Some(vec![
+            alc_error(
+                ALC_EXPECTED_TOKEN_CODE,
+                "Syntax error, 'end' expected".to_string(),
+                range,
+            ),
+            alc_error(
+                ALC_EXPECTED_TOKEN_CODE,
+                "Syntax error, ';' expected".to_string(),
+                range,
+            ),
+        ]);
+    }
+    None
+}
+
+fn root_of(node: tree_sitter::Node) -> tree_sitter::Node {
+    let mut root = node;
+    while let Some(parent) = root.parent() {
+        root = parent;
+    }
+    root
+}
+
+/// First non-empty, non-comment leaf that starts at or after `byte`.
+fn first_token_from(node: tree_sitter::Node, byte: usize) -> Option<tree_sitter::Node> {
+    if node.end_byte() <= byte || node.kind().contains("comment") {
+        return None;
+    }
+    if node.child_count() == 0 {
+        return (node.start_byte() >= byte && node.start_byte() < node.end_byte()).then_some(node);
+    }
+    let mut cursor = node.walk();
+    let children: Vec<_> = node.children(&mut cursor).collect();
+    children
+        .into_iter()
+        .find_map(|child| first_token_from(child, byte))
+}
+
+/// An ERROR node holding exactly one leaf token, inside a `statement_list`
+/// and not inside another error. Returns the token before it when its kind is
+/// one of `previous_kinds`.
+fn lone_token_error_after<'a>(
+    error: tree_sitter::Node<'a>,
+    previous_kinds: &[&str],
+) -> Option<tree_sitter::Node<'a>> {
+    if !error.is_error() || error.child_count() != 1 || error.child(0)?.child_count() != 0 {
+        return None;
+    }
+    in_statement_list(error)?;
+    let previous = last_token_before(root_of(error), error.start_byte())?;
+    previous_kinds
+        .contains(&previous.kind())
+        .then_some(previous)
+}
+
+/// `Some(())` when `node` sits in a `statement_list` with no error node between.
+fn in_statement_list(node: tree_sitter::Node) -> Option<()> {
+    let mut ancestor = node.parent();
+    while let Some(parent) = ancestor {
+        if parent.kind() == "statement_list" {
+            return Some(());
+        }
+        // An error inside another error is part of a recovery cascade (a missing
+        // `end`), where alc reports other codes.
+        if parent.is_error() {
+            return None;
+        }
+        ancestor = parent.parent();
+    }
+    None
+}
+
 /// Recognise the shape tree-sitter produces for a statement that lacks its
 /// `;` and is followed by another statement: an ERROR node holding exactly the
 /// first token of the next statement, inside a `statement_list`, directly after
 /// a token that can end an expression. alc reports AL0111 on that same token
 /// (checked on a statement start, an `exit`, and a second statement on the same
 /// line). Returns the byte offset where the `;` belongs, the end of the token
-/// before the error. Errors that span more than one token (for example a
-/// following `if` with its condition) are not matched and stay generic.
+/// before the error. A following `if` is handled by [`missing_semicolon_shape`].
 pub fn missing_semicolon_insert_byte(error: tree_sitter::Node) -> Option<usize> {
-    if !error.is_error() || error.child_count() != 1 || error.child(0)?.child_count() != 0 {
+    missing_semicolon_shape(error).map(|(insert, _)| insert)
+}
+
+/// Where the `;` belongs and the range alc reports. Besides the single token
+/// shape above, a statement that spans several tokens: an ERROR node holding
+/// the whole previous statement (a call expression) followed by an `if`
+/// statement. alc reports AL0111 on the `if` keyword only, the `;` belongs at
+/// the end of the error node.
+fn missing_semicolon_shape(error: tree_sitter::Node) -> Option<(usize, tree_sitter::Range)> {
+    if let Some(previous) = lone_token_error_after(
+        error,
+        &[
+            ")",
+            "]",
+            "identifier",
+            "quoted_identifier",
+            "integer",
+            "decimal",
+            "string",
+        ],
+    ) {
+        return Some((previous.end_byte(), error.range()));
+    }
+    if !error.is_error()
+        || error.child_count() != 1
+        || error.child(0)?.kind() != "postfix_expression"
+    {
         return None;
     }
-    let mut ancestor = error.parent();
-    while let Some(node) = ancestor {
-        if node.kind() == "statement_list" {
-            break;
-        }
-        // An error inside another error is part of a recovery cascade (a missing
-        // `end`), where alc reports other codes.
-        if node.is_error() {
-            return None;
-        }
-        ancestor = node.parent();
+    in_statement_list(error)?;
+    let next = error.next_sibling()?;
+    if next.kind() != "statement" {
+        return None;
     }
-    ancestor?;
-    let mut root = error;
-    while let Some(parent) = root.parent() {
-        root = parent;
+    let keyword = first_token_from(next, next.start_byte())?;
+    if keyword.kind() != "kw_if" {
+        return None;
     }
-    let previous = last_token_before(root, error.start_byte())?;
-    matches!(
-        previous.kind(),
-        ")" | "]" | "identifier" | "quoted_identifier" | "integer" | "decimal" | "string"
-    )
-    .then(|| previous.end_byte())
+    let before = last_token_before(root_of(error), error.start_byte())?;
+    matches!(before.kind(), "semicolon" | "kw_begin").then(|| (error.end_byte(), keyword.range()))
 }
 
 /// Same check for a diagnostic range: find the ERROR node that starts at
 /// `error_start_byte` and return where its `;` belongs.
 pub fn missing_semicolon_insert_byte_at(tree: &Tree, error_start_byte: usize) -> Option<usize> {
-    let mut node = tree
-        .root_node()
-        .descendant_for_byte_range(error_start_byte, error_start_byte)?;
-    while !node.is_error() {
-        node = node.parent()?;
+    let mut node = Some(
+        tree.root_node()
+            .descendant_for_byte_range(error_start_byte, error_start_byte)?,
+    );
+    while let Some(current) = node {
+        // The reported range starts at the error node, or at the `if` of the
+        // statement that follows an error node.
+        for candidate in [Some(current), current.prev_sibling()]
+            .into_iter()
+            .flatten()
+            .filter(|candidate| candidate.is_error())
+        {
+            if let Some((insert, range)) = missing_semicolon_shape(candidate) {
+                if range.start_byte == error_start_byte {
+                    return Some(insert);
+                }
+            }
+        }
+        node = current.parent();
     }
-    if node.start_byte() != error_start_byte {
-        return None;
-    }
-    missing_semicolon_insert_byte(node)
+    None
 }
 
 fn last_token_before(node: tree_sitter::Node, byte: usize) -> Option<tree_sitter::Node> {
@@ -313,7 +453,7 @@ mod tests {
         let source = "codeunit 50100 Test { procedure () begin end; }";
         let result = parser.parse(source);
 
-        let from_tree = AlParser::errors_from_tree(&result.tree);
+        let from_tree = AlParser::errors_from_tree(&result.tree, source.as_bytes());
 
         assert_eq!(
             from_tree.len(),
@@ -330,8 +470,9 @@ mod tests {
     #[test]
     fn test_errors_from_tree_empty_for_valid_code() {
         let mut parser = AlParser::new();
-        let result = parser.parse("codeunit 50100 Test { }");
-        let from_tree = AlParser::errors_from_tree(&result.tree);
+        let source = "codeunit 50100 Test { }";
+        let result = parser.parse(source);
+        let from_tree = AlParser::errors_from_tree(&result.tree, source.as_bytes());
         assert!(
             from_tree.is_empty(),
             "valid code should yield no errors from the cached tree"

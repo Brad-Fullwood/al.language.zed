@@ -560,6 +560,52 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
         })
         .flatten();
 
+    // The NuGet route requests the core Microsoft apps at the version the
+    // tenant runs when a tenant is known, instead of the version in app.json.
+    let mut all_deps = all_deps;
+    let mut aligned: Vec<String> = Vec::new();
+    let mut environment_version: Option<String> = None;
+    let version_text = if source == "nuget" {
+        match super::nuget_release::lookup(
+            workspace,
+            &project_configs,
+            requested_config.as_deref(),
+            params,
+        )
+        .await
+        {
+            Ok(super::nuget_release::Lookup::Environment { version, config }) => {
+                aligned = super::nuget_release::align_to_environment(&mut all_deps, &version);
+                let text = if aligned.is_empty() {
+                    format!(
+                        "Environment {config} runs BaseApp {version}. app.json already asks for that release or a newer one, so its versions are used."
+                    )
+                } else {
+                    format!(
+                        "Environment {config} runs BaseApp {version}. Requested {} at {version} and System at {} (app.json had a lower version).",
+                        aligned
+                            .iter()
+                            .filter(|name| name.as_str() != "System")
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        super::nuget_release::release_line(&version),
+                    )
+                };
+                environment_version = Some(version);
+                text
+            }
+            Ok(super::nuget_release::Lookup::Skipped(why)) => {
+                format!("Using the versions in app.json: {why}.")
+            }
+            Err(error) => format!(
+                "Using the versions in app.json: the environment version is not available ({error})."
+            ),
+        }
+    } else {
+        "Server source: the environment serves its own versions.".to_string()
+    };
+
     // don't re-download dependencies already satisfied in
     // package cache. The resolver fetched app.json MINIMUM versions — pulling
     // OLDER duplicates of Microsoft/vendor apps next to the installed newer
@@ -599,7 +645,7 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
             if queue.is_empty() {
                 break;
             }
-            let round = download_dependency_wave(
+            let mut round = download_dependency_wave(
                 workspace,
                 source,
                 &queue,
@@ -608,6 +654,41 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
                 requested_config.as_deref(),
             )
             .await;
+            // The feed may not hold the environment's exact build yet. Retry
+            // those dependencies on the environment's release line.
+            if wave == 0 && !aligned.is_empty() {
+                if let Some(environment) = environment_version.as_deref() {
+                    let retry: Vec<al_symbols::nuget::AppDependency> = queue
+                        .iter()
+                        .filter(|dep| aligned.contains(&dep.name))
+                        .filter(|dep| {
+                            round.iter().any(|entry| {
+                                entry.get("name").and_then(|v| v.as_str()) == Some(&dep.name)
+                                    && entry.get("status").and_then(|v| v.as_str()) == Some("error")
+                            })
+                        })
+                        .cloned()
+                        .collect();
+                    if !retry.is_empty() {
+                        let retry = super::nuget_release::on_release_line(&retry, environment);
+                        let again = download_dependency_wave(
+                            workspace,
+                            source,
+                            &retry,
+                            &dest,
+                            &project_configs,
+                            requested_config.as_deref(),
+                        )
+                        .await;
+                        round.retain(|entry| {
+                            !retry.iter().any(|dep| {
+                                entry.get("name").and_then(|v| v.as_str()) == Some(&dep.name)
+                            })
+                        });
+                        round.extend(again);
+                    }
+                }
+            }
             let downloaded: Vec<std::path::PathBuf> = round
                 .iter()
                 .filter(|entry| entry.get("status").and_then(|v| v.as_str()) == Some("ok"))
@@ -702,6 +783,11 @@ pub(in crate::server::daemon) async fn dispatch_download_symbols(
             "skipped": skipped_count,
             "loaded_into_index": loaded,
             "hint": server_route_hint(source, &result),
+            "versionChoice": {
+                "source": if environment_version.is_some() { "tenant" } else { "app.json" },
+                "environmentVersion": environment_version,
+                "message": version_text,
+            },
             "results": result,
         })),
         error: None,

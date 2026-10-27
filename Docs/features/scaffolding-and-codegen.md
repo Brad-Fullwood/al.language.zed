@@ -13,7 +13,13 @@ permission sets, all natively, with consistent identifier escaping and atomic wr
 template-appropriate target, features, and analyzers), `.gitignore`, a `.zed/debug.json` launch
 config, and template source files. It refuses a directory that already holds an `app.json`.
 Writes are atomic (temp + rename) so a crash never leaves a half-written file. Project name,
-publisher, template, and AL runtime are supplied by the CLI or daemon request. The minimum
+publisher, template, and AL runtime are supplied by the CLI or daemon request. `--app-id <guid>`
+(`appId` on the daemon request) sets the app id instead of generating one. `--tenant <guid>` and
+`--environment <name>` (`tenant` and `environment` on the request) put that tenant and environment
+name into the cloud entries of `.zed/debug.json` and also write `.vscode/launch.json` with the same
+cloud entries (`type` `al`, `launch` and `attach`, `schemaUpdateMode`, `breakOnNext`), so the
+project opens in VS Code's AL extension too. Without `--tenant` the output is unchanged and no
+`launch.json` is written. The minimum
 Business Central application version is derived from the runtime compatibility line (for example,
 runtime `17.0` produces application `28.0.0.0`), so generated manifests do not carry a stale
 calendar-based release constant.

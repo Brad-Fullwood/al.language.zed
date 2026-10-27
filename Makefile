@@ -306,10 +306,9 @@ deny:
 # execute only through this explicit external-contract gate.
 #
 # Supported toolchain: the build pinned in crates/al-syntax/data/record_methods.json
-# (18.0.43.1464 today). The bridge loads AL 18.1 (2842859) too, the live_bridge
-# tests pass on it, but check-record-methods stops with PROVENANCE DRIFT because
-# the pin names another build. Move the pin with 'make record-methods' to run the
-# profile on a newer toolchain. It then fails on the older one.
+# (AL 18.1.2842859 today, the Cursor extension bin/ directory). The profile passed
+# on it on 2026-10-27. On another build check-record-methods stops with PROVENANCE
+# DRIFT. Move the pin with 'make record-methods' to run the profile on that build.
 microsoft-contracts:
 	@echo "=== Microsoft AL toolchain contract profile ==="
 	@if [ -z "$$AL_TOOL_PATH" ] || [ ! -f "$$AL_TOOL_PATH/alc.dll" ] || [ ! -f "$$AL_TOOL_PATH/Microsoft.Dynamics.Nav.CodeAnalysis.dll" ]; then \

@@ -463,6 +463,12 @@ Examples:
         /// AL runtime version; the matching minimum application version is derived automatically
         #[arg(long, default_value = "17.0")]
         runtime: String,
+        /// App id for app.json (a GUID, default: a fresh one)
+        #[arg(long, value_name = "GUID")]
+        app_id: Option<String>,
+        /// Cloud environment name for the cloud launch entries (default: sandbox)
+        #[arg(long, value_name = "NAME")]
+        environment: Option<String>,
     },
     /// Generate .zed/debug.json with AL debug configurations
     InitDebug,

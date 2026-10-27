@@ -1479,6 +1479,7 @@ dispatch_table! {
         "downloadSymbols" [authorized] => {
             build_dispatch::dispatch_download_symbols(workspace, id, &params).await
         },
+        "environmentVersion" [authorized] => build_dispatch::dispatch_environment_version(workspace, id, &params).await,
         "debug" [authorized] => debug_dispatch::dispatch_debug(workspace, id, &params).await,
         "snapshot" [named_write, authorized] => snapshot_dispatch::dispatch_snapshot(workspace, id, &params).await,
         "profiling" [named_write, authorized] => build_dispatch::dispatch_profiling(workspace, id, &params).await,

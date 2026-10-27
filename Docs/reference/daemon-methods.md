@@ -16,7 +16,7 @@ below is available through MCP's `al_call`, whether or not it also has a named M
 `lint`, `format`, `fix`, `fix.applicationArea`, `fix.tooltips`, `fix.dataClassification`, `rules`,
 `parse`, `metrics`, `sqlPatterns`, `sortMembers`, `organizeFiles`, `source`, `eventSource`,
 `location`, `permissions`, `compile`, `package`, `publish`, `newProject`, `errorCodes`, `builtinTypes`, `setup`,
-`clearCache`, `authenticate`, `downloadSymbols`, `snapshot`, `profiling`, `generate`, `obsolete`,
+`clearCache`, `authenticate`, `downloadSymbols`, `environmentVersion`, `snapshot`, `profiling`, `generate`, `obsolete`,
 `obsoleteUsages`, `packageDiff`,
 `audit.dataClassification`, `permissions.audit`, `deps.graph`, `breaking`, `arch.lint`, `duplicates`,
 `upgrade`, `profiler.hints`, `freeIds`. `diag` is answered in `daemon/mod.rs`.
