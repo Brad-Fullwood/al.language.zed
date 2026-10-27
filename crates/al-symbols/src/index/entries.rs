@@ -1,6 +1,6 @@
 //! Adding entries to the index and the lookup tables derived from them.
 
-use super::{fold_name, IndexedEntry, SymbolIndex, DEFAULT_COMPLETIONS_CAP};
+use super::{fold_name, IndexedEntry, SymbolIndex};
 use super::{package_identity_key, read_derived_cache, write_derived_cache};
 use crate::model::SymbolEntry;
 use std::sync::Arc;
@@ -83,7 +83,6 @@ impl SymbolIndex {
             })
             .collect();
         self.update_sorted_names_after_add(&new_arcs, update_sorted_names);
-        self.update_default_completions(&new_arcs);
         self.note_mutation();
     }
 
@@ -107,73 +106,6 @@ impl SymbolIndex {
                 names.insert(position, name);
             }
         }
-    }
-
-    /// Append newly-added entries into the default_completions cache up to the cap.
-    ///
-    /// Called after all entries from a batch are indexed. Uses a fast read-check
-    /// to skip acquiring the write lock when the cache is already full.
-    pub(super) fn update_default_completions(&self, new_arcs: &[Arc<SymbolEntry>]) {
-        let (cache, repaired) =
-            read_derived_cache(&self.default_completions, "default_completions");
-        if repaired {
-            drop(cache);
-            self.rebuild_default_completions();
-            return;
-        }
-        if cache.len() >= DEFAULT_COMPLETIONS_CAP {
-            return;
-        }
-        drop(cache);
-        let (mut cache, repaired) =
-            write_derived_cache(&self.default_completions, "default_completions");
-        if repaired {
-            drop(cache);
-            self.rebuild_default_completions();
-            return;
-        }
-        for arc in new_arcs {
-            if arc.synthetic {
-                continue;
-            }
-            if cache.len() >= DEFAULT_COMPLETIONS_CAP {
-                break;
-            }
-            cache.push(Arc::clone(arc));
-        }
-    }
-
-    /// Return the pre-computed default completion entries (up to DEFAULT_COMPLETIONS_CAP).
-    ///
-    /// O(1) pointer copies — never iterates the full symbol index. Use in place of
-    /// `search("", 30)` on completion hot paths.
-    pub fn default_completions_snapshot(&self) -> Vec<Arc<SymbolEntry>> {
-        let (cache, repaired) =
-            read_derived_cache(&self.default_completions, "default_completions");
-        if repaired {
-            drop(cache);
-            self.rebuild_default_completions();
-            return read_derived_cache(&self.default_completions, "default_completions")
-                .0
-                .clone();
-        }
-        cache.clone()
-    }
-
-    pub(super) fn rebuild_default_completions(&self) {
-        let mut remaining: Vec<(usize, Arc<SymbolEntry>)> = self
-            .all
-            .iter()
-            .filter_map(|entry| {
-                let indexed = entry.value();
-                (!indexed.arc.synthetic).then(|| (*entry.key(), Arc::clone(&indexed.arc)))
-            })
-            .collect();
-        remaining.sort_unstable_by_key(|(seq, _)| *seq);
-        remaining.truncate(DEFAULT_COMPLETIONS_CAP);
-
-        let (mut cache, _) = write_derived_cache(&self.default_completions, "default_completions");
-        *cache = remaining.into_iter().map(|(_, arc)| arc).collect();
     }
 
     /// Helper: filter a `DashMap<K, Vec<Arc<SymbolEntry>>>` secondary index
@@ -202,18 +134,6 @@ mod tests {
     use crate::index::test_support::*;
     use crate::index::SymbolIndex;
     use crate::model::{FieldSymbol, MethodSymbol, ObjectKind};
-
-    #[test]
-    fn default_completions_exclude_synthetic_entries() {
-        let index = SymbolIndex::new();
-        let mut synthetic = make_entry(ObjectKind::Enum, -1, "Synthetic Option");
-        synthetic.synthetic = true;
-        index.add_entries(&[synthetic, make_entry(ObjectKind::Table, 1, "Real Table")]);
-
-        let defaults = index.default_completions_snapshot();
-        assert_eq!(defaults.len(), 1);
-        assert_eq!(defaults[0].name, "Real Table");
-    }
 
     #[test]
     fn index_with_methods_and_fields() {

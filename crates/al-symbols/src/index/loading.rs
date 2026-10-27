@@ -182,16 +182,12 @@ impl SymbolIndex {
         self.app_paths.clear();
         self.source_path_cache.clear();
         self.composed_cache.clear();
-        write_derived_cache(&self.default_completions, "default_completions")
-            .0
-            .clear();
 
         let arcs: Vec<Arc<SymbolEntry>> = entries
             .into_iter()
             .map(|(_, entry)| self.add_arc(entry.arc, entry.package_key))
             .collect();
         self.update_sorted_names_after_add(&arcs, false);
-        self.update_default_completions(&arcs);
         for (key, value) in app_paths {
             self.app_paths.insert(key, value);
         }
@@ -587,7 +583,6 @@ mod tests {
     fn replace_with_rebuilds_every_lookup_and_completion_index() {
         let active = SymbolIndex::new();
         active.add_entries(&[make_entry(ObjectKind::Table, 50_100, "Old")]);
-        assert_eq!(active.default_completions_snapshot().len(), 1);
         let _ = active.search("Old", 10);
 
         let staged = SymbolIndex::new();
@@ -611,7 +606,6 @@ mod tests {
             "New"
         );
         assert_eq!(active.get_extensions_of("New").len(), 1);
-        assert_eq!(active.default_completions_snapshot().len(), 2);
         assert_eq!(active.len(), 2);
     }
 
