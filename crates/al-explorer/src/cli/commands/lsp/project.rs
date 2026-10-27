@@ -96,16 +96,48 @@ fn skipped_files_text(skipped: &[serde_json::Value]) -> String {
     out
 }
 
+/// Why an empty `errorCodes` or `builtinTypes` catalog is an error. The daemon
+/// fills both from the semantic bridge, which loads the Microsoft AL compiler
+/// that ALTool installs. An empty list means one of the two is missing, and the
+/// daemon does not say which, so the message names both.
+fn catalog_missing_text(what: &str) -> String {
+    format!(
+        "No {} loaded: the semantic bridge (AlBridge.dll) was not found next to al-lsp \
+         or in AL_BRIDGE_DIR, or ALTool (the AL compiler) was not found. \
+         Run `al-explorer setup` to check ALTool.",
+        terminal_text(what)
+    )
+}
+
+/// Exit code for the catalog commands: a missing catalog is a failure.
+fn catalog_exit(result: &serde_json::Value) -> ExitCode {
+    if list_rows(result)
+        .as_array()
+        .is_none_or(|rows| rows.is_empty())
+    {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 pub fn cmd_error_codes(json: bool) -> ExitCode {
-    run_command("errorCodes", None, json, None, |result| {
-        let codes = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
-        if codes.is_empty() {
-            eprintln!("No error codes loaded (requires ALTool)");
-        } else {
-            print!("{}", error_codes_text(codes));
-            eprintln!("\n{} error codes", codes.len());
-        }
-    })
+    run_command_with_exit(
+        "errorCodes",
+        None,
+        json,
+        None,
+        |result| {
+            let codes = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
+            if codes.is_empty() {
+                eprintln!("{}", catalog_missing_text("error codes"));
+            } else {
+                print!("{}", error_codes_text(codes));
+                eprintln!("\n{} error codes", codes.len());
+            }
+        },
+        catalog_exit,
+    )
 }
 
 /// The lines `error-codes` prints, one per code.
@@ -120,15 +152,22 @@ fn error_codes_text(codes: &[serde_json::Value]) -> String {
 }
 
 pub fn cmd_builtins(json: bool) -> ExitCode {
-    run_command("builtinTypes", None, json, None, |result| {
-        let types = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
-        if types.is_empty() {
-            eprintln!("No builtin types loaded (requires ALTool)");
-        } else {
-            print!("{}", builtins_text(types));
-            eprintln!("\n{} builtin types", types.len());
-        }
-    })
+    run_command_with_exit(
+        "builtinTypes",
+        None,
+        json,
+        None,
+        |result| {
+            let types = list_rows(result).as_array().map(|v| &v[..]).unwrap_or(&[]);
+            if types.is_empty() {
+                eprintln!("{}", catalog_missing_text("builtin types"));
+            } else {
+                print!("{}", builtins_text(types));
+                eprintln!("\n{} builtin types", types.len());
+            }
+        },
+        catalog_exit,
+    )
 }
 
 /// The lines `builtins` prints, one per type with its method count.
@@ -865,6 +904,18 @@ fn free_ids_text(result: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An empty catalog (no bridge or no ALTool) is a failed command.
+    #[test]
+    fn empty_catalog_exits_non_zero_and_names_the_bridge() {
+        assert_eq!(catalog_exit(&serde_json::json!([])), ExitCode::FAILURE);
+        assert_eq!(
+            catalog_exit(&serde_json::json!([{"code": "AL0001"}])),
+            ExitCode::SUCCESS
+        );
+        let message = catalog_missing_text("error codes");
+        assert!(message.contains("AlBridge.dll") && message.contains("ALTool"));
+    }
 
     /// The human formatter must not panic on any shape the daemon can send,
     /// including the modes that carry no `ranges` and the summary that carries
