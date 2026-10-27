@@ -42,9 +42,10 @@ pub enum BraceStyle {
 pub struct FormatOptions {
     pub tab_size: usize,
     pub insert_spaces: bool,
-    /// Keyword casing to apply. `Preserve` is the no-op default; `Lower` and
-    /// `Upper` walk each non-comment, non-string token and case-fold it when
-    /// the token matches a known AL keyword.
+    /// Keyword casing to apply. `Preserve` is the no-op default. `Lower` and
+    /// `Upper` case-fold the keyword tokens of the parse tree (`kw_*` leaves
+    /// and object section keywords such as `fields` and `field`). Names and
+    /// type names that spell a keyword are left as written.
     pub keyword_casing: KeywordCasing,
     /// Blank lines between procedures. `Preserve` (default) is a no-op; `One`
     /// / `Two` normalise the gap between a procedure's closing `end;` and the

@@ -2,7 +2,7 @@
 //!
 //! See the module docs of [`crate::formatting`] for the rules it applies.
 
-use super::casing::{apply_keyword_casing, apply_keyword_casing_with_state};
+use super::casing::apply_keyword_casing;
 use super::options::{BlankLinesBetweenProcedures, FormatOptions};
 use super::passes::{
     apply_brace_style, normalize_blank_lines_between_procedures, sort_object_properties,
@@ -138,7 +138,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
         // in Microsoft's formatter and take no part in the statement layout:
         // an `if C then` followed by `#pragma ...` still has its body below.
         if !started_in_block_comment && is_column_zero_directive(trimmed) {
-            result.push_str(&apply_keyword_casing(trimmed, &options.keyword_casing));
+            result.push_str(trimmed);
             result.push('\n');
             continue;
         }
@@ -415,15 +415,7 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
             }
             trimmed
         };
-        // Apply casing only to code spans. On a carried block-comment closing
-        // line, the scanner starts in comment state so prose before `*/` stays
-        // byte-for-byte while an executable tail still receives normal casing.
-        let transformed = if started_in_block_comment {
-            apply_keyword_casing_with_state(output_line, &options.keyword_casing, true)
-        } else {
-            apply_keyword_casing(output_line, &options.keyword_casing)
-        };
-        result.push_str(&transformed);
+        result.push_str(output_line);
         result.push('\n');
 
         if !code.is_empty() {
@@ -679,6 +671,8 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // ran ahead of the indentation pass.
     let result = normalize_blank_lines_between_procedures(result, options);
     let result = wrap_long_property_lines(result, options);
+    // Casing runs last, on the final layout, so the parse sees the real tokens.
+    let result = apply_keyword_casing(result, &options.keyword_casing);
 
     if uses_crlf {
         result.replace('\n', "\r\n")
