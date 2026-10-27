@@ -42,6 +42,16 @@ fn xml10_safe(text: &str) -> Cow<'_, str> {
     )
 }
 
+/// True when a failed method is an error in JUnit terms (the test could not
+/// run to a verdict) rather than a failure (an assertion went red).
+fn is_error(method: &crate::result::TestMethodResult) -> bool {
+    method.status == TestStatus::Fail && method.failure_kind.is_some()
+}
+
+fn count_errors(methods: &[crate::result::TestMethodResult]) -> usize {
+    methods.iter().filter(|m| is_error(m)).count()
+}
+
 /// The JUnit `type` attribute for a failure, so a CI dashboard can separate a
 /// red test from a red environment.
 fn failure_type(kind: Option<TestFailureKind>) -> &'static str {
@@ -91,22 +101,31 @@ fn measured_total<'a>(
 /// Serialize `results` as JUnit XML to `out`.
 ///
 /// Schema: `<testsuites>` containing one `<testsuite>` per codeunit,
-/// each with one `<testcase>` per method. Failures carry a `<failure>`
-/// child; skipped tests carry a `<skipped/>` child.
+/// each with one `<testcase>` per method. Assertion failures carry a
+/// `<failure>` child. Timeouts and infrastructure failures carry an `<error>`
+/// child and count in `errors`. Skipped tests carry a `<skipped/>` child.
+///
+/// The output validates against the Jenkins xunit plugin `junit-10.xsd`
+/// (`tests/fixtures/junit-10.xsd`), which allows no `skipped` attribute on
+/// `<testsuites>` and requires `errors` on `<testsuite>`.
 pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(), io::Error> {
     let mut writer = Writer::new(out);
 
     writer.write_event(Event::Decl(BytesDecl::new("1.0", Some("UTF-8"), None)))?;
 
     let total_tests: usize = results.iter().map(|cu| cu.total).sum();
-    let total_failures: usize = results.iter().map(|cu| cu.failed).sum();
-    let total_skipped: usize = results.iter().map(|cu| cu.skipped).sum();
+    let total_errors: usize = results.iter().map(|cu| count_errors(&cu.methods)).sum();
+    let total_failures: usize = results
+        .iter()
+        .map(|cu| cu.failed)
+        .sum::<usize>()
+        .saturating_sub(total_errors);
     let total_time = measured_total(results.iter().flat_map(|cu| cu.methods.iter()))?;
 
     let mut suites_start = BytesStart::new("testsuites");
     suites_start.push_attribute(("tests", total_tests.to_string().as_str()));
     suites_start.push_attribute(("failures", total_failures.to_string().as_str()));
-    suites_start.push_attribute(("skipped", total_skipped.to_string().as_str()));
+    suites_start.push_attribute(("errors", total_errors.to_string().as_str()));
     if let Some(total_time) = &total_time {
         suites_start.push_attribute(("time", total_time.as_str()));
     }
@@ -120,7 +139,12 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
         suite_start.push_attribute(("name", cu_name.as_ref()));
         suite_start.push_attribute(("id", cu.id.to_string().as_str()));
         suite_start.push_attribute(("tests", cu.total.to_string().as_str()));
-        suite_start.push_attribute(("failures", cu.failed.to_string().as_str()));
+        let cu_errors = count_errors(&cu.methods);
+        suite_start.push_attribute((
+            "failures",
+            cu.failed.saturating_sub(cu_errors).to_string().as_str(),
+        ));
+        suite_start.push_attribute(("errors", cu_errors.to_string().as_str()));
         suite_start.push_attribute(("skipped", cu.skipped.to_string().as_str()));
         if let Some(cu_time) = &cu_time {
             suite_start.push_attribute(("time", cu_time.as_str()));
@@ -159,12 +183,13 @@ pub fn write_junit<W: Write>(results: &[TestCodeunitResult], out: W) -> Result<(
 
                     writer.write_event(Event::Start(tc))?;
 
-                    let mut failure_start = BytesStart::new("failure");
+                    let element = if is_error(method) { "error" } else { "failure" };
+                    let mut failure_start = BytesStart::new(element);
                     failure_start.push_attribute(("message", msg));
                     failure_start.push_attribute(("type", failure_type(method.failure_kind)));
                     writer.write_event(Event::Start(failure_start))?;
                     writer.write_event(Event::Text(BytesText::new(body)))?;
-                    writer.write_event(Event::End(BytesEnd::new("failure")))?;
+                    writer.write_event(Event::End(BytesEnd::new(element)))?;
 
                     writer.write_event(Event::End(BytesEnd::new("testcase")))?;
                 }
@@ -365,7 +390,7 @@ mod tests {
             "Expected failures=\"1\" at suite level, got:\n{xml}"
         );
         assert!(
-            xml.contains(r#"skipped="1""#),
+            xml.contains(r#"<testsuite name="MixedTests" id="50102" tests="3" failures="1" errors="0" skipped="1""#),
             "Expected skipped=\"1\" at suite level, got:\n{xml}"
         );
         assert_eq!(
@@ -446,7 +471,7 @@ mod tests {
         let mut types = Vec::new();
         loop {
             match reader.read_event() {
-                Ok(Event::Start(e)) if e.local_name().as_ref() == b"failure" => {
+                Ok(Event::Start(e)) if matches!(e.local_name().as_ref(), b"failure" | b"error") => {
                     for attribute in e.attributes() {
                         let attribute = attribute.expect("failure attributes parse");
                         if attribute.key.local_name().as_ref() == b"type" {
@@ -591,5 +616,130 @@ mod tests {
             xml.len(),
             MAX_TOTAL
         );
+    }
+
+    /// Validate generated reports against the Jenkins xunit plugin schema.
+    /// Schema: `tests/fixtures/junit-10.xsd`, see `tests/fixtures/README.md`
+    /// for its source. Rust XSD validation is not in the workspace, so the
+    /// check shells out to `xmllint` and is skipped when that is missing.
+    #[test]
+    fn output_validates_against_junit_10_xsd() {
+        let xsd = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/junit-10.xsd");
+        if std::process::Command::new("xmllint")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            eprintln!("SKIPPED: xmllint is not installed, junit-10.xsd validation not run");
+            return;
+        }
+        let cases: Vec<(&str, Vec<TestCodeunitResult>)> = vec![
+            ("empty", vec![]),
+            (
+                "pass",
+                vec![TestCodeunitResult::from_methods(
+                    "Pass Suite".to_string(),
+                    50200,
+                    vec![pass_method("Test_A"), pass_method("Test_B")],
+                )],
+            ),
+            (
+                "fail",
+                vec![TestCodeunitResult::from_methods(
+                    "Fail Suite".to_string(),
+                    50201,
+                    vec![fail_method("Test_F", "x < 1 & \"y\"\nsecond line")],
+                )],
+            ),
+            (
+                "skip",
+                vec![TestCodeunitResult::from_methods(
+                    "Skip Suite".to_string(),
+                    50202,
+                    vec![skip_method("Test_S")],
+                )],
+            ),
+            (
+                "error",
+                vec![TestCodeunitResult::from_methods(
+                    "Error Suite".to_string(),
+                    50203,
+                    vec![
+                        fail_method_of_kind(
+                            "Test_T",
+                            "timeout after 30000 ms",
+                            TestFailureKind::Timeout,
+                        ),
+                        fail_method_of_kind(
+                            "Test_I",
+                            "BC server error (HTTP 500)",
+                            TestFailureKind::Infrastructure,
+                        ),
+                    ],
+                )],
+            ),
+            (
+                "mixed",
+                vec![
+                    TestCodeunitResult::from_methods(
+                        "Mixed One".to_string(),
+                        50204,
+                        vec![
+                            pass_method("P"),
+                            fail_method("F", "boom"),
+                            skip_method("S"),
+                            fail_method_of_kind("E", "dead", TestFailureKind::Infrastructure),
+                        ],
+                    ),
+                    TestCodeunitResult::from_methods(
+                        "Mixed Two".to_string(),
+                        50205,
+                        vec![pass_method("P2")],
+                    ),
+                ],
+            ),
+        ];
+        let dir = std::env::temp_dir().join(format!("al-test-junit-xsd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (label, results) in &cases {
+            let xml = run_junit(results);
+            let path = dir.join(format!("{label}.xml"));
+            std::fs::write(&path, &xml).unwrap();
+            let out = std::process::Command::new("xmllint")
+                .args(["--noout", "--schema", xsd])
+                .arg(&path)
+                .output()
+                .expect("xmllint runs");
+            assert!(
+                out.status.success(),
+                "case {label} fails junit-10.xsd:\n{}\n{xml}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn errors_are_counted_apart_from_failures() {
+        let cu = TestCodeunitResult::from_methods(
+            "Counts".to_string(),
+            50206,
+            vec![
+                fail_method("A", "assert"),
+                fail_method_of_kind("T", "t", TestFailureKind::Timeout),
+                fail_method_of_kind("I", "i", TestFailureKind::Infrastructure),
+            ],
+        );
+        let xml = run_junit(&[cu]);
+        assert!(
+            xml.contains(r#"<testsuites tests="3" failures="1" errors="2""#),
+            "{xml}"
+        );
+        assert!(
+            xml.contains(r#"tests="3" failures="1" errors="2" skipped="0""#),
+            "{xml}"
+        );
+        assert_eq!(count_occurrences(&xml, "<error "), 2);
+        assert_eq!(count_occurrences(&xml, "<failure "), 1);
     }
 }
