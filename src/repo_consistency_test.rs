@@ -533,6 +533,11 @@ fn expected_schema_keys() -> std::collections::BTreeSet<String> {
             }
             continue;
         }
+        // `codeAnalyzersSet` records whether `al.codeAnalyzers` was present in
+        // the settings file. It is state, not a setting a user writes.
+        if field == "codeAnalyzersSet" {
+            continue;
+        }
         keys.insert(format!("al.{field}"));
     }
     keys.insert("al.useOfficialLsp".to_string());
