@@ -136,7 +136,8 @@ remain `null`. Native diagnostics preserve both endpoints.
 | `ALN2101`–`ALN2106` | Unsupported permission object type, invalid permission flags, unresolved permission target, a missing local interface member, forbidden page-customization ToolTip, or a duplicate locally added page control. |
 | `ALN2201`–`ALN2211` | Local procedure contracts: no overload or more than one for the argument count, a Record passed to an Integer parameter, `Exit` with or without a value against the declared return, an incompatible literal return, a conditional `Exit(value)` with no unconditional return, `Break`/`Continue` outside a loop, an unknown local or Record method. |
 | `ALN2301` | An `[EventSubscriber]` whose parameters do not match a locally declared publisher. |
-| `ALN2401`–`ALN2405` | Body binding: unknown Record subtype, undeclared identifier, incompatible assignment, a Record field that neither the table nor any of its table extensions declares, an unknown field property. |
+| `ALN2401`, `ALN2403`, `ALN2405` | Body binding: unknown Record subtype, incompatible assignment, an unknown field property. |
+| `AL0118`, `AL0132` | Tree-based name and member binding (`crates/al-emit/src/binding.rs`), with the code and message text `alc` prints. `AL0118`: a bare name that no local, parameter, global, procedure, implicit variable, builtin or table field resolves. `AL0132`: a member of a `Record` variable (or `Rec`/`xRec`) that the table and its table extensions do not declare, quoted or not. Both are errors: the build fails and no `.app` is written. The editor publishes the same pass as native diagnostics without the bridge. |
 | `ALN2501` | A report layout that names a file outside the project. |
 | `ALN3001`–`ALN3006` | Unreadable/corrupt artifact, missing/empty or duplicate entries, source-snapshot mismatch, generated metadata parse failure, or package identity mismatch. |
 
@@ -243,10 +244,20 @@ package-semantic-equivalence check.
 > `emitter-02-native-app-differs-from-alc-on-dms`.
 >
 > **The verifier warns, it does not prove.** The text checks for local procedure calls, return
-> values, overloads, `Continue`, identifiers in field triggers and record fields (ALN2202, ALN2203,
-> ALN2208, ALN2209, ALN2402, ALN2404) cannot be exact without a binder. They are reported as
-> warnings and do not stop the build (finding `emitter-01-native-verifier-rejects-valid-dms-project`).
-> A clean native build does not mean `alc` would accept the project.
+> values, overloads, `Continue` and identifiers in field triggers (ALN2202, ALN2203, ALN2208,
+> ALN2209) cannot be exact without a binder. They are reported as warnings and do not stop the
+> build (finding `emitter-01-native-verifier-rejects-valid-dms-project`). A clean native build does
+> not mean `alc` would accept the project.
+>
+> **What the binding pass checks (`AL0118`, `AL0132`).** It runs on the syntax tree of codeunits,
+> tables, table extensions and pages whose source table is known, and reports only what the
+> declarations prove. It skips files with syntax errors or preprocessor directives, code under
+> `with`, names that are called (`Foo(...)`, because the builtin catalog is incomplete), and report,
+> query, XMLport and page extension scopes. `AL0132` needs the table in the workspace or a loaded
+> package. Type mismatches, overload resolution, undeclared procedure calls and everything else
+> still need `alc` or the bridge. On the DMS project `alc` reports 0 errors and the native pass 0.
+> Findings: `journey-02-pack-native-accepts-unquoted-missing-field`,
+> `journey-03-lsp-undeclared-identifier-no-diagnostic`.
 
 ## Microsoft comparison
 

@@ -91,10 +91,13 @@ fn validate_refuses_parseable_but_invalid_project() {
     );
     let dir = std::env::temp_dir().join(format!("al-b1-bad-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    // Parses fine, but `Undeclared` does not exist → alc AL0118.
+    // Parses fine, but `Missing` is not a procedure anywhere, so alc reports
+    // AL0118. The native binding pass leaves undeclared calls to alc (its
+    // function catalog is incomplete), so this case reaches alc. Bare undeclared
+    // names are refused natively, see tests/pack_native_binding.rs.
     make_project(
         &dir,
-        "codeunit 50100 C\n{\n    procedure Bad(): Integer begin exit(Undeclared + 1); end;\n}",
+        "codeunit 50100 C\n{\n    procedure Bad(): Integer begin exit(Missing(1)); end;\n}",
     );
     let out = dir.join("bad.app");
     let res = pack_validate(&dir, &out);

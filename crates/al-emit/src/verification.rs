@@ -293,9 +293,7 @@ pub(crate) fn verify_layout_files(
 }
 
 /// Codes of the heuristic body checks reported as warnings.
-const HEURISTIC_CODES: &[&str] = &[
-    "ALN2202", "ALN2203", "ALN2208", "ALN2209", "ALN2402", "ALN2404",
-];
+const HEURISTIC_CODES: &[&str] = &["ALN2202", "ALN2203", "ALN2208", "ALN2209"];
 
 /// AL keywords that can be followed by a parenthesised expression. They are
 /// operators and statement words, never procedure names.
@@ -449,17 +447,6 @@ fn verify_provable_body_bindings(
                 .sum();
             if let Some((left, right)) = trimmed.split_once(":=") {
                 let left = left.trim();
-                if left.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-                    && !vars.contains_key(&left.to_ascii_lowercase())
-                    && !matches!(left.to_ascii_lowercase().as_str(), "rec" | "xrec")
-                {
-                    out.push(VerificationDiagnostic::error_at_source_offset(
-                        object,
-                        offset,
-                        "ALN2402",
-                        format!("undeclared identifier '{}'", left),
-                    ));
-                }
                 let right = right.trim().trim_end_matches(';').trim();
                 if let (Some(left_ty), Some(right_ty)) = (
                     vars.get(&left.to_ascii_lowercase()),
@@ -476,28 +463,11 @@ fn verify_provable_body_bindings(
                     }
                 }
             }
-            for (var, ty) in &vars {
-                let Some(table) = record_subtype(ty) else {
-                    continue;
-                };
-                let table = table.unquote_identifier().to_ascii_lowercase();
-                let prefix = format!("{var}.\"");
-                if let Some(start) = trimmed.to_ascii_lowercase().find(&prefix) {
-                    let rest = &trimmed[start + prefix.len()..];
-                    if let Some((field, _)) = rest.split_once('"') {
-                        if !fields.contains_key(&(table.clone(), field.to_ascii_lowercase())) {
-                            out.push(VerificationDiagnostic::error_at_source_offset(
-                                object,
-                                offset + start,
-                                "ALN2404",
-                                format!("Record '{}' has no field '{}'", table, field),
-                            ));
-                        }
-                    }
-                }
-            }
         }
     }
+    // Names and members are bound on the syntax tree (AL0118, AL0132) in
+    // `binding`, which replaces the old line-text ALN2402 and ALN2404 checks.
+    out.extend(crate::binding::bind_objects(objects, external));
 }
 
 fn added_control_names<'a>(

@@ -212,6 +212,68 @@ pub fn native_workspace_diagnostics(
     native_workspace_diagnostics_at_root(workspace, config, None)
 }
 
+/// `AL0118` and `AL0132` from the tree-based binding pass in `al-emit`, the
+/// same pass the native build uses to refuse a project. Declarations come from
+/// the workspace symbol table, which holds the workspace objects and the loaded
+/// packages, so no .NET bridge is involved. Positions are zero based UTF-16, as
+/// LSP expects.
+fn native_binding_diagnostics(
+    workspace: &Workspace,
+    config: &AlConfig,
+) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
+    let wanted = ["AL0118", "AL0132"];
+    if !wanted.iter().any(|code| config.is_lint_rule_enabled(code)) {
+        return Vec::new();
+    }
+    let mut symbols = al_emit::binding::BindingSymbols::new();
+    for entry in workspace.symbols.all_entries() {
+        symbols.add_entry(&entry);
+    }
+    // Packages are in `workspace.symbols`. Workspace objects are read from the
+    // cached parse trees, the way the native build reads them.
+    let mut seen = std::collections::HashSet::new();
+    let mut files = Vec::new();
+    for (path, _) in al_insight::calls::indexed_objects(&workspace.file_index) {
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        let Some((source, tree)) = workspace.file_index.get_cached_parse(&path) else {
+            continue;
+        };
+        for object in al_emit::extract_objects_from_tree(&source, &path.to_string_lossy(), &tree) {
+            symbols.add_entry(&object.entry);
+        }
+        files.push((path, source, tree));
+    }
+    let mut out = Vec::new();
+    for (path, source, tree) in &files {
+        for finding in al_emit::binding::bind_tree(&symbols, &path.to_string_lossy(), source, tree)
+        {
+            if !config.is_lint_rule_enabled(finding.code) {
+                continue;
+            }
+            let position = |line: u32, column: u32| crate::queries::Position {
+                line: line.saturating_sub(1),
+                character: column.saturating_sub(1),
+            };
+            out.push((
+                path.clone(),
+                SyntaxDiagnostic {
+                    message: finding.message,
+                    range: crate::queries::Range {
+                        start: position(finding.line, finding.column),
+                        end: position(finding.end_line, finding.end_column),
+                    },
+                    severity: SyntaxDiagnosticSeverity::Error,
+                    code: finding.code.to_string(),
+                    source: "al-native".to_string(),
+                },
+            ));
+        }
+    }
+    out
+}
+
 pub fn native_workspace_diagnostics_at_root(
     workspace: &Workspace,
     config: &AlConfig,
@@ -255,6 +317,8 @@ pub fn native_workspace_diagnostics_at_root(
             },
         ));
     }
+
+    diagnostics.extend(native_binding_diagnostics(workspace, config));
 
     let transaction_rules_enabled = [
         super::transaction_lint::COMMIT_AFTER_DATABASE_CHANGE,
@@ -1008,5 +1072,44 @@ mod tests {
         );
         assert_eq!(q.end.character, 6, "end column should be 6 in UTF-16");
         assert_eq!(q.start.line, 0);
+    }
+
+    /// journey-02 and journey-03: the editor reports an unknown Record member
+    /// and an undeclared name with the codes `alc` uses, from the workspace
+    /// symbols and parse trees alone.
+    #[test]
+    fn native_diagnostics_report_al0118_and_al0132_without_the_bridge() {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/test/src/Item.Table.al"),
+            "table 50100 \"AZJ Item\"\n{\n    fields\n    {\n        field(1; Code; Code[20]) { }\n    }\n}\n".to_string(),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/test/src/C.Codeunit.al"),
+            "codeunit 50101 C\n{\n    procedure P()\n    var\n        Item: Record \"AZJ Item\";\n    begin\n        Item.Code := 'A';\n        Item.NoSuchField := 'B';\n        Undeclared := 1;\n    end;\n}\n".to_string(),
+        );
+        let found: Vec<_> = native_workspace_diagnostics(&workspace, &AlConfig::default())
+            .into_iter()
+            .filter(|(_, d)| d.code == "AL0118" || d.code == "AL0132")
+            .collect();
+        assert_eq!(found.len(), 2, "{found:?}");
+        let (path, member) = found.iter().find(|(_, d)| d.code == "AL0132").unwrap();
+        assert!(path.ends_with("C.Codeunit.al"));
+        assert_eq!(
+            member.message,
+            "'Record \"AZJ Item\"' does not contain a definition for 'NoSuchField'"
+        );
+        assert_eq!(member.source, "al-native");
+        assert_eq!(member.severity, SyntaxDiagnosticSeverity::Error);
+        assert_eq!(
+            (member.range.start.line, member.range.start.character),
+            (7, 13)
+        );
+        assert_eq!(member.range.end.character, 24);
+        let (_, name) = found.iter().find(|(_, d)| d.code == "AL0118").unwrap();
+        assert_eq!(
+            name.message,
+            "The name 'Undeclared' does not exist in the current context."
+        );
     }
 }
