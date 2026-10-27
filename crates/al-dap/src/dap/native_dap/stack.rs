@@ -1,11 +1,10 @@
 //! stackTrace: the BC call stack as DAP frames.
 //!
-//! BC returns the whole stack, so the `startFrame` and `levels` arguments are
+//! The frames come from the last `Break` callback kept in the session (BC has
+//! no stack method). The callback carries the whole stack, so the `startFrame` and `levels` arguments are
 //! applied here rather than asked of the server.
 
 use std::path::{Path, PathBuf};
-
-use tracing::debug;
 
 use crate::dap::Result;
 
@@ -30,13 +29,7 @@ where
     ) -> Result<()> {
         let session_arc = self.session.lock().await.clone();
         let stack_frames = if let Some(s) = session_arc {
-            match s.call_stack().await {
-                Ok(frames) => bc_stack_to_dap(frames, &self.resolve_path),
-                Err(e) => {
-                    debug!("call_stack failed: {e}");
-                    Vec::new()
-                }
-            }
+            bc_stack_to_dap(s.call_stack().await, &self.resolve_path)
         } else {
             Vec::new()
         };

@@ -576,18 +576,10 @@ async fn continue_execution_clears_is_stopped_and_sends_response() {
 #[tokio::test]
 async fn variable_inspection_requests_have_correct_targets_and_params() {
     let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
-    // Completions for the five invocations in call order (ids 1..=5).
+    // Completions for the four invocations in call order (ids 1..=4).
     event_tx
         .send(completion(
             "1",
-            Some(serde_json::json!([{ "name": "Customer" }])),
-            None,
-        ))
-        .await
-        .unwrap();
-    event_tx
-        .send(completion(
-            "2",
             Some(serde_json::json!([{ "name": "x" }])),
             None,
         ))
@@ -595,7 +587,7 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
         .unwrap();
     event_tx
         .send(completion(
-            "3",
+            "2",
             Some(serde_json::json!([{ "name": "g" }])),
             None,
         ))
@@ -603,7 +595,7 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
         .unwrap();
     event_tx
         .send(completion(
-            "4",
+            "3",
             Some(serde_json::json!([{ "name": "child" }])),
             None,
         ))
@@ -611,14 +603,13 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
         .unwrap();
     event_tx
         .send(completion(
-            "5",
+            "4",
             Some(serde_json::json!({ "value": "42" })),
             None,
         ))
         .await
         .unwrap();
 
-    assert_eq!(session.call_stack().await.unwrap()[0]["name"], "Customer");
     assert_eq!(session.variables(7).await.unwrap()[0]["name"], "x");
     assert_eq!(session.globals(7).await.unwrap()[0]["name"], "g");
     assert_eq!(
@@ -630,9 +621,6 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
         "42"
     );
 
-    let f = next_frame(&mut ws_rx);
-    assert_eq!(f["target"], "GetStackTrace");
-    assert_eq!(f["arguments"].as_array().unwrap().len(), 0);
     let f = next_frame(&mut ws_rx);
     assert_eq!(f["target"], "GetVariables");
     assert_eq!(f["arguments"][0], 7);
@@ -689,8 +677,6 @@ async fn null_results_fall_back_to_empty_collections() {
     // Completions with neither result nor error → invoke returns Ok(None).
     event_tx.send(completion("1", None, None)).await.unwrap();
     event_tx.send(completion("2", None, None)).await.unwrap();
-    event_tx.send(completion("3", None, None)).await.unwrap();
-    assert_eq!(session.call_stack().await.unwrap(), serde_json::json!([]));
     assert_eq!(session.variables(0).await.unwrap(), serde_json::json!([]));
     assert_eq!(
         session.evaluate(0, "x").await.unwrap(),
@@ -781,11 +767,14 @@ async fn invoke_buffers_server_push_events_for_flush() {
     let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
     // A Break callback arrives BEFORE our completion while invoke holds
     // event_rx — it must be buffered, not dropped, then drained by flush.
-    let break_args = vec![
-        serde_json::Value::Null,
-        serde_json::json!([{ "DisplayName": "OnRun", "SourcePosition": { "Line": 10, "Column": 2 } }]),
-        serde_json::json!(""),
-    ];
+    let break_args = super::super::test_fixtures::break_args(
+        vec![super::super::test_fixtures::stack_frame(
+            "OnRun",
+            (10, 2),
+            (10, 9),
+        )],
+        "",
+    );
     event_tx
         .send(invocation(Some("Break"), Some(break_args)))
         .await
@@ -795,7 +784,7 @@ async fn invoke_buffers_server_push_events_for_flush() {
         .await
         .unwrap();
 
-    session.invoke("GetStackTrace", vec![]).await.unwrap();
+    session.invoke("IsAlive", vec![]).await.unwrap();
 
     let events = session.flush_pending_events().await;
     assert_eq!(events.len(), 1, "exactly the buffered Break is flushed");
@@ -811,6 +800,39 @@ async fn invoke_buffers_server_push_events_for_flush() {
     }
     // flush_pending_events also runs handle_server_callback("Break").
     assert!(session.is_stopped().await, "Break dispatch set is_stopped");
+}
+
+#[tokio::test]
+async fn call_stack_is_the_last_break_callback_frames_and_sends_nothing() {
+    use super::super::test_fixtures::{break_args, stack_frame};
+    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
+    assert_eq!(
+        session.call_stack().await,
+        serde_json::json!([]),
+        "before any Break"
+    );
+
+    let frames = vec![
+        stack_frame("OnRun", (41, 8), (41, 30)),
+        stack_frame("Caller", (9, 4), (9, 20)),
+    ];
+    event_tx
+        .send(invocation(
+            Some("Break"),
+            Some(break_args(frames.clone(), "")),
+        ))
+        .await
+        .unwrap();
+    session.try_drain_push_events().await;
+    assert_eq!(
+        session.call_stack().await,
+        serde_json::Value::Array(frames),
+        "stack is kept from the Break callback"
+    );
+    assert!(
+        ws_rx.try_recv().is_err(),
+        "reading the stack must not invoke a hub method"
+    );
 }
 
 #[tokio::test]

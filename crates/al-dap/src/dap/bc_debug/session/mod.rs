@@ -134,6 +134,11 @@ pub struct BcDebugSession {
     /// ("step" vs "breakpoint") — BC's own `Break` callback carries no such
     /// distinction. Reset on every `continue_execution` call.
     expecting_step: Mutex<bool>,
+    /// `StackFrame[]` of the last `Break` callback. Microsoft's client keeps
+    /// the same list (`DebuggerService.SetExecutionState`, DebuggerService.cs:124-135,
+    /// `Frames = stack.ToList()`) and answers `stackTrace` from it: the hub has
+    /// no stack method to call.
+    last_break_frames: Mutex<Vec<serde_json::Value>>,
     /// Receives `true` when a Break event arrives and `false` when the session
     /// ends (Detached or FatalError). Populated by the WebSocket reader task,
     /// which sends without holding any lock — no deadlock risk. The channel is
@@ -359,6 +364,7 @@ impl BcDebugSession {
             is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
             expecting_step: Mutex::new(false),
+            last_break_frames: Mutex::new(Vec::new()),
             break_event_rx: Mutex::new(break_event_rx),
         })
     }
@@ -511,8 +517,9 @@ impl BcDebugSession {
         // step's own Break was then reported as a breakpoint.
         let mut expecting_step = self.expecting_step.lock().await;
         let event = signalr_to_bc_event(msg, *expecting_step);
-        if matches!(event, Some(BcEvent::Break { .. })) {
+        if let Some(BcEvent::Break { frames, .. }) = &event {
             *expecting_step = false;
+            *self.last_break_frames.lock().await = frames.clone();
         }
         event
     }
@@ -761,16 +768,13 @@ impl BcDebugSession {
         Ok(())
     }
 
-    /// BC hub method: `GetStackTrace()` → `StackFrame[]`
-    ///
-    /// Each StackFrame has (at minimum):
-    ///   - `ApplicationObjectId` — BC object reference
-    ///   - `SourcePosition` — `{Line, Column}`
-    ///   - `DisplayName` — human-readable frame name
-    ///
-    pub async fn call_stack(&self) -> Result<serde_json::Value> {
-        let result = self.invoke("GetStackTrace", vec![]).await?;
-        Ok(result.unwrap_or(serde_json::json!([])))
+    /// The call stack of the last `Break` callback, as BC sent it: an array of
+    /// `StackFrame` objects with `MethodName`, `ObjectId`, `ObjectName` and
+    /// `StatementSpan` (StackFrame.cs). Empty before the first break.
+    /// Microsoft answers `stackTrace` from the same stored list and has no hub
+    /// method that returns a stack (HubBasedDebuggerService.cs:34-79).
+    pub async fn call_stack(&self) -> serde_json::Value {
+        serde_json::Value::Array(self.last_break_frames.lock().await.clone())
     }
 
     /// BC hub method: `GetVariables(int frameId)` → `LocalNode[]`
@@ -929,6 +933,7 @@ impl BcDebugSession {
             is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
             expecting_step: Mutex::new(false),
+            last_break_frames: Mutex::new(Vec::new()),
             break_event_rx: Mutex::new(break_event_rx),
         };
         (

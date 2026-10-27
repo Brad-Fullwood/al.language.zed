@@ -99,7 +99,7 @@ A from-scratch SignalR (protocol v1) client: negotiates (`/negotiate?negotiateVe
 the negotiated version and `connectionToken`), opens a WebSocket with the record-separator handshake,
 and runs reader/writer tasks. Hub methods invoked include `Attach`,
 `DebugAdapterConfigurationDone`, `AddBreakpoint`/`RemoveBreakpoint`/`UpdateBreakpoint`,
-`GetStackTrace`, `GetVariables`/`ExpandGlobals`/`GetWatchNode`, `SetBreakpointResponse`
+`GetVariables`/`ExpandGlobals`/`GetWatchNode`, `SetBreakpointResponse`
 (0=continue, 1=step-over, 2=step-in, 3=step-out), `StopDebugging`/`TerminateSession`. Server
 callbacks handled: `Break` (→ `stopped`), `IsAlive` (→ ack), `OnAttachedToConnection`,
 `OnDetachedFromConnection` (→ `terminated`), `OnFatalDebuggerException` (→ `output`). All
@@ -107,6 +107,9 @@ field access tolerates both PascalCase and camelCase from different BC versions.
 reason is derived rather than hard-coded: a non-empty message argument means BC broke on a runtime
 error (`stopped.reason = "exception"`, with the message surfaced in `stopped.text`). Otherwise the
 reason is `"step"` when the last client action was step over/in/out, and `"breakpoint"` otherwise.
+`stackTrace` answers from the `StackFrame[]` of the last `Break` callback, kept in the session, as
+Microsoft's client does (`DebuggerService.SetExecutionState`). Microsoft has no `GetStackTrace` hub
+method.
 Stack frames prefer `StatementSpan.From` over `SourcePosition` (current BC servers send the former)
 and convert BC's 0-based line/column to DAP's 1-based ones.
 

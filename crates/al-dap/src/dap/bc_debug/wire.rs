@@ -43,8 +43,9 @@ pub(super) fn default_invoke_timeout(target: &str) -> tokio::time::Duration {
     use tokio::time::Duration;
     match target {
         "IsAlive" => Duration::from_secs(5),
-        "GetVariables" | "GetStackTrace" | "ExpandGlobals" | "ExpandNode" | "GetWatchNode"
-        | "GetSource" => Duration::from_secs(30),
+        "GetVariables" | "ExpandGlobals" | "ExpandNode" | "GetWatchNode" | "GetSource" => {
+            Duration::from_secs(30)
+        }
         "Attach" | "DebugAdapterConfigurationDone" => Duration::from_secs(120),
         "AddBreakpoint" | "RemoveBreakpoint" | "UpdateBreakpoint" | "SetBreakpointResponse" => {
             Duration::from_secs(30)
@@ -254,7 +255,7 @@ mod tests {
     fn invoke_timeout_variable_inspection_is_medium() {
         // Positive: variable / stack-frame inspection can be slow on deep
         // BC records but shouldn't take more than ~30s either.
-        for target in ["GetVariables", "GetStackTrace", "ExpandGlobals"] {
+        for target in ["GetVariables", "ExpandGlobals"] {
             let t = default_invoke_timeout(target);
             assert!(
                 t >= tokio::time::Duration::from_secs(15)
