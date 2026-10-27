@@ -21,6 +21,19 @@ esc()   { wtype -k Escape; sleep 0.5; }
 snap before
 shot highlight 0
 
+# Wait for al-lsp to finish its project scan before any editor request. With the Base Application
+# symbols in .alpackages the container builds the dependency source index from nothing (about 60 s,
+# the host keeps a cache), and requests sent meanwhile are cancelled: F2 opened no rename box and
+# the ctrl-a plus typed text then replaced the whole buffer. Capped at 240 s.
+ready=0
+while (( ready < 240 )); do
+  grep -q "Published project-scoped diagnostics generation" "$HOME/.local/share/al-lsp/logs/al-lsp.log" 2>/dev/null && break
+  sleep 1; ready=$((ready + 1))
+done
+echo "$ready" > "$OUTD/artifact-ready-wait.txt"
+echo "KEYS al-lsp ready after waiting ${ready}s"
+sleep 2
+
 # completion: a blank line 13 inside UseIt, a partial identifier, ctrl-space
 goto 13:1
 press -k Return
@@ -66,8 +79,9 @@ shot diagnostics-clear 1
 
 # rename the procedure from its declaration
 goto 3:20
+sleep 3           # a cold or busy al-lsp answers prepareRename late, and F2 before that does nothing
 press -k F2
-sleep 1
+sleep 3
 chord a
 wtype 'SumNumbers'; sleep 0.5
 shot rename-box 1
@@ -77,7 +91,7 @@ shot rename 1
 
 # save: format on save re-indents the Messy procedure
 chord s
-sleep 4
+sleep 10          # Zed waits 5 s for the formatter, then saves unformatted (Zed.log: timed out waiting for formatting)
 esc               # nudge a repaint, the software renderer can show the frame from before the save
 shot format 3
 snap after-format
@@ -101,3 +115,5 @@ esc
 
 # Zed's own log (drive.sh's zed-app.log picks telemetry.log, so copy the right one)
 cp "$HOME/.local/share/zed/logs/Zed.log" "$OUTD/artifact-Zed.log" 2>/dev/null || true
+# al-lsp's own log (start time, index, semantic bridge, slow requests) for the same run.
+cp "$HOME/.local/share/al-lsp/logs/al-lsp.log" "$OUTD/artifact-al-lsp.log" 2>/dev/null || true

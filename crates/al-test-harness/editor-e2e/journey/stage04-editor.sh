@@ -49,6 +49,17 @@ s4_zed_half() {
     done
     return 0
   fi
+  # How long al-lsp needed inside Zed before it answered: from "initialize" to the first project diagnostics publish.
+  local lspl="$run/artifact-al-lsp.log" t0 t1 waited
+  waited=$(cat "$run/artifact-ready-wait.txt" 2>/dev/null)
+  t0=$(grep 'initialize: storing root URI' "$lspl" 2>/dev/null | tail -n 1 | grep -oE '[0-9T:.-]+Z' | head -n 1)
+  t1=$(grep 'Published project-scoped diagnostics generation' "$lspl" 2>/dev/null | head -n 1 | grep -oE '[0-9T:.-]+Z' | head -n 1)
+  if [[ -n "$t0" && -n "$t1" ]]; then
+    local secs; secs=$(( $(date -d "$t1" +%s) - $(date -d "$t0" +%s) ))
+    [[ "$secs" -gt 5 ]] && record 04 zed.al-lsp-ready NIGGLE "al-lsp inside Zed answered requests ${secs}s after initialize (first project diagnostics publish), keystrokes waited ${waited:-?}s for it. The container has no dotnet and no source index cache, so the Base Application index is built from nothing. Requests sent before that were cancelled (Zed.log / al-lsp.log in $run)"
+  else
+    record 04 zed.al-lsp-ready NIGGLE "no project diagnostics publish in al-lsp.log after ${waited:-?}s of waiting, al-lsp inside Zed never finished its project scan (see $lspl)"
+  fi
   # screenshots: shot-<name>.png -> zed-<name>.png
   local p
   for p in "$run"/shot-*.png; do
@@ -130,8 +141,8 @@ s4_lsp_half() {
   local rc=$? line status item detail n=0
   while IFS= read -r line; do
     status="${line%% *}"; line="${line#* }"; item="${line%% *}"; detail="${line#* }"
-    case "$status" in PASS|FAIL|SKIP) record 04 "$item" "$status" "$detail"; n=$((n+1)) ;; esac
-  done < <(grep -E '^(PASS|FAIL|SKIP) ' "$lsp/lines.txt" 2>/dev/null)
+    case "$status" in PASS|FAIL|SKIP|NIGGLE) record 04 "$item" "$status" "$detail"; n=$((n+1)) ;; esac
+  done < <(grep -E "^(PASS|FAIL|SKIP|NIGGLE) " "$lsp/lines.txt" 2>/dev/null)
   if [[ $n == 0 ]]; then
     record 04 lsp.all FAIL "journey-lsp produced no result lines (exit $rc), see $(step_log 04 journey-lsp)"
   elif [[ $rc != 0 ]]; then

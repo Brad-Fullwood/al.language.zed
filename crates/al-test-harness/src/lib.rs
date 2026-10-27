@@ -540,6 +540,26 @@ impl LspClient {
     /// without exercising the requested document.
     pub async fn open_file(&mut self, relative_path: &str, content: &str) {
         let uri = self.file_uri(relative_path);
+        assert!(
+            self.open_file_within(relative_path, content, diag_wait_timeout())
+                .await
+                .is_some(),
+            "server did not acknowledge textDocument/didOpen for {uri} version 1"
+        );
+    }
+
+    /// Like [`open_file`](Self::open_file) with an explicit wait limit and no
+    /// panic: returns how long the server took to acknowledge the open, or
+    /// `None` when it never did within `timeout`. The journey probe uses it to
+    /// measure the first open, which waits for the project scan and the
+    /// semantic bridge start.
+    pub async fn open_file_within(
+        &mut self,
+        relative_path: &str,
+        content: &str,
+        timeout: tokio::time::Duration,
+    ) -> Option<tokio::time::Duration> {
+        let uri = self.file_uri(relative_path);
         let version = 1;
         self.open_docs.insert(uri.clone(), version);
 
@@ -552,16 +572,17 @@ impl LspClient {
             }
         });
 
+        let started = tokio::time::Instant::now();
         self.notify("textDocument/didOpen", params)
             .await
             .unwrap_or_else(|error| {
                 panic!("textDocument/didOpen notify failed for {uri}: {error}")
             });
-        assert!(
-            self.wait_for_diagnostics(&uri, version, diag_wait_timeout())
-                .await,
-            "server did not acknowledge textDocument/didOpen for {uri} version {version}"
-        );
+        if self.wait_for_diagnostics(&uri, version, timeout).await {
+            Some(started.elapsed())
+        } else {
+            None
+        }
     }
 
     /// Send a text change to an already-open file (simulates Zed keystroke).

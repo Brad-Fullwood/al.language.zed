@@ -14,6 +14,8 @@ use al_test_harness::LspClient;
 use serde_json::{json, Value};
 
 const FILE: &str = "src/JourneyEditor.Codeunit.al";
+/// Longest wait for the first didOpen acknowledgement.
+const OPEN_LIMIT_MS: u64 = 120_000;
 
 struct Report {
     out: PathBuf,
@@ -128,6 +130,7 @@ async fn run(project: PathBuf, out: PathBuf) {
             return;
         }
     };
+    let init_ms = ms(t);
     let init = c.initialize_result().clone();
     r.save("initialize", &init);
     let caps = &init["capabilities"];
@@ -169,7 +172,27 @@ async fn run(project: PathBuf, out: PathBuf) {
     }
 
     let t = Instant::now();
-    c.open_file(FILE, &original).await;
+    // The first open waits for the project scan and, with the semantic feature, the .NET bridge start.
+    // Wait up to OPEN_LIMIT_MS for the acknowledgement. Over 5 s is a NIGGLE, never acknowledged is the FAIL.
+    match c
+        .open_file_within(FILE, &original, std::time::Duration::from_millis(OPEN_LIMIT_MS))
+        .await
+    {
+        Some(d) if d.as_millis() > 5_000 => r.line(
+            "NIGGLE",
+            "lsp.open.time",
+            format!("al-lsp acknowledged the first didOpen after {} ms (over 5 s, initialize took {} ms before it)", d.as_millis(), init_ms),
+        ),
+        Some(_) => {}
+        None => {
+            r.line(
+                "FAIL",
+                "lsp.open",
+                format!("al-lsp never acknowledged didOpen within {OPEN_LIMIT_MS} ms"),
+            );
+            return;
+        }
+    }
     let uri = c.file_uri(FILE);
     let opened = c.drain_diagnostics();
     let base = opened.get(&uri).cloned().unwrap_or_default();
@@ -444,20 +467,55 @@ async fn run(project: PathBuf, out: PathBuf) {
     let t = Instant::now();
     c.change_file(FILE, &original).await;
     let dur = ms(t);
-    let after = c.drain_diagnostics().remove(&uri);
-    let errors_after = after
-        .as_ref()
-        .map(|d| d.iter().filter(|x| x["severity"] == json!(1)).count());
-    match (after.is_some(), errors_after) {
-        (true, Some(0)) => r.line(
+    let mut after = c.drain_diagnostics().remove(&uri);
+    let count_errors = |d: &Option<Vec<Value>>| {
+        d.as_ref()
+            .map(|d| d.iter().filter(|x| x["severity"] == json!(1)).count())
+    };
+    let first_errors = count_errors(&after);
+    // The first publish after the edit can still carry the old error while the semantic pass of the
+    // previous text finishes. Wait up to 10 s for a later publish and judge the last state.
+    let mut settle_ms = 0u128;
+    if first_errors.is_some_and(|n| n > 0) {
+        let settle = Instant::now();
+        while settle.elapsed() < std::time::Duration::from_secs(10) {
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if let Some(later) = c.drain_diagnostics().remove(&uri) {
+                after = Some(later);
+            }
+            if count_errors(&after) == Some(0) {
+                break;
+            }
+        }
+        settle_ms = ms(settle);
+    }
+    match (after.is_some(), count_errors(&after)) {
+        (true, Some(0)) if settle_ms == 0 => r.line(
             "PASS",
             "lsp.diagnostics-clear",
             format!("error cleared after the fix, {dur} ms"),
         ),
+        (true, Some(0)) => {
+            r.line(
+                "PASS",
+                "lsp.diagnostics-clear",
+                format!("error cleared after the fix, {} ms", dur + settle_ms),
+            );
+            r.line(
+                "NIGGLE",
+                "lsp.diagnostics-clear.stale",
+                format!(
+                    "the first publish after the fix still had {} error(s), the clean publish came {settle_ms} ms later",
+                    first_errors.unwrap_or(0)
+                ),
+            );
+        }
         (true, Some(n)) => r.line(
             "FAIL",
             "lsp.diagnostics-clear",
-            format!("{n} errors remain after the fix"),
+            format!(
+                "{n} errors remain after the fix, still there after waiting {settle_ms} ms more"
+            ),
         ),
         _ => r.line(
             "FAIL",

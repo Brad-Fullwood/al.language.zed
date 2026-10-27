@@ -2,7 +2,7 @@
 # Developer journey: replays a Business Central AL project from scaffold to publish and
 # records every result in $OUT/results.tsv. Product failures are data, not script errors.
 #
-#   journey.sh [--out DIR] [--target-dir DIR] [--stages 1,2,5] [--offline]
+#   journey.sh [--out DIR] [--target-dir DIR] [--stages 1,2,5] [--offline] [--no-build]
 #
 # Only the CDX demo tenant is ever contacted. Exit 1 when any row is FAIL.
 set -u
@@ -13,6 +13,7 @@ TARGET_DIR="${JOURNEY_TARGET_DIR:-/home/bradf/.cache/al-zed-fix/target-journey}"
 OUT=""
 STAGES="1,2,3,4,5,6,7,8,9,10"
 OFFLINE=0
+NO_BUILD=0
 LOGFILE=/home/bradf/.cache/al-zed-fix/journey-log.md
 
 while [[ $# -gt 0 ]]; do
@@ -21,7 +22,8 @@ while [[ $# -gt 0 ]]; do
     --target-dir) TARGET_DIR="$2"; shift 2 ;;
     --stages) STAGES="$2"; shift 2 ;;
     --offline) OFFLINE=1; shift ;;
-    -h|--help) sed -n 2,7p "${BASH_SOURCE[0]}"; exit 0 ;;
+    --no-build) NO_BUILD=1; shift ;;
+    -h|--help) sed -n 2,8p "${BASH_SOURCE[0]}"; exit 0 ;;
     *) echo "unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -38,6 +40,42 @@ export ROOT OUT PROJ TARGET_DIR ALX ALLSP ALC_DLL OFFLINE
 # drive.sh looks for $ROOT/target/debug/al-lsp
 if [[ ! -e "$ROOT/target" ]]; then ln -s "$TARGET_DIR" "$ROOT/target"; fi
 
+jlog() { printf '%s %s\n' "$(date +%H:%M)" "$*" >> "$LOGFILE"; }
+
+# Stop the project daemon an earlier run left on $PROJ: it may come from other code than the binaries below.
+if [[ -x "$ALX" && -f "$PROJ/app.json" ]]; then
+  env -C "$PROJ" "$ALX" daemon-shutdown > /dev/null 2>&1 || true
+fi
+
+# Preflight: al-lsp, al-explorer and the harness bins must come from one HEAD. The daemon handshake compares
+# the build hash baked in by crates/al-protocol/build.rs and refuses a daemon from other code. AL_BUILD_HASH
+# pins that hash to HEAD for every build here (build.rs reruns when it changes, so no stale hash survives).
+# Order matters: al-lsp with the `semantic` feature (the release feature set, it loads the .NET bridge) is
+# built last. Checked with mtimes: building al-explorer or the harness bins does not relink al-lsp, but the
+# last build wins if that changes.
+BUILD_TAG="no-build"
+HEAD_HASH="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null)"
+if [[ "$NO_BUILD" == 0 ]]; then
+  export AL_BUILD_HASH="$HEAD_HASH" CARGO_INCREMENTAL=0 CARGO_TARGET_DIR="$TARGET_DIR"
+  for b in "-p al-explorer" "-p al-test-harness --bins" "-p al-lsp --features semantic"; do
+    # shellcheck disable=SC2086
+    if ! (cd "$ROOT" && cargo build -q $b) > "$OUT/preflight-build.log" 2>&1; then
+      echo "preflight: cargo build $b failed, see $OUT/preflight-build.log" >&2; tail -n 5 "$OUT/preflight-build.log" >&2; exit 2
+    fi
+  done
+  BUILD_TAG="built HEAD=$HEAD_HASH dirty=$(git -C "$ROOT" status --porcelain --untracked-files=no | wc -l) al-lsp=semantic"
+fi
+for bin in "$ALX" "$ALLSP"; do
+  [[ -x "$bin" ]] || { echo "missing binary $bin" >&2; exit 2; }
+done
+if [[ -n "$HEAD_HASH" ]]; then
+  for bin in "$ALX" "$ALLSP"; do
+    grep -aqF -- "$HEAD_HASH" "$bin" || { echo "preflight: $bin does not carry build hash $HEAD_HASH (HEAD). al-lsp and al-explorer must be built from the same commit, run without --no-build." >&2; exit 2; }
+  done
+  lspver=$("$ALLSP" --version 2>&1)
+  [[ "$lspver" == *"$HEAD_HASH"* ]] || { echo "preflight: '$lspver' does not name HEAD $HEAD_HASH, stale al-lsp" >&2; exit 2; }
+  BUILD_TAG="$BUILD_TAG $lspver"
+fi
 # Clean results and project for this out dir. Per-stage folders are rewritten by the stages.
 rm -rf "$PROJ" "$OUT/results.tsv" "$OUT/SUMMARY.md"
 : > "$OUT/results.tsv"
@@ -50,18 +88,12 @@ for f in "$HERE"/journey/stage*.sh; do
   [[ -f "$f" ]] && source "$f"
 done
 
-jlog() { printf '%s %s\n' "$(date +%H:%M)" "$*" >> "$LOGFILE"; }
-
-for bin in "$ALX" "$ALLSP"; do
-  [[ -x "$bin" ]] || { echo "missing binary $bin" >&2; exit 2; }
-done
-
 # Stages that connect to Business Central.
 online_stage() { case "$1" in 2|8|9) return 0 ;; *) return 1 ;; esac; }
 
 want() { [[ ",$STAGES," == *",$1,"* ]]; }
 
-jlog "journey start out=$OUT stages=$STAGES offline=$OFFLINE"
+jlog "journey start out=$OUT stages=$STAGES offline=$OFFLINE build: $BUILD_TAG"
 for n in 1 2 3 4 5 6 7 8 9 10; do
   want "$n" || continue
   # Stage 8's app stays installed through stage 9, then goes before stage 10.

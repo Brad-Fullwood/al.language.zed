@@ -33,15 +33,40 @@ stage_02() {
   echo "${route:-none}" > "$OUT/$s/route.txt"
   record "$s" route PASS "symbols route: ${route:-none}"
 
-  local pkg found
+  # The NuGet route names files Microsoft_System Application_<ver>.app (space kept), the server route
+  # names them Microsoft_System_Application_<ver>.app (underscores, version taken from app.json). Accept both.
+  local pkg found under route_names=""
   for pkg in System "System Application" "Base Application" Application; do
-    found=$(find "$PROJ/.alpackages" -maxdepth 1 -name "Microsoft_${pkg}_*.app" -size +0 2>/dev/null | head -n 1)
+    under="${pkg// /_}"
+    found=$(find "$PROJ/.alpackages" -maxdepth 1 \( -name "Microsoft_${pkg}_*.app" -o -name "Microsoft_${under}_*.app" \) -size +0 2>/dev/null | head -n 1)
     if [[ -z "$found" && "$pkg" == System && -s "$PROJ/.alpackages/System.app" ]]; then
       found="$PROJ/.alpackages/System.app"
       record "$s" pkg.System.name NIGGLE "System package saved as System.app, other packages use Microsoft_<Name>_<version>.app"
     fi
-    if [[ -n "$found" ]]; then record "$s" "pkg.$pkg" PASS "$(basename "$found") $(stat -c %s "$found") bytes"; else record "$s" "pkg.$pkg" FAIL "no nonzero Microsoft_${pkg}_*.app in .alpackages"; fi
+    [[ "$pkg" != "$under" && "$found" == *"/Microsoft_${under}_"* ]] && route_names="underscore"
+    if [[ -n "$found" ]]; then record "$s" "pkg.$pkg" PASS "$(basename "$found") $(stat -c %s "$found") bytes"; else record "$s" "pkg.$pkg" FAIL "no nonzero Microsoft_${pkg}_*.app or Microsoft_${under}_*.app in .alpackages"; fi
+    [[ "$pkg" == "Base Application" && -n "$found" ]] && base="$found"
   done
+  if [[ "$route_names" == underscore ]]; then
+    record "$s" pkg.naming NIGGLE "the server route writes Microsoft_System_Application_<ver>.app, the NuGet route writes Microsoft_System Application_<ver>.app: the two routes name files differently"
+  fi
+  if [[ -n "${base:-}" ]]; then
+    local real fname
+    real=$(python3 -I - "$base" <<'PY' 2>/dev/null
+import sys, zipfile, re
+z = zipfile.ZipFile(sys.argv[1])
+m = z.read("NavxManifest.xml").decode("utf-8-sig", "replace")
+print(re.search(r'<App\b[^>]*\sVersion="([^"]+)"', m).group(1))
+PY
+)
+    fname=$(basename "$base" | sed -E 's/^.*_([0-9]+(\.[0-9]+){3})\.app$/\1/')
+    echo "${real:-unknown}" > "$OUT/$s/base-application-real-version.txt"
+    if [[ "$route" == server && "$fname" != "${real:-}" ]]; then
+      record "$s" pkg.server-version NIGGLE "server route file name carries $fname while NavxManifest.xml in $(basename "$base") says Version $real (CDX runs 29.0). Known: audit finding publish-symbols-03-server-download-filename-uses-requested-version.md"
+    else
+      record "$s" pkg.version PASS "$(basename "$base") manifest Version $real"
+    fi
+  fi
   ls -la "$PROJ/.alpackages" > "$OUT/$s/alpackages.txt" 2>&1
   sync
 }
