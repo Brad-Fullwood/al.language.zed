@@ -243,6 +243,12 @@ use crate::server::workspace::{
     next_transitive_dependencies, read_manifests, MAX_TRANSITIVE_DEPENDENCY_DEPTH,
 };
 
+/// A server-download failure the caller counts: `status` is what `failed` in the
+/// response sums, so an entry with only an `error` key would exit 0.
+fn server_failure(message: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({ "name": "launch configuration", "status": "error", "error": message.into() })
+}
+
 /// Download one wave of dependencies, returning a per-dependency result entry.
 ///
 /// Extracted so the dispatcher can run it repeatedly: after each wave the
@@ -259,9 +265,7 @@ async fn download_dependency_wave(
 ) -> Vec<serde_json::Value> {
     if source == "server" {
         if project_configs.is_empty() {
-            return vec![serde_json::json!({
-                "error": "No BC server config found"
-            })];
+            return vec![server_failure("No BC server config found")];
         }
         // `requested_config` names one of the project's launch configurations.
         // With no name the first entry is used, and the caller reports which
@@ -269,7 +273,7 @@ async fn download_dependency_wave(
         // from one of them silently.
         let cfg = match al_bc::launch::pick_config(project_configs, requested_config) {
             Ok(cfg) => cfg,
-            Err(error) => return vec![serde_json::json!({ "error": error })],
+            Err(error) => return vec![server_failure(error)],
         };
         // The launch configuration ships in the repository, and the download
         // presents the user's Business Central credential to whatever server
@@ -277,7 +281,7 @@ async fn download_dependency_wave(
         if let Err(error) =
             crate::server::daemon::debug_dispatch::authorize_launch_target(workspace, cfg)
         {
-            return vec![serde_json::json!({ "error": error })];
+            return vec![server_failure(error)];
         }
         let auth = match cfg.authentication {
             al_bc::launch::AuthMethod::Windows => al_symbols::bc_server::AuthMethod::Windows,
@@ -293,28 +297,48 @@ async fn download_dependency_wave(
             cfg.accept_invalid_certs,
         ) {
             Ok(c) => c,
-            Err(e) => return vec![serde_json::json!({ "error": e.to_string() })],
+            Err(e) => return vec![server_failure(e.to_string())],
         };
-        let url_deps: Vec<(String, al_symbols::nuget::AppDependency)> = deps
-            .iter()
-            .filter_map(|dep| cfg.dev_packages_url(dep).map(|url| (url, dep.clone())))
-            .collect();
-        let bc_results = client.download_all(&url_deps, dest).await;
-        bc_results
-            .into_iter()
-            .zip(url_deps.iter())
-            .map(|(r, (_url, sym_dep))| match r {
-                Ok(path) => serde_json::json!({
-                    "name": sym_dep.name,
-                    "status": "ok",
-                    "path": path.display().to_string(),
-                }),
-                Err(e) => serde_json::json!({
-                    "name": sym_dep.name,
+        // A dependency with no dev-packages URL is a failure, not a skip:
+        // dropping it printed "0 failed" for a cloud launch.json with no
+        // `tenant` (publish-symbols-02).
+        let mut unresolved: Vec<serde_json::Value> = Vec::new();
+        let mut url_deps: Vec<(String, al_symbols::nuget::AppDependency)> = Vec::new();
+        for dep in deps {
+            match cfg.dev_packages_url(dep) {
+                Some(url) => url_deps.push((url, dep.clone())),
+                None => unresolved.push(serde_json::json!({
+                    "name": dep.name,
                     "status": "error",
-                    "error": e.to_string(),
-                }),
-            })
+                    "error": match cfg.environment_type {
+                        al_bc::launch::EnvironmentType::OnPrem => {
+                            "the launch configuration cannot construct a BC dev-packages URL"
+                                .to_string()
+                        }
+                        _ => cfg.cloud_base_url().err().unwrap_or_else(|| {
+                            "the launch configuration has no environmentName".to_string()
+                        }),
+                    },
+                })),
+            }
+        }
+        let bc_results = client.download_all(&url_deps, dest).await;
+        unresolved
+            .into_iter()
+            .chain(bc_results.into_iter().zip(url_deps.iter()).map(
+                |(r, (_url, sym_dep))| match r {
+                    Ok(path) => serde_json::json!({
+                        "name": sym_dep.name,
+                        "status": "ok",
+                        "path": path.display().to_string(),
+                    }),
+                    Err(e) => serde_json::json!({
+                        "name": sym_dep.name,
+                        "status": "error",
+                        "error": e.to_string(),
+                    }),
+                },
+            ))
             .collect()
     } else {
         // honor al.nugetFeeds / al.useOnlyCustomFeeds /
@@ -680,6 +704,13 @@ fn refresh_workspace_after_download(
 mod tests {
     use super::*;
     use al_workspace::Workspace;
+
+    #[test]
+    fn a_server_failure_carries_the_status_the_failed_count_sums() {
+        let entry = server_failure("no tenant");
+        assert_eq!(entry["status"], "error");
+        assert_eq!(entry["error"], "no tenant");
+    }
 
     fn empty_ws() -> Workspace {
         Workspace::new()

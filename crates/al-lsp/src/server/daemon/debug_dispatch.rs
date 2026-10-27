@@ -233,7 +233,8 @@ pub(super) fn authorize_debug_target(
         &config.environment_type,
         config.server.as_deref(),
         config.port,
-    );
+    )
+    .with_tenant(Some(&config.tenant), config.tenant_purpose.as_deref());
     al_project::trust::authorize_cached_credential(
         &project_root,
         &target,
@@ -315,6 +316,15 @@ pub(super) async fn acquire_bc_token(
 ) -> Result<String, (i32, String)> {
     use al_protocol::jsonrpc::error_codes;
 
+    // A caller-supplied token reaches the same tenant, so the guard does not
+    // wait for the credential authorisation below.
+    if !config.environment_type.eq_ignore_ascii_case("OnPrem") {
+        al_bc::tenant_guard::guard_cloud_connection(
+            Some(&config.tenant),
+            config.tenant_purpose.as_deref(),
+        )
+        .map_err(|refusal| (error_codes::INVALID_PARAMS, refusal.0))?;
+    }
     let spends_cached_credential = supplied.is_empty() && debug_uses_oauth(config);
     if spends_cached_credential || config.accept_invalid_certs {
         let authorization = authorize_debug_target(workspace, config, source)
@@ -1235,6 +1245,7 @@ mod acquire_bc_token_tests {
         let config = BcDebugConfig {
             environment_type: "Sandbox".to_string(),
             environment_name: Some("SANDBOX".to_string()),
+            tenant: al_bc::tenant_guard::install_test_registry().to_string(),
             ..BcDebugConfig::default()
         };
         let token = acquire_bc_token(

@@ -100,7 +100,8 @@ pub fn authorize_debug_scenario(
         &config.environment_type,
         config.server.as_deref(),
         config.port,
-    );
+    )
+    .with_tenant(Some(&config.tenant), config.tenant_purpose.as_deref());
     let authorization = al_project::trust::authorize_cached_credential(
         project_root,
         &target,
@@ -1401,17 +1402,28 @@ mod tests {
     fn the_legacy_proxy_forwards_an_online_scenario() {
         let _config = ScratchConfig::new();
         let project = project_with_debug_scenario("https://collector.example.test", false);
+        let tenant = al_bc::tenant_guard::install_test_registry();
 
         for arguments in [
             serde_json::json!({
                 "environmentType": "Sandbox",
                 "environmentName": "Test",
-                "tenant": "organizations",
+                "tenant": tenant,
             }),
+            serde_json::json!({"environmentType": "production", "tenant": tenant}),
+            serde_json::json!({"tenant": tenant}),
+        ] {
+            assert_eq!(proxy_refusal(project.path(), arguments), None);
+        }
+
+        // A cloud scenario with no tenant, or a name in place of the GUID, is
+        // refused whatever else it says.
+        for arguments in [
             serde_json::json!({"environmentType": "production"}),
             serde_json::json!({"tenant": "organizations"}),
         ] {
-            assert_eq!(proxy_refusal(project.path(), arguments), None);
+            let refusal = proxy_refusal(project.path(), arguments).expect("tenant refused");
+            assert!(refusal.contains("tenant"), "{refusal}");
         }
     }
 
@@ -1482,7 +1494,11 @@ mod tests {
         assert_eq!(
             proxy_refusal(
                 project.path(),
-                serde_json::json!({"environmentType": "Sandbox", "applicationFamily": "Fabrikam"}),
+                serde_json::json!({
+                    "environmentType": "Sandbox",
+                    "applicationFamily": "Fabrikam",
+                    "tenant": al_bc::tenant_guard::install_test_registry(),
+                }),
             ),
             None
         );
@@ -1498,13 +1514,14 @@ mod tests {
     fn the_legacy_proxy_refuses_an_authentication_that_is_not_one_of_the_four_names() {
         let _config = ScratchConfig::new();
         let project = project_with_debug_scenario("https://collector.example.test", false);
+        let tenant = al_bc::tenant_guard::install_test_registry();
         let scenario = |authentication: &str| {
             serde_json::json!({
                 "environmentType": "Sandbox",
                 "server": "https://collector.example.test",
                 "serverInstance": "BC",
                 "authentication": authentication,
-                "tenant": "default",
+                "tenant": tenant,
             })
         };
 

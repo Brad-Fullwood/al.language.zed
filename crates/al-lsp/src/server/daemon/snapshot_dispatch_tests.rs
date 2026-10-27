@@ -26,6 +26,8 @@ struct Env {
     server: MockServer,
 }
 
+const CDX_TENANT: &str = "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d";
+
 async fn env_with(environment_type: &str) -> Env {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap().join("project");
@@ -40,9 +42,10 @@ async fn env_with(environment_type: &str) -> Env {
         "server": "http://127.0.0.1",
         "serverInstance": "BC",
         "authentication": "AAD",
-        "tenant": "default",
+        "tenant": if environment_type == "OnPrem" { "default" } else { CDX_TENANT },
         "snapshotPort": port,
     });
+    al_bc::tenant_guard::install_test_registry();
     if environment_type != "OnPrem" {
         configuration["environmentName"] = json!("Live");
     }

@@ -1329,7 +1329,27 @@ async fn dispatch_method(
     // connection loop restores the original id on the wire.
     let id = req.dispatch_id();
     let params = req.params.unwrap_or(serde_json::Value::Null);
-    dispatch_known_method(workspace, &req.method, id, params, shutdown).await
+    // Every request that reaches this function comes from the CLI or MCP, so a
+    // cloud connection it makes needs the tenant the caller typed
+    // (`cliTenant`, with `cliPurpose` for a customer tenant) and checks it
+    // against the launch configuration. The editor does not come through here.
+    // The `tenant` param is not used for this: debug requests already use it
+    // to name an inline configuration's tenant.
+    let declared = al_bc::tenant_guard::Declaration {
+        tenant: params
+            .get("cliTenant")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        purpose: params
+            .get("cliPurpose")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    };
+    al_bc::tenant_guard::scope_declaration(
+        declared,
+        dispatch_known_method(workspace, &req.method, id, params, shutdown),
+    )
+    .await
 }
 
 dispatch_table! {
