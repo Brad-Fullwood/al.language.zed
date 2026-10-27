@@ -1512,4 +1512,42 @@ mod tests {
         analyze_breaking_changes_checked(&[indirect], &[])
             .expect("an indirect permission bit is a valid mask");
     }
+
+    /// A table and a page that share a name (the normal setup table and page
+    /// pattern) must not collide in a permission set. Both sides are emitted
+    /// through al-emit, so the permission ids come from the real resolver.
+    #[test]
+    fn same_name_table_and_page_permissions_give_no_change() {
+        let source = |extra: &str| {
+            format!(
+                r#"table 50200 "Setup" {{ fields {{ field(1; "Code"; Code[10]) {{ }} }} }}
+page 50201 "Setup" {{ PageType = Card; SourceTable = "Setup"; }}
+page 50203 "Other" {{ PageType = Card; }}
+permissionset 50202 "Setup User"
+{{
+    Assignable = true;
+    Permissions = tabledata "Setup" = RIMD, page "Setup" = X, page "Other" = X{extra};
+}}
+"#
+            )
+        };
+        let entries = |text: &str| {
+            let objects = al_emit::extract_objects(text, "src/Setup.al");
+            let meta = al_emit::SymbolRefMeta {
+                runtime_version: "14.0".into(),
+                app_id: "aaaaaaaa-1111-2222-3333-444444444444".into(),
+                name: "App".into(),
+                publisher: "P".into(),
+                version: "1.0.0.0".into(),
+            };
+            let document = al_emit::build_symbol_reference(&objects, &meta, &Default::default());
+            al_symbols::read_symbol_reference_bytes(&serde_json::to_vec(&document).unwrap(), "App")
+                .unwrap()
+        };
+        let baseline = entries(&source(""));
+        let current = entries(&source(""));
+        let changes = analyze_breaking_changes_checked(&baseline, &current)
+            .expect("same-name table and page permissions are distinct targets");
+        assert!(changes.is_empty(), "{changes:?}");
+    }
 }

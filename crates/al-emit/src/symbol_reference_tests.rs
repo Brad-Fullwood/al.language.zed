@@ -9,6 +9,7 @@ use serde_json::Value;
 
 use super::symbol_extract::extract_objects;
 use super::symbol_reference::{build_symbol_reference, ExternalSymbols, ObjectRef, SymbolRefMeta};
+use al_symbols::model::ObjectKind;
 
 /// A subtype defined in a referenced app resolves to its `ModuleId` + `Id`, and
 /// that id flows into the method-signature hash (verified byte-identical to alc
@@ -17,7 +18,7 @@ use super::symbol_reference::{build_symbol_reference, ExternalSymbols, ObjectRef
 fn external_subtype_emits_module_id_and_id() {
     let mut external = ExternalSymbols::default();
     external.resolver.insert(
-        "customer".to_string(),
+        (ObjectKind::Table, "customer".to_string()),
         ObjectRef {
             id: 18,
             module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()),
@@ -107,6 +108,86 @@ permissionset 50101 "API User"
     );
 }
 
+const SHARED_NAME_PERMISSIONS: &str = r#"table 50200 "Setup"
+{
+    fields { field(1; "Code"; Code[10]) { } }
+}
+
+page 50201 "Setup"
+{
+    PageType = Card;
+    SourceTable = "Setup";
+}
+
+permissionset 50202 "Setup User"
+{
+    Assignable = true;
+    Permissions = tabledata "Setup" = RIMD,
+                  table "Setup" = X,
+                  page "Setup" = X;
+}
+"#;
+
+/// A table and a page sharing a name each resolve to their own id in a
+/// permission set, and the page's SourceTable still resolves to the table.
+#[test]
+fn permission_targets_resolve_by_object_kind_and_name() {
+    let objects = extract_objects(SHARED_NAME_PERMISSIONS, "src/Setup.al");
+    let document = build_symbol_reference(&objects, &min_app_meta(), &Default::default());
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let entries = al_symbols::read_symbol_reference_bytes(&bytes, "Min App").unwrap();
+    let set = entries.iter().find(|e| e.name == "Setup User").unwrap();
+    let targets: Vec<(i32, i32)> = set
+        .permissions
+        .iter()
+        .map(|p| (p.permission_object, p.object_id))
+        .collect();
+    assert_eq!(targets, vec![(0, 50200), (1, 50200), (8, 50201)]);
+    assert_eq!(
+        document["Pages"][0]["Properties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["Name"] == "SourceTable")
+            .unwrap()["Value"],
+        "50200"
+    );
+}
+
+/// A referenced-app table and page sharing a name resolve per kind, and a
+/// project page shadows only the referenced page of that name.
+#[test]
+fn external_resolver_is_kind_aware_and_project_shadows_same_kind_only() {
+    let mut external = ExternalSymbols::default();
+    for (kind, id) in [(ObjectKind::Table, 18), (ObjectKind::Page, 21)] {
+        external.resolver.insert(
+            (kind, "customer".to_string()),
+            ObjectRef {
+                id,
+                module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()),
+            },
+        );
+    }
+    let src = r#"page 50300 "Customer" { PageType = Card; }
+permissionset 50301 "PS"
+{
+    Assignable = true;
+    Permissions = tabledata "Customer" = R, page "Customer" = X;
+}
+"#;
+    let objects = extract_objects(src, "src/Customer.al");
+    let document = build_symbol_reference(&objects, &min_app_meta(), &external);
+    let bytes = serde_json::to_vec(&document).unwrap();
+    let entries = al_symbols::read_symbol_reference_bytes(&bytes, "Min App").unwrap();
+    let set = entries.iter().find(|e| e.name == "PS").unwrap();
+    let targets: Vec<(i32, i32)> = set
+        .permissions
+        .iter()
+        .map(|p| (p.permission_object, p.object_id))
+        .collect();
+    assert_eq!(targets, vec![(0, 18), (8, 50300)]);
+}
+
 /// Lowercase letters are indirect grants: the direct bit shifted left by 5,
 /// as Microsoft's packages encode them (`Rimd` is 449 in Base Application).
 #[test]
@@ -193,7 +274,7 @@ fn normalize(v: &Value) -> Value {
 fn external_base_table_field_type_resolves_in_page_extension() {
     let mut external = ExternalSymbols::default();
     external.resolver.insert(
-        "customer card".to_string(),
+        (ObjectKind::Page, "customer card".to_string()),
         ObjectRef {
             id: 21,
             module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()),
@@ -274,7 +355,7 @@ fn page_modify_properties_and_customization_defaults_match_alc() {
 fn external_report_dataitem_uses_module_qualified_related_table() {
     let mut external = ExternalSymbols::default();
     external.resolver.insert(
-        "customer".to_string(),
+        (ObjectKind::Table, "customer".to_string()),
         ObjectRef {
             id: 18,
             module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()),
@@ -390,7 +471,7 @@ fn native_symbol_reference_matches_alc() {
 fn object_globals_are_emitted_as_variables() {
     let mut external = ExternalSymbols::default();
     external.resolver.insert(
-        "widget".to_string(),
+        (ObjectKind::Table, "widget".to_string()),
         ObjectRef {
             id: 50200,
             module_id: None,

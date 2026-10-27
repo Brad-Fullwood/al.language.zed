@@ -36,3 +36,4 @@ lsp = ["dep:tower-lsp"]
 [dev-dependencies]
 tokio = { workspace = true }
 zip = { workspace = true }
+al-emit = { path = "../al-emit", version = "0.1.0" }

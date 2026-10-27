@@ -38,15 +38,38 @@ pub struct ObjectRef {
     pub module_id: Option<String>,
 }
 
-/// Object name (lowercased) → its reference (id + optional defining module).
-pub type Resolver = std::collections::HashMap<String, ObjectRef>;
+/// `(object kind, lowercase object name)` → its reference (id + optional defining
+/// module). The kind is part of the key because a table and a page routinely
+/// share a name.
+pub type Resolver = std::collections::HashMap<(ObjectKind, String), ObjectRef>;
+
+/// The object kind an AL type keyword (`Record`, `Codeunit`, `Page`, ...) refers to.
+fn type_keyword_kind(keyword: &str) -> Option<ObjectKind> {
+    Some(match keyword.to_ascii_lowercase().as_str() {
+        "record" | "table" => ObjectKind::Table,
+        "codeunit" => ObjectKind::Codeunit,
+        "page" | "testpage" => ObjectKind::Page,
+        "report" | "testrequestpage" => ObjectKind::Report,
+        "xmlport" => ObjectKind::XmlPort,
+        "query" => ObjectKind::Query,
+        "enum" => ObjectKind::Enum,
+        "interface" => ObjectKind::Interface,
+        "controladdin" => ObjectKind::ControlAddIn,
+        _ => return None,
+    })
+}
+
+/// Look an object up by kind and (any-case) name.
+fn lookup<'r>(resolver: &'r Resolver, kind: ObjectKind, name: &str) -> Option<&'r ObjectRef> {
+    resolver.get(&(kind, name.to_lowercase()))
+}
 
 /// Symbols loaded from *referenced* apps (`.alpackages`), used to resolve
 /// cross-app object ids and the field types of fields added to base
 /// pages/reports. All keys are lowercased.
 #[derive(Default, Clone)]
 pub struct ExternalSymbols {
-    /// Object name → id + defining module.
+    /// (kind, object name) → id + defining module.
     pub resolver: Resolver,
     /// (table name, field name) → field type.
     pub field_types: std::collections::HashMap<(String, String), String>,
@@ -123,12 +146,12 @@ fn namespace_tree(objects: &[EmitObject]) -> NamespaceNode<'_> {
 }
 
 /// Build the project resolver merged over `external` (referenced-app objects);
-/// project objects shadow referenced ones of the same name.
+/// project objects shadow referenced ones of the same kind and name.
 fn merged_resolver(objects: &[EmitObject], external: &Resolver) -> Resolver {
     let mut resolver = external.clone();
     for o in objects {
         resolver.insert(
-            o.entry.name.to_lowercase(),
+            (o.entry.kind, o.entry.name.to_lowercase()),
             ObjectRef {
                 id: o.entry.id,
                 module_id: None,
@@ -374,7 +397,9 @@ fn object_json(obj: &EmitObject, app_id: &str, app_name: &str, ctx: &SymbolRefCt
         } else {
             "TargetObject"
         };
-        let value = qualified_object_name(target, resolver);
+        // Extensions name an object of their base kind (a table extension a table).
+        let target_kind = e.kind.base_kind().unwrap_or(e.kind);
+        let value = qualified_object_name(target, target_kind, resolver);
         m.insert(key.into(), json!(value));
     }
 
@@ -910,7 +935,8 @@ fn subtype_hash_for(type_str: &str, resolver: &Resolver) -> i32 {
         "record" | "table" | "codeunit" | "page" | "xmlport" | "query" | "enum" | "testpage"
         | "testrequestpage" => subtype
             .as_deref()
-            .and_then(|s| resolver.get(&s.to_lowercase()).map(|r| r.id))
+            .zip(type_keyword_kind(&base_type_name(type_str)))
+            .and_then(|(s, kind)| lookup(resolver, kind, s).map(|r| r.id))
             .unwrap_or(0),
         // Interface: FNV of the name (NOT upper-cased, unlike method names).
         "interface" => subtype.as_deref().map(fnv1_hash).unwrap_or(0),
@@ -1285,13 +1311,29 @@ fn permission_json(p: &PermissionDecl, resolver: &Resolver) -> Value {
     let id = if code == 10 {
         al_syntax::language_data::system_object_id(&name).unwrap_or(0)
     } else {
-        resolver
-            .get(&name.to_lowercase())
+        // Standard route checked: `type_keyword_kind` maps AL type keywords, not
+        // permission object types, so the permission code is mapped here.
+        permission_object_kind(code)
+            .and_then(|kind| lookup(resolver, kind, &name))
             .map(|r| r.id)
             .unwrap_or(0)
     };
     m.insert("Id".into(), json!(id));
     Value::Object(m)
+}
+
+/// The object kind a `PermissionObjectType` code names (`Tabledata` and `Table`
+/// both name a table). `System` (10) and unknown codes name no project object.
+fn permission_object_kind(code: i32) -> Option<ObjectKind> {
+    Some(match code {
+        0 | 1 => ObjectKind::Table,
+        3 => ObjectKind::Report,
+        5 => ObjectKind::Codeunit,
+        6 => ObjectKind::XmlPort,
+        8 => ObjectKind::Page,
+        9 => ObjectKind::Query,
+        _ => return None,
+    })
 }
 
 /// `PermissionObjectType` codes (RE'd from alc; not AL language data).
@@ -1391,7 +1433,7 @@ fn report_dataitem_json(
     if let Some(rt) = &el.related_table {
         m.insert(
             "RelatedTable".into(),
-            json!(qualified_object_name(rt, resolver)),
+            json!(qualified_object_name(rt, ObjectKind::Table, resolver)),
         );
     }
     // GetFilterControlId: member_id(Name + "Report" + objectId).
@@ -1436,9 +1478,8 @@ fn report_dataitem_json(
 
 /// Names bound to objects in referenced apps use alc's
 /// `#<module-id-without-dashes>#<object-name>` archive representation.
-fn qualified_object_name(name: &str, resolver: &Resolver) -> String {
-    match resolver
-        .get(&name.unquote_identifier().to_lowercase())
+fn qualified_object_name(name: &str, kind: ObjectKind, resolver: &Resolver) -> String {
+    match lookup(resolver, kind, &name.unquote_identifier())
         .and_then(|reference| reference.module_id.as_deref())
     {
         Some(module_id) => format!("#{}#{}", module_id.replace('-', ""), name),
@@ -1503,8 +1544,8 @@ fn property_json(p: &PropertyValue) -> Value {
 /// `IncludedPermissionSets` keeps each referenced name quoted-as-needed.
 fn object_property_json(p: &PropertyValue, resolver: &Resolver) -> Value {
     if p.name.eq_ignore_ascii_case("SourceTable") {
-        let name = p.value.unquote_identifier().to_lowercase();
-        if let Some(r) = resolver.get(&name) {
+        let name = p.value.unquote_identifier();
+        if let Some(r) = lookup(resolver, ObjectKind::Table, &name) {
             return json!({ "Name": p.name, "Value": r.id.to_string() });
         }
     }
@@ -1555,7 +1596,7 @@ fn type_def_json(type_str: &str, resolver: &Resolver) -> Value {
     let (base, subtype) = split_type(type_str);
     if let Some(sub) = subtype {
         let mut st = Map::new();
-        let r = resolver.get(&sub.to_lowercase());
+        let r = type_keyword_kind(&base).and_then(|kind| lookup(resolver, kind, &sub));
         // External subtypes record the defining module id (before Name).
         if let Some(module_id) = r.and_then(|r| r.module_id.as_deref()) {
             st.insert("ModuleId".into(), json!(module_id));
