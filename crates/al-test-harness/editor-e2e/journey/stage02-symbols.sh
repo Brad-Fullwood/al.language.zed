@@ -9,19 +9,19 @@ stage_02() {
   record "$s" cdx-launch PASS "tenant is CDX"
   if cdx_token; then record "$s" token PASS "BC_ACCESS_TOKEN obtained (not logged)"; else record "$s" token FAIL "no CDX token"; fi
 
-  local help; help=$("$ALX" download-symbols --help 2>&1)
-  if grep -q -- '--tenant' <<<"$help"; then
-    if run_step "$s" download-server 300 "$ALX" download-symbols --project "$PROJ" --source server --tenant "$CDX_TENANT"; then
-      record "$s" download-server PASS "server route exit 0"; route=server
-    else
-      record "$s" download-server FAIL "server route exit $(cat "$OUT/$s/download-server.rc"): $(tail -n 2 "$(step_log "$s" download-server)" | tr '\n' ' ' | cut -c1-200)"
-    fi
+  # Server route first: it gives the symbols of the server being debugged (BaseApp 29 on CDX), NuGet gives 28.
+  # It reads the server from launch.json and the token from BC_ACCESS_TOKEN.
+  local help tflag=()
+  help=$("$ALX" download-symbols --help 2>&1)
+  if grep -q -- '--tenant' <<<"$help"; then tflag=(--tenant "$CDX_TENANT"); else record "$s" tenant-flag NIGGLE "download-symbols has no --tenant flag, the tenant comes from launch.json only"; fi
+  if run_step "$s" download-server 300 "$ALX" download-symbols --project "$PROJ" --source server "${tflag[@]}"; then
+    record "$s" download-server PASS "server route exit 0"; route=server
   else
-    record "$s" tenant-flag NIGGLE "no --tenant flag (being added on fix/audit-integration)"
+    record "$s" download-server FAIL "server route exit $(cat "$OUT/$s/download-server.rc"): $(tail -n 2 "$(step_log "$s" download-server)" | tr '\n' ' ' | cut -c1-200)"
   fi
 
   if [[ -z "$route" ]]; then
-    # NuGet route must work with no token at all.
+    # Fallback only: the NuGet route must work with no token at all.
     local saved="${BC_ACCESS_TOKEN:-}"; unset BC_ACCESS_TOKEN
     if run_step "$s" download-nuget 600 "$ALX" download-symbols --project "$PROJ" --source nuget; then
       record "$s" download-nuget PASS "nuget route exit 0 with no token"; route=nuget

@@ -1,4 +1,5 @@
-# Stage 8: publish to the CDX Sandbox dev endpoint, verify through the Automation API, clean up.
+# Stage 8: publish to the CDX Sandbox dev endpoint and verify through the Automation API.
+# The app stays installed for stage 9. journey_cleanup (below) removes it after the last stage, from journey.sh.
 # Needs BC_ACCESS_TOKEN in the environment (cdx_token). The token is never put on a command line.
 # shellcheck shell=bash
 
@@ -67,7 +68,21 @@ stage_08() {
   done
   if [[ "$installed" == 1 ]]; then record "$s" installed PASS "$(tail -n +2 "$(step_log $s find-after)" | head -n 1)"; else record "$s" installed FAIL "app not installed per Automation API after publish (CLI publish exit $cli_rc): $(tail -n +2 "$(step_log $s find-after)" | head -n 1 | cut -c1-160)"; fi
 
-  # 4. Clean up, always, so a rerun starts clean.
+  # 4. Cleanup runs after stage 9 (journey_cleanup, called from journey.sh and from its EXIT trap).
+  # Armed now so an aborted run also removes what the publish above may have left on the server.
+  JOURNEY_CLEANUP_APPID="$appid"
+  trap journey_cleanup EXIT
+  sync
+}
+
+# journey_cleanup: uninstall and unpublish the stage 8 app, then verify it is gone. Runs at most once.
+# Reads BC_ACCESS_TOKEN from the environment like stage 8 does.
+journey_cleanup() {
+  local s=08 appid="${JOURNEY_CLEANUP_APPID:-}" bcapi="$HERE/journey/bcapi.py"
+  [[ -n "$appid" ]] || return 0
+  JOURNEY_CLEANUP_APPID=""
+  trap - EXIT
+  mkdir -p "$OUT/$s"
   run_step "$s" remove 900 python3 -I "$bcapi" remove "$appid"
   run_step "$s" find-gone 180 python3 -I "$bcapi" find "$appid"
   if [[ "$(tail -n +2 "$(step_log $s find-gone)" | grep -c .)" == 0 && "$(cat "$OUT/$s/find-gone.rc")" == 0 ]]; then record "$s" cleanup PASS "uninstalled and unpublished, Automation API lists no row"; else record "$s" cleanup FAIL "app still listed: $(tail -n +2 "$(step_log $s find-gone)" | head -n 2 | tr '\n' ' ' | cut -c1-200)"; fi

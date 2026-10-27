@@ -19,7 +19,7 @@ cli.deps-graph	cli	deps-graph	cli-commands.md:71; analysis-and-insight.md:142; R
 cli.events	cli	events	cli-commands.md:72; cli-and-tui.md:21; symbol-and-package-engine.md:146-150; README.md:363	events OnAfterPostSalesDoc	rc=0,1	n
 cli.subscribers	cli	subscribers	cli-commands.md:73; analysis-and-insight.md:133; symbol-and-package-engine.md:146-150; README.md:363	subscribers OnAfterPostSalesDoc	rc=0,1	n
 cli.event-source	cli	event-source	cli-commands.md:74; cli-and-tui.md:21; README.md:363	event-source --file $F_CU --line $LN	rc=0,1	n
-cli.builtins	cli	builtins	cli-commands.md:75; cli-and-tui.md:21; README.md:362	builtins	out	n
+cli.builtins	cli	builtins	cli-commands.md:75; cli-and-tui.md:21; README.md:362	builtins	hasre=Record|Codeunit	n
 cli.rules	cli	rules	cli-commands.md:76; cli-and-tui.md:21; README.md:362	rules	out	n
 cli.error-codes	cli	error-codes	cli-commands.md:77; cli-and-tui.md:21; README.md:362	error-codes	has=AL0	n
 cli.generate-completions	cli	generate-completions	cli-commands.md:78; cli-and-tui.md:22; scaffolding-and-codegen.md:58; README.md:362	generate-completions bash	has=al-explorer	n
@@ -68,8 +68,8 @@ cli.duplicates	cli	duplicates	cli-commands.md:137; analysis-and-insight.md:136; 
 cli.arch-lint	cli	arch-lint	cli-commands.md:138; analysis-and-insight.md:136; README.md:364	arch-lint	rc=0,1;noerr;out	n
 cli.native-check	cli	native-check	cli-commands.md:139; analysis-and-insight.md:140; README.md:364	native-check	rc=0,1;out	n
 cli.free-ids	cli	free-ids	cli-commands.md:140; analysis-and-insight.md:139; README.md:364	free-ids --kind table --count 3	out	n
-cli.breaking	cli	breaking	cli-commands.md:141; analysis-and-insight.md:137; README.md:364	breaking --baseline-app $APP	rc=0,1;noerr;out	n
-cli.upgrade	cli	upgrade	cli-commands.md:142; analysis-and-insight.md:138; README.md:364	upgrade --baseline-app $APP	rc=0,1;noerr;out	n
+cli.breaking	cli	breaking	cli-commands.md:141; analysis-and-insight.md:137; README.md:364	breaking --baseline-app "$APP"	rc=0,1;noerr;out	n
+cli.upgrade	cli	upgrade	cli-commands.md:142; analysis-and-insight.md:138; README.md:364	upgrade --baseline-app "$APP"	rc=0,1;noerr;out	n
 cli.obsolete	cli	obsolete	cli-commands.md:143; analysis-and-insight.md:138; README.md:364	obsolete --used	rc=0,1;noerr;out	n
 cli.package-diff	cli	package-diff	cli-commands.md:144; analysis-and-insight.md:139; README.md:364	package-diff $DEPAPP $DEPAPP --all	rc=0,1;out	n
 cli.audit-data	cli	audit-data	cli-commands.md:145; analysis-and-insight.md:141; README.md:364	audit-data	rc=0,1;noerr;out	n
@@ -256,7 +256,7 @@ mcp-tool.al_debug stack	mcp-tool	al_debug stack	debugging-dap.md:174	al_debug {"
 mcp-tool.al_debug variables	mcp-tool	al_debug variables	debugging-dap.md:175	al_debug {"cmd":"variables"}	loose;nosession	y
 mcp-tool.al_debug globals	mcp-tool	al_debug globals	debugging-dap.md:176	al_debug {"cmd":"globals"}	loose;nosession	y
 mcp-tool.al_debug expand	mcp-tool	al_debug expand	debugging-dap.md:177	al_debug {"cmd":"expand","path":"Rec"}	loose;nosession	y
-mcp-tool.al_debug eval	mcp-tool	al_debug eval	debugging-dap.md:178	al_debug {"cmd":"eval","expression":"1+1"}	loose;nosession	y
+mcp-tool.al_debug eval	mcp-tool	al_debug eval	debugging-dap.md:178	al_debug {"cmd":"eval","expr":"1+1"}	loose;nosession	y
 mcp-tool.al_debug continue	mcp-tool	al_debug continue	debugging-dap.md:179	al_debug {"cmd":"continue"}	loose;nosession	y
 mcp-tool.al_debug step	mcp-tool	al_debug step	debugging-dap.md:180	al_debug {"cmd":"step","stepType":"over"}	loose;nosession	y
 mcp-tool.al_debug history	mcp-tool	al_debug history	debugging-dap.md:181	al_debug {"cmd":"history"}	loose;nosession	n

@@ -64,6 +64,8 @@ want() { [[ ",$STAGES," == *",$1,"* ]]; }
 jlog "journey start out=$OUT stages=$STAGES offline=$OFFLINE"
 for n in 1 2 3 4 5 6 7 8 9 10; do
   want "$n" || continue
+  # Stage 8's app stays installed through stage 9, then goes before stage 10.
+  [[ "$n" -ge 10 ]] && declare -F journey_cleanup > /dev/null && journey_cleanup
   nn=$(printf '%02d' "$n")
   mkdir -p "$OUT/$nn"
   if [[ "$OFFLINE" == 1 ]] && online_stage "$n"; then
@@ -78,6 +80,8 @@ for n in 1 2 3 4 5 6 7 8 9 10; do
   "stage_$nn"
   jlog "stage $nn end: $(awk -F'\t' -v s="$nn" '$1==s{c[$3]++} END{printf "PASS=%d FAIL=%d NIGGLE=%d SKIP=%d", c["PASS"],c["FAIL"],c["NIGGLE"],c["SKIP"]}' "$OUT/results.tsv")"
 done
+
+declare -F journey_cleanup > /dev/null && journey_cleanup
 
 {
   echo "# Journey summary"
