@@ -48,8 +48,10 @@ fn workspace_snapshot(workspace: &Workspace) -> Result<Vec<WorkspaceSource>, Aud
 pub enum GdprRisk {
     /// No classification set — unknown risk.
     Unclassified,
-    /// Contains personal data (EndUserId, ToBeClassified, CustomerContent, EUII, etc.).
+    /// Personal data by definition (EndUserIdentifiableInformation, EndUserPseudonymousIdentifiers).
     Personal,
+    /// CustomerContent: customer data, which Microsoft does not define as personal data.
+    CustomerContent,
     /// Non-personal organizational data.
     OrganizationIdentifiableInformation,
     SystemMetadata,
@@ -106,6 +108,16 @@ fn scan_table_fields(
         .root_node()
         .descendant_for_byte_range(range.start_byte, range.end_byte)
         .unwrap_or_else(|| source.tree.root_node());
+    // Table-level DataClassification, the fallback for fields without their own.
+    // alc: FieldSymbol.LazyGetDataClassification (Microsoft.Dynamics.Nav.CodeAnalysis.dll
+    // 18.1, Symbols/FieldSymbol.cs:113-118) reads the field property and, when it is
+    // absent, `ContainingSymbol.GetSimplePropertyValue(PropertyKind.DataClassification)`.
+    // Table extensions have no such property, so only tables get a fallback.
+    let table_classification = if object.kind == al_symbols::ObjectKind::Table {
+        table_level_classification(object_node, &source.text)
+    } else {
+        None
+    };
     let sections = super::bulk_fix::collect_ast_sections_in(object_node, &source.text, &["field"])
         .map_err(|reason| AuditError::InvalidSource {
             path: source.path.clone(),
@@ -145,7 +157,9 @@ fn scan_table_fields(
                     reason: format!("DataClassification on field '{field}' has no value"),
                 });
             }
-            None => "(none)".to_string(),
+            None => table_classification
+                .clone()
+                .unwrap_or_else(|| "(none)".to_string()),
         };
         let risk = classify_gdpr_risk(&classification);
         results.push(DataClassificationEntry {
@@ -160,18 +174,46 @@ fn scan_table_fields(
     Ok(())
 }
 
+/// The table's own `DataClassification` property, read from the direct children
+/// of the object body so a field's property is not mistaken for it.
+fn table_level_classification(object_node: tree_sitter::Node<'_>, source: &str) -> Option<String> {
+    let mut cursor = object_node.walk();
+    let body = object_node.child_by_field_name("body").or_else(|| {
+        object_node
+            .children(&mut cursor)
+            .find(|c| c.kind() == "object_body")
+    })?;
+    let mut body_cursor = body.walk();
+    for property in body.children(&mut body_cursor) {
+        if property.kind() != "property_assignment" {
+            continue;
+        }
+        let name = property
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())?;
+        if !name.trim().eq_ignore_ascii_case("dataclassification") {
+            continue;
+        }
+        let value = property
+            .child_by_field_name("value")
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())?;
+        let value = value.trim().trim_matches(['\'', '"']).trim();
+        return (!value.is_empty()).then(|| value.to_string());
+    }
+    None
+}
+
 fn classify_gdpr_risk(classification: &str) -> GdprRisk {
     let lower = classification.to_lowercase();
     match lower.as_str() {
         "(none)" | "" => GdprRisk::Unclassified,
         "enduserpseudonymousidentifiers" | "eupi" => GdprRisk::Personal,
         "enduseridentifiableinformation" | "euii" => GdprRisk::Personal,
-        "customercontent" => GdprRisk::Personal,
+        "customercontent" => GdprRisk::CustomerContent,
         "tobeclassified" => GdprRisk::Unclassified,
         "organizationidentifiableinformation" => GdprRisk::OrganizationIdentifiableInformation,
         "systemmetadata" => GdprRisk::SystemMetadata,
         "none" | "accountdata" => GdprRisk::None,
-        _ if lower.contains("personal") || lower.contains("customer") => GdprRisk::Personal,
         _ => GdprRisk::Unclassified,
     }
 }
@@ -901,6 +943,39 @@ mod tests {
     }
 
     #[test]
+    fn field_without_property_inherits_the_table_classification() {
+        let ws = workspace_with(vec![(
+            "/src/T.al",
+            r#"table 50100 "Inherit Test"
+{
+    DataClassification = CustomerContent;
+
+    fields
+    {
+        field(1; A; Code[20]) { }
+        field(2; B; Text[50]) { DataClassification = SystemMetadata; }
+        field(3; C; Integer) { DataClassification = ToBeClassified; }
+    }
+}
+table 50101 "No Table Level"
+{
+    fields
+    {
+        field(1; D; Code[20]) { }
+    }
+}"#,
+        )]);
+        let entries = data_classification_audit(&ws).unwrap();
+        let get = |f: &str| entries.iter().find(|e| e.field == f).unwrap();
+        assert_eq!(get("A").classification, "CustomerContent");
+        assert_eq!(get("A").risk, GdprRisk::CustomerContent);
+        assert_eq!(get("B").classification, "SystemMetadata");
+        assert_eq!(get("C").risk, GdprRisk::Unclassified);
+        assert_eq!(get("D").classification, "(none)");
+        assert_eq!(get("D").risk, GdprRisk::Unclassified);
+    }
+
+    #[test]
     fn data_classification_finds_unclassified_field() {
         let ws = workspace_with(vec![(
             "/src/Customer.al",
@@ -932,8 +1007,8 @@ mod tests {
         assert!(name_field.is_some(), "Should find 'Name' field");
         assert_eq!(
             name_field.unwrap().risk,
-            GdprRisk::Personal,
-            "CustomerContent is personal"
+            GdprRisk::CustomerContent,
+            "CustomerContent is reported as itself, not as personal"
         );
     }
 

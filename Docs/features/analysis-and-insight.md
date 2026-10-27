@@ -56,7 +56,7 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 | **Package diff** | `queries/package_diff.rs` | `package-diff <old.app> <new.app>`: the changes between two versions of a dependency, kept to the ones the workspace's code uses (`--all` for every change), each with its consumers in `impact`'s row shape. |
 | **Free IDs** | `queries/free_ids.rs` | `free-ids`: the next free object ID, table field number or enum ordinal inside `app.json` `idRanges`, counting every workspace object and the package objects inside the same range. |
 | **Native check** | `queries/native_check.rs` | `native-check`: duplicate object IDs, IDs outside `idRanges` and duplicate object names, as `AL-NC*` diagnostics. |
-| **Data-classification audit** | `queries/audit.rs` | GDPR posture: every table field's `DataClassification` and a risk level. |
+| **Data-classification audit** | `queries/audit.rs` | GDPR posture: every table field's `DataClassification` (a field with none inherits the table's) and a risk level. CustomerContent is reported as itself, not as personal data. |
 | **Permission audit** | `queries/audit.rs` | Permission-set coverage plus unused object grants (`overBroad`) and granted I/M/D rights without a corresponding observed write (`overGrantedRights`). |
 | **Dependency graph** | `queries/deps.rs` | GUID-keyed transitive tree from the typed current `app.json` and loaded `.app` manifests. Implicit dependencies, missing packages, duplicate versions, unsatisfied minimum versions, deterministic JSON/DOT export. |
 | **Duplicates** | (daemon `duplicates`) | Repeated AL code blocks (configurable min tokens/similarity, clamped to safe bounds). |
