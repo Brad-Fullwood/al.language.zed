@@ -28,6 +28,7 @@ pub fn run(cli: Cli) -> ExitCode {
         commands::set_request_timeout_override(millis);
     }
     commands::set_compact_json(cli.compact);
+    commands::set_caller_tenant(cli.tenant.clone(), cli.purpose.clone());
     commands::set_projection_override(cli.limit, cli.offset, &cli.fields, cli.scope.as_deref());
     // `--compact` is about how JSON is rendered, so asking for it is asking
     // for JSON. `--fields` too: the text tables have a column for every field
@@ -255,8 +256,8 @@ pub fn run(cli: Cli) -> ExitCode {
             Ok(root) => lsp::cmd_init_debug(&root, cli.json),
             Err(error) => commands::report_error(&error, cli.json),
         },
-        Commands::Authenticate { cmd, tenant } => {
-            lsp::cmd_authenticate(cmd.as_str(), tenant.as_deref(), cli.json)
+        Commands::Authenticate { cmd } => {
+            lsp::cmd_authenticate(cmd.as_str(), cli.tenant.as_deref(), cli.json)
         }
         Commands::Trace { event, depth, tree } => insight::cmd_trace(&event, depth, tree, cli.json),
         Commands::Intercept => insight::cmd_intercept(cli.json),

@@ -255,12 +255,19 @@ pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
 }
 
 pub fn report_error(msg: &str, json: bool) -> ExitCode {
+    // A tenant guard refusal exits 3, the code the other Business Central
+    // tools use for it.
+    let code = if msg.contains(al_bc::tenant_guard::REFUSAL_PREFIX) {
+        ExitCode::from(3)
+    } else {
+        ExitCode::FAILURE
+    };
     if json {
         print_json(&serde_json::json!({ "error": msg }));
     } else {
         eprintln!("{}", error_text(msg));
     }
-    ExitCode::FAILURE
+    code
 }
 
 /// The text `report_error` writes for `msg` when `--json` is off.
@@ -609,6 +616,67 @@ pub fn set_projection_override(
     }
 }
 
+/// `--tenant` and `--purpose` as typed, for the requests that connect to a
+/// Business Central cloud tenant.
+static CALLER_TENANT: std::sync::OnceLock<al_bc::tenant_guard::Declaration> =
+    std::sync::OnceLock::new();
+
+/// Daemon methods that open a connection to Business Central. The daemon
+/// refuses a cloud connection from any of them unless `cliTenant` matches the
+/// launch configuration.
+const CONNECTING_METHODS: [&str; 10] = [
+    "downloadSymbols",
+    "publish",
+    "debug",
+    "snapshot",
+    "profiling",
+    "tests.run",
+    "tests.run_batch",
+    "tests.run_auto",
+    "tests.snapshot_capture",
+    "tests.snapshot_replay",
+];
+
+pub fn set_caller_tenant(tenant: Option<String>, purpose: Option<String>) {
+    let _ = CALLER_TENANT.set(al_bc::tenant_guard::Declaration { tenant, purpose });
+}
+
+/// Add `cliTenant` and `cliPurpose` to a request that connects, and print the
+/// tenant banner once before the first such request.
+fn with_caller_tenant(
+    method: &str,
+    params: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    if !CONNECTING_METHODS.contains(&method) {
+        return params;
+    }
+    let Some(declared) = CALLER_TENANT.get() else {
+        return params;
+    };
+    static BANNER: std::sync::Once = std::sync::Once::new();
+    BANNER.call_once(|| {
+        if let Some(line) = declared
+            .tenant
+            .as_deref()
+            .and_then(|tenant| al_bc::tenant_guard::banner_for(tenant, declared.purpose.as_deref()))
+        {
+            eprintln!("{}", terminal_text(&line));
+        }
+    });
+    let mut merged = match params {
+        Some(serde_json::Value::Object(object)) => object,
+        Some(other) => return Some(other),
+        None => serde_json::Map::new(),
+    };
+    if let Some(tenant) = &declared.tenant {
+        merged.insert("cliTenant".into(), serde_json::json!(tenant));
+    }
+    if let Some(purpose) = &declared.purpose {
+        merged.insert("cliPurpose".into(), serde_json::json!(purpose));
+    }
+    Some(serde_json::Value::Object(merged))
+}
+
 /// Add the process-wide projection to one request's params.
 ///
 /// A command that sets one of these itself keeps its own value: `search`
@@ -735,7 +803,7 @@ pub fn request_checked(
     method: &str,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let mut sent = with_projection(params);
+    let mut sent = with_caller_tenant(method, with_projection(params));
     // At most two passes: the second carries the text for a file the daemon
     // may not open, and `params_with_text` returns None once it is attached.
     loop {

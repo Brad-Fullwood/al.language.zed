@@ -407,6 +407,47 @@ so there is no cached credential to protect. `acceptInvalidCerts` is still refus
 project's own configuration asks for it and the project is trusted: turning off TLS
 verification is about the target, not the token.
 
+## Tenant registry and `--tenant`
+
+Every connection to a Business Central cloud tenant (Sandbox or Production) names its tenant and
+is checked against a registry file, `~/.config/bc-tenants.json` (the `BC_TENANTS_FILE`
+environment variable overrides the path). The check is `al_bc::tenant_guard`, and
+`authorize_cached_credential` runs it for every cloud target, so symbol download, publish,
+debug, snapshot, live tests and the Zed debug attach all pass through it. On-premises servers
+have no Entra tenant and are not checked.
+
+```json
+{"tenants": {"1b7a9471-d313-4aa4-99e8-7a6c762c8e7d": {"name": "CDX", "kind": "demo"}}}
+```
+
+- The launch configuration's `tenant` must be the tenant GUID. A missing tenant, `default`,
+  `common` or a domain name is refused with a message that names `tenant`. Nothing falls back
+  to `default`, `common` or a remembered tenant.
+- A launch configuration may carry `tenantPurpose`, the customer issue the work is for.
+- The tenant must be in the registry. Kind `customer` also needs a purpose. Kind `demo` does not.
+- Each tenant is logged once per process as `tenant NAME (GUID) KIND`, with the purpose for a
+  customer, before the first request.
+
+**CLI.** `al-explorer` commands that connect (`download-symbols --source server`, `publish`,
+`debug`, `snapshot`, `test-run*`, `authenticate`) take `--tenant <GUID>` and, for a customer
+tenant, `--purpose <TEXT>`. The command is refused when `--tenant` is missing or differs from
+the `tenant` in launch.json. A refusal exits with code 3. A cloud launch.json without `tenant`
+makes `download-symbols --source server` exit non-zero with the message instead of reporting
+nothing downloaded.
+
+```
+al-explorer --tenant 1b7a9471-d313-4aa4-99e8-7a6c762c8e7d download-symbols --source server
+al-explorer --tenant <GUID> --purpose "ticket 1234" publish
+```
+
+**Editor.** Inside Zed there is no command line to type a tenant on, so the launch
+configuration is the declaration. The first connection per session logs the tenant name, GUID
+and kind. A customer tenant is refused unless the configuration carries `tenantPurpose`. A
+tenant that is not in the registry is refused in the editor too.
+
+Profiling takes an on-premises `serverUrl` with Basic authentication and has no cloud path, so
+the guard does not apply to it.
+
 ## Limits
 
 The Zed extension reads `binary.path`, `binary.arguments` and `dotnetPath` from

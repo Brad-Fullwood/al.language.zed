@@ -117,7 +117,8 @@ Two download backends:
 - **OAuth (`oauth/`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
   redirect) and a **device-code** fallback for headless environments, with disk-cached refresh
   tokens, tenant/GUID validation, env-var overrides (`BC_CLIENT_ID`/`BC_ACCESS_TOKEN`),
-  and **zeroized** token memory on drop.
+  and **zeroized** token memory on drop. A cloud download never builds a URL without a tenant GUID
+  and passes the tenant registry check, see [project trust](project-trust.md#tenant-registry-and---tenant).
 
 Freshly downloaded symbols are loaded into the workspace **without a daemon restart**.
 

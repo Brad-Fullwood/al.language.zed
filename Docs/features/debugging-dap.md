@@ -86,6 +86,8 @@ either feature until it can provide the full behavior itself.
 2. **Authenticate** (OAuth callback / env token).
 3. **Publish** the `.app` to BC (`POST …/dev/apps`). A missing `.app` fails the launch with a clear
    error rather than silently debugging a stale build.
+   The `tenant` must be the tenant GUID and listed in the tenant registry, see
+   [project trust](project-trust.md#tenant-registry-and---tenant). `tenantPurpose` names the issue for a customer tenant.
 4. **Connect** SignalR to `/dev/DebuggerHub`, **Attach** (`breakOnError`, `breakOnRecordWrite`).
 5. Optionally **open the browser** at the debug-context URL when `launchBrowser` is set.
 

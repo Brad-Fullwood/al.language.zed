@@ -108,7 +108,11 @@ al-explorer                     # open the TUI
 al-explorer search Customer --json
 al-explorer impact "Sales-Post.PostDocument"
 al-explorer test-run-all --junit-out results.xml
+# commands that connect to a cloud tenant name it and are checked against the registry
+al-explorer --tenant <GUID> download-symbols --source server
 ```
+
+The `--tenant` and `--purpose` rules are in [project trust](project-trust.md#tenant-registry-and---tenant).
 
 ## Platform verification
 

@@ -76,6 +76,19 @@ pub struct Cli {
     /// intercept and graph.
     #[arg(long, global = true, value_name = "SCOPE")]
     pub scope: Option<String>,
+
+    /// Tenant GUID, typed in full. Every command that connects to a Business
+    /// Central cloud tenant (download-symbols --source server, publish, debug,
+    /// snapshot, test-run, authenticate) refuses without it, or when it differs
+    /// from the `tenant` in launch.json. The tenant must be listed in
+    /// ~/.config/bc-tenants.json (path from BC_TENANTS_FILE).
+    #[arg(long, global = true, value_name = "GUID")]
+    pub tenant: Option<String>,
+
+    /// The customer issue this work is for. A tenant of kind customer in the
+    /// registry is refused without it. A demo tenant needs none.
+    #[arg(long, global = true, value_name = "TEXT")]
+    pub purpose: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -463,9 +476,6 @@ Examples:
         /// Subcommand: login (default), status, clear
         #[arg(value_enum, default_value_t = AuthenticateCommand::Login)]
         cmd: AuthenticateCommand,
-        /// Tenant ID or domain (auto-detected from project if omitted)
-        #[arg(short, long)]
-        tenant: Option<String>,
     },
     /// Trace event propagation chain
     Trace {

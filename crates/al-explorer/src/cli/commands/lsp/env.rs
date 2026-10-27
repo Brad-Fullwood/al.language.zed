@@ -386,7 +386,19 @@ pub fn cmd_download_symbols(
                 );
             }
             if result.get("failed").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
-                ExitCode::FAILURE
+                // A tenant guard refusal exits 3, as `report_error` does.
+                let refused = result["results"].as_array().is_some_and(|rows| {
+                    rows.iter().any(|row| {
+                        row["error"]
+                            .as_str()
+                            .is_some_and(|e| e.contains(al_bc::tenant_guard::REFUSAL_PREFIX))
+                    })
+                });
+                if refused {
+                    ExitCode::from(3)
+                } else {
+                    ExitCode::FAILURE
+                }
             } else {
                 ExitCode::SUCCESS
             }
