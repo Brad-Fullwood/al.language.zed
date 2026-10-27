@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use thiserror::Error;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use al_bc::bc_client::{BcClient, BcClientError};
 use al_bc::launch::{find_launch_config, BcServerConfig};
@@ -164,13 +164,17 @@ pub async fn publish(
 
     let bc_client = BcClient::new(&server_config).map_err(PublishError::Unauthorized)?;
 
-    let (app_id, app_version, upload_success) = if config.incremental {
-        let app_id = extract_app_id_from_manifest(&config.project_root)?;
-        debug!(app_id = %app_id, "Using RAD incremental deploy");
-        do_rad_publish(&bc_client, &app_id, &app_path, &mut steps).await
+    let upload_success = if config.incremental {
+        // RAD is `POST dev/apps` with `IsRad=true` (AppsApiClient.cs:46-49).
+        // The id check stays so a malformed app.json is refused before upload.
+        extract_app_id_from_manifest(&config.project_root)?;
+        do_rad_publish(&bc_client, &app_path, &mut steps).await
     } else {
         do_standard_publish(&bc_client, &app_path, &mut steps).await
     };
+    // BC's reply is not read (see `BcClient::publish_extension`), so the
+    // identity in the result comes from the manifest that was built.
+    let (app_id, app_version) = manifest_identity(&config.project_root);
 
     let overall_success = compile_success && upload_success;
     if overall_success {
@@ -191,87 +195,51 @@ pub async fn publish(
     })
 }
 
-/// Standard full-upload publish pipeline.
-///
-/// Returns `(app_id, app_version, success)`.
+/// Standard full-upload publish: `POST dev/apps`. Returns whether BC answered
+/// with a success status, which is Microsoft's rule (AppsApiClient.cs:66).
 async fn do_standard_publish(
     bc_client: &BcClient,
     app_path: &Path,
     steps: &mut Vec<PublishStep>,
-) -> (Option<String>, Option<String>, bool) {
-    match bc_client.publish_extension(app_path).await {
-        Ok(resp) => {
-            let success = publish_status_is_complete(resp.status.as_deref());
-            steps.push(PublishStep {
-                phase: PublishPhase::Upload,
-                success,
-                message: Some(publish_status_message(resp.status.as_deref())),
-            });
-            (resp.app_id, resp.version, success)
-        }
-        Err(e) => {
-            warn!(error = %e, "Extension upload failed");
-            steps.push(PublishStep {
-                phase: PublishPhase::Upload,
-                success: false,
-                message: Some(e.to_string()),
-            });
-            (None, None, false)
-        }
-    }
+) -> bool {
+    record_upload(
+        PublishPhase::Upload,
+        bc_client.publish_extension(app_path).await,
+        steps,
+    )
 }
 
-/// RAD (Rapid Application Development) incremental-deploy pipeline: `PATCH
-/// /dev/applications/{appId}`.
-///
-/// Returns `(app_id, app_version, success)`, mirroring `do_standard_publish`.
+/// RAD incremental deploy: `POST dev/apps` with `IsRad=true`.
 async fn do_rad_publish(
     bc_client: &BcClient,
-    app_id: &str,
     app_path: &Path,
     steps: &mut Vec<PublishStep>,
-) -> (Option<String>, Option<String>, bool) {
-    match bc_client.rad_publish(app_id, app_path).await {
-        Ok(resp) => {
-            let success = publish_status_is_complete(resp.status.as_deref());
-            steps.push(PublishStep {
-                phase: PublishPhase::Rad,
-                success,
-                message: Some(publish_status_message(resp.status.as_deref())),
-            });
-            (resp.app_id, resp.version, success)
-        }
+) -> bool {
+    record_upload(
+        PublishPhase::Rad,
+        bc_client.rad_publish(app_path).await,
+        steps,
+    )
+}
+
+fn record_upload(
+    phase: PublishPhase,
+    result: Result<(), al_bc::bc_client::BcClientError>,
+    steps: &mut Vec<PublishStep>,
+) -> bool {
+    let (success, message) = match result {
+        Ok(()) => (true, "BC accepted the package".to_string()),
         Err(e) => {
-            warn!(error = %e, "RAD publish failed");
-            steps.push(PublishStep {
-                phase: PublishPhase::Rad,
-                success: false,
-                message: Some(e.to_string()),
-            });
-            (None, None, false)
+            warn!(error = %e, "Extension upload failed");
+            (false, e.to_string())
         }
-    }
-}
-
-/// A successful HTTP upload is not the same as a completed deployment.
-///
-/// Business Central exposes deployment as background work and documents
-/// `Completed` as the successful terminal state. Missing, in-progress, failed,
-/// or unknown states must therefore remain unsuccessful until a caller can
-/// positively establish completion.
-fn publish_status_is_complete(status: Option<&str>) -> bool {
-    status.is_some_and(|status| status.eq_ignore_ascii_case("Completed"))
-}
-
-fn publish_status_message(status: Option<&str>) -> String {
-    match status {
-        Some(status) if publish_status_is_complete(Some(status)) => status.to_string(),
-        Some(status) => format!(
-            "BC reported deployment status '{status}'; deployment completion was not confirmed"
-        ),
-        None => "BC response omitted deployment status; deployment completion was not confirmed"
-            .to_string(),
-    }
+    };
+    steps.push(PublishStep {
+        phase,
+        success,
+        message: Some(message),
+    });
+    success
 }
 
 /// Compile the project, using the workspace's toolchain.
@@ -362,6 +330,21 @@ fn resolve_server_config(
     Ok(chosen)
 }
 
+/// Read `id` and `version` from app.json for the result. Missing or unreadable
+/// values give `None`.
+fn manifest_identity(project_root: &Path) -> (Option<String>, Option<String>) {
+    let json = std::fs::read(project_root.join("app.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    let field = |name: &str| {
+        json.as_ref()
+            .and_then(|j| j.get(name))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    };
+    (field("id"), field("version"))
+}
+
 /// Extract the app GUID from app.json (needed for RAD).
 fn extract_app_id_from_manifest(project_root: &Path) -> Result<String, PublishError> {
     let path = project_root.join("app.json");
@@ -376,8 +359,7 @@ fn extract_app_id_from_manifest(project_root: &Path) -> Result<String, PublishEr
         .and_then(|value| value.as_str())
         .map(str::trim)
         .unwrap_or_default();
-    // BC requires a GUID here, and the value is interpolated into the RAD
-    // request path, so a repository must not be able to choose that path.
+    // BC requires a GUID here.
     if !al_bc::bc_client::is_guid(id) {
         return Err(PublishError::InvalidManifest(format!(
             "`id` must be a GUID, got {id:?}"
@@ -441,10 +423,7 @@ mod tests {
 
     #[test]
     fn extract_app_id_rejects_an_id_that_steers_the_request_path() {
-        // The id is interpolated into `PATCH {base}/dev/applications/{id}`.
-        // `Url::parse` normalises `..` segments away, so a cloned repository
-        // could aim an authenticated PATCH carrying the whole .app body at a
-        // path of its choosing, and a `?` or `#` truncates the path instead.
+        // BC requires a GUID id. Anything else is refused before upload.
         for id in [
             "../../../admin/SomeEndpoint",
             "33333333-4444-5555-6666-777777777773/../admin",
@@ -717,7 +696,7 @@ mod tests {
     }
 
     /// Config whose base_url is the wiremock server with instance "BC", so the
-    /// publish endpoint is `{uri}/BC/dev/extensions`. Windows auth means no
+    /// publish endpoint is `{uri}/BC/dev/apps`. Windows auth means no
     /// credentials are required (apply_auth only errors for UserPassword/AAD).
     fn mock_config(uri: &str) -> BcServerConfig {
         use al_bc::launch::{AuthMethod, EnvironmentType};
@@ -742,181 +721,19 @@ mod tests {
         p
     }
 
+    // fixture source: AppsApiClient.cs:38-72 (Microsoft.Dynamics.Nav.Deployment.ApiClients).
+    // Microsoft treats the HTTP status as the whole result and never reads the
+    // body, so the mocks return an empty body or an arbitrary one.
+
     #[tokio::test]
-    async fn do_standard_publish_success_captures_id_and_version() {
+    async fn do_standard_publish_succeeds_on_http_200_with_empty_body() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
-            .and(path("/BC/dev/extensions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "appId": "abc-123",
-                "name": "MyApp",
-                "version": "2.0.0.0",
-                "status": "Completed"
-            })))
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
-        let mut steps = Vec::new();
-
-        let (app_id, version, success) = do_standard_publish(&client, &app, &mut steps).await;
-
-        assert!(success);
-        assert_eq!(app_id.as_deref(), Some("abc-123"));
-        assert_eq!(version.as_deref(), Some("2.0.0.0"));
-        assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].phase, PublishPhase::Upload);
-        assert!(steps[0].success);
-        assert_eq!(steps[0].message.as_deref(), Some("Completed"));
-    }
-
-    #[tokio::test]
-    async fn do_standard_publish_failed_status_marks_step_unsuccessful() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/extensions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "status": "Failed"
-            })))
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
-        let mut steps = Vec::new();
-
-        let (app_id, version, success) = do_standard_publish(&client, &app, &mut steps).await;
-
-        // A "Failed" status from a 200 response must still mark the step failed.
-        assert!(!success);
-        assert!(app_id.is_none());
-        assert!(version.is_none());
-        assert_eq!(steps.len(), 1);
-        assert!(!steps[0].success);
-        assert!(steps[0]
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("'Failed'")));
-    }
-
-    #[tokio::test]
-    async fn do_standard_publish_missing_status_fails_closed() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/extensions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "appId": "no-status-app"
-            })))
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
-        let mut steps = Vec::new();
-
-        let (app_id, _version, success) = do_standard_publish(&client, &app, &mut steps).await;
-
-        assert!(!success);
-        assert_eq!(app_id.as_deref(), Some("no-status-app"));
-        assert!(steps[0]
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("omitted deployment status")));
-    }
-
-    #[tokio::test]
-    async fn do_standard_publish_in_progress_status_is_not_complete() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/extensions"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "appId": "pending-app",
-                "operationId": "operation-1",
-                "status": "InProgress"
-            })))
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
-        let mut steps = Vec::new();
-
-        let (_, _, success) = do_standard_publish(&client, &app, &mut steps).await;
-
-        assert!(!success);
-        assert!(steps[0]
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("InProgress")));
-    }
-
-    #[tokio::test]
-    async fn do_standard_publish_server_error_records_failure_step() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/extensions"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
-            .mount(&server)
-            .await;
-
-        let dir = tempfile::tempdir().unwrap();
-        let app = dummy_app(dir.path());
-        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
-        let mut steps = Vec::new();
-
-        let (app_id, version, success) = do_standard_publish(&client, &app, &mut steps).await;
-
-        assert!(!success);
-        assert!(app_id.is_none());
-        assert!(version.is_none());
-        assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].phase, PublishPhase::Upload);
-        assert!(!steps[0].success);
-        // The error string from BcClientError should be propagated into the step.
-        assert!(steps[0].message.is_some());
-    }
-
-    // `do_rad_publish` (PATCH /dev/applications/{id}) previously had zero
-    // test coverage in either al-bc or al-publish — every wiremock test
-    // exercised only `do_standard_publish`/`publish_extension`. These mirror
-    // that coverage for the RAD path: URL shape (method + path), successful
-    // `ApplicationStateResponse` handling, and server-error propagation.
-
-    #[tokio::test]
-    async fn do_rad_publish_success_captures_id_and_version() {
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .and(path(
-                "/BC/dev/applications/33333333-4444-5555-6666-777777777701",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "appId": "33333333-4444-5555-6666-777777777701",
-                "version": "2.1.0.0",
-                "status": "Completed"
-            })))
+            .and(path("/BC/dev/apps"))
+            .respond_with(ResponseTemplate::new(200))
             .expect(1)
             .mount(&server)
             .await;
@@ -926,40 +743,23 @@ mod tests {
         let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
-        let (app_id, version, success) = do_rad_publish(
-            &client,
-            "33333333-4444-5555-6666-777777777701",
-            &app,
-            &mut steps,
-        )
-        .await;
-
-        assert!(success);
-        assert_eq!(
-            app_id.as_deref(),
-            Some("33333333-4444-5555-6666-777777777701")
-        );
-        assert_eq!(version.as_deref(), Some("2.1.0.0"));
+        assert!(do_standard_publish(&client, &app, &mut steps).await);
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].phase, PublishPhase::Rad);
+        assert_eq!(steps[0].phase, PublishPhase::Upload);
         assert!(steps[0].success);
-        assert_eq!(steps[0].message.as_deref(), Some("Completed"));
     }
 
     #[tokio::test]
-    async fn do_rad_publish_non_complete_status_marks_step_unsuccessful() {
+    async fn do_standard_publish_ignores_a_status_field_in_the_body() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .and(path(
-                "/BC/dev/applications/33333333-4444-5555-6666-777777777702",
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "appId": "33333333-4444-5555-6666-777777777702",
-                "status": "InProgress"
-            })))
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/apps"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": "Failed"})),
+            )
             .mount(&server)
             .await;
 
@@ -968,32 +768,17 @@ mod tests {
         let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
-        let (_, _, success) = do_rad_publish(
-            &client,
-            "33333333-4444-5555-6666-777777777702",
-            &app,
-            &mut steps,
-        )
-        .await;
-
-        assert!(!success);
-        assert_eq!(steps[0].phase, PublishPhase::Rad);
-        assert!(steps[0]
-            .message
-            .as_deref()
-            .is_some_and(|message| message.contains("InProgress")));
+        assert!(do_standard_publish(&client, &app, &mut steps).await);
     }
 
     #[tokio::test]
-    async fn do_rad_publish_server_error_records_failure_step() {
+    async fn do_standard_publish_server_error_records_failure_step() {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        Mock::given(method("PATCH"))
-            .and(path(
-                "/BC/dev/applications/33333333-4444-5555-6666-777777777703",
-            ))
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/apps"))
             .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
             .mount(&server)
             .await;
@@ -1003,20 +788,70 @@ mod tests {
         let client = BcClient::new(&mock_config(&server.uri())).unwrap();
         let mut steps = Vec::new();
 
-        let (app_id, version, success) = do_rad_publish(
-            &client,
-            "33333333-4444-5555-6666-777777777703",
-            &app,
-            &mut steps,
-        )
-        .await;
-
-        assert!(!success);
-        assert!(app_id.is_none());
-        assert!(version.is_none());
+        assert!(!do_standard_publish(&client, &app, &mut steps).await);
         assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].phase, PublishPhase::Upload);
+        assert!(!steps[0].success);
+        assert!(steps[0].message.as_deref().unwrap().contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn do_rad_publish_sends_is_rad_and_succeeds_on_204() {
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/apps"))
+            .and(query_param("IsRad", "true"))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = dummy_app(dir.path());
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
+        let mut steps = Vec::new();
+
+        assert!(do_rad_publish(&client, &app, &mut steps).await);
+        assert_eq!(steps[0].phase, PublishPhase::Rad);
+        assert!(steps[0].success);
+    }
+
+    #[tokio::test]
+    async fn do_rad_publish_server_error_records_failure_step() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/BC/dev/apps"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let app = dummy_app(dir.path());
+        let client = BcClient::new(&mock_config(&server.uri())).unwrap();
+        let mut steps = Vec::new();
+
+        assert!(!do_rad_publish(&client, &app, &mut steps).await);
         assert_eq!(steps[0].phase, PublishPhase::Rad);
         assert!(!steps[0].success);
-        assert!(steps[0].message.is_some());
+    }
+
+    #[test]
+    fn manifest_identity_reads_id_and_version() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"33333333-4444-5555-6666-777777777773","version":"1.2.3.4"}"#,
+        )
+        .unwrap();
+        let (id, version) = manifest_identity(dir.path());
+        assert_eq!(id.as_deref(), Some("33333333-4444-5555-6666-777777777773"));
+        assert_eq!(version.as_deref(), Some("1.2.3.4"));
+        assert_eq!(manifest_identity(&dir.path().join("none")), (None, None));
     }
 }

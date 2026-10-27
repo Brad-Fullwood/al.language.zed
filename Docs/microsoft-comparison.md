@@ -32,8 +32,8 @@ feature pages for implementation details and limitations.
 | Produce `.app` | ✅ pure-Rust verified emitter for the documented subset. Real-world packages can differ in symbols, path encoding, and bundled resources | 🔷 `alc` (parse→bind→type-check→emit) |
 | Compile-time validation | ✅ native syntax/project/declaration/declared-binding/integrity checks, optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
-| Symbol download | ✅ NuGet + BC server, concurrent, deduped, no restart | ✅ download-symbols |
-| OAuth (Entra) | ✅ PKCE + device code, token zeroization | ✅ |
+| Symbol download | ✅ NuGet or BC server (one per run, chosen with `--source`), concurrent, deduped, no restart. Per-tenant apps need `--source server` | ✅ download-symbols |
+| OAuth (Entra) | ✅ PKCE + device code (`authenticate login --device-code` prints the code to stderr). Uses the AL extension client id, honours launch.json `entraIdAuthentication`, and exchanges the AL extension's cached refresh token. Access and refresh token fields are zeroized on drop. The access token string handed to callers and HTTP headers is a plain `String` | ✅ |
 | Force Microsoft compiler | ✅ `al.useOfficialCompiler` | n/a |
 
 ## Analysis (largely unique to this project)

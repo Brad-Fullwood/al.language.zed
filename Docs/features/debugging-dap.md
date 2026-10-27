@@ -43,7 +43,7 @@ MCP client ── al_debug ─────► debug_dispatch.rs
 | High-level session | `native_debug.rs` | wrap session, breakpoint registry, 10k-entry hit history |
 | MCP control plane | `server/daemon/debug_dispatch.rs` | stateful structured commands shared by CLI and MCP |
 | MCP tool | `server/mcp/mod.rs` (`al_debug`) | schema mapped to daemon method `debug` |
-| BC REST | `bc_client.rs` | publish `.app`, RAD delta, status (size caps + secret redaction) |
+| BC REST | `bc_client.rs` | publish `.app` and RAD delta via `POST dev/apps` (size caps + secret redaction) |
 | TLS helper | `http_auth.rs` | client builder. Warns loudly when cert validation is disabled |
 | Profiling | `profiling.rs`, `bc_debug/snapshot_capture.rs` | start/status/stop through the snapshot debugger (ExecutionContext 2), parse `.alcpuprofile` hotspots |
 | Snapshots | `snapshot/` | snapshot debugger zip reader, session store and saved zips |

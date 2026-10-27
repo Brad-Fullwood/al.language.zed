@@ -384,6 +384,9 @@ pub fn cmd_download_symbols(
                 eprintln!(
                     "\n{downloaded} downloaded, {skipped} already present, {failed} failed (source: {source_name})"
                 );
+                if result.get("hint").is_some_and(|v| v.is_string()) {
+                    eprintln!("{}", text_field(&result, "hint", ""));
+                }
             }
             if result.get("failed").and_then(|v| v.as_u64()).unwrap_or(0) > 0 {
                 // A tenant guard refusal exits 3, as `report_error` does.

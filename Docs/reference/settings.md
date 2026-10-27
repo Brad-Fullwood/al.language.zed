@@ -105,6 +105,15 @@ Daemon and client:
 - `AL_ALLOW_INSECURE_BC_HTTP=1`: allow credentials to a non-loopback Business Central server over
   `http`. See [project trust](../features/project-trust.md).
 
+Sign-in client: the default client id is the AL extension's `41839ce3-4041-4bac-8c17-0941f25d7aaf`
+(CloudHttpClientFactory.cs:228). A launch configuration's `entraIdAuthentication` block overrides
+`endpoint` (https host only), `scope`, `clientId` and `redirectUri`. `redirectUri` is read and not sent,
+because the interactive flow uses `http://localhost` and the device code flow has no redirect. `BC_CLIENT_ID`
+overrides both. A tenant policy that blocks the AL client needs `BC_CLIENT_ID` or a launch override. Before an
+interactive sign-in, a refresh token for the same client id and a GUID tenant is taken from the AL extension's
+`~/.local/share/Microsoft/BusinessCentral/DevTools/TokenCacheUnprotected.dat` (read only, never written).
+The protected `TokenCache.dat` is not read. Use `al-explorer authenticate login --device-code` on a headless host.
+
 BC credentials (secrets, prefer OAuth/keyring): `BC_CLIENT_ID`, canonical `BC_ACCESS_TOKEN`
 (`BC_TOKEN` is a compatibility alias), and `BC_USERNAME`/`BC_PASSWORD`. When both bearer-token
 variables are set they must match. A blank, non-UTF-8, or conflicting override is rejected before

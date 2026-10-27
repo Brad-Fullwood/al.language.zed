@@ -7,19 +7,40 @@
 //!
 //! Tokens are cached to disk with refresh token support.
 
+mod al_cache;
 mod cache;
 mod encoding;
 mod flows;
 mod pkce;
 mod redirect;
+mod settings;
 mod validation;
 
 pub use cache::{cached_token_expiry, invalidate_cached_token, token_cache_path};
-pub use flows::acquire_token;
+pub use flows::{
+    acquire_token, acquire_token_blocking, acquire_token_with_mode, acquire_token_with_settings,
+    SignInMode,
+};
+pub use settings::{AuthSettings, AL_CLIENT_ID};
 
 use serde::{Deserialize, Serialize};
+use std::io::Write;
 use thiserror::Error;
 use zeroize::{Zeroize, ZeroizeOnDrop};
+
+/// Write one sign-in message (a device code prompt, mostly) to `out`.
+pub fn announce_to(out: &mut impl Write, message: &str) {
+    let _ = writeln!(out, "{message}");
+    let _ = out.flush();
+}
+
+/// Put a sign-in message on stderr so a user on a headless host sees the
+/// device code while the flow waits. Servers speaking JSON-RPC on stdout keep
+/// stdout clean. Callers that also have a client channel (LSP showMessage)
+/// send the message there too.
+pub fn announce(message: &str) {
+    announce_to(&mut std::io::stderr().lock(), message);
+}
 
 #[derive(Debug, Error)]
 pub enum OAuthError {

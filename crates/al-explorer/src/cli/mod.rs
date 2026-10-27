@@ -256,8 +256,8 @@ pub fn run(cli: Cli) -> ExitCode {
             Ok(root) => lsp::cmd_init_debug(&root, cli.json),
             Err(error) => commands::report_error(&error, cli.json),
         },
-        Commands::Authenticate { cmd } => {
-            lsp::cmd_authenticate(cmd.as_str(), cli.tenant.as_deref(), cli.json)
+        Commands::Authenticate { cmd, device_code } => {
+            lsp::cmd_authenticate(cmd.as_str(), cli.tenant.as_deref(), cli.json, device_code)
         }
         Commands::Trace { event, depth, tree } => insight::cmd_trace(&event, depth, tree, cli.json),
         Commands::Intercept => insight::cmd_intercept(cli.json),

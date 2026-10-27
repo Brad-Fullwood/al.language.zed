@@ -188,15 +188,15 @@ of bearer tokens, Basic credentials, passwords and secrets, case-insensitively).
 Reachable as `al-explorer publish [--config <name>] [--incremental]`, which calls the daemon's
 `publish` method. That method calls `al_publish::publish` and adds no pipeline of its own.
 
-Native DAP launch does **not** go through `al-publish`. `al-dap`'s `bc_debug/rest.rs` posts a
-multipart form to `{base}/dev/apps` with `SchemaUpdateMode` and `DependencyPublishingOption`, using
-the OAuth token from its own sign-in, while `al-publish` posts an octet-stream body to
-`{base}/dev/extensions` with credentials from `BC_ACCESS_TOKEN` or `BC_USERNAME`/`BC_PASSWORD`.
-Those are two different BC dev endpoints, so collapsing them needs a live server to settle which
-one each BC version accepts.
+Native DAP launch does **not** go through `al-publish`. `al-dap`'s `bc_debug/rest.rs` and
+`al-publish` both post a multipart form to `{base}/dev/apps` (Microsoft's route,
+`AppsApiClient.cs:38-72`), `al-publish` with credentials from `BC_ACCESS_TOKEN` or
+`BC_USERNAME`/`BC_PASSWORD`, the debugger with the OAuth token from its own sign-in. Publish
+succeeds when BC answers with an HTTP success status. The response body is not read, as in
+Microsoft's client (`AppsApiClient.cs:66`). RAD is the same route with `IsRad=true`. Not yet run
+against a live server yet.
 
-`bc_client.rs` implements only the two BC dev endpoints publish uses: `POST
-/dev/extensions` (full upload) and `PATCH /dev/applications/{appId}` (RAD delta deploy). It does
+`bc_client.rs` implements only that one BC dev endpoint, `POST /dev/apps`. It does
 **not** implement extension install/uninstall, an application-status query, or an AAD device-code
 sign-in flow. `AuthMethod::AAD` requires a pre-provisioned bearer token in `BC_ACCESS_TOKEN` (or the
 legacy `BC_TOKEN`) and otherwise fails fast with `MissingCredentials`. `AuthMethod::Windows`
