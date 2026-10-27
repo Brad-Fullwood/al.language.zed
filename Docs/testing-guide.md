@@ -13,7 +13,7 @@ real output (or inspect the screenshot), not just an exit code.
 | tree-sitter grammar or generator | Grammar crate/generator tests, fixture build, and `tree-sitter-al/tests/run_repo_tests.sh` |
 | `languages/al/*.scm`, `extension.toml`, language-server wiring, in-editor behavior | GUI e2e: `crates/al-test-harness/editor-e2e/drive.sh`, then **open the screenshot** |
 | Native `.app` emit / `alc` / live semantic bridge | env-gated harness tests with `AL_TOOL_PATH=…` (see below) |
-| Publish/install, native DAP, live-routed tests, or test snapshots | strict live service profile: `make live-bc-contracts` (see below) |
+| Publish/install and native DAP | strict live service profile: `make live-bc-contracts` (see below). Live-routed tests and test snapshots cannot run until the TestRunnerHub client exists, see `testing-01-live-bc-dev-tests-endpoint-invented.md` |
 | Generated artifacts (`languages/al`, grammar, themes) | `make repro-artifacts` (and `scripts/check-release-hygiene.sh`) |
 | Anything you intend to release | `make release-dryrun` |
 
@@ -241,7 +241,7 @@ BC_ACCESS_TOKEN='<headless AAD bearer token>' \
   make live-bc-contracts
 ```
 
-The custom test must route to live BC, invoke the supplied breakpoint, have a
+Running the test needs a client for BC's SignalR TestRunnerHub, which is not built yet (`testing-01-live-bc-dev-tests-endpoint-invented.md`), so the test-run and snapshot steps below fail until it is. The custom test must route to live BC, invoke the supplied breakpoint, have a
 second executable statement for step-over, expose at least one local, and be
 deterministic at the captured sample. The profile:
 

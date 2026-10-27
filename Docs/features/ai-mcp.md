@@ -46,7 +46,7 @@ published input schema, including `minItems`/`maxItems` on array arguments.
 | `al_downloadsymbols` | `downloadSymbols` | `source` (`nuget` or `server`, default `nuget`), `config` (launch configuration for `server`) | Download dependency symbol packages into `.alpackages`. |
 | `al_symbolsearch` | `search` | `query` (string), `limit` (number, default 50 through MCP), `summary` (default true: name, kind, id and package only, false adds every member) | Fuzzy-search symbols across workspace and packages. |
 | `al_getdiagnostics` | `lint` | `file` or `uri`, plus `text` for a file outside the project | Run diagnostics for an AL file. |
-| `al_runtests` | `tests.run_auto` | | Discover and run tests. Returns per-method classified/actual routing and reasons. Pure-logic and supported workspace-record tests run locally, while unsupported/platform-dependent tests need a launch config + live BC. |
+| `al_runtests` | `tests.run_auto` | | Discover and run tests. Returns per-method classified/actual routing and reasons. Pure-logic and supported workspace-record tests run locally, while unsupported/platform-dependent tests are reported as skipped (live BC needs a TestRunnerHub client, not built yet). |
 | `al_deadcode` | `deadCode` | | Find unused procedures, fields, and orphaned subscribers. |
 | `al_sqlscan` | `sqlPatterns` | | Detect SQL anti-patterns (FindFirst/Get/CalcFields in loops, unfiltered FindSet). |
 | `al_entrypoints` | `entrypoints` | `scope` (default `workspace`) | List procedures with no incoming calls. |
@@ -55,8 +55,8 @@ published input schema, including `minItems`/`maxItems` on array arguments.
 | `al_suggestevent` | `suggestEvent` | `query` (structured source/filter object) | Suggest integration events along an object, table, procedure, or event path. |
 | `al_testclassify` | `tests.classify` | | Explain where every test runs and why. |
 | `al_testcoverage` | `tests.coverage` | | Report qualified/transitive static call-graph coverage, including explicit unresolved overload targets. |
-| `al_testsnapshot` | `tests.snapshot_capture` | `codeunitId`, `codeunitName`, `methodName`, `bcVersion`, `breakpoints` (`file`, `line`, optional `condition`), `outputPath`. Optional `config`, `timeoutMs` | Capture explicit breakpoint samples while one exact test method runs on live BC. |
-| `al_testsnapshotreplay` | `tests.snapshot_replay` | `snapshotPath`, `bcVersion`. Optional `config`, `timeoutMs` | Re-run a baseline snapshot's exact test method on live BC and return divergences. |
+| `al_testsnapshot` | `tests.snapshot_capture` | `codeunitId`, `codeunitName`, `methodName`, `bcVersion`, `breakpoints` (`file`, `line`, optional `condition`), `outputPath`. Optional `config`, `timeoutMs` | Capture explicit breakpoint samples while one exact test method runs on live BC. Returns "not implemented" until the TestRunnerHub client exists. |
+| `al_testsnapshotreplay` | `tests.snapshot_replay` | `snapshotPath`, `bcVersion`. Optional `config`, `timeoutMs` | Re-run a baseline snapshot's exact test method on live BC and return divergences. Returns "not implemented" until the TestRunnerHub client exists. |
 | `al_depgraph` | `deps.graph` | `format` (`json` or `dot`) | Return the GUID-keyed current-manifest/package dependency graph. |
 | `al_freeids` | `freeIds` | `kind` (object-kind keyword, omit for a per-kind summary), `object` (table/tableextension/enum/enumextension, wins over `kind`), `count` (1 to 100, default 1), `includeUsed` (default false) | Pick the next free object ID, table field number or enum value ordinal inside the `app.json` idRanges. |
 

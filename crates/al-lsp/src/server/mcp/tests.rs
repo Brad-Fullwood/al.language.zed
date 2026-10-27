@@ -349,7 +349,7 @@ async fn symbolsearch_surfaces_missing_symbol_recovery_in_structured_content() {
 }
 
 #[tokio::test]
-async fn al_runtests_blocked_by_bc_config_keeps_routing_and_diagnostic_context() {
+async fn al_runtests_reports_live_bc_tests_as_skipped_without_a_launch_config() {
     let workspace = ws();
     let temp = tempfile::tempdir().expect("temp project");
     install_project(&workspace, temp.path(), None).await;
@@ -380,14 +380,14 @@ end;
     )
     .await
     .expect("response");
-    assert_eq!(response["result"]["isError"], true, "{response}");
+    // A liveBc test no longer needs a launch config: it is reported as skipped.
+    assert_eq!(response["result"]["isError"], false, "{response}");
     let structured = &response["result"]["structuredContent"];
-    assert!(structured["diagnostics"].as_array().is_some_and(|items| {
-        items
-            .iter()
-            .any(|item| item["code"] == "AL_AGENT_MISSING_BC_CONFIGURATION")
-    }));
-    let routing = structured["routing"].as_array().expect("routing context");
+    assert_eq!(structured["result"]["totals"]["skipped"], 1, "{response}");
+    assert_eq!(structured["result"]["totals"]["failed"], 0, "{response}");
+    let routing = structured["result"]["routing"]
+        .as_array()
+        .expect("routing context");
     assert_eq!(routing.len(), 1, "{response}");
     assert_eq!(routing[0]["decision"], "liveBc");
     assert_eq!(routing[0]["runsLocally"], false);

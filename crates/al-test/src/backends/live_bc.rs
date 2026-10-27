@@ -1,286 +1,46 @@
-//! Live BC backend — runs tests against a real Business Central server.
+//! Live BC backend: classified, reported as skipped, not run.
 //!
-//! `LiveBcMode` implements `TestSession`. It groups `TestId`s by codeunit,
-//! optionally dispatches codeunit runs in parallel via `tokio::task::JoinSet`,
-//! applies per-codeunit timeouts, and streams `TestEvent`s through the
-//! caller-supplied `mpsc::Sender`.
+//! BC runs tests through the SignalR hub `{base}/dev/TestRunnerHub`, and this
+//! crate has no client for it yet (see [`crate::test_runner`] and the finding
+//! `testing-01-live-bc-dev-tests-endpoint-invented.md`). `LiveBcMode` keeps the
+//! `liveBc` routing path alive and reports every test routed to it as skipped
+//! with [`LIVE_BC_SKIP_MESSAGE`], so a run that mixes local and live tests still
+//! runs the local ones and does not fail on the live ones. It makes no network
+//! call and needs no launch config.
 
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::{BTreeMap, HashSet};
 
-use tokio::sync::{mpsc, Semaphore};
-use tokio::task::JoinSet;
+use tokio::sync::mpsc;
 
 use crate::error::TestRunnerError;
-use crate::result::{TestCodeunitResult, TestFailureKind, TestMethodResult, TestStatus};
-use crate::session::{
-    method_name_matches, RunOptions, TestEvent, TestId, TestSession, DEFAULT_MAX_PARALLEL,
-};
-use crate::test_runner::TestRunnerClient;
-use al_bc::launch::BcServerConfig;
+use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
+use crate::session::{method_name_matches, RunOptions, TestEvent, TestId, TestSession};
+use crate::test_runner::LIVE_BC_SKIP_MESSAGE;
 
-pub struct LiveBcMode {
-    config: BcServerConfig,
-}
+#[derive(Default)]
+pub struct LiveBcMode;
 
 impl LiveBcMode {
-    pub fn new(config: BcServerConfig) -> Self {
-        Self { config }
+    pub fn new() -> Self {
+        Self
     }
 }
 
 async fn send_event(tx: &mpsc::Sender<TestEvent>, event: TestEvent) -> Result<(), TestRunnerError> {
     tx.send(event).await.map_err(|_| {
-        tracing::warn!("test event channel closed; receiver dropped — aborting run");
+        tracing::warn!("test event channel closed; receiver dropped, aborting run");
         TestRunnerError::ChannelClosed
     })
 }
 
-fn failure_result(name: String, message: String, kind: TestFailureKind) -> TestMethodResult {
+fn skipped_result(name: String) -> TestMethodResult {
     TestMethodResult {
         name,
-        status: TestStatus::Fail,
-        error: Some(message),
+        status: TestStatus::Skip,
+        error: Some(LIVE_BC_SKIP_MESSAGE.to_string()),
         duration_ms: None,
-        failure_kind: Some(kind),
+        failure_kind: None,
     }
-}
-
-/// Emit an `Error`, a failed `CaseResult` and a one-test `SuiteComplete` for a
-/// target the server never reported on.
-///
-/// `kind` reaches the JUnit `type` attribute, so a timeout or a dead server is
-/// not filed under `AssertionError` alongside a genuinely red test.
-fn append_failed_case(
-    events: &mut Vec<TestEvent>,
-    codeunit_id: i32,
-    codeunit_name: &str,
-    method_name: Option<&str>,
-    message: String,
-    kind: TestFailureKind,
-) {
-    events.push(TestEvent::Error {
-        message: message.clone(),
-    });
-    let result = failure_result(
-        method_name.unwrap_or(codeunit_name).to_string(),
-        message,
-        kind,
-    );
-    events.push(TestEvent::CaseResult {
-        id: TestId {
-            codeunit_id,
-            codeunit_name: codeunit_name.to_string(),
-            method_name: method_name.map(str::to_string),
-        },
-        result: result.clone(),
-    });
-    events.push(TestEvent::SuiteComplete {
-        codeunit_id,
-        summary: TestCodeunitResult {
-            name: codeunit_name.to_string(),
-            id: codeunit_id,
-            methods: vec![result],
-            total: 1,
-            passed: 0,
-            failed: 1,
-            skipped: 0,
-        },
-    });
-}
-
-/// Index every specifically named method by `(codeunit_id, lowercased name)`.
-///
-/// Keyed case-insensitively because BC echoes a method name with its own
-/// casing. `tally` removes an entry when its result arrives, so whatever is
-/// left at the end of a run was requested and never reported.
-fn requested_targets(
-    codeunits: &[(i32, String, Vec<Option<String>>)],
-) -> HashMap<(i32, String), (String, String)> {
-    let mut targets = HashMap::new();
-    for (codeunit_id, codeunit_name, methods) in codeunits {
-        for method in methods.iter().flatten() {
-            targets.insert(
-                (*codeunit_id, method.to_ascii_lowercase()),
-                (codeunit_name.clone(), method.clone()),
-            );
-        }
-    }
-    targets
-}
-
-/// Fold one event into the session totals and tick off the method it reports.
-fn tally(
-    event: &TestEvent,
-    unreported: &mut HashMap<(i32, String), (String, String)>,
-    total: &mut usize,
-    passed: &mut usize,
-    failed: &mut usize,
-    skipped: &mut usize,
-) {
-    match event {
-        TestEvent::SuiteComplete { summary, .. } => {
-            *total += summary.total;
-            *passed += summary.passed;
-            *failed += summary.failed;
-            *skipped += summary.skipped;
-        }
-        TestEvent::CaseResult { id, .. } => {
-            if let Some(method) = &id.method_name {
-                unreported.remove(&(id.codeunit_id, method.to_ascii_lowercase()));
-            }
-        }
-        _ => {}
-    }
-}
-
-async fn run_one_codeunit(
-    config: &BcServerConfig,
-    codeunit_id: i32,
-    codeunit_name: &str,
-    methods: &[Option<String>],
-    timeout_dur: Duration,
-) -> Vec<TestEvent> {
-    let client = match TestRunnerClient::new(config) {
-        Ok(client) => client,
-        Err(error) => {
-            let mut events = Vec::new();
-            for method in methods {
-                events.push(TestEvent::CaseStarted {
-                    id: TestId {
-                        codeunit_id,
-                        codeunit_name: codeunit_name.to_string(),
-                        method_name: method.clone(),
-                    },
-                });
-                append_failed_case(
-                    &mut events,
-                    codeunit_id,
-                    codeunit_name,
-                    method.as_deref(),
-                    format!("Failed to construct the BC test client: {error}"),
-                    TestFailureKind::Infrastructure,
-                );
-            }
-            return events;
-        }
-    };
-    let mut events = Vec::new();
-
-    let has_specific_methods = methods.iter().any(|m| m.is_some());
-
-    if has_specific_methods {
-        for method_opt in methods {
-            let method_str = method_opt.as_deref();
-
-            let started_id = TestId {
-                codeunit_id,
-                codeunit_name: codeunit_name.to_string(),
-                method_name: method_str.map(str::to_string),
-            };
-            events.push(TestEvent::CaseStarted { id: started_id });
-
-            match tokio::time::timeout(
-                timeout_dur,
-                client.run_codeunit(codeunit_id, codeunit_name, method_str),
-            )
-            .await
-            {
-                Ok(Ok(result)) => {
-                    for method_result in &result.methods {
-                        let id = TestId {
-                            codeunit_id,
-                            codeunit_name: codeunit_name.to_string(),
-                            method_name: Some(method_result.name.clone()),
-                        };
-                        events.push(TestEvent::CaseResult {
-                            id,
-                            result: method_result.clone(),
-                        });
-                    }
-                    events.push(TestEvent::SuiteComplete {
-                        codeunit_id,
-                        summary: result,
-                    });
-                }
-                Ok(Err(e)) => {
-                    append_failed_case(
-                        &mut events,
-                        codeunit_id,
-                        codeunit_name,
-                        method_str,
-                        e.to_string(),
-                        TestFailureKind::Infrastructure,
-                    );
-                }
-                Err(_elapsed) => {
-                    append_failed_case(
-                        &mut events,
-                        codeunit_id,
-                        codeunit_name,
-                        method_str,
-                        format!("timeout after {} ms", timeout_dur.as_millis()),
-                        TestFailureKind::Timeout,
-                    );
-                }
-            }
-        }
-    } else {
-        let started_id = TestId {
-            codeunit_id,
-            codeunit_name: codeunit_name.to_string(),
-            method_name: None,
-        };
-        events.push(TestEvent::CaseStarted { id: started_id });
-
-        match tokio::time::timeout(
-            timeout_dur,
-            client.run_codeunit(codeunit_id, codeunit_name, None),
-        )
-        .await
-        {
-            Ok(Ok(result)) => {
-                for method_result in &result.methods {
-                    let id = TestId {
-                        codeunit_id,
-                        codeunit_name: codeunit_name.to_string(),
-                        method_name: Some(method_result.name.clone()),
-                    };
-                    events.push(TestEvent::CaseResult {
-                        id,
-                        result: method_result.clone(),
-                    });
-                }
-                events.push(TestEvent::SuiteComplete {
-                    codeunit_id,
-                    summary: result,
-                });
-            }
-            Ok(Err(e)) => {
-                append_failed_case(
-                    &mut events,
-                    codeunit_id,
-                    codeunit_name,
-                    None,
-                    e.to_string(),
-                    TestFailureKind::Infrastructure,
-                );
-            }
-            Err(_elapsed) => {
-                append_failed_case(
-                    &mut events,
-                    codeunit_id,
-                    codeunit_name,
-                    None,
-                    format!("timeout after {} ms", timeout_dur.as_millis()),
-                    TestFailureKind::Timeout,
-                );
-            }
-        }
-    }
-
-    events
 }
 
 impl TestSession for LiveBcMode {
@@ -290,43 +50,20 @@ impl TestSession for LiveBcMode {
         opts: RunOptions,
         tx: mpsc::Sender<TestEvent>,
     ) -> Result<(), TestRunnerError> {
-        let timeout_dur = Duration::from_millis(opts.timeout_ms.unwrap_or(30_000));
-
-        // Apply the method-name filter before grouping. Whole-codeunit targets
-        // are expanded through the dev API so `--filter` never silently runs
-        // every method merely because the caller supplied `method_name: None`.
+        // A whole-codeunit target has no method list here (BC would supply it),
+        // so it is kept and reported as one skipped entry named after the codeunit.
         let requested = tests.len();
-        let tests = match opts.filter.as_deref() {
+        let tests: Vec<TestId> = match opts.filter.as_deref() {
             None => tests,
-            Some(pattern) => {
-                let client = TestRunnerClient::new(&self.config)?;
-                let mut expanded = Vec::new();
-                let mut listed = HashSet::new();
-                for test in tests {
-                    match &test.method_name {
-                        Some(method) if method_name_matches(method, pattern) => expanded.push(test),
-                        Some(_) => {}
-                        None if listed.insert(test.codeunit_id) => {
-                            for method in client.list_methods(test.codeunit_id).await? {
-                                if method_name_matches(&method, pattern) {
-                                    expanded.push(TestId {
-                                        codeunit_id: test.codeunit_id,
-                                        codeunit_name: test.codeunit_name.clone(),
-                                        method_name: Some(method),
-                                    });
-                                }
-                            }
-                        }
-                        None => {}
-                    }
-                }
-                expanded
-            }
+            Some(pattern) => tests
+                .into_iter()
+                .filter(|test| {
+                    test.method_name
+                        .as_deref()
+                        .is_none_or(|method| method_name_matches(method, pattern))
+                })
+                .collect(),
         };
-
-        // A filter that selects nothing is a typo in the pattern far more often
-        // than it is an empty suite. Returning an error stops `al test run
-        // --filter '*Post'` from printing a green summary over zero tests.
         if let Some(pattern) = opts.filter.as_deref() {
             if requested > 0 && tests.is_empty() {
                 return Err(TestRunnerError::FilterMatchedNothing {
@@ -336,1104 +73,171 @@ impl TestSession for LiveBcMode {
             }
         }
 
-        // Deduplicate identical (codeunit_id, method_name) targets before
-        // grouping. A malformed RPC call can repeat the same TestId; without
-        // this guard the BC API would be invoked once per duplicate and every
-        // duplicate's SuiteComplete summary would be tallied into the final
-        // SessionComplete, inflating total/passed/failed/skipped.
+        // A malformed request can repeat a TestId. Counting it twice would
+        // inflate the session totals.
         let mut seen: HashSet<(i32, Option<String>)> = HashSet::new();
-
-        let mut groups: HashMap<i32, (String, Vec<Option<String>>)> = HashMap::new();
+        let mut codeunits: BTreeMap<i32, (String, Vec<Option<String>>)> = BTreeMap::new();
         for test in tests {
             if !seen.insert((test.codeunit_id, test.method_name.clone())) {
                 continue;
             }
-            let entry = groups
+            codeunits
                 .entry(test.codeunit_id)
-                .or_insert_with(|| (test.codeunit_name.clone(), Vec::new()));
-            entry.1.push(test.method_name);
+                .or_insert_with(|| (test.codeunit_name.clone(), Vec::new()))
+                .1
+                .push(test.method_name);
         }
 
-        let mut codeunits: Vec<(i32, String, Vec<Option<String>>)> = groups
-            .into_iter()
-            .map(|(id, (name, methods))| (id, name, methods))
-            .collect();
-        codeunits.sort_by_key(|(id, _, _)| *id);
-
-        // Reconcile against what was asked for, before the collapse below
-        // removes the individually named methods from the work list.
-        let mut unreported = requested_targets(&codeunits);
-
-        // "Run selected" in a tree UI sends the codeunit node and a method node
-        // under it in one request, so a group can hold both `None` and
-        // `Some("TestA")`. Running both issues two BC calls and counts TestA in
-        // two SuiteComplete summaries. The whole-codeunit run covers every
-        // named method, so it wins and the named entries are dropped.
-        for (_, _, methods) in codeunits.iter_mut() {
-            if methods.iter().any(Option::is_none) {
-                methods.retain(Option::is_none);
-            }
-        }
-
-        let mut total_total: usize = 0;
-        let mut total_passed: usize = 0;
-        let mut total_failed: usize = 0;
-        let mut total_skipped: usize = 0;
-
-        if opts.parallel && codeunits.len() > 1 {
-            let permits = opts.max_parallel.unwrap_or(DEFAULT_MAX_PARALLEL).max(1);
-            let gate = Arc::new(Semaphore::new(permits));
-            let mut join_set: JoinSet<Vec<TestEvent>> = JoinSet::new();
-            for (codeunit_id, codeunit_name, methods) in codeunits {
-                let config = self.config.clone();
-                let gate = Arc::clone(&gate);
-                join_set.spawn(async move {
-                    let _permit = gate
-                        .acquire_owned()
-                        .await
-                        .expect("the parallelism gate is never closed");
-                    run_one_codeunit(&config, codeunit_id, &codeunit_name, &methods, timeout_dur)
-                        .await
-                });
-            }
-
-            while let Some(result) = join_set.join_next().await {
-                let events =
-                    result.map_err(|error| TestRunnerError::WorkerFailed(error.to_string()))?;
-                for event in events {
-                    tally(
-                        &event,
-                        &mut unreported,
-                        &mut total_total,
-                        &mut total_passed,
-                        &mut total_failed,
-                        &mut total_skipped,
-                    );
-                    send_event(&tx, event).await?;
-                }
-            }
-        } else {
-            for (codeunit_id, codeunit_name, methods) in codeunits {
-                let events = run_one_codeunit(
-                    &self.config,
+        let mut total = 0usize;
+        for (codeunit_id, (codeunit_name, methods)) in codeunits {
+            // "Run selected" can send the codeunit node and a method under it.
+            // The whole-codeunit entry covers the method, so it wins.
+            let methods: Vec<Option<String>> = if methods.iter().any(Option::is_none) {
+                vec![None]
+            } else {
+                methods
+            };
+            let mut results = Vec::new();
+            for method in methods {
+                let id = TestId {
                     codeunit_id,
-                    &codeunit_name,
-                    &methods,
-                    timeout_dur,
+                    codeunit_name: codeunit_name.clone(),
+                    method_name: method.clone(),
+                };
+                send_event(&tx, TestEvent::CaseStarted { id: id.clone() }).await?;
+                let result = skipped_result(method.unwrap_or_else(|| codeunit_name.clone()));
+                send_event(
+                    &tx,
+                    TestEvent::CaseResult {
+                        id,
+                        result: result.clone(),
+                    },
                 )
-                .await;
-                for event in events {
-                    tally(
-                        &event,
-                        &mut unreported,
-                        &mut total_total,
-                        &mut total_passed,
-                        &mut total_failed,
-                        &mut total_skipped,
-                    );
-                    send_event(&tx, event).await?;
-                }
+                .await?;
+                results.push(result);
             }
-        }
-
-        // Report the dropped tests as failures rather than letting them shrink
-        // the summary: a silently smaller `total` reads as a green run.
-        let mut dropped: Vec<(i32, String, String)> = unreported
-            .into_iter()
-            .map(|((codeunit_id, _), (codeunit_name, method_name))| {
-                (codeunit_id, codeunit_name, method_name)
-            })
-            .collect();
-        dropped.sort();
-        for (codeunit_id, codeunit_name, method_name) in dropped {
-            let message = format!(
-                "{codeunit_name}.{method_name} was requested but the backend reported no result for it"
-            );
-            tracing::error!("{message}");
-            let mut events = Vec::new();
-            append_failed_case(
-                &mut events,
-                codeunit_id,
-                &codeunit_name,
-                Some(&method_name),
-                message,
-                TestFailureKind::Infrastructure,
-            );
-            for event in events {
-                if let TestEvent::SuiteComplete { ref summary, .. } = event {
-                    total_total += summary.total;
-                    total_failed += summary.failed;
-                }
-                send_event(&tx, event).await?;
-            }
+            total += results.len();
+            let summary = TestCodeunitResult {
+                name: codeunit_name,
+                id: codeunit_id,
+                total: results.len(),
+                passed: 0,
+                failed: 0,
+                skipped: results.len(),
+                methods: results,
+            };
+            send_event(
+                &tx,
+                TestEvent::SuiteComplete {
+                    codeunit_id,
+                    summary,
+                },
+            )
+            .await?;
         }
 
         send_event(
             &tx,
             TestEvent::SessionComplete {
-                total: total_total,
-                passed: total_passed,
-                failed: total_failed,
-                skipped: total_skipped,
+                total,
+                passed: 0,
+                failed: 0,
+                skipped: total,
             },
         )
-        .await?;
-
-        Ok(())
+        .await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use super::*;
 
-    use tokio::sync::mpsc;
-    use wiremock::matchers::{method, path, query_param};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    use crate::backends::live_bc::LiveBcMode;
-    use crate::error::TestRunnerError;
-    use crate::result::TestStatus;
-    use crate::session::{RunOptions, TestEvent, TestId, TestSession};
-    use al_bc::launch::{AuthMethod, BcServerConfig, EnvironmentType};
-
-    /// Build a `BcServerConfig` pointing at the given wiremock base URL.
-    ///
-    /// Uses Windows auth so no env-var credentials are required (the mock
-    /// server accepts any request without checking auth headers).
-    fn config_for(base_url: &str) -> BcServerConfig {
-        BcServerConfig {
-            name: "test".into(),
-            environment_type: EnvironmentType::OnPrem,
-            server: Some(base_url.to_string()),
-            server_instance: Some("BC".into()),
-            port: None,
-            environment_name: None,
-            tenant: None,
-            authentication: AuthMethod::Windows,
-            accept_invalid_certs: false,
-            debug_args: serde_json::json!({}),
-        }
-    }
-
-    fn test_id(codeunit_id: i32, name: &str) -> TestId {
+    fn id(codeunit_id: i32, method: Option<&str>) -> TestId {
         TestId {
             codeunit_id,
-            codeunit_name: name.into(),
-            method_name: None,
+            codeunit_name: format!("Codeunit {codeunit_id}"),
+            method_name: method.map(str::to_string),
         }
     }
 
-    fn method_test_id(codeunit_id: i32, codeunit_name: &str, method_name: &str) -> TestId {
-        TestId {
-            codeunit_id,
-            codeunit_name: codeunit_name.into(),
-            method_name: Some(method_name.into()),
-        }
-    }
-
-    use crate::session::method_name_matches as method_matches;
-
-    #[test]
-    fn method_matches_exact_case_insensitive() {
-        assert!(method_matches("TestAlpha", "TestAlpha"));
-        assert!(method_matches("TestAlpha", "testalpha"));
-        assert!(method_matches("TESTALPHA", "TestAlpha"));
-        assert!(!method_matches("TestAlpha", "Alpha"));
-        assert!(!method_matches("TestAlphaExtra", "TestAlpha"));
-    }
-
-    #[test]
-    fn method_matches_leading_wildcard() {
-        assert!(method_matches("TestAlpha", "*Alpha"));
-        assert!(method_matches("Alpha", "*Alpha"));
-        assert!(!method_matches("AlphaTest", "*Alpha"));
-    }
-
-    #[test]
-    fn method_matches_trailing_wildcard() {
-        assert!(method_matches("TestAlpha", "Test*"));
-        assert!(method_matches("Test", "Test*"));
-        assert!(!method_matches("UnitTest", "Test*"));
-    }
-
-    #[test]
-    fn method_matches_middle_wildcard() {
-        assert!(method_matches("TestAlphaCase", "Test*Case"));
-        assert!(method_matches("TestCase", "Test*Case"));
-        // Negative: pattern with middle wildcard requires both anchors.
-        assert!(!method_matches("Test", "Test*Case"));
-        assert!(!method_matches("Case", "Test*Case"));
-    }
-
-    #[test]
-    fn method_matches_double_star() {
-        assert!(method_matches("AlphaBeta", "*Beta*"));
-        assert!(method_matches("BetaAlpha", "*Beta*"));
-        assert!(method_matches("XBetaY", "*Beta*"));
-        assert!(!method_matches("Gamma", "*Beta*"));
-    }
-
-    #[test]
-    fn method_matches_just_star_matches_anything() {
-        assert!(method_matches("anything", "*"));
-        assert!(method_matches("", "*"));
-    }
-
-    #[tokio::test]
-    async fn test_live_bc_mode_constructs_from_config() {
-        let server = MockServer::start().await;
-        let cfg = config_for(&server.uri());
-        let _mode = LiveBcMode::new(cfg);
-    }
-
-    #[tokio::test]
-    async fn test_live_bc_mode_empty_tests_emits_only_session_complete() {
-        let server = MockServer::start().await;
-        let cfg = config_for(&server.uri());
-        let mode = LiveBcMode::new(cfg);
-
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(16);
-        mode.run(vec![], RunOptions::default(), tx).await.unwrap();
-
+    async fn run(
+        tests: Vec<TestId>,
+        opts: RunOptions,
+    ) -> (Result<(), TestRunnerError>, Vec<TestEvent>) {
+        let (tx, mut rx) = mpsc::channel(64);
+        let outcome = LiveBcMode::new().run(tests, opts, tx).await;
         let mut events = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
-        }
-
-        assert_eq!(
-            events.len(),
-            1,
-            "expected exactly one event, got {events:?}"
-        );
-        match &events[0] {
-            TestEvent::SessionComplete {
-                total,
-                passed,
-                failed,
-                skipped,
-            } => {
-                assert_eq!(*total, 0);
-                assert_eq!(*passed, 0);
-                assert_eq!(*failed, 0);
-                assert_eq!(*skipped, 0);
-            }
-            other => panic!("expected SessionComplete, got {other:?}"),
-        }
-
-        assert_eq!(server.received_requests().await.unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn test_live_bc_mode_single_codeunit_pass_path() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [
-                    { "name": "TestA", "result": "pass", "duration": 0.05 }
-                ]
-            })))
-            .mount(&server)
-            .await;
-
-        let cfg = config_for(&server.uri());
-        let mode = LiveBcMode::new(cfg);
-
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
-        mode.run(vec![test_id(50100, "MyTests")], RunOptions::default(), tx)
-            .await
-            .unwrap();
-
-        let mut events = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
-        }
-
-        assert!(
-            events.len() >= 4,
-            "expected ≥4 events, got {}: {events:?}",
-            events.len()
-        );
-
-        match &events[0] {
-            TestEvent::CaseStarted { id } => {
-                assert_eq!(id.codeunit_id, 50100, "wrong codeunit_id in CaseStarted");
-            }
-            other => panic!("expected CaseStarted, got {other:?}"),
-        }
-
-        let case_result = events
-            .iter()
-            .find(|e| matches!(e, TestEvent::CaseResult { .. }));
-        match case_result {
-            Some(TestEvent::CaseResult { result, .. }) => {
-                assert_eq!(result.status, TestStatus::Pass, "expected Pass status");
-            }
-            _ => panic!("no CaseResult event found in {events:?}"),
-        }
-
-        let suite = events.iter().find(|e| {
-            matches!(
-                e,
-                TestEvent::SuiteComplete {
-                    codeunit_id: 50100,
-                    ..
-                }
-            )
-        });
-        match suite {
-            Some(TestEvent::SuiteComplete { summary, .. }) => {
-                assert_eq!(summary.passed, 1, "expected 1 passed in SuiteComplete");
-            }
-            _ => panic!("no SuiteComplete for codeunit 50100 in {events:?}"),
-        }
-
-        let last = events.last().unwrap();
-        match last {
-            TestEvent::SessionComplete {
-                total,
-                passed,
-                failed,
-                skipped,
-            } => {
-                assert_eq!(*total, 1);
-                assert_eq!(*passed, 1);
-                assert_eq!(*failed, 0);
-                assert_eq!(*skipped, 0);
-            }
-            other => panic!("expected SessionComplete last, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn empty_success_response_is_reported_as_a_failed_test() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({ "value": [] })),
-            )
-            .mount(&server)
-            .await;
-
-        let mode = LiveBcMode::new(config_for(&server.uri()));
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
-        mode.run(
-            vec![test_id(50100, "EmptySuite")],
-            RunOptions::default(),
-            tx,
-        )
-        .await
-        .expect("run completes with an explicit failed result");
-
-        let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
+        while let Some(event) = rx.recv().await {
             events.push(event);
         }
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                TestEvent::CaseResult { result, .. }
-                    if result.status == TestStatus::Fail
-                        && result.error.as_deref().is_some_and(|error| error.contains("no method results"))
-            )
-        }));
+        (outcome, events)
+    }
+
+    #[tokio::test]
+    async fn every_test_is_skipped_with_the_message_and_none_fails() {
+        let (outcome, events) = run(
+            vec![
+                id(50100, Some("A")),
+                id(50100, Some("B")),
+                id(50200, Some("C")),
+            ],
+            RunOptions::default(),
+        )
+        .await;
+        outcome.expect("run succeeds");
+        let skipped: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                TestEvent::CaseResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(skipped.len(), 3);
+        for result in skipped {
+            assert_eq!(result.status, TestStatus::Skip);
+            assert_eq!(result.error.as_deref(), Some(LIVE_BC_SKIP_MESSAGE));
+        }
+        assert!(matches!(
+            events.last(),
+            Some(TestEvent::SessionComplete {
+                total: 3,
+                passed: 0,
+                failed: 0,
+                skipped: 3
+            })
+        ));
+        assert!(!events.iter().any(|e| matches!(e, TestEvent::Error { .. })));
+    }
+
+    #[tokio::test]
+    async fn duplicates_and_codeunit_plus_method_count_once() {
+        let (outcome, events) = run(
+            vec![id(50100, Some("A")), id(50100, Some("A")), id(50100, None)],
+            RunOptions::default(),
+        )
+        .await;
+        outcome.expect("run succeeds");
         assert!(matches!(
             events.last(),
             Some(TestEvent::SessionComplete {
                 total: 1,
-                failed: 1,
-                passed: 0,
-                skipped: 0,
+                skipped: 1,
+                ..
             })
         ));
     }
 
     #[tokio::test]
-    async fn specific_method_response_mismatch_is_reported_as_failure() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [{ "name": "DifferentMethod", "result": "pass" }]
-            })))
-            .mount(&server)
-            .await;
-
-        let mode = LiveBcMode::new(config_for(&server.uri()));
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
-        mode.run(
-            vec![method_test_id(50100, "SpecificSuite", "ExpectedMethod")],
-            RunOptions::default(),
-            tx,
-        )
-        .await
-        .expect("run completes with an explicit failed result");
-
-        let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
-        }
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                TestEvent::CaseResult { result, .. }
-                    if result.status == TestStatus::Fail
-                        && result.error.as_deref().is_some_and(|error| {
-                            error.contains("ExpectedMethod") && error.contains("DifferentMethod")
-                        })
-            )
-        }));
-    }
-
-    #[tokio::test]
-    async fn whole_codeunit_filter_lists_then_runs_only_matching_methods() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/BC/dev/tests/50100"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [
-                    { "name": "KeepThis" },
-                    { "name": "SkipThis" }
-                ]
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .and(query_param("method", "KeepThis"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [{ "name": "KeepThis", "result": "pass" }]
-            })))
-            .mount(&server)
-            .await;
-
-        let mode = LiveBcMode::new(config_for(&server.uri()));
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
-        mode.run(
-            vec![test_id(50100, "Filtered Live Tests")],
-            RunOptions {
-                filter: Some("Keep*".to_string()),
-                ..Default::default()
-            },
-            tx,
-        )
-        .await
-        .expect("filtered live run");
-
-        let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
-        }
-        assert!(
-            events.iter().any(|event| {
-                matches!(
-                    event,
-                    TestEvent::CaseResult { id, result }
-                        if id.method_name.as_deref() == Some("KeepThis")
-                            && result.status == TestStatus::Pass
-                )
-            }),
-            "matching method should run: {events:?}"
-        );
-        let requests = server.received_requests().await.expect("requests");
-        assert_eq!(
-            requests.len(),
-            2,
-            "expected one list + one run: {requests:?}"
-        );
-        assert!(requests.iter().all(|request| {
-            !request
-                .url
-                .query()
-                .is_some_and(|query| query.contains("SkipThis"))
-        }));
-    }
-
-    /// A method whose name repeats the filter's trailing chunk used to be
-    /// dropped from `expanded`, so it never reached BC and never appeared in
-    /// any event, while the summary still said the run was green.
-    #[tokio::test]
-    async fn filter_keeps_a_method_whose_name_repeats_the_pattern() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/BC/dev/tests/50100"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [
-                    { "name": "TestPostPost" },
-                    { "name": "TestShip" }
-                ]
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .and(query_param("method", "TestPostPost"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [{ "name": "TestPostPost", "result": "pass" }]
-            })))
-            .mount(&server)
-            .await;
-
-        let mode = LiveBcMode::new(config_for(&server.uri()));
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
-        mode.run(
-            vec![test_id(50100, "PostingTests")],
-            RunOptions {
-                filter: Some("*Post".to_string()),
-                ..Default::default()
-            },
-            tx,
-        )
-        .await
-        .expect("filtered live run");
-
-        let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
-        }
-        assert!(
-            events.iter().any(|event| matches!(
-                event,
-                TestEvent::CaseResult { id, result }
-                    if id.method_name.as_deref() == Some("TestPostPost")
-                        && result.status == TestStatus::Pass
-            )),
-            "TestPostPost ends with the pattern and must run: {events:?}"
-        );
-        assert!(
-            matches!(
-                events.last(),
-                Some(TestEvent::SessionComplete { total: 1, .. })
-            ),
-            "the matched test must be counted: {events:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn filter_matching_nothing_is_an_error_not_a_green_run() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/BC/dev/tests/50100"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [{ "name": "TestShip" }]
-            })))
-            .mount(&server)
-            .await;
-
-        let mode = LiveBcMode::new(config_for(&server.uri()));
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
-        let error = mode
-            .run(
-                vec![test_id(50100, "PostingTests")],
-                RunOptions {
-                    filter: Some("*Nonexistent".to_string()),
-                    ..Default::default()
-                },
-                tx,
-            )
-            .await
-            .expect_err("a filter that selects nothing must fail loudly");
-        assert!(
-            matches!(error, TestRunnerError::FilterMatchedNothing { .. }),
-            "got {error:?}"
-        );
-        assert!(
-            rx.try_recv().is_err(),
-            "no SessionComplete may be emitted for an empty selection"
-        );
-    }
-
-    /// A requested method whose result never arrives stays in the reconciliation
-    /// map, which is what turns it into a reported failure at the end of `run`.
-    #[test]
-    fn a_requested_method_without_a_case_result_stays_unreported() {
-        use crate::backends::live_bc::{requested_targets, tally};
-
-        let codeunits = vec![(
-            50100,
-            "MyTests".to_string(),
-            vec![Some("TestA".to_string()), Some("TestB".to_string())],
-        )];
-        let mut unreported = requested_targets(&codeunits);
-        assert_eq!(unreported.len(), 2);
-
-        let (mut total, mut passed, mut failed, mut skipped) = (0, 0, 0, 0);
-        // BC echoes its own casing; the reconciliation must still tick it off.
-        tally(
-            &TestEvent::CaseResult {
-                id: method_test_id(50100, "MyTests", "testa"),
-                result: crate::result::TestMethodResult {
-                    name: "testa".into(),
-                    status: TestStatus::Pass,
-                    error: None,
-                    duration_ms: None,
-                    failure_kind: None,
-                },
-            },
-            &mut unreported,
-            &mut total,
-            &mut passed,
-            &mut failed,
-            &mut skipped,
-        );
-
-        let left: Vec<_> = unreported.into_values().collect();
-        assert_eq!(left, vec![("MyTests".to_string(), "TestB".to_string())]);
-    }
-
-    #[tokio::test]
-    async fn test_live_bc_mode_two_codeunits_parallel() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [{ "name": "TestA", "result": "pass", "duration": 0.01 }]
-            })))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50200/run"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [{ "name": "TestB", "result": "pass", "duration": 0.01 }]
-            })))
-            .mount(&server)
-            .await;
-
-        let cfg = config_for(&server.uri());
-        let mode = LiveBcMode::new(cfg);
-
+    async fn filter_selecting_nothing_is_an_error() {
         let opts = RunOptions {
-            parallel: true,
-            ..Default::default()
+            filter: Some("Nope*".to_string()),
+            ..RunOptions::default()
         };
-
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(64);
-        mode.run(
-            vec![test_id(50100, "Suite1"), test_id(50200, "Suite2")],
-            opts,
-            tx,
-        )
-        .await
-        .unwrap();
-
-        let mut events = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
-        }
-
-        let suite_100 = events.iter().any(|e| {
-            matches!(
-                e,
-                TestEvent::SuiteComplete {
-                    codeunit_id: 50100,
-                    ..
-                }
-            )
-        });
-        let suite_200 = events.iter().any(|e| {
-            matches!(
-                e,
-                TestEvent::SuiteComplete {
-                    codeunit_id: 50200,
-                    ..
-                }
-            )
-        });
-        assert!(suite_100, "missing SuiteComplete for 50100 in {events:?}");
-        assert!(suite_200, "missing SuiteComplete for 50200 in {events:?}");
-
-        match events.last() {
-            Some(TestEvent::SessionComplete { total, .. }) => {
-                assert_eq!(*total, 2, "expected total=2 in SessionComplete");
-            }
-            other => panic!("expected SessionComplete last, got {other:?}"),
-        }
-    }
-
-    /// Serve every request with a fixed JSON body after a short hold, and
-    /// record the highest number of requests held at once.
-    ///
-    /// wiremock answers from a shared pool and does not expose in-flight
-    /// counts, so the concurrency ceiling needs a socket the test owns.
-    async fn counting_server(
-        hold: Duration,
-    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let in_flight = std::sync::Arc::new(AtomicUsize::new(0));
-        let peak = std::sync::Arc::new(AtomicUsize::new(0));
-        let peak_handle = std::sync::Arc::clone(&peak);
-
-        tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                let in_flight = std::sync::Arc::clone(&in_flight);
-                let peak = std::sync::Arc::clone(&peak);
-                tokio::spawn(async move {
-                    let mut buf = [0u8; 4096];
-                    let _ = socket.read(&mut buf).await;
-                    let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
-                    peak.fetch_max(now, Ordering::SeqCst);
-                    tokio::time::sleep(hold).await;
-                    in_flight.fetch_sub(1, Ordering::SeqCst);
-                    let body = r#"{"value":[{"name":"TestA","result":"pass"}]}"#;
-                    let response = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    let _ = socket.write_all(response.as_bytes()).await;
-                    let _ = socket.shutdown().await;
-                });
-            }
-        });
-
-        (format!("http://127.0.0.1:{port}"), peak_handle)
-    }
-
-    #[tokio::test]
-    async fn parallel_runs_are_capped_at_max_parallel() {
-        let (base_url, peak) = counting_server(Duration::from_millis(120)).await;
-        let mode = LiveBcMode::new(config_for(&base_url));
-
-        let tests: Vec<TestId> = (0..8)
-            .map(|index| test_id(50100 + index, &format!("Suite{index}")))
-            .collect();
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(256);
-        mode.run(
-            tests,
-            RunOptions {
-                parallel: true,
-                max_parallel: Some(2),
-                ..Default::default()
-            },
-            tx,
-        )
-        .await
-        .expect("parallel run completes");
-
-        let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
-        }
-        match events.last() {
-            Some(TestEvent::SessionComplete { total, .. }) => assert_eq!(*total, 8),
-            other => panic!("expected SessionComplete last, got {other:?}"),
-        }
-        let observed = peak.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(
-            observed <= 2,
-            "at most 2 codeunit runs may be in flight, saw {observed}"
-        );
-        assert!(
-            observed >= 2,
-            "the run must still be parallel, saw {observed}"
-        );
-    }
-
-    #[test]
-    fn the_default_fan_out_is_bounded() {
-        assert!(
-            (1..=8).contains(&crate::session::DEFAULT_MAX_PARALLEL),
-            "an unbounded default would open one BC session per codeunit"
-        );
-        assert_eq!(RunOptions::default().max_parallel, None);
-    }
-
-    #[tokio::test]
-    async fn test_live_bc_mode_per_test_timeout() {
-        use std::time::Duration;
-
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_delay(Duration::from_millis(500))
-                    .set_body_json(serde_json::json!({ "value": [] })),
-            )
-            .mount(&server)
-            .await;
-
-        let cfg = config_for(&server.uri());
-        let mode = LiveBcMode::new(cfg);
-
-        let opts = RunOptions {
-            timeout_ms: Some(50), // 50ms → fires well before 500ms mock delay
-            ..Default::default()
-        };
-
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
-        let result = tokio::time::timeout(
-            Duration::from_secs(5),
-            mode.run(vec![test_id(50100, "SlowSuite")], opts, tx),
-        )
-        .await
-        .expect("run() must not hang — timed out after 5s");
-
-        // run() itself should succeed (the timeout is internal, not fatal).
-        result.unwrap_or_else(|e| {
-            // ChannelClosed is acceptable if receiver was dropped before SessionComplete.
-            match e {
-                TestRunnerError::ChannelClosed => {}
-                other => panic!("unexpected error from run(): {other}"),
-            }
-        });
-
-        let mut events = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
-        }
-
-        let failed_result = events.iter().find(|e| {
-            if let TestEvent::CaseResult { result, .. } = e {
-                result.status == TestStatus::Fail
-                    && result
-                        .error
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_lowercase()
-                        .contains("timeout")
-            } else {
-                false
-            }
-        });
-        assert!(
-            failed_result.is_some(),
-            "expected a Fail CaseResult with timeout message, got {events:?}"
-        );
-
-        let session_complete = events
-            .iter()
-            .find(|e| matches!(e, TestEvent::SessionComplete { .. }));
-        match session_complete {
-            Some(TestEvent::SessionComplete {
-                failed, skipped, ..
-            }) => {
-                assert!(*failed >= 1, "expected failed >= 1, got {failed}");
-                assert_eq!(*skipped, 0, "timeouts must not masquerade as skips");
-            }
-            None => panic!("no SessionComplete in {events:?}"),
-            _ => unreachable!(),
-        }
-    }
-
-    /// Passing the same TestId twice runs the codeunit once and reports one test.
-    #[tokio::test]
-    async fn test_live_bc_mode_duplicate_test_ids_deduplicated() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [{ "name": "TestA", "result": "pass", "duration": 0.01 }]
-            })))
-            .mount(&server)
-            .await;
-
-        let cfg = config_for(&server.uri());
-        let mode = LiveBcMode::new(cfg);
-
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(32);
-        // Same whole-codeunit TestId twice.
-        mode.run(
-            vec![test_id(50100, "MyTests"), test_id(50100, "MyTests")],
-            RunOptions::default(),
-            tx,
-        )
-        .await
-        .unwrap();
-
-        let mut events = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
-        }
-
-        assert_eq!(
-            server.received_requests().await.unwrap().len(),
-            1,
-            "duplicate TestId must not cause a second BC call"
-        );
-
-        let suite_count = events
-            .iter()
-            .filter(|e| {
-                matches!(
-                    e,
-                    TestEvent::SuiteComplete {
-                        codeunit_id: 50100,
-                        ..
-                    }
-                )
-            })
-            .count();
-        assert_eq!(suite_count, 1, "expected one SuiteComplete, got {events:?}");
-
-        match events.last() {
-            Some(TestEvent::SessionComplete {
-                total,
-                passed,
-                failed,
-                skipped,
-            }) => {
-                assert_eq!(*total, 1, "total must not be inflated by the duplicate");
-                assert_eq!(*passed, 1);
-                assert_eq!(*failed, 0);
-                assert_eq!(*skipped, 0);
-            }
-            other => panic!("expected SessionComplete last, got {other:?}"),
-        }
-    }
-
-    /// A tree UI that sends the codeunit node and one of its method nodes in
-    /// the same request used to run the codeunit twice and count the named
-    /// method in both summaries.
-    #[tokio::test]
-    async fn codeunit_plus_one_of_its_methods_runs_the_codeunit_once() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [
-                    { "name": "TestA", "result": "pass" },
-                    { "name": "TestB", "result": "pass" }
-                ]
-            })))
-            .mount(&server)
-            .await;
-
-        let mode = LiveBcMode::new(config_for(&server.uri()));
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(64);
-        mode.run(
-            vec![
-                test_id(50100, "MyTests"),
-                method_test_id(50100, "MyTests", "TestA"),
-            ],
-            RunOptions::default(),
-            tx,
-        )
-        .await
-        .expect("run completes");
-
-        let mut events = Vec::new();
-        while let Ok(event) = rx.try_recv() {
-            events.push(event);
-        }
-        assert_eq!(
-            server.received_requests().await.unwrap().len(),
-            1,
-            "the whole-codeunit run already covers TestA"
-        );
-        let suites = events
-            .iter()
-            .filter(|event| matches!(event, TestEvent::SuiteComplete { .. }))
-            .count();
-        assert_eq!(suites, 1, "expected one SuiteComplete, got {events:?}");
-        match events.last() {
-            Some(TestEvent::SessionComplete {
-                total,
-                passed,
-                failed,
-                ..
-            }) => {
-                assert_eq!(*total, 2, "TestA must not be counted twice: {events:?}");
-                assert_eq!(*passed, 2);
-                assert_eq!(*failed, 0);
-            }
-            other => panic!("expected SessionComplete last, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_live_bc_mode_server_500_emits_error_event_and_continues() {
-        let server = MockServer::start().await;
-
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50100/run"))
-            .respond_with(ResponseTemplate::new(500).set_body_string("internal server error"))
-            .mount(&server)
-            .await;
-
-        Mock::given(method("POST"))
-            .and(path("/BC/dev/tests/50200/run"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "value": [{ "name": "TestOK", "result": "pass", "duration": 0.01 }]
-            })))
-            .mount(&server)
-            .await;
-
-        let cfg = config_for(&server.uri());
-        let mode = LiveBcMode::new(cfg);
-
-        let (tx, mut rx) = mpsc::channel::<TestEvent>(64);
-        mode.run(
-            vec![test_id(50100, "BrokenSuite"), test_id(50200, "GoodSuite")],
-            RunOptions::default(),
-            tx,
-        )
-        .await
-        .unwrap();
-
-        let mut events = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            events.push(ev);
-        }
-
-        let error_event = events.iter().find(|e| {
-            if let TestEvent::Error { message } = e {
-                message.contains("500")
-            } else {
-                false
-            }
-        });
-        assert!(
-            error_event.is_some(),
-            "expected Error event containing '500', got {events:?}"
-        );
-
-        let suite_200 = events.iter().any(|e| {
-            matches!(
-                e,
-                TestEvent::SuiteComplete {
-                    codeunit_id: 50200,
-                    ..
-                }
-            )
-        });
-        assert!(
-            suite_200,
-            "expected SuiteComplete for codeunit 50200 (run must continue after 500), got {events:?}"
-        );
-
-        assert!(
-            events
-                .iter()
-                .any(|e| matches!(e, TestEvent::SessionComplete { .. })),
-            "expected SessionComplete, got {events:?}"
-        );
-        match events.last() {
-            Some(TestEvent::SessionComplete {
-                total,
-                passed,
-                failed,
-                skipped,
-            }) => {
-                assert_eq!(*total, 2);
-                assert_eq!(*passed, 1);
-                assert_eq!(*failed, 1);
-                assert_eq!(*skipped, 0);
-            }
-            other => panic!("expected SessionComplete last, got {other:?}"),
-        }
+        let (outcome, _) = run(vec![id(50100, Some("A"))], opts).await;
+        assert!(matches!(
+            outcome,
+            Err(TestRunnerError::FilterMatchedNothing { requested: 1, .. })
+        ));
     }
 }

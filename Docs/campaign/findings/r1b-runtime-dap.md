@@ -118,7 +118,7 @@ item that file left unticked, plus the files its checklist does not name.
 ### [GAP] The parallel live-BC path spawns one task per codeunit with no concurrency cap
 - where: crates/al-test/src/backends/live_bc.rs:287 (`JoinSet::spawn` inside the `for` loop)
 - severity: medium
-- scenario: `opts.parallel` with 200 test codeunits opens 200 simultaneous `POST /dev/tests/{id}/run` calls against one BC server instance, each holding a session. On-prem NST typically caps concurrent sessions well below that, so the surplus calls fail with a server error and `append_failed_case` reports them as test *failures* rather than as an infrastructure limit. The failures look like product regressions and are not reproducible on a rerun with fewer codeunits.
+- scenario: `opts.parallel` with 200 test codeunits opens 200 simultaneous per-codeunit run calls (to a route BC does not have, see testing-01-live-bc-dev-tests-endpoint-invented.md, removed since) against one BC server instance, each holding a session. On-prem NST typically caps concurrent sessions well below that, so the surplus calls fail with a server error and `append_failed_case` reports them as test *failures* rather than as an infrastructure limit. The failures look like product regressions and are not reproducible on a rerun with fewer codeunits.
 - fix: bound the fan-out (a `Semaphore`, or spawn in chunks) with a default around 4 to 8 and expose it in `RunOptions`, and keep a server-error result distinguishable from an assertion failure in the emitted `TestMethodResult`.
 - status: fixed 54bfd8b7 (the failure-kind half lands with the JUnit `type` finding below)
 
