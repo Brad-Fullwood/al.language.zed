@@ -80,7 +80,7 @@ pub struct CompilationConfigOptions {
     /// (e.g. `/nowarn:AL0432`, `/target:Cloud`). Passed through unmodified so
     /// users can reach any alc switch we don't model explicitly.
     pub compilation_options: Vec<String>,
-    /// `al.incrementalBuild` — a VS Code language server option. `alc /help`
+    /// `al.incrementalBuild`: a VS Code language server option. `alc /help`
     /// (18.1) has no incremental switch, so nothing is emitted.
     pub incremental_build: bool,
     /// `al.enableExternalRulesets` — master gate for [`Self::rule_set_path`].
@@ -94,7 +94,7 @@ pub struct CompilationConfigOptions {
     /// `al.assemblyProbingPaths` — emits one `/assemblyprobingpaths:<path>`
     /// per entry.
     pub assembly_probing_paths: Vec<PathBuf>,
-    /// `al.outputAnalyzerStatistics` — a VS Code language server option. `alc /help`
+    /// `al.outputAnalyzerStatistics`: a VS Code language server option. `alc /help`
     /// (18.1) has no such switch, so nothing is emitted.
     pub output_analyzer_statistics: bool,
 }
