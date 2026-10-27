@@ -641,39 +641,6 @@ async fn variable_inspection_requests_have_correct_targets_and_params() {
 }
 
 #[tokio::test]
-async fn get_source_serializes_object_id_and_parses_string() {
-    let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());
-    event_tx
-        .send(completion(
-            "1",
-            Some(serde_json::json!("codeunit 50100 X { }")),
-            None,
-        ))
-        .await
-        .unwrap();
-    let src = session.get_source(5, 50100).await.unwrap();
-    assert_eq!(src, "codeunit 50100 X { }");
-    let f = next_frame(&mut ws_rx);
-    assert_eq!(f["target"], "GetSource");
-    assert_eq!(f["arguments"][0]["ObjectType"], 5);
-    assert_eq!(f["arguments"][0]["ObjectNumber"], 50100);
-}
-
-#[tokio::test]
-async fn get_source_non_string_result_becomes_empty_string() {
-    let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
-    event_tx
-        .send(completion("1", Some(serde_json::json!(42)), None))
-        .await
-        .unwrap();
-    assert_eq!(
-        session.get_source(5, 1).await.unwrap(),
-        "",
-        "a non-string GetSource result must collapse to empty"
-    );
-}
-
-#[tokio::test]
 async fn null_results_fall_back_to_empty_collections() {
     let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
     // Completions with neither result nor error → invoke returns Ok(None).
@@ -697,7 +664,7 @@ async fn invoke_ignores_completion_with_mismatched_invocation_id() {
         .send(completion("1", Some(serde_json::json!("fresh")), None))
         .await
         .unwrap();
-    let r = session.invoke("GetSource", vec![]).await.unwrap();
+    let r = session.invoke("GetVariables", vec![]).await.unwrap();
     assert_eq!(r, Some(serde_json::json!("fresh")));
 }
 
@@ -914,23 +881,6 @@ async fn handle_server_callback_isalive_sends_acknowledge() {
 }
 
 #[tokio::test]
-async fn is_alive_true_on_completion_false_on_error() {
-    let (session, event_tx, _b, _w) = BcDebugSession::test_new("c".into());
-    event_tx
-        .send(completion("1", Some(serde_json::json!(null)), None))
-        .await
-        .unwrap();
-    assert!(session.is_alive().await, "a completion => alive");
-
-    let (session2, event_tx2, _b2, _w2) = BcDebugSession::test_new("c".into());
-    event_tx2
-        .send(completion("1", None, Some("dead")))
-        .await
-        .unwrap();
-    assert!(!session2.is_alive().await, "a server error => not alive");
-}
-
-#[tokio::test]
 async fn attach_agent_maps_to_client_service() {
     // BreakOnNext.cs: WebServiceClient=0, WebClient=1, Background=2,
     // ClientService=3. The VS Code client maps "Agent" to ClientService.
@@ -1038,7 +988,7 @@ async fn hub_requests_serialise_to_the_decompiled_pascal_case_frames() {
 }
 
 /// dap-11: negotiate and the WebSocket both carry the query Microsoft builds
-/// (HubBasedDebuggerService.cs:171-193) and the WebSocket gets the cookie
+/// (HubBasedDebuggerService.cs:176-200) and the WebSocket gets the cookie
 /// negotiate set (HubBasedService.cs:57-58).
 #[tokio::test]
 async fn connect_sends_the_hub_query_on_both_requests_and_forwards_the_cookie() {

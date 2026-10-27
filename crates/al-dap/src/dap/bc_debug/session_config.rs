@@ -515,7 +515,7 @@ impl BcDebugConfig {
     /// segment, `DebugAdapterStartRequestHandler.FindCloudConfig` appends `dev`
     /// (DebugAdapterStartRequestHandler.cs:133-137) and
     /// `HubBasedDebuggerService.OpenConnectionAsync` appends `/DebuggerHub`
-    /// (HubBasedDebuggerService.cs:197). On premises it is
+    /// (HubBasedDebuggerService.cs:202). On premises it is
     /// `{server}:{port}/{instance}/dev/DebuggerHub` (`:127-131`).
     /// Not modelled: application family and sovereign cloud suffixes, which
     /// `BcDebugConfig` has no fields for.
@@ -529,11 +529,11 @@ impl BcDebugConfig {
     }
 
     /// Query parameters of the hub URL, in the order and under the conditions of
-    /// `HubBasedDebuggerService.OpenConnectionAsync` (HubBasedDebuggerService.cs:171-193):
+    /// `HubBasedDebuggerService.OpenConnectionAsync` (HubBasedDebuggerService.cs:176-200):
     /// `tenant` (on premises only, `FindOnPremiseConfig`, DebugAdapterStartRequestHandler.cs:130),
     /// `sessionId` when set and not -1, `userid` when non-empty (both come from
     /// the attach options, so only an attach sends them), and `Authentication=<value>`
-    /// for a bearer credential (`:190-191`). `deploymentId` (cloud only, `:136`)
+    /// for a bearer credential (`:199-200`). `deploymentId` (cloud only, `:136`)
     /// is not sent: `BcDebugConfig` has no deployment id. Values are percent
     /// encoded. `negotiate` and the WebSocket both carry them (`HubConnectionOptions.FullUrl`).
     pub fn debug_hub_query(
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn hub_query_follows_open_connection_async() {
-        // HubBasedDebuggerService.cs:171-193: cloud sends no tenant, sessionId
+        // HubBasedDebuggerService.cs:176-200: cloud sends no tenant, sessionId
         // and userid only on attach, Authentication last.
         let mut cfg = cloud_config("contoso.com", "Production");
         cfg.session_id = Some(12);

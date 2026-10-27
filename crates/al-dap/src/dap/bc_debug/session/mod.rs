@@ -166,7 +166,7 @@ impl BcDebugSession {
         let hub_url = config.debug_hub_url();
 
         // Microsoft puts the query parameters on the hub URL, so negotiate and the
-        // WebSocket both carry them (HubBasedDebuggerService.cs:171-193). The
+        // WebSocket both carry them (HubBasedDebuggerService.cs:176-200). The
         // SignalR client appends `negotiateVersion` and `id` after them.
         let query = config
             .debug_hub_query(access_token, attaching)
@@ -873,32 +873,11 @@ impl BcDebugSession {
         Ok(result.unwrap_or(serde_json::Value::Null))
     }
 
-    /// BC hub method: `GetSource(ApplicationObjectIdWrapper)` → `string`
-    pub async fn get_source(&self, object_type: i32, object_number: i32) -> Result<String> {
-        let object_id = serde_json::json!({
-            "ObjectType": object_type,
-            "ObjectNumber": object_number,
-        });
-        let result = self.invoke("GetSource", vec![object_id]).await?;
-        Ok(result
-            .and_then(|v| v.as_str().map(|s| s.to_string()))
-            .unwrap_or_default())
-    }
-
-    pub async fn terminate(&self) -> Result<()> {
-        if let Err(e) = self.invoke("TerminateSession", vec![]).await {
-            tracing::debug!(error = %e, "TerminateSession RPC errored — session may already be closed");
-        }
-        Ok(())
-    }
-
-    /// Calls `invoke()`, which acquires `completion_rx`. Only safe to call when no
-    /// other `invoke()` is in progress (i.e. outside of an active debug loop).
-    /// Server-side `IsAlive` pings during a session are handled automatically
-    /// via `try_send` in `handle_server_callback`.
-    pub async fn is_alive(&self) -> bool {
-        self.invoke("IsAlive", vec![]).await.is_ok()
-    }
+    // Not invoked: `GetStackTrace`, `GetSource`, `TerminateSession` and a client-to-server
+    // `IsAlive`. HubBasedDebuggerService.cs:34-79 lists the only hub methods Microsoft's client
+    // calls. A session ends with `StopDebugging` (:256) and the liveness reply is
+    // `AcknowledgeIsAlive` (:224-229). Source download is `GetSourceContent` for debugger
+    // version 2 and later, `GetSource` before (:327-340), and this client reads source from disk.
 
     pub async fn is_stopped(&self) -> bool {
         *self.is_stopped.lock().await

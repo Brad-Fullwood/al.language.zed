@@ -99,7 +99,7 @@ The hub URL follows Microsoft's adapter. In the cloud it is
 `https://api.businesscentral.dynamics.com/v2.0/{environment}/dev/DebuggerHub` with no tenant segment
 (`CloudHttpClientFactory.cs:137-158`, `DebugAdapterStartRequestHandler.cs:133-137`), on premises
 `{server}:{port}/{instance}/dev/DebuggerHub`. The query parameters are those of
-`HubBasedDebuggerService.OpenConnectionAsync` (`HubBasedDebuggerService.cs:171-193`): `tenant` (on premises
+`HubBasedDebuggerService.OpenConnectionAsync` (`HubBasedDebuggerService.cs:176-200`): `tenant` (on premises
 only), `sessionId` (when set and not -1) and `userid` (both only for an attach, they come from the attach options),
 and `Authentication=Bearer <token>`. Negotiate and the WebSocket both carry them, and the affinity cookie
 that negotiate sets is sent on the WebSocket (`HubBasedService.cs:57-58`). Not sent: `deploymentId` (no
@@ -110,11 +110,14 @@ the negotiated version and `connectionToken`), opens a WebSocket with the record
 and runs reader/writer tasks. Every hub request uses the C# property names (PascalCase, for example
 `BreakOnNextClient`, `ObjectNumber`, `Line`) and integer enums, because Microsoft's client registers Newtonsoft
 with `DefaultContractResolver` (`AspNetCoreSignalRFactory.cs:24-27`). A test compares the serialised frame bytes
-with frames built from the decompiled types. Hub methods invoked include `Attach`,
+with frames built from the decompiled types. Hub methods invoked are a subset of the ones in `HubBasedDebuggerService.cs:34-79`. Invoked: `Attach`,
 `DebugAdapterConfigurationDone`, `AddBreakpoint`/`RemoveBreakpoint`/`UpdateBreakpoint`,
-`GetVariables`/`ExpandGlobals`/`GetWatchNode`, `SetBreakpointResponse`
-(0=continue, 1=step-over, 2=step-in, 3=step-out), `StopDebugging`/`TerminateSession`. Server
-callbacks handled: `Break` (→ `stopped`), `IsAlive` (→ ack), `OnAttachedToConnection`,
+`GetVariables`/`ExpandNode`/`ExpandGlobals`/`GetWatchNode`, `SetBreakpointResponse`
+(0=continue, 1=step-over, 2=step-in, 3=step-out), `StopDebugging`. Server
+Not invoked: `AddBreakpointByName` and `AddBreakpointByNameAndNamespace` (Microsoft uses them for interface
+objects only), `GetSource` and `GetSourceContent`, `GetNstSessionInfo`. There is no client call named
+`GetStackTrace`, `TerminateSession` or `IsAlive`. Server
+callbacks handled: `Break` (→ `stopped`), `IsAlive` (answered with the `AcknowledgeIsAlive` hub call), `OnAttachedToConnection`,
 `OnDetachedFromConnection` (→ `terminated`), `OnFatalDebuggerException` (→ `output`).
 `Break`'s stop reason is derived rather than hard-coded: a non-empty message argument means BC broke on a runtime
 error (`stopped.reason = "exception"`, with the message surfaced in `stopped.text`). Otherwise the
@@ -136,7 +139,7 @@ one-based.
   a file that declares more than one object sets every breakpoint on the right one. A
   `setBreakpoints` call clears a file's previously tracked breakpoints even when none of its
   requested lines resolve to an object.
-- **Per-operation timeouts:** `IsAlive` 5 s, `StopDebugging`/`TerminateSession` 10 s,
+- **Per-operation timeouts:** `StopDebugging` 10 s,
   breakpoints and step/continue (`SetBreakpointResponse`) 30 s, stack and variables 30 s,
   `Attach`/`DebugAdapterConfigurationDone` 120 s, any other hub method 60 s.
 - **Lock discipline:** clone the session `Arc` inside the lock, drop the lock, then await.

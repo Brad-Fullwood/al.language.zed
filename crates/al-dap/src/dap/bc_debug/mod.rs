@@ -11,7 +11,7 @@
 //!   OpenConnectionAsync, Attach, ConfigurationDoneAsync, ContinueAsync,
 //!   AddBreakpointAsync, RemoveBreakpointAsync, UpdateBreakpointAsync,
 //!   GetVariablesAsync, ExpandGlobalsAsync, ExpandNodeAsync,
-//!   GetWatchNodeAsync, GetSourceAsync, TerminateSession, IsAlive
+//!   GetWatchNodeAsync (the full list: HubBasedDebuggerService.cs:34-79)
 //!
 //! Split into submodules along natural seams (was a single ~3,371-line file):
 //! `session_config` (DAP-args parsing + `BcDebugConfig`), `events` (`BcEvent` /
