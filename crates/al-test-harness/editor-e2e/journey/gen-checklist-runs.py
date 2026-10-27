@@ -69,9 +69,9 @@ CLI = {
     "events": ("events OnAfterPostSalesDoc", "rc=0,1"),
     "subscribers": ("subscribers OnAfterPostSalesDoc", "rc=0,1"),
     "event-source": ("event-source --file $F_CU --line $LN", "rc=0,1"),
-    "builtins": ("builtins", "hasre=Record|Codeunit"),
+    "builtins": ("builtins", "hasre=[0-9]+ builtin types"),
     "rules": ("rules", "out"),
-    "error-codes": ("error-codes", "has=AL0"),
+    "error-codes": ("error-codes", "has=AL0;hasre=[0-9]+ error codes"),
     "generate-completions": ("generate-completions bash", "has=al-explorer"),
     "hover": (f"hover {POS}", "out"),
     "definition": (f"definition {POS}", "out"),
@@ -190,7 +190,7 @@ MCP = {
     "al_entrypoints": ('{"scope":"workspace"}', "strict"),
     "al_trace_event": ('{"event":"OnAfterPostSalesDoc","depth":10}', "strict"),
     "al_impact": ('{"symbol":"$TBL","scope":"workspace"}', "strict"),
-    "al_suggestevent": ('{"query":{"table":"$TBL"}}', "loose"),
+    "al_suggestevent": ('{"query":{"source":{"type":"table","table":"$TBL"}}}', "loose"),
     "al_testclassify": ("{}", "strict"),
     "al_testcoverage": ("{}", "strict"),
     "al_testsnapshot": ("{}", "covered"),
@@ -203,6 +203,9 @@ MCP_COVER = {"al_debug start": 9, "al_runtests": 6, "al_testsnapshot": 9, "al_te
 # lsp-command: name -> (arguments JSON array, expect)
 URI = '"file://$F_CU"'
 SUBURI = '"file://$F_SUB"'
+PUBURI = '"file://$F_PUB"'  # a file with an [IntegrationEvent] or [BusinessEvent] publisher
+POS = '{"line":$LN0,"character":$CH0}'
+SUBPOS = '{"line":$SUBLN0,"character":0}'
 LSP = {
     "al.downloadSymbols": ("[]", "loose"),
     "al.downloadSymbolsServer": ("[]", "covered"),
@@ -214,12 +217,12 @@ LSP = {
     "al.reindex": ("[]", "strict"),
     "al.compile": ("[]", "loose"),
     "al.applyRecommendedSettings": ("[]", "loose"),
-    "al.findReferences": (f"[{URI}]", "loose"),
+    "al.findReferences": (f'[{{"uri":{URI},"position":{POS}}}]', "loose"),
     "al.showProfiler": (f"[{URI}]", "loose"),
     "al.runTest": (f"[{URI}]", "loose"),
-    "al.showEventSource": (f"[{SUBURI}]", "loose"),
-    "al.showReport": (f"[{URI}]", "loose"),
-    "al.showSubscribers": (f"[{URI}]", "loose"),
+    "al.showEventSource": (f'[{{"uri":{SUBURI},"position":{SUBPOS}}}]', "loose"),
+    "al.showReport": (f'[{{"report":"metrics","object":"$CU","uri":{URI}}}]', "loose"),
+    "al.showSubscribers": (f'[{{"uri":{PUBURI},"position":{{"line":$PUBLN0,"character":10}}}}]', "loose"),
 }
 LSP_COVER = {"al.downloadSymbolsServer": 2}
 
@@ -230,7 +233,7 @@ D = {
     "status": ("{}", "strict;has=callGraph"),
     "shutdown": ("{}", "strict;last"),
     "handshake": ('{"nonce":"journey10"}', "strict;has=proof"),
-    "diag/summary": ("{}", "strict;has=process"),
+    "diag/summary": ('{"cmd":"summary"}', "strict;has=process"),  # sent as method diag, see D_METHOD
     "diag": ("{}", "strict;has=sourceIndex"),
     "hover": (POSQ, "strict"),
     "definition": (POSQ, "strict"),
@@ -287,10 +290,10 @@ D = {
     "audit.dataClassification": ("{}", "strict"),
     "permissions.audit": ("{}", "strict"),
     "deps.graph": ("{}", "strict"),
-    "breaking": ('{"baselineSymbols":"$APP"}', "loose"),
+    "breaking": ('{"baselineSymbols":[{"kind":"Codeunit","id":50100,"name":"JourneyBaseline"}]}', "loose"),
     "arch.lint": ("{}", "strict"),
     "duplicates": ("{}", "strict"),
-    "upgrade": ('{"baselineSymbols":"$APP"}', "loose"),
+    "upgrade": ('{"baselineSymbols":[{"kind":"Codeunit","id":50100,"name":"JourneyBaseline"}]}', "loose"),
     "profiler.hints": ('{"hotspots":[]}', "loose"),
     "freeIds": ('{"kind":"table","count":3}', "strict"),
     "xlf.generate": ("{}", "covered"),
@@ -303,7 +306,7 @@ D = {
     "tests.run_batch": ("{}", "covered"),
     "tests.run_auto": ("{}", "covered"),
     "tests.last_results": ("{}", "strict"),
-    "tests.affected": ('{"files":["$F_CU"]}', "loose"),
+    "tests.affected": ('{"changedFiles":["$F_CU"]}', "loose"),
     "tests.classify": ("{}", "strict"),
     "tests.snapshot_validate": ('{"snapshotPath":"$SNAP"}', "loose"),
     "tests.snapshot_capture": ("{}", "covered"),
@@ -319,10 +322,12 @@ D = {
     "nativeCheck": ("{}", "strict"),
     "impact": ('{"symbol":"$TBL","scope":"workspace"}', "strict"),
     "tableImpact": ('{"table":"$TBL","scope":"workspace"}', "loose"),
-    "suggestEvent": ('{"table":"$TBL"}', "loose"),
+    "suggestEvent": ('{"query":{"source":{"type":"table","table":"$TBL"}}}', "loose"),
     "eventMap": ('{"scope":"workspace"}', "strict"),
     "debug": ('{"cmd":"state"}', "loose;nosession"),
 }
+# Older doc spellings of a method name that the daemon answers under another name.
+D_METHOD = {"diag/summary": "diag"}
 D_COVER = {"compile": 5, "package": 5, "publish": 8, "newProject": 1, "downloadSymbols": 2,
            "profiling": 9, "xlf.generate": 7, "xlf.refresh": 7, "xlf.untranslated": 7,
            "xlf.suggest": 7, "tests.run": 6, "tests.run_batch": 6, "tests.run_auto": 6,
@@ -426,7 +431,7 @@ for (kind, nm), e in rows.items():
     else:
         if nm in D:
             args, exp = D[nm]
-            inv = f"{nm} {args}"
+            inv = f"{D_METHOD.get(nm, nm)} {args}"
             if nm in D_COVER:
                 exp = f"covered by stage {D_COVER[nm]}"
         else:

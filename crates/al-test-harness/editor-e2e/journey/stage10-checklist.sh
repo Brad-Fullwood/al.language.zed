@@ -21,7 +21,7 @@
 
 S10_STAGE=10
 S10_TSV="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/checklist-runs.tsv"
-S10_VARS='$PROJ $ALX $F_CU $F_TBL $F_PEXT $F_SUB $SUBLN $TBLID $TBL $CU $LN $COL $LN0 $CH0 $APP $DEPAPP $SNAP $SNAPZIP $OUTSIDE $CDX_TENANT'
+S10_VARS='$PROJ $ALX $F_CU $F_TBL $F_PEXT $F_SUB $SUBLN $SUBLN0 $F_PUB $PUBLN0 $TBLID $TBL $CU $LN $COL $LN0 $CH0 $APP $DEPAPP $SNAP $SNAPZIP $OUTSIDE $CDX_TENANT'
 
 # s10_discover: sets the placeholder variables from the files in $PROJ.
 s10_discover() {
@@ -39,6 +39,9 @@ s10_discover() {
   fi
   F_SUB=$(grep -rl 'EventSubscriber' "$src" --include='*.al' 2>/dev/null | head -1)
   SUBLN=$(grep -n 'EventSubscriber' "$F_SUB" 2>/dev/null | head -1 | cut -d: -f1)
+  SUBLN0=$(( ${SUBLN:-1} - 1 ))
+  F_PUB=$(grep -rlE '\[(Integration|Business)Event' "$src" --include='*.al' 2>/dev/null | grep -v '/\.alpackages/' | head -1)
+  PUBLN0=$(( $(grep -nE '\[(Integration|Business)Event' "${F_PUB:-/dev/null}" 2>/dev/null | head -1 | cut -d: -f1) - 1 ))
   F_TBL=$(grep -rlE '^table +[0-9]+' "$src" --include='*.al' 2>/dev/null | grep -v '/\.alpackages/' | sort | head -1)
   TBLID=$(sed -nE 's/^table +([0-9]+).*/\1/p' "$F_TBL" 2>/dev/null | head -1)
   F_PEXT=$(grep -rliE '^pageextension ' "$src" --include='*.al' 2>/dev/null | head -1)
