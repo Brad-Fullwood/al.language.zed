@@ -333,6 +333,8 @@ pub struct LspClient {
     buffered_notifications: Vec<(String, Value)>,
     root_path: PathBuf,
     open_docs: HashMap<String, i32>, // uri -> version
+    /// The server's `initialize` response, kept for capability checks.
+    initialize_result: Value,
 }
 
 impl LspClient {
@@ -340,6 +342,15 @@ impl LspClient {
     ///
     /// This is the standard entry point for tests and Zed integration.
     pub async fn spawn(project_root: impl AsRef<Path>) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::spawn_with_snippets(project_root, false).await
+    }
+
+    /// Like [`spawn`](Self::spawn), with the client's `snippetSupport`
+    /// completion capability set. Zed advertises it, so the journey test needs it.
+    pub async fn spawn_with_snippets(
+        project_root: impl AsRef<Path>,
+        snippet_support: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let binary = find_binary();
         let root_path = project_root.as_ref().to_path_buf();
 
@@ -368,7 +379,7 @@ impl LspClient {
 
         let mut client = Self::from_transport(stdin, BufReader::new(stdout), child, root_path);
 
-        client.initialize().await?;
+        client.initialize_result = client.initialize(snippet_support).await?;
         Ok(client)
     }
 
@@ -406,10 +417,14 @@ impl LspClient {
             buffered_notifications: Vec::new(),
             root_path,
             open_docs: HashMap::new(),
+            initialize_result: Value::Null,
         }
     }
 
-    async fn initialize(&mut self) -> Result<Value, Box<dyn std::error::Error>> {
+    async fn initialize(
+        &mut self,
+        snippet_support: bool,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
         let root_uri = format!("file://{}", self.root_path.display());
         let params = serde_json::json!({
             "processId": std::process::id(),
@@ -417,7 +432,7 @@ impl LspClient {
             "capabilities": {
                 "textDocument": {
                     "hover": { "contentFormat": ["markdown", "plaintext"] },
-                    "completion": { "completionItem": { "snippetSupport": false } },
+                    "completion": { "completionItem": { "snippetSupport": snippet_support } },
                     "definition": {},
                     "references": {},
                     "documentSymbol": { "hierarchicalDocumentSymbolSupport": true },
@@ -535,6 +550,26 @@ impl LspClient {
     /// without exercising the requested document.
     pub async fn open_file(&mut self, relative_path: &str, content: &str) {
         let uri = self.file_uri(relative_path);
+        assert!(
+            self.open_file_within(relative_path, content, diag_wait_timeout())
+                .await
+                .is_some(),
+            "server did not acknowledge textDocument/didOpen for {uri} version 1"
+        );
+    }
+
+    /// Like [`open_file`](Self::open_file) with an explicit wait limit and no
+    /// panic: returns how long the server took to acknowledge the open, or
+    /// `None` when it never did within `timeout`. The journey probe uses it to
+    /// measure the first open, which waits for the project scan and the
+    /// semantic bridge start.
+    pub async fn open_file_within(
+        &mut self,
+        relative_path: &str,
+        content: &str,
+        timeout: tokio::time::Duration,
+    ) -> Option<tokio::time::Duration> {
+        let uri = self.file_uri(relative_path);
         let version = 1;
         self.open_docs.insert(uri.clone(), version);
 
@@ -547,16 +582,17 @@ impl LspClient {
             }
         });
 
+        let started = tokio::time::Instant::now();
         self.notify("textDocument/didOpen", params)
             .await
             .unwrap_or_else(|error| {
                 panic!("textDocument/didOpen notify failed for {uri}: {error}")
             });
-        assert!(
-            self.wait_for_diagnostics(&uri, version, diag_wait_timeout())
-                .await,
-            "server did not acknowledge textDocument/didOpen for {uri} version {version}"
-        );
+        if self.wait_for_diagnostics(&uri, version, timeout).await {
+            Some(started.elapsed())
+        } else {
+            None
+        }
     }
 
     /// Send a text change to an already-open file (simulates Zed keystroke).
@@ -1079,6 +1115,21 @@ impl Drop for LspClient {
 }
 
 impl LspClient {
+    /// The server's `initialize` response (`capabilities` under `result`).
+    pub fn initialize_result(&self) -> &Value {
+        &self.initialize_result
+    }
+
+    /// Send any request and return its result. For requests the typed helpers
+    /// do not cover (codeAction with diagnostics, workspace/diagnostic).
+    pub async fn raw_request(
+        &mut self,
+        method: &str,
+        params: Value,
+    ) -> Result<Value, Box<dyn std::error::Error>> {
+        self.request(method, params).await
+    }
+
     /// Build a file:// URI from a relative path. Public for test assertions.
     pub fn file_uri(&self, relative_path: &str) -> String {
         let full_path = self.root_path.join(relative_path);
