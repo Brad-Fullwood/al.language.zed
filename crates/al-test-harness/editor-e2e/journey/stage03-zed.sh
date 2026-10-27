@@ -27,7 +27,9 @@ s34_prime_source_index() {
   XDG_DATA_HOME="$JOURNEY_DATA_HOME" XDG_CACHE_HOME="${XDG_CACHE_HOME:-/home/bradf/.cache/al-zed-fix/xdg-f2}" AL_TEST_DIAG_TIMEOUT_MS=120000 AL_LSP_BIN="$ALLSP" RUST_LOG=warn \
     run_step 04 prime-source-index 600 "$TARGET_DIR/debug/journey-lsp" --project "$OUT/04/prime/proj" --out "$OUT/04/prime" --prime-only
   local rc=$?
-  [[ $rc == 0 ]] && compgen -G "$store/*.summary" > /dev/null && printf '%s' "$want" > "$JOURNEY_DATA_HOME/primed.stamp"
+  # No summaries (a project with no .alpackages, or an index that never finished) is a failed prime.
+  compgen -G "$store/*.summary" > /dev/null || return 1
+  [[ $rc == 0 ]] && printf '%s' "$want" > "$JOURNEY_DATA_HOME/primed.stamp"
   return $rc
 }
 

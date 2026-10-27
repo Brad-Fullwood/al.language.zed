@@ -109,6 +109,15 @@ fn edit_count(edit: &Value) -> (usize, usize, Vec<String>) {
     (count, files, texts)
 }
 
+fn count_summaries(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir).map_or(0, |entries| {
+        entries
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "summary"))
+            .count()
+    })
+}
+
 async fn run(project: PathBuf, out: PathBuf) {
     let mut r = Report {
         out: out.clone(),
@@ -196,10 +205,49 @@ async fn run(project: PathBuf, out: PathBuf) {
     if std::env::args().any(|a| a == "--prime-only") {
         // The dependency source index is ready before the first open is acknowledged. Stop here so
         // the summaries it wrote under the user data dir can be mounted into the editor container.
+        // The index builds in the background and the store files appear when it finishes, so poll
+        // the store (al-lsp exposes no completion notification) and fail when none shows up.
+        let store = std::env::var_os("XDG_DATA_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+            })
+            .map(|d| d.join("al-lsp").join("source-index"));
+        let limit = std::time::Duration::from_secs(
+            std::env::var("AL_PRIME_SUMMARY_TIMEOUT_S")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300),
+        );
+        let waited = Instant::now();
+        let count = loop {
+            let n = store.as_deref().map_or(0, count_summaries);
+            if n > 0 || waited.elapsed() >= limit {
+                break n;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        };
+        if count == 0 {
+            r.line(
+                "FAIL",
+                "lsp.prime",
+                format!(
+                    "no *.summary in {} after {} ms (does the project have .alpackages?)",
+                    store.map_or("<no data dir>".into(), |s| s.display().to_string()),
+                    ms(waited)
+                ),
+            );
+            std::process::exit(1);
+        }
         r.line(
             "PASS",
             "lsp.prime",
-            format!("first open acknowledged after {} ms", ms(t)),
+            format!(
+                "first open acknowledged after {} ms, {count} summaries after {} ms",
+                ms(t),
+                ms(waited)
+            ),
         );
         return;
     }
