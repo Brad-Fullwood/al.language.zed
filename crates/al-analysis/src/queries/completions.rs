@@ -210,8 +210,12 @@ pub fn completions_native(
             }
             add_default_completions(workspace, uri, position, &mut items)?;
             // The type resolver also lists CurrPage and CurrReport as trigger
-            // variables for every object kind, so filter the merged list.
-            items.retain(|item| implicit_variable_applies(&item.label, object_kind.as_deref()));
+            // variables for every object kind, so filter the merged list. Only
+            // variable items are filtered, so a procedure named CurrPage stays.
+            items.retain(|item| {
+                item.kind != CompletionKind::Variable
+                    || implicit_variable_applies(&item.label, object_kind.as_deref())
+            });
         }
     }
 
