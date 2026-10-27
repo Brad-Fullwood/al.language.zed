@@ -246,6 +246,9 @@ async fn update_breakpoint_serializes_id_and_condition() {
     assert_eq!(frame["arguments"][1], "x > 5");
 }
 
+// fixture source: Microsoft.Dynamics.Nav.EditorServices.Protocol.DebugAdapter/AttachOptions.cs:15-27
+// (BreakOnNextClient, SessionId, UserId). The key casing below is what the code
+// sends today. The casing is a phase 2 finding (see the audit's dap-11 to dap-20).
 #[tokio::test]
 async fn attach_serializes_editorservices_attach_options() {
     let (session, event_tx, _b, mut ws_rx) = BcDebugSession::test_new("c".into());

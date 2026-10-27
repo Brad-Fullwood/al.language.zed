@@ -32,3 +32,24 @@ pub(crate) fn stack_frame(method: &str, from: (u16, u16), to: (u16, u16)) -> Val
 pub(crate) fn break_args(frames: Vec<Value>, message: &str) -> Vec<Value> {
     vec![object_id(), Value::Array(frames), json!(message)]
 }
+
+/// The `AddBreakpoint` reply for codeunit 50100 at 0-based line 41.
+// fixture source: TypeWrappers/Microsoft.Dynamics.Nav.DebuggerService/BreakpointDefinition.cs:9-27
+// (BreakpointId, Condition, InternalMethodName, MethodName, ObjectId, SourceSpan, RelativeSourceSpan)
+pub(crate) fn breakpoint_definition(id: i64) -> Value {
+    json!({
+        "BreakpointId": id,
+        "Condition": "",
+        "InternalMethodName": "OnRun",
+        "MethodName": "OnRun",
+        "ObjectId": object_id(),
+        "SourceSpan": {
+            "From": { "Line": 41, "Column": 0 },
+            "To": { "Line": 41, "Column": 20 }
+        },
+        "RelativeSourceSpan": {
+            "From": { "Line": 3, "Column": 0 },
+            "To": { "Line": 3, "Column": 20 }
+        }
+    })
+}

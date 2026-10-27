@@ -294,22 +294,13 @@ mod tests {
     use super::super::{bc_object_type, VariableHandleStore};
 
     #[test]
-    fn extract_breakpoint_id_reads_pascal_and_camel_case() {
+    fn extract_breakpoint_id_reads_breakpoint_definition() {
+        // fixture source: test_fixtures::breakpoint_definition (BreakpointDefinition.cs:9)
         assert_eq!(
-            extract_breakpoint_id(&serde_json::json!({ "BreakpointId": 99 })),
+            extract_breakpoint_id(&crate::dap::bc_debug::test_fixtures::breakpoint_definition(
+                99
+            )),
             Some(99)
-        );
-        assert_eq!(
-            extract_breakpoint_id(&serde_json::json!({ "breakpointId": 88 })),
-            Some(88)
-        );
-        assert_eq!(
-            extract_breakpoint_id(&serde_json::json!({ "Id": 42 })),
-            Some(42)
-        );
-        assert_eq!(
-            extract_breakpoint_id(&serde_json::json!({ "id": 7 })),
-            Some(7)
         );
     }
 
@@ -323,7 +314,12 @@ mod tests {
             extract_breakpoint_id(&serde_json::json!({ "Other": 1 })),
             None
         );
-        assert_eq!(extract_breakpoint_id(&serde_json::json!({ "Id": 0 })), None);
+        assert_eq!(
+            extract_breakpoint_id(&crate::dap::bc_debug::test_fixtures::breakpoint_definition(
+                0
+            )),
+            None
+        );
         assert_eq!(extract_breakpoint_id(&serde_json::json!({ "id": 0 })), None);
     }
 
@@ -416,8 +412,14 @@ mod tests {
         // exactly as `handle_launch_attach` does right after connect/attach
         // succeed, against a fake BC hub.
         let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
-        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 501 }));
-        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 502 }));
+        fake.reply_ok(
+            "AddBreakpoint",
+            crate::dap::bc_debug::test_fixtures::breakpoint_definition(501),
+        );
+        fake.reply_ok(
+            "AddBreakpoint",
+            crate::dap::bc_debug::test_fixtures::breakpoint_definition(502),
+        );
 
         let (mut client, server) = tokio::io::duplex(64 * 1024);
         state
@@ -494,8 +496,14 @@ mod tests {
         let mut state = test_state();
         state.resolve_object = resolve_posting_al;
         let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
-        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 601 }));
-        fake.reply_ok("AddBreakpoint", serde_json::json!({ "Id": 602 }));
+        fake.reply_ok(
+            "AddBreakpoint",
+            crate::dap::bc_debug::test_fixtures::breakpoint_definition(601),
+        );
+        fake.reply_ok(
+            "AddBreakpoint",
+            crate::dap::bc_debug::test_fixtures::breakpoint_definition(602),
+        );
         *state.session.lock().await = Some(Arc::new(session));
 
         let (_, frames) = run_request_on(

@@ -998,7 +998,7 @@ mod parse_bc_variables_tests {
 mod native_session_tests {
     use super::*;
     use crate::dap::bc_debug::fake::FakeBc;
-    use crate::dap::bc_debug::test_fixtures::{break_args, stack_frame};
+    use crate::dap::bc_debug::test_fixtures::{break_args, breakpoint_definition, stack_frame};
     use serde_json::json;
 
     /// A `Break` callback whose top frame starts at `line` (BC's own number).
@@ -1039,9 +1039,9 @@ mod native_session_tests {
     }
 
     #[tokio::test]
-    async fn set_breakpoints_adds_and_parses_pascalcase_response() {
+    async fn set_breakpoints_adds_and_parses_breakpoint_definition() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 77, "Verified": true }));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(77));
 
         let infos = nds
             .set_breakpoints("src/Foo.al", &[(10, None)], 5, 50100)
@@ -1064,28 +1064,29 @@ mod native_session_tests {
     }
 
     #[tokio::test]
-    async fn set_breakpoints_parses_camelcase_response() {
-        // Older BC returns camelCase id/verified. Without the camelCase
-        // fallback the id would default to 0 and verified to true.
+    async fn set_breakpoints_reports_unverified_when_bc_returns_no_breakpoint_id() {
+        // BreakpointDefinition.cs:9: BreakpointId 0 is not a usable handle.
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "id": 5, "verified": false }));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(0));
 
         let infos = nds
             .set_breakpoints("src/A.al", &[(3, None)], 1, 18)
             .await
             .unwrap();
 
-        assert_eq!(infos[0].id, 5, "camelCase id parsed");
-        assert!(!infos[0].verified, "camelCase verified parsed");
+        assert_eq!(infos[0].id, 0);
+        assert!(!infos[0].verified);
     }
 
     #[tokio::test]
     async fn set_breakpoints_rejects_silently_coerced_object_id() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok(
-            "AddBreakpoint",
-            json!({ "Id": 5, "Verified": true, "ObjectId": { "ObjectType": 0, "ObjectNumber": 0 } }),
-        );
+        fake.reply_ok("AddBreakpoint", {
+            // A reply for the wrong object: BreakpointDefinition.ObjectId is 0/0.
+            let mut def = breakpoint_definition(5);
+            def["ObjectId"] = json!({ "ObjectType": 0, "ObjectNumber": 0 });
+            def
+        });
 
         fake.reply_ok("RemoveBreakpoint", json!(null));
 
@@ -1114,7 +1115,7 @@ mod native_session_tests {
     #[tokio::test]
     async fn break_history_names_the_breakpoint_it_came_from() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 91, "Verified": true }));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(91));
         nds.set_breakpoints("src/Foo.al", &[(42, None)], 5, 50100)
             .await
             .unwrap();
@@ -1134,11 +1135,11 @@ mod native_session_tests {
         // A real condition is preserved; an empty condition normalises to None
         // but is still forwarded verbatim ("") to BC as the third arg.
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 1, "Verified": true }));
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 2, "Verified": true }));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(1));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(2));
 
         let infos = nds
-            .set_breakpoints("src/B.al", &[(1, Some("x > 5")), (2, Some(""))], 5, 99)
+            .set_breakpoints("src/B.al", &[(1, Some("x > 5")), (2, Some(""))], 5, 50100)
             .await
             .unwrap();
 
@@ -1153,16 +1154,16 @@ mod native_session_tests {
     #[tokio::test]
     async fn set_breakpoints_removes_prior_ids_for_same_file() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 100, "Verified": true }));
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 101, "Verified": true }));
-        nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50)
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(100));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(101));
+        nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50100)
             .await
             .unwrap();
 
         fake.reply_ok("RemoveBreakpoint", json!(null));
         fake.reply_ok("RemoveBreakpoint", json!(null));
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 200, "Verified": true }));
-        nds.set_breakpoints("src/C.al", &[(9, None)], 5, 50)
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(200));
+        nds.set_breakpoints("src/C.al", &[(9, None)], 5, 50100)
             .await
             .unwrap();
 
@@ -1182,11 +1183,11 @@ mod native_session_tests {
     #[tokio::test]
     async fn set_breakpoints_partial_failure_marks_failed_unverified() {
         let (mut nds, fake) = session("c1");
-        fake.reply_ok("AddBreakpoint", json!({ "Id": 11, "Verified": true }));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(11));
         fake.reply_err("AddBreakpoint", "compilation error");
 
         let infos = nds
-            .set_breakpoints("src/D.al", &[(1, None), (2, None)], 5, 50)
+            .set_breakpoints("src/D.al", &[(1, None), (2, None)], 5, 50100)
             .await
             .unwrap();
 
