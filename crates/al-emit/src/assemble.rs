@@ -891,7 +891,12 @@ pub(crate) fn project_relative_resource_path(
             "{kind} path must be a non-empty project-relative path: {value:?}"
         )));
     }
-    Ok(path.to_path_buf())
+    // alc names the entry without the leading `./` (`layout/Objects/x.xlsx`
+    // for `./Objects/x.xlsx`), so drop current-directory components.
+    Ok(path
+        .components()
+        .filter(|component| !matches!(component, std::path::Component::CurDir))
+        .collect())
 }
 
 fn read_project_resource(
@@ -933,12 +938,8 @@ fn validate_logo_resource(
         EmitError::Project("cannot resolve app.json logo without a project root".to_string())
     })?;
     let (relative, _) = read_project_resource(root, &manifest.logo, "app.json logo")?;
-    if !relative.eq_ignore_ascii_case("res") && !relative.to_ascii_lowercase().starts_with("res/") {
-        return Err(EmitError::Project(format!(
-            "app.json logo must live under res/: {:?}",
-            manifest.logo
-        )));
-    }
+    // alc 18.1 accepts a logo anywhere in the project and stores it as
+    // `logo/<file name>`, so no `res/` folder is required.
     let file_name = std::path::Path::new(&relative)
         .file_name()
         .and_then(|name| name.to_str())

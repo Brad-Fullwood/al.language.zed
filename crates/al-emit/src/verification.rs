@@ -292,6 +292,18 @@ pub(crate) fn verify_layout_files(
     }
 }
 
+/// Codes of the heuristic body checks reported as warnings.
+const HEURISTIC_CODES: &[&str] = &[
+    "ALN2202", "ALN2203", "ALN2208", "ALN2209", "ALN2402", "ALN2404",
+];
+
+/// AL keywords that can be followed by a parenthesised expression. They are
+/// operators and statement words, never procedure names.
+const KEYWORDS_BEFORE_PAREN: &[&str] = &[
+    "if", "then", "else", "and", "or", "xor", "not", "of", "until", "while", "do", "to", "downto",
+    "in", "case", "with", "for", "foreach", "repeat", "begin", "end", "div", "mod", "is", "as",
+];
+
 pub(crate) fn verify_project_objects(
     app_json: &serde_json::Value,
     objects: &[EmitObject],
@@ -310,6 +322,19 @@ pub(crate) fn verify_project_objects(
     verify_local_procedure_semantics(objects, external, &mut diagnostics);
     verify_provable_body_bindings(objects, external, &mut diagnostics);
     verify_local_event_contracts(objects, &mut diagnostics);
+    // These checks read source text without a binder. Against a real project
+    // alc compiles with no errors they gave false errors (named return values,
+    // overloads told apart by type, field names used as identifiers in field
+    // triggers, `Rec` resolved to the wrong table, `Continue` found in a
+    // string, built-in methods missing from the catalog). Standard route
+    // checked: alc is the only exact binder and is not linked here. A check
+    // that cannot be exact must not refuse the build, so each one stays
+    // visible as a warning.
+    for diagnostic in &mut diagnostics {
+        if HEURISTIC_CODES.contains(&diagnostic.code) {
+            diagnostic.severity = VerificationSeverity::Warning;
+        }
+    }
     diagnostics.sort_by(|a, b| {
         a.file
             .cmp(&b.file)
@@ -981,6 +1006,14 @@ fn call_sites(source: &str) -> Vec<CallSite> {
             i += 1;
         }
         let name = &source[start..i];
+        // `if (A) and (B) then`: the keyword is not a call. Move on without
+        // skipping the parenthesis so calls inside it are still found.
+        if KEYWORDS_BEFORE_PAREN
+            .iter()
+            .any(|keyword| name.eq_ignore_ascii_case(keyword))
+        {
+            continue;
+        }
         // A quoted field name such as `Cust."Balance (LCY)"` is not a call.
         if start > 0 && bytes[start - 1] == b'"' {
             continue;

@@ -560,3 +560,218 @@ fn aln2501_a_missing_layout_file_is_reported_on_the_report() {
     assert!(missing.file.ends_with("R.Report.al"), "{missing:?}");
     assert_eq!(missing.line, 10);
 }
+
+// ---------------------------------------------------------------------------
+// Valid AL that the text checks once refused (audit finding emitter-01).
+// Each case is a small synthetic project. None may produce an error, and the
+// heuristic checks that stay may only warn.
+// ---------------------------------------------------------------------------
+
+fn errors_for(sources: &[(&str, &str)]) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(dir.path(), APP_JSON, sources);
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("verification must run");
+    built
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == al_emit::VerificationSeverity::Error)
+        .map(|d| format!("{} {}", d.code, d.message))
+        .collect()
+}
+
+fn assert_no_errors(sources: &[(&str, &str)]) {
+    let errors = errors_for(sources);
+    assert!(errors.is_empty(), "valid AL was refused: {errors:?}");
+}
+
+#[test]
+fn a_parenthesised_condition_after_a_keyword_is_not_a_call() {
+    assert_no_errors(&[
+        CUSTOMER_TABLE,
+        (
+            "Cond.Codeunit.al",
+            "codeunit 50102 \"Prop Cond\"\n{\n\
+             \x20   procedure Run(Value: Integer)\n\
+             \x20   var\n\
+             \x20       Customer: Record \"Prop Customer\";\n\
+             \x20   begin\n\
+             \x20       if (Value > 1) and (Value < 5) or (Value = 9) then\n\
+             \x20           Customer.Reset();\n\
+             \x20       case (Value) of\n\
+             \x20           1:\n\
+             \x20               Customer.Reset();\n\
+             \x20       end;\n\
+             \x20       repeat\n\
+             \x20           Value += 1;\n\
+             \x20       until (Value > 10);\n\
+             \x20   end;\n}\n",
+        ),
+    ]);
+}
+
+#[test]
+fn a_named_return_value_needs_no_exit() {
+    assert_no_errors(&[(
+        "Named.Codeunit.al",
+        "codeunit 50103 \"Prop Named\"\n{\n\
+         \x20   procedure Names() Result: List of [Code[50]]\n\
+         \x20   begin\n\
+         \x20       Result.Add('A');\n\
+         \x20   end;\n}\n",
+    )]);
+}
+
+#[test]
+fn overloads_that_differ_by_type_are_not_ambiguous_errors() {
+    assert_no_errors(&[
+        CUSTOMER_TABLE,
+        (
+            "Over.Codeunit.al",
+            "codeunit 50104 \"Prop Over\"\n{\n\
+             \x20   procedure Caller()\n\
+             \x20   var\n\
+             \x20       Customer: Record \"Prop Customer\";\n\
+             \x20       Text: Text;\n\
+             \x20   begin\n\
+             \x20       Build(Customer);\n\
+             \x20       Build(Text);\n\
+             \x20   end;\n\
+             \n\
+             \x20   local procedure Build(Customer: Record \"Prop Customer\")\n\
+             \x20   begin\n\
+             \x20   end;\n\
+             \n\
+             \x20   local procedure Build(Text: Text)\n\
+             \x20   begin\n\
+             \x20   end;\n}\n",
+        ),
+    ]);
+}
+
+#[test]
+fn a_field_name_used_as_an_identifier_in_a_field_trigger_is_accepted() {
+    assert_no_errors(&[(
+        "Setup.Table.al",
+        "table 50105 \"Prop Setup\"\n{\n\
+         \x20   fields\n\
+         \x20   {\n\
+         \x20       field(1; Code; Code[10]) { }\n\
+         \x20       field(2; Expires; DateTime)\n\
+         \x20       {\n\
+         \x20           trigger OnValidate()\n\
+         \x20           begin\n\
+         \x20               Expires := 0DT;\n\
+         \x20           end;\n\
+         \x20       }\n\
+         \x20   }\n}\n",
+    )]);
+}
+
+#[test]
+fn a_record_parameter_named_rec_resolves_to_its_own_table() {
+    assert_no_errors(&[
+        (
+            "Alpha.Table.al",
+            "table 50106 \"Prop Alpha Line\"\n{\n\
+             \x20   fields\n\
+             \x20   {\n\
+             \x20       field(1; \"Alpha Only\"; Code[10]) { }\n\
+             \x20   }\n}\n",
+        ),
+        (
+            "Beta.Table.al",
+            "table 50107 \"Prop Beta Line\"\n{\n\
+             \x20   fields\n\
+             \x20   {\n\
+             \x20       field(1; \"Beta Only\"; Code[10]) { }\n\
+             \x20   }\n}\n",
+        ),
+        (
+            "Rec.Codeunit.al",
+            "codeunit 50108 \"Prop Rec\"\n{\n\
+             \x20   procedure Read(Rec: Record \"Prop Beta Line\"): Code[10]\n\
+             \x20   begin\n\
+             \x20       exit(Rec.\"Beta Only\");\n\
+             \x20   end;\n}\n",
+        ),
+    ]);
+}
+
+#[test]
+fn continue_inside_a_loop_or_text_is_accepted() {
+    assert_no_errors(&[(
+        "Loop.Codeunit.al",
+        "codeunit 50109 \"Prop Loop\"\n{\n\
+         \x20   procedure Run(): Boolean\n\
+         \x20   var\n\
+         \x20       i: Integer;\n\
+         \x20   begin\n\
+         \x20       for i := 1 to 3 do begin\n\
+         \x20           if i = 2 then\n\
+         \x20               continue;\n\
+         \x20       end;\n\
+         \x20       exit(Confirm('Do you wish to continue?', false));\n\
+         \x20   end;\n}\n",
+    )]);
+}
+
+#[test]
+fn built_in_methods_outside_the_record_catalog_are_accepted() {
+    assert_no_errors(&[(
+        "Builtin.Codeunit.al",
+        "codeunit 50110 \"Prop Builtin\"\n{\n\
+         \x20   procedure Run(Source: InStream)\n\
+         \x20   var\n\
+         \x20       Target: OutStream;\n\
+         \x20       Blob: Codeunit \"Temp Blob\";\n\
+         \x20   begin\n\
+         \x20       Blob.CreateOutStream(Target);\n\
+         \x20       CopyStream(Target, Source);\n\
+         \x20       BindSubscription(this);\n\
+         \x20       UnbindSubscription(this);\n\
+         \x20   end;\n}\n",
+    )]);
+}
+
+#[test]
+fn a_logo_outside_res_and_a_dot_slash_layout_path_package_like_alc() {
+    let dir = tempfile::tempdir().unwrap();
+    let app_json = APP_JSON.replace(
+        "\"dependencies\": []",
+        "\"logo\": \"Images/logo.png\",\n  \"dependencies\": []",
+    );
+    write_project(
+        dir.path(),
+        &app_json,
+        &[(
+            "Rep.Report.al",
+            "report 50111 \"Prop Rep\"\n{\n\
+             \x20   rendering\n\
+             \x20   {\n\
+             \x20       layout(Sheet)\n\
+             \x20       {\n\
+             \x20           Type = Excel;\n\
+             \x20           LayoutFile = './Layouts/Sheet.xlsx';\n\
+             \x20       }\n\
+             \x20   }\n}\n",
+        )],
+    );
+    std::fs::create_dir_all(dir.path().join("Images")).unwrap();
+    std::fs::write(dir.path().join("Images/logo.png"), b"PNG").unwrap();
+    std::fs::create_dir_all(dir.path().join("Layouts")).unwrap();
+    std::fs::write(dir.path().join("Layouts/Sheet.xlsx"), b"XLSX").unwrap();
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("build runs");
+    let errors: Vec<_> = built
+        .diagnostics
+        .iter()
+        .filter(|d| d.severity == al_emit::VerificationSeverity::Error)
+        .collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    let app = built.app.expect("package is produced");
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(app.bytes[40..].to_vec())).unwrap();
+    // alc 18.1 names these `logo/logo.png` and `layout/Layouts/Sheet.xlsx`.
+    assert!(archive.by_name("logo/logo.png").is_ok());
+    assert!(archive.by_name("layout/Layouts/Sheet.xlsx").is_ok());
+}
