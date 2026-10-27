@@ -128,6 +128,13 @@ Two download backends:
   and **zeroized** token memory on drop. A cloud download never builds a URL without a tenant GUID
   and passes the tenant registry check, see [project trust](project-trust.md#tenant-registry-and---tenant).
 
+**NuGet version choice.** With `--tenant`, `download-symbols --source nuget` asks the tenant for its
+Base Application version (the call behind "The environment runs BaseApp ...") and requests the four
+application packages at that version, falling back to its release line when the exact build is not on the
+feed. `System` is requested by release line, since its build numbers differ. The command prints which
+version it chose and why. Without `--tenant`, app.json decides, and the output says so. `al-explorer new
+--tenant` writes app.json application and platform as the tenant's `major.0.0.0` when the lookup works.
+
 Freshly downloaded symbols are loaded into the workspace **without a daemon restart**.
 
 ## Microsoft comparison

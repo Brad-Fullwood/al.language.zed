@@ -1,0 +1,18 @@
+{
+  "@odata.context": "stripped",
+  "value": [
+    {
+      "@odata.etag": "stripped",
+      "packageId": "stripped",
+      "id": "437dbf0e-84ff-417a-965d-ed2bb9650972",
+      "displayName": "Base Application",
+      "publisher": "Microsoft",
+      "versionMajor": 29,
+      "versionMinor": 0,
+      "versionBuild": 54011,
+      "versionRevision": 56136,
+      "isInstalled": true,
+      "publishedAs": "Global"
+    }
+  ]
+}

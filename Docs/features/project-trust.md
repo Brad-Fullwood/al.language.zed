@@ -330,10 +330,10 @@ writing a sentence.
 
 ## Credentials
 
-Ten daemon methods reach a credential the daemon holds, send the user's own to a server the
-repository's launch file names, or send one to a server the request names, and all ten go
+Eleven daemon methods reach a credential the daemon holds, send the user's own to a server the
+repository's launch file names, or send one to a server the request names, and all eleven go
 through one authorisation function: `debug` (the `start` command), `publish`,
-`downloadSymbols` from a BC server, `tests.run`, `tests.run_batch`, `tests.run_auto`,
+`downloadSymbols`, `environmentVersion` (the BaseApp version of the typed tenant), `tests.run`, `tests.run_batch`, `tests.run_auto`,
 `tests.snapshot_capture`, `tests.snapshot_replay`, `snapshot` and `profiling`. The daemon's
 dispatch table declares which methods those are, and a test holds this list and that
 declaration together.

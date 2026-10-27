@@ -204,6 +204,30 @@ pub struct ScaffoldResult {
     pub files_created: Vec<String>,
 }
 
+/// Rewrite `application` and `platform` in a scaffolded app.json to the major
+/// release of a tenant, as `major.0.0.0`. `version` is the environment's
+/// BaseApp version, for example `29.0.54011.56136`. Returns the value written.
+pub fn retarget_app_json_to_environment(dir: &Path, version: &str) -> Result<String, String> {
+    let major = version
+        .split('.')
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .filter(|major| *major > 0)
+        .ok_or_else(|| format!("'{version}' is not an environment version"))?;
+    let target = format!("{major}.0.0.0");
+    let path = dir.join("app.json");
+    let text =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
+    manifest["application"] = serde_json::json!(target);
+    manifest["platform"] = serde_json::json!(target);
+    let out = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    std::fs::write(&path, format!("{out}\n"))
+        .map_err(|e| format!("write {}: {e}", path.display()))?;
+    Ok(target)
+}
+
 pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldResult, String> {
     if dir.join("app.json").exists() {
         return Err(format!(
@@ -2415,5 +2439,20 @@ mod tests {
         }
         // version-4 nibble
         assert_eq!(a.as_bytes()[14], b'4', "{a}");
+    }
+
+    #[test]
+    fn app_json_retargets_to_the_environment_major() {
+        let dir = std::env::temp_dir().join(format!("al-retarget-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        create_project(&dir, &ScaffoldConfig::default()).expect("scaffold");
+        let written = retarget_app_json_to_environment(&dir, "29.0.54011.56136").expect("retarget");
+        assert_eq!(written, "29.0.0.0");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("app.json")).unwrap()).unwrap();
+        assert_eq!(parsed["application"], "29.0.0.0");
+        assert_eq!(parsed["platform"], "29.0.0.0");
+        assert!(retarget_app_json_to_environment(&dir, "x.y").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

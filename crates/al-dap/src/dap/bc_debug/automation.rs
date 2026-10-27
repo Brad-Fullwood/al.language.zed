@@ -288,6 +288,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reads_the_version_from_a_recorded_cdx_answer() {
+        // Recorded from CDX Sandbox, etag, packageId and context stripped.
+        let recorded: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tests/fixtures/cdx-base-application-extension.json"
+        ))
+        .unwrap();
+        let server = with_companies().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/companies({COMPANY})/extensions")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(recorded))
+            .mount(&server)
+            .await;
+        let version = base_app_version_at(&reqwest::Client::new(), &server.uri(), TOKEN)
+            .await
+            .unwrap();
+        assert_eq!(version, "29.0.54011.56136");
+    }
+
+    #[tokio::test]
     async fn http_failure_carries_the_status() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))

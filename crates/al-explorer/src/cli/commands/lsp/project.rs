@@ -690,6 +690,39 @@ pub struct NewOptions<'a> {
     pub environment: Option<&'a str>,
 }
 
+/// Ask the tenant for its BaseApp version and write app.json to its release.
+/// Standard route checked: the daemon's `environmentVersion` request reuses the
+/// call download-symbols makes. A failed lookup keeps the runtime table values.
+fn retarget_to_tenant(project_dir: &str) -> String {
+    let kept = |why: &str| {
+        format!("app.json keeps the application and platform versions of the AL runtime: {why}")
+    };
+    let mut client = match connect(Some(project_dir)) {
+        Ok(client) => client,
+        Err(error) => return kept(&error),
+    };
+    let answer = match request_checked(&mut client, "environmentVersion", None) {
+        Ok(answer) => answer,
+        Err(error) => return kept(&error),
+    };
+    let Some(version) = answer["version"].as_str() else {
+        return kept(
+            answer["reason"]
+                .as_str()
+                .unwrap_or("the tenant gave no version"),
+        );
+    };
+    match al_project::scaffold::retarget_app_json_to_environment(
+        std::path::Path::new(project_dir),
+        version,
+    ) {
+        Ok(target) => format!(
+            "The environment runs BaseApp {version}, so app.json application and platform are {target}."
+        ),
+        Err(error) => kept(&error),
+    }
+}
+
 pub fn cmd_new(options: NewOptions<'_>, json: bool) -> ExitCode {
     use al_project::scaffold;
 
@@ -737,6 +770,10 @@ pub fn cmd_new(options: NewOptions<'_>, json: bool) -> ExitCode {
 
     match scaffold::create_project(std::path::Path::new(&directory), &config) {
         Ok(result) => {
+            let environment_note = config
+                .tenant
+                .as_deref()
+                .map(|_| retarget_to_tenant(&result.project_dir));
             if json {
                 println!(
                     "{}",
@@ -747,6 +784,9 @@ pub fn cmd_new(options: NewOptions<'_>, json: bool) -> ExitCode {
                     "{}",
                     new_project_text(&result.project_dir, &result.files_created)
                 );
+                if let Some(note) = environment_note {
+                    println!("{}", terminal_text(&note));
+                }
             }
             ExitCode::SUCCESS
         }

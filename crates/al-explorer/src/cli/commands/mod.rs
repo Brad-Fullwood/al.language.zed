@@ -583,8 +583,9 @@ static CALLER_TENANT: std::sync::OnceLock<al_bc::tenant_guard::Declaration> =
 /// Daemon methods that open a connection to Business Central. The daemon
 /// refuses a cloud connection from any of them unless `cliTenant` matches the
 /// launch configuration.
-const CONNECTING_METHODS: [&str; 10] = [
+const CONNECTING_METHODS: [&str; 11] = [
     "downloadSymbols",
+    "environmentVersion",
     "publish",
     "debug",
     "snapshot",
