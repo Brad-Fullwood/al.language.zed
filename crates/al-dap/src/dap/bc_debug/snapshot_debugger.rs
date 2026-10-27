@@ -126,6 +126,48 @@ pub enum SnapshotObjectType {
 /// to both (DebugAndProfile).
 pub const EXECUTION_CONTEXT_DEBUG_AND_PROFILE: u32 = 3;
 
+/// `SnapshotDebuggingExecutionContextWrapper.Profiling`. Sampling must not carry
+/// the Debugging flag (SnapshotDebuggerAttachInitializeRequestHandler.cs:60-68),
+/// so a profiling attach sends 2 alone.
+pub const EXECUTION_CONTEXT_PROFILING: u32 = 2;
+
+/// `ProfileKindWrapper` (TypeWrappers/Microsoft.Dynamics.Nav.DebuggerService/ProfileKindWrapper.cs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotProfileKind {
+    Instrumentation = 0,
+    Sampling = 1,
+}
+
+/// `ProfilerSamplingIntervalWrapper`, milliseconds between samples.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotSamplingInterval {
+    Every50ms = 50,
+    Every100ms = 100,
+    Every150ms = 150,
+}
+
+impl SnapshotSamplingInterval {
+    pub fn from_millis(millis: u64) -> Option<Self> {
+        Some(match millis {
+            50 => Self::Every50ms,
+            100 => Self::Every100ms,
+            150 => Self::Every150ms,
+            _ => return None,
+        })
+    }
+}
+
+/// `SnapshotApiVersions.Version3_0`, the `webApiVersion` that
+/// `SnapshotApiFeature.SampleProfiling` requires (SnapshotApiFeatureExtensions.cs:14).
+pub const SAMPLE_PROFILING_MIN_API_VERSION: &str = "3.0";
+
+/// The profiling part of an attach: `Kind` and, for sampling, `SamplingInterval`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotProfile {
+    pub kind: SnapshotProfileKind,
+    pub sampling_interval: Option<SnapshotSamplingInterval>,
+}
+
 /// One snap point: a 0 based line in an object and an optional condition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotLine {
@@ -150,6 +192,8 @@ pub struct SnapshotAttachRequest {
     /// `-1` means no specific session.
     pub session_id: i64,
     pub execution_context: u32,
+    /// Set for a profiling attach (`execution_context` 2).
+    pub profile: Option<SnapshotProfile>,
 }
 
 impl SnapshotAttachRequest {
@@ -162,6 +206,7 @@ impl SnapshotAttachRequest {
             verbosity: SnapshotVerbosity::Full,
             session_id: -1,
             execution_context: EXECUTION_CONTEXT_DEBUG_AND_PROFILE,
+            profile: None,
         }
     }
 }
@@ -187,6 +232,11 @@ struct AttachBody<'a> {
     session_id: i64,
     #[serde(skip_serializing_if = "is_zero")]
     execution_context: u32,
+    /// Nullable in the wrapper: written when set, even as 0 (Instrumentation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sampling_interval: Option<u8>,
 }
 
 #[derive(Serialize)]
@@ -259,6 +309,11 @@ pub fn attach_body(request: &SnapshotAttachRequest) -> String {
         snapshot_verbosity: request.verbosity as u8,
         session_id: request.session_id,
         execution_context: request.execution_context,
+        kind: request.profile.map(|p| p.kind as u8),
+        sampling_interval: request
+            .profile
+            .and_then(|p| p.sampling_interval)
+            .map(|i| i as u8),
     };
     serde_json::to_string(&body).expect("attach body serialises")
 }

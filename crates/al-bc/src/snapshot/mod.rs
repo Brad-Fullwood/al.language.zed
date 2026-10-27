@@ -41,10 +41,9 @@ pub async fn save_finished_snapshot(
     let profile = if sampling {
         let entry = format!("{ctx}.alcpuprofile");
         let zip_bytes = bytes.clone();
-        let data = tokio::task::spawn_blocking(move || read_zip_entry(&zip_bytes, &entry))
+        tokio::task::spawn_blocking(move || read_zip_entry(&zip_bytes, &entry))
             .await
-            .map_err(|e| std::io::Error::other(e.to_string()))??;
-        Some(data)
+            .map_err(|e| std::io::Error::other(e.to_string()))??
     } else {
         None
     };
@@ -63,12 +62,18 @@ pub async fn save_finished_snapshot(
     })
 }
 
-fn read_zip_entry(zip_bytes: &[u8], name: &str) -> std::io::Result<Vec<u8>> {
+/// `None` when the zip has no entry of that name (a sampling run that recorded
+/// nothing), so the zip is still saved.
+fn read_zip_entry(zip_bytes: &[u8], name: &str) -> std::io::Result<Option<Vec<u8>>> {
     use std::io::Read;
     let invalid =
         |e: zip::result::ZipError| std::io::Error::new(std::io::ErrorKind::InvalidData, e);
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).map_err(invalid)?;
-    let entry = archive.by_name(name).map_err(invalid)?;
+    let entry = match archive.by_name(name) {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(e) => return Err(invalid(e)),
+    };
     let mut out = Vec::new();
     entry
         .take(MAX_CPU_PROFILE_BYTES + 1)
@@ -79,7 +84,7 @@ fn read_zip_entry(zip_bytes: &[u8], name: &str) -> std::io::Result<Vec<u8>> {
             "CPU profile in the snapshot zip is larger than 500 MB",
         ));
     }
-    Ok(out)
+    Ok(Some(out))
 }
 
 #[cfg(test)]
@@ -106,6 +111,18 @@ mod tests {
         let profile = saved.cpu_profile.unwrap();
         assert_eq!(profile, dir.path().join(format!("{ctx}.alcpuprofile")));
         assert_eq!(std::fs::read(profile).unwrap(), b"{\"nodes\":[]}");
+    }
+
+    #[tokio::test]
+    async fn save_finished_snapshot_keeps_the_zip_when_the_profile_entry_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = "c4fbb573-e325-443c-9887-8d0574e833ee";
+        let bytes = zip_with("other.txt", b"x");
+        let saved = save_finished_snapshot(dir.path(), ctx, bytes.clone(), true)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&saved.zip).unwrap(), bytes);
+        assert!(saved.cpu_profile.is_none());
     }
 
     #[tokio::test]

@@ -517,3 +517,32 @@ fn new_debugging_context_is_a_guid() {
     assert!(Uuid::parse_str(&a).is_ok());
     assert_ne!(a, new_debugging_context());
 }
+
+// Built from SnapshotDebuggerAttachPayloadWrapper (Newtonsoft, PascalCase, enums as
+// integers), not recorded: replace with a CDX capture of a profiling attach.
+#[test]
+fn profiling_attach_body_carries_execution_context_kind_and_interval() {
+    let mut request = SnapshotAttachRequest::new("ed75bfc5-a198-4fe6-ad81-54b95d34965a".into());
+    request.execution_context = EXECUTION_CONTEXT_PROFILING;
+    request.profile = Some(SnapshotProfile {
+        kind: SnapshotProfileKind::Sampling,
+        sampling_interval: Some(SnapshotSamplingInterval::Every150ms),
+    });
+    let body: serde_json::Value = serde_json::from_str(&attach_body(&request)).unwrap();
+    assert_eq!(body["ExecutionContext"], 2);
+    assert_eq!(body["Kind"], 1);
+    assert_eq!(body["SamplingInterval"], 150);
+
+    request.profile = Some(SnapshotProfile {
+        kind: SnapshotProfileKind::Instrumentation,
+        sampling_interval: None,
+    });
+    let body: serde_json::Value = serde_json::from_str(&attach_body(&request)).unwrap();
+    assert_eq!(body["Kind"], 0, "a nullable enum set to 0 is still written");
+    assert!(body.get("SamplingInterval").is_none());
+
+    request.profile = None;
+    request.execution_context = 1;
+    let body: serde_json::Value = serde_json::from_str(&attach_body(&request)).unwrap();
+    assert!(body.get("Kind").is_none() && body.get("SamplingInterval").is_none());
+}
