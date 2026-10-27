@@ -71,7 +71,7 @@ feature pages for implementation details and limitations.
 | Capability | This project | Microsoft |
 | --- | --- | --- |
 | Debug adapter | ✅ native Rust DAP (direct SignalR/REST) | 🔷 `EditorServices.Host` |
-| Launch / attach / breakpoints (conditional) / step / stack / scopes / variables / evaluate | ✅ | ✅ |
+| Launch / attach / breakpoints (conditional) / step / stack / scopes / variables / evaluate | ✅ project files only, no dependency source (`dap-30-dependency-source-breakpoints`), evaluate differs (`dap-31-evaluate-array-index-and-large-strings`) | ✅ |
 | Pause-while-running | ❌ (BC limitation) | ❌ (BC limitation) |
 | Profiling | ✅ start/status/stop through the snapshot debugger (sampling gives a `.alcpuprofile`, instrumentation saves the snapshot zip only), analyze | ✅ |
 | Snapshot debugging | ✅ capture in Zed, CLI and MCP, replay in Zed (see [snapshot-debugging](./features/snapshot-debugging.md)). `WebServiceClient` capture failed on the test Sandbox | ✅ |

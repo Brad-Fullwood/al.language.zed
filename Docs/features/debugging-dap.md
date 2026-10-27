@@ -310,3 +310,7 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   consumes them.
   When a launch config omits `breakOnNext`, attach defaults to `WebServiceClient`, the
   schema's documented default.
+- Breakpoints and source display work only for files in the project folder. A breakpoint in dependency
+  code (BaseApp, other apps) is reported `verified:false`, and frames in dependency code have no
+  source because the `source` request is not served. The adapter calls `AddBreakpoint` only and never
+  `AddBreakpointByName`. See audit finding `dap-30-dependency-source-breakpoints`.
