@@ -16,6 +16,7 @@
 #   drive.sh --proj-dir DIR               # open a project outside the repo (copied, never written back)
 #   drive.sh --keys-file steps.sh         # script run in the container after trust, may call
 #                                         #   wtype and `grim /out/shot-NAME.png` (copied next to --out)
+#   drive.sh --proj-rw                    # mount the --proj-dir project read-write at /extproj (default is read-only)
 #   drive.sh --mount HOST:CONT            # extra read-only mount (e.g. a dotnet runtime), repeatable
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +30,7 @@ KEYS=""
 PROJ=""   # repo-relative project subdir to open (default: the bundled fixture in run-zed.sh)
 PROJ_DIR=""      # absolute project dir outside the repo
 KEYS_FILE=""     # script mounted at /out/keys.sh and run after trust
+PROJ_MODE="ro"   # --proj-rw sets rw
 MOUNTS=()        # extra podman -v arguments
 ZED_SETTINGS=""  # a settings.json for the Zed under test (theme, LSP settings)
 
@@ -43,6 +45,7 @@ while [[ $# -gt 0 ]]; do
     --proj)        PROJ="$2"; shift 2 ;;
     --proj-dir)    PROJ_DIR="$(cd "$2" && pwd)" || exit 2; shift 2 ;;
     --keys-file)   KEYS_FILE="$2"; shift 2 ;;
+    --proj-rw)     PROJ_MODE="rw"; shift ;;
     --mount)       MOUNTS+=(-v "$2:ro"); shift 2 ;;
     --zed-settings) ZED_SETTINGS="$2"; shift 2 ;;
     *) echo "unknown arg: $1"; exit 2 ;;
@@ -118,7 +121,7 @@ if [[ -L "$ROOT/target" ]]; then
   MOUNTS+=(-v "$TARGET_REAL:$TARGET_REAL:ro")
 fi
 if [[ -n "$PROJ_DIR" ]]; then
-  MOUNTS+=(-v "$PROJ_DIR:/extproj:ro"); EXTRA_ENV+=(-e EXT_PROJ=/extproj)
+  MOUNTS+=(-v "$PROJ_DIR:/extproj:$PROJ_MODE"); EXTRA_ENV+=(-e EXT_PROJ=/extproj)
 fi
 if [[ -n "$KEYS_FILE" ]]; then
   cp "$KEYS_FILE" "$OUTDIR/keys.sh" || { echo "cannot read $KEYS_FILE"; exit 2; }
@@ -137,7 +140,7 @@ mkdir -p "$(dirname "$OUT")"
 [[ -f "$OUTDIR/$RESULT" ]] && cp "$OUTDIR/$RESULT" "$OUT"
 [[ -f "$OUTDIR/zed.log" ]] && cp "$OUTDIR/zed.log" "$(dirname "$OUT")/zed-editor.log"
 [[ -f "$OUTDIR/zed-app.log" ]] && cp "$OUTDIR/zed-app.log" "$(dirname "$OUT")/zed-app.log"
-for f in "$OUTDIR"/shot-*.png; do [[ -f "$f" ]] && cp "$f" "$(dirname "$OUT")/"; done
+for f in "$OUTDIR"/shot-*.png "$OUTDIR"/artifact-*; do [[ -f "$f" ]] && cp "$f" "$(dirname "$OUT")/"; done   # artifact-*: files a --keys-file script copies to /out
 [[ -f "$OUTDIR/dap.log" ]] && cp "$OUTDIR/dap.log" "$(dirname "$OUT")/"
 if [[ "$MODE" == "compare" ]]; then
   [[ -f "$OUTDIR/zed.png" ]]    && cp "$OUTDIR/zed.png"    "$(dirname "$OUT")/zed.png"

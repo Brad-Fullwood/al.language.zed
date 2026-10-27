@@ -1,0 +1,281 @@
+id	kind	name	doc_refs	invocation	expect	connects
+cli.version	cli	version	cli-commands.md:50; cli-and-tui.md:18; README.md:362	version	out	n
+cli.setup	cli	setup	cli-commands.md:51; cli-and-tui.md:18; README.md:359	setup	rc=0,1;out	n
+cli.doctor	cli	doctor	cli-commands.md:52; cli-and-tui.md:106; README.md:359	doctor	rc=0,1,75;out	n
+cli.diag	cli	diag	cli-commands.md:53; cli-and-tui.md:18; README.md:359	diag	out	n
+cli.clear-cache	cli	clear-cache	cli-commands.md:54; cli-and-tui.md:18; symbol-and-package-engine.md:152; README.md:359	clear-cache	out	n
+cli.daemon-shutdown	cli	daemon-shutdown	cli-commands.md:55; daemon-protocol.md:180; README.md:359, 370	daemon-shutdown --json	json	n
+cli.init-debug	cli	init-debug	cli-commands.md:56; cli-and-tui.md:19; README.md:359	init-debug	file=.zed/debug.json	n
+cli.trust	cli	trust	cli-commands.md:57; settings.md:16; cli-and-tui.md:19; project-trust.md:113; semantic-bridge.md:143; project-trust.md:112-114; README.md:359	trust	rc=0,1;out	n
+cli.search	cli	search	cli-commands.md:63; cli-and-tui.md:108; symbol-and-package-engine.md:146	search "$TBL"	hasre=.	n
+cli.object	cli	object	cli-commands.md:64; cli-and-tui.md:20; symbol-and-package-engine.md:146	object table "$TBL"	has=$TBL	n
+cli.by-id	cli	by-id	cli-commands.md:65; cli-and-tui.md:20; symbol-and-package-engine.md:146	by-id table $TBLID	out	n
+cli.source	cli	source	cli-commands.md:66; cli-and-tui.md:20; symbol-and-package-engine.md:146-150	source "$CU"	out	n
+cli.location	cli	location	cli-commands.md:67; cli-and-tui.md:20; symbol-and-package-engine.md:146-150	location "$CU"	out	n
+cli.composed	cli	composed	cli-commands.md:68; cli-and-tui.md:20; symbol-and-package-engine.md:146-150	composed table "$TBL"	out	n
+cli.packages	cli	packages	cli-commands.md:69; cli-and-tui.md:20; README.md:359	packages	out	n
+cli.deps	cli	deps	cli-commands.md:70; analysis-and-insight.md:142; README.md:359	deps	out	n
+cli.deps-graph	cli	deps-graph	cli-commands.md:71; analysis-and-insight.md:142; README.md:359	deps-graph --format json	json	n
+cli.events	cli	events	cli-commands.md:72; cli-and-tui.md:21; symbol-and-package-engine.md:146-150; README.md:363	events OnAfterPostSalesDoc	rc=0,1	n
+cli.subscribers	cli	subscribers	cli-commands.md:73; analysis-and-insight.md:133; symbol-and-package-engine.md:146-150; README.md:363	subscribers OnAfterPostSalesDoc	rc=0,1	n
+cli.event-source	cli	event-source	cli-commands.md:74; cli-and-tui.md:21; README.md:363	event-source --file $F_CU --line $LN	rc=0,1	n
+cli.builtins	cli	builtins	cli-commands.md:75; cli-and-tui.md:21; README.md:362	builtins	out	n
+cli.rules	cli	rules	cli-commands.md:76; cli-and-tui.md:21; README.md:362	rules	out	n
+cli.error-codes	cli	error-codes	cli-commands.md:77; cli-and-tui.md:21; README.md:362	error-codes	has=AL0	n
+cli.generate-completions	cli	generate-completions	cli-commands.md:78; cli-and-tui.md:22; scaffolding-and-codegen.md:58; README.md:362	generate-completions bash	has=al-explorer	n
+cli.hover	cli	hover	cli-commands.md:84; cli-and-tui.md:23; README.md:361	hover $F_CU $LN $COL	out	n
+cli.definition	cli	definition	cli-commands.md:85; cli-and-tui.md:23; README.md:361	definition $F_CU $LN $COL	out	n
+cli.references	cli	references	cli-commands.md:86; cli-and-tui.md:23; README.md:361	references $F_CU $LN $COL	out	n
+cli.signature	cli	signature	cli-commands.md:87; cli-and-tui.md:23; README.md:361	signature $F_CU $LN $COL	rc=0,1	n
+cli.completions	cli	completions	cli-commands.md:88; cli-and-tui.md:23; README.md:361	completions $F_CU $LN $COL	out	n
+cli.symbols	cli	symbols	cli-commands.md:89; cli-and-tui.md:23; README.md:361	symbols $F_CU	has=$CU	n
+cli.folding	cli	folding	cli-commands.md:90; cli-and-tui.md:24; README.md:361	folding $F_CU	out	n
+cli.tokens	cli	tokens	cli-commands.md:91; cli-and-tui.md:24; parsing-and-syntax.md:134; README.md:361	tokens $F_CU	out	n
+cli.parse	cli	parse	cli-commands.md:92; cli-and-tui.md:24; parsing-and-syntax.md:133; README.md:361	parse $F_CU	out	n
+cli.rename	cli	rename	cli-commands.md:93; cli-and-tui.md:24; README.md:361	rename $F_CU $LN $COL Journey10Renamed --dry-run	out	n
+cli.hints	cli	hints	cli-commands.md:94; cli-and-tui.md:24; README.md:361	hints $F_CU --start-line 1 --end-line 40	rc=0,1	n
+cli.compile	cli	compile	cli-commands.md:100; cli-and-tui.md:25; native-app-emitter.md:246; README.md:360	NONE	covered by stage 5	n
+cli.package	cli	package	cli-commands.md:101; cli-and-tui.md:25; native-app-emitter.md:246; README.md:360	NONE	covered by stage 5	n
+cli.publish	cli	publish	cli-commands.md:102; cli-and-tui.md:25; native-app-emitter.md:188; README.md:360	NONE	covered by stage 8	y
+cli.pack-native	cli	pack-native	cli-commands.md:103; cli-and-tui.md:25; native-app-emitter.md:247; README.md:94, 360	NONE	covered by stage 5	n
+cli.download-symbols	cli	download-symbols	cli-commands.md:104; cli-and-tui.md:25; symbol-and-package-engine.md:151; README.md:360	NONE	covered by stage 2	y
+cli.authenticate	cli	authenticate	cli-commands.md:105; cli-and-tui.md:26; symbol-and-package-engine.md:152; README.md:360	NONE	skip=the doc default (login) needs a browser sign-in, status and clear rows cover the subcommands	y
+cli.authenticate login	cli	authenticate login	cli-commands.md:105	NONE	skip=login opens a browser sign-in, the journey uses BC_ACCESS_TOKEN	y
+cli.authenticate status	cli	authenticate status	cli-commands.md:105	authenticate status --tenant $CDX_TENANT	rc=0,1;out	y
+cli.authenticate clear	cli	authenticate clear	cli-commands.md:105	authenticate clear --tenant $CDX_TENANT	rc=0,1;out	y
+cli.format	cli	format	cli-commands.md:111; settings.md:43; cli-and-tui.md:31; parsing-and-syntax.md:139; README.md:365	format $F_CU --check	rc=0,1;noerr	n
+cli.lint	cli	lint	cli-commands.md:112; cli-and-tui.md:31; README.md:365	lint $F_CU	rc=0,1;noerr	n
+cli.fix	cli	fix	cli-commands.md:113; code-actions.md:61; README.md:365	fix $F_CU --dry-run	rc=0,1;noerr	n
+cli.permissions	cli	permissions	cli-commands.md:114; cli-and-tui.md:31; scaffolding-and-codegen.md:87; README.md:365	NONE	covered by stage 7	n
+cli.new	cli	new	cli-commands.md:115; cli-and-tui.md:31; scaffolding-and-codegen.md:85-86; README.md:359	NONE	covered by stage 1	n
+cli.generate	cli	generate	cli-commands.md:116; cli-and-tui.md:31; scaffolding-and-codegen.md:88; README.md:365	generate test --name Journey10Gen --subject "$CU"	has=Subtype = Test	n
+cli.sort-members	cli	sort-members	cli-commands.md:117; cli-and-tui.md:32; parsing-and-syntax.md:139; scaffolding-and-codegen.md:89; README.md:365	sort-members $F_CU --dry-run	rc=0,1;noerr	n
+cli.organize-files	cli	organize-files	cli-commands.md:118; cli-and-tui.md:32; scaffolding-and-codegen.md:90; README.md:365	organize-files --dry-run	rc=0,1;noerr	n
+cli.add-application-area	cli	add-application-area	cli-commands.md:119; analysis-and-insight.md:144; README.md:365	add-application-area --value All --dry-run	rc=0,1;noerr	n
+cli.add-tooltips	cli	add-tooltips	cli-commands.md:120; analysis-and-insight.md:144; README.md:365	add-tooltips --from-table "$TBL" --dry-run	rc=0,1;noerr	n
+cli.add-data-classification	cli	add-data-classification	cli-commands.md:121; analysis-and-insight.md:144; README.md:365	add-data-classification --value CustomerContent --dry-run	rc=0,1;noerr	n
+cli.trace	cli	trace	cli-commands.md:127; analysis-and-insight.md:133; README.md:363	trace OnAfterPostSalesDoc --depth 10 --tree	rc=0,1	n
+cli.intercept	cli	intercept	cli-commands.md:128; analysis-and-insight.md:135; README.md:363	intercept	rc=0,1	n
+cli.entrypoints	cli	entrypoints	cli-commands.md:129; analysis-and-insight.md:135; README.md:363	entrypoints	rc=0,1;out	n
+cli.graph	cli	graph	cli-commands.md:130; analysis-and-insight.md:135; README.md:363	graph --format json	json	n
+cli.insight-stats	cli	insight-stats	cli-commands.md:131; cli-and-tui.md:27; README.md:363	insight-stats	out	n
+cli.impact	cli	impact	cli-commands.md:132; analysis-and-insight.md:132; README.md:363	impact "$TBL" --table	rc=0,1;out	n
+cli.suggest-event	cli	suggest-event	cli-commands.md:133; analysis-and-insight.md:134; README.md:363	suggest-event --table "$TBL"	rc=0,1;out	n
+cli.metrics	cli	metrics	cli-commands.md:134; analysis-and-insight.md:142; parsing-and-syntax.md:135; README.md:364	metrics	rc=0,1;noerr;out	n
+cli.dead-code	cli	dead-code	cli-commands.md:135; analysis-and-insight.md:132; README.md:364	dead-code	rc=0,1;noerr;out	n
+cli.sql-scan	cli	sql-scan	cli-commands.md:136; analysis-and-insight.md:136; README.md:364	sql-scan	rc=0,1;noerr;out	n
+cli.duplicates	cli	duplicates	cli-commands.md:137; analysis-and-insight.md:136; README.md:364	duplicates --min-tokens 20 --min-similarity 0.8	rc=0,1;noerr;out	n
+cli.arch-lint	cli	arch-lint	cli-commands.md:138; analysis-and-insight.md:136; README.md:364	arch-lint	rc=0,1;noerr;out	n
+cli.native-check	cli	native-check	cli-commands.md:139; analysis-and-insight.md:140; README.md:364	native-check	rc=0,1;out	n
+cli.free-ids	cli	free-ids	cli-commands.md:140; analysis-and-insight.md:139; README.md:364	free-ids --kind table --count 3	out	n
+cli.breaking	cli	breaking	cli-commands.md:141; analysis-and-insight.md:137; README.md:364	breaking --baseline-app $APP	rc=0,1;noerr;out	n
+cli.upgrade	cli	upgrade	cli-commands.md:142; analysis-and-insight.md:138; README.md:364	upgrade --baseline-app $APP	rc=0,1;noerr;out	n
+cli.obsolete	cli	obsolete	cli-commands.md:143; analysis-and-insight.md:138; README.md:364	obsolete --used	rc=0,1;noerr;out	n
+cli.package-diff	cli	package-diff	cli-commands.md:144; analysis-and-insight.md:139; README.md:364	package-diff $DEPAPP $DEPAPP --all	rc=0,1;out	n
+cli.audit-data	cli	audit-data	cli-commands.md:145; analysis-and-insight.md:141; README.md:364	audit-data	rc=0,1;noerr;out	n
+cli.permission-audit	cli	permission-audit	cli-commands.md:146; analysis-and-insight.md:141; README.md:364	permission-audit	rc=0,1;noerr;out	n
+cli.profiler-hints	cli	profiler-hints	cli-commands.md:147; analysis-and-insight.md:143; README.md:364	profiler-hints	rc=0,1	n
+cli.debug	cli	debug	cli-commands.md:153; debugging-dap.md:238	NONE	skip=bare 'debug' is a group, the subcommand rows run it	y
+cli.debug start	cli	debug start	cli-commands.md:153; README.md:366, 370	NONE	covered by stage 9	y
+cli.debug breakpoint	cli	debug breakpoint	cli-commands.md:153; README.md:370	NONE	covered by stage 9	y
+cli.debug state	cli	debug state	cli-commands.md:153; README.md:370	NONE	covered by stage 9	y
+cli.debug eval	cli	debug eval	cli-commands.md:153; README.md:370	NONE	covered by stage 9	y
+cli.debug continue	cli	debug continue	cli-commands.md:153; README.md:370	NONE	covered by stage 9	y
+cli.debug step	cli	debug step	cli-commands.md:153; README.md:370	NONE	covered by stage 9	y
+cli.debug history	cli	debug history	cli-commands.md:153; README.md:370	NONE	covered by stage 9	y
+cli.debug stop	cli	debug stop	cli-commands.md:153; README.md:370	NONE	covered by stage 9	y
+cli.snapshot	cli	snapshot	cli-commands.md:154; debugging-dap.md:239	NONE	skip=bare 'snapshot' is a group, the subcommand rows run it	y
+cli.snapshot start	cli	snapshot start	cli-commands.md:154; snapshot-debugging.md:154-155; README.md:366, 370	NONE	covered by stage 9	y
+cli.snapshot status	cli	snapshot status	cli-commands.md:154; snapshot-debugging.md:158; README.md:370	NONE	covered by stage 9	y
+cli.snapshot finish	cli	snapshot finish	cli-commands.md:154; snapshot-debugging.md:75-76, 161; README.md:370	NONE	covered by stage 9	y
+cli.snapshot list	cli	snapshot list	cli-commands.md:154; snapshot-debugging.md:164; README.md:370	NONE	covered by stage 9	n
+cli.snapshot show	cli	snapshot show	cli-commands.md:154; snapshot-debugging.md:167; README.md:370	snapshot show $SNAPZIP	covered by stage 9	n
+cli.profile	cli	profile	cli-commands.md:155; debugging-dap.md:239	NONE	skip=bare 'profile' is a group, the subcommand rows run it	y
+cli.profile start	cli	profile start	cli-commands.md:155; README.md:366, 370	profile start	covered by stage 9	y
+cli.profile stop	cli	profile stop	cli-commands.md:155; README.md:370	NONE	covered by stage 9	y
+cli.profile analyze	cli	profile analyze	cli-commands.md:155; README.md:370	NONE	covered by stage 9	n
+cli.tests	cli	tests	cli-commands.md:161; cli-and-tui.md:35; native-test-runtime.md:276; README.md:367	tests	out	n
+cli.test-run	cli	test-run	cli-commands.md:162; cli-and-tui.md:35; native-test-runtime.md:277; README.md:367	NONE	covered by stage 6	y
+cli.test-run-all	cli	test-run-all	cli-commands.md:163; cli-and-tui.md:110; native-test-runtime.md:278-279; README.md:236, 242, 367	NONE	covered by stage 6	y
+cli.test-coverage	cli	test-coverage	cli-commands.md:164; cli-and-tui.md:35; native-test-runtime.md:280; README.md:367	NONE	covered by stage 6	y
+cli.test-classify	cli	test-classify	cli-commands.md:165; cli-and-tui.md:36; native-test-runtime.md:280; README.md:367	test-classify	rc=0,1;out	n
+cli.test-affected	cli	test-affected	cli-commands.md:166; cli-and-tui.md:35; native-test-runtime.md:281; README.md:367	test-affected $F_CU	rc=0,1	n
+cli.test-results	cli	test-results	cli-commands.md:167; cli-and-tui.md:36; native-test-runtime.md:280; README.md:367	test-results	rc=0,1	n
+cli.test-mutate	cli	test-mutate	cli-commands.md:168; cli-and-tui.md:35; native-test-runtime.md:281; README.md:367	NONE	covered by stage 6	y
+cli.test-snapshot	cli	test-snapshot	cli-commands.md:169; cli-and-tui.md:36	NONE	skip=bare 'test-snapshot' is a group, the subcommand rows run it	y
+cli.test-snapshot capture	cli	test-snapshot capture	cli-commands.md:169; native-test-runtime.md:284-285; README.md:245-246, 367, 370	NONE	covered by stage 9	y
+cli.test-snapshot validate	cli	test-snapshot validate	cli-commands.md:169; native-test-runtime.md:282; README.md:370	test-snapshot validate $SNAP	rc=0,1;out	n
+cli.test-snapshot replay	cli	test-snapshot replay	cli-commands.md:169; native-test-runtime.md:286; README.md:246-247, 367, 370	NONE	covered by stage 9	y
+cli.test-snapshot diff	cli	test-snapshot diff	cli-commands.md:169; native-test-runtime.md:283; README.md:370	test-snapshot diff $SNAP $SNAP	rc=0,1;out	n
+cli.xlf	cli	xlf	cli-commands.md:175; cli-and-tui.md:37	NONE	skip=bare 'xlf' is a group, the subcommand rows run it	n
+cli.xlf generate	cli	xlf generate	cli-commands.md:175; xliff-translation.md:80; README.md:368, 370	NONE	covered by stage 7	n
+cli.xlf refresh	cli	xlf refresh	cli-commands.md:175; xliff-translation.md:81; README.md:368, 370	NONE	covered by stage 7	n
+cli.xlf untranslated	cli	xlf untranslated	cli-commands.md:175; xliff-translation.md:82; README.md:370	NONE	covered by stage 7	n
+cli.xlf suggest	cli	xlf suggest	cli-commands.md:175; xliff-translation.md:83; README.md:370	NONE	covered by stage 7	n
+lsp-command.al.downloadSymbols	lsp-command	al.downloadSymbols	lsp-commands.md:44; language-server.md:109; symbol-and-package-engine.md:153; README.md:320	al.downloadSymbols []	loose	y
+lsp-command.al.downloadSymbolsServer	lsp-command	al.downloadSymbolsServer	lsp-commands.md:45; language-server.md:110; symbol-and-package-engine.md:153; README.md:321	al.downloadSymbolsServer []	covered by stage 2	y
+lsp-command.al.downloadSymbolsNuget	lsp-command	al.downloadSymbolsNuget	lsp-commands.md:46; language-server.md:109; symbol-and-package-engine.md:154; README.md:322	al.downloadSymbolsNuget []	loose	n
+lsp-command.al.clearSymbolCache	lsp-command	al.clearSymbolCache	lsp-commands.md:47; language-server.md:111; symbol-and-package-engine.md:154; README.md:323	al.clearSymbolCache []	strict	n
+lsp-command.al.formatFile	lsp-command	al.formatFile	lsp-commands.md:48; language-server.md:112; README.md:324	al.formatFile ["file://$F_CU"]	loose	n
+lsp-command.al.lintFile	lsp-command	al.lintFile	lsp-commands.md:49; language-server.md:113; README.md:325	al.lintFile ["file://$F_CU"]	loose	n
+lsp-command.al.getStatus	lsp-command	al.getStatus	lsp-commands.md:50; language-server.md:114; README.md:326	al.getStatus []	json	n
+lsp-command.al.reindex	lsp-command	al.reindex	lsp-commands.md:51; language-server.md:115; README.md:327	al.reindex []	strict	n
+lsp-command.al.compile	lsp-command	al.compile	lsp-commands.md:52; daemon-protocol.md:207; language-server.md:116; README.md:328	al.compile []	loose	n
+lsp-command.al.applyRecommendedSettings	lsp-command	al.applyRecommendedSettings	lsp-commands.md:53; language-server.md:117; README.md:329	al.applyRecommendedSettings []	loose	n
+lsp-command.al.findReferences	lsp-command	al.findReferences	lsp-commands.md:57; language-server.md:121; README.md:335	al.findReferences ["file://$F_CU"]	loose	n
+lsp-command.al.showProfiler	lsp-command	al.showProfiler	lsp-commands.md:57; language-server.md:121; README.md:336	al.showProfiler ["file://$F_CU"]	loose	y
+lsp-command.al.runTest	lsp-command	al.runTest	lsp-commands.md:57; language-server.md:121; README.md:337	al.runTest ["file://$F_CU"]	loose	y
+cli.--timeout-ms	cli	--timeout-ms	settings.md:101	version --timeout-ms 20000	out	n
+cli.al-lsp mcp	cli	al-lsp mcp	mcp-tools.md:3; ai-mcp.md:105	NONE	skip=started by the mcp-tool rows through journey-rpc	n
+cli.parse ../elsewhere/Foo.al	cli	parse ../elsewhere/Foo.al	daemon-methods.md:213	parse $OUTSIDE	out	n
+cli.--idle-timeout-secs	cli	--idle-timeout-secs	daemon-methods.md:179	NONE	skip=flag of 'al-lsp daemon', the daemon rows start the daemon with the default	n
+mcp-tool.al_call	mcp-tool	al_call	mcp-tools.md:13; ai-mcp.md:42; language-server.md:153-158; README.md:116; scaffolding-and-codegen.md:95; xliff-translation.md:88-89	al_call {"method":"ping","params":{}}	has=pong	y
+mcp-tool.al_debug	mcp-tool	al_debug	mcp-tools.md:14; ai-mcp.md:43; project-trust.md:317; README.md:118	al_debug {"cmd":"state"}	loose;nosession	y
+mcp-tool.al_snapshot	mcp-tool	al_snapshot	mcp-tools.md:15; ai-mcp.md:44; snapshot-debugging.md:178; README.md:117	al_snapshot {"action":"list"}	strict	y
+mcp-tool.al_build	mcp-tool	al_build	mcp-tools.md:16; ai-mcp.md:45; native-app-emitter.md:251; README.md:120	al_build {}	has=appPath	n
+mcp-tool.al_downloadsymbols	mcp-tool	al_downloadsymbols	mcp-tools.md:17; ai-mcp.md:46; symbol-and-package-engine.md:155; README.md:121	al_downloadsymbols {"source":"nuget"}	loose	y
+mcp-tool.al_symbolsearch	mcp-tool	al_symbolsearch	mcp-tools.md:18; ai-mcp.md:47; symbol-and-package-engine.md:155; README.md:122	al_symbolsearch {"query":"$TBL","limit":5}	has=$TBL	n
+mcp-tool.al_getdiagnostics	mcp-tool	al_getdiagnostics	mcp-tools.md:19; ai-mcp.md:48; README.md:123	al_getdiagnostics {"file":"$F_CU"}	strict	n
+mcp-tool.al_runtests	mcp-tool	al_runtests	mcp-tools.md:20; ai-mcp.md:49; native-test-runtime.md:293; README.md:124	al_runtests {}	covered by stage 6	y
+mcp-tool.al_deadcode	mcp-tool	al_deadcode	mcp-tools.md:21; ai-mcp.md:50; README.md:125	al_deadcode {}	strict	n
+mcp-tool.al_sqlscan	mcp-tool	al_sqlscan	mcp-tools.md:22; ai-mcp.md:51; README.md:126	al_sqlscan {}	strict	n
+mcp-tool.al_entrypoints	mcp-tool	al_entrypoints	mcp-tools.md:23; ai-mcp.md:52; README.md:127	al_entrypoints {"scope":"workspace"}	strict	n
+mcp-tool.al_trace_event	mcp-tool	al_trace_event	mcp-tools.md:24; ai-mcp.md:53; README.md:128	al_trace_event {"event":"OnAfterPostSalesDoc","depth":10}	strict	n
+mcp-tool.al_impact	mcp-tool	al_impact	mcp-tools.md:25; ai-mcp.md:54; README.md:129	al_impact {"symbol":"$TBL","scope":"workspace"}	strict	n
+mcp-tool.al_suggestevent	mcp-tool	al_suggestevent	mcp-tools.md:26; ai-mcp.md:55; README.md:130	al_suggestevent {"query":{"table":"$TBL"}}	loose	n
+mcp-tool.al_testclassify	mcp-tool	al_testclassify	mcp-tools.md:27; ai-mcp.md:56; README.md:131	al_testclassify {}	strict	n
+mcp-tool.al_testcoverage	mcp-tool	al_testcoverage	mcp-tools.md:28; ai-mcp.md:57; README.md:132	al_testcoverage {}	strict	n
+mcp-tool.al_testsnapshot	mcp-tool	al_testsnapshot	mcp-tools.md:29; ai-mcp.md:58; README.md:133	al_testsnapshot {}	covered by stage 9	y
+mcp-tool.al_testsnapshotreplay	mcp-tool	al_testsnapshotreplay	mcp-tools.md:30; ai-mcp.md:59; README.md:134	al_testsnapshotreplay {}	covered by stage 9	y
+mcp-tool.al_depgraph	mcp-tool	al_depgraph	mcp-tools.md:31; ai-mcp.md:60; README.md:135	al_depgraph {"format":"json"}	strict	n
+mcp-tool.al_freeids	mcp-tool	al_freeids	mcp-tools.md:32; ai-mcp.md:61; README.md:136	al_freeids {"kind":"table","count":3}	strict	n
+daemon-method.ping	daemon-method	ping	daemon-methods.md:140; daemon-protocol.md:132	ping {}	has=pong	n
+daemon-method.status	daemon-method	status	daemon-methods.md:140; daemon-protocol.md:132	status {}	strict;has=callGraph	n
+daemon-method.shutdown	daemon-method	shutdown	daemon-methods.md:141; daemon-protocol.md:132	shutdown {}	strict;last	n
+daemon-method.handshake	daemon-method	handshake	daemon-methods.md:141-142; daemon-protocol.md:132	handshake {"nonce":"journey10"}	strict;has=proof	n
+daemon-method.diag/summary	daemon-method	diag/summary	daemon-methods.md:155; daemon-protocol.md:89	diag/summary {}	strict;has=process	n
+daemon-method.diag	daemon-method	diag	daemon-methods.md:22; daemon-protocol.md:132	diag {}	strict;has=sourceIndex	n
+daemon-method.hover	daemon-method	hover	daemon-methods.md:10, 203-205; daemon-protocol.md:124	hover {"uri":"file://$F_CU","line":$LN0,"character":$CH0}	strict	n
+daemon-method.definition	daemon-method	definition	daemon-methods.md:10, 203-205; daemon-protocol.md:124	definition {"uri":"file://$F_CU","line":$LN0,"character":$CH0}	strict	n
+daemon-method.references	daemon-method	references	daemon-methods.md:10, 203-205; daemon-protocol.md:124	references {"uri":"file://$F_CU","line":$LN0,"character":$CH0}	strict	n
+daemon-method.implementations	daemon-method	implementations	daemon-methods.md:10, 203-205; daemon-protocol.md:124	implementations {"uri":"file://$F_CU","line":$LN0,"character":$CH0}	strict	n
+daemon-method.completions	daemon-method	completions	daemon-methods.md:10, 96, 203-205; daemon-protocol.md:124	completions {"uri":"file://$F_CU","line":$LN0,"character":$CH0,"limit":5}	strict	n
+daemon-method.signatureHelp	daemon-method	signatureHelp	daemon-methods.md:10, 203-205; daemon-protocol.md:124	signatureHelp {"uri":"file://$F_CU","line":$LN0,"character":$CH0}	strict	n
+daemon-method.rename	daemon-method	rename	daemon-methods.md:10, 203-208; daemon-protocol.md:124	rename {"uri":"file://$F_CU","line":$LN0,"character":$CH0,"newName":"Journey10Renamed"}	strict	n
+daemon-method.documentSymbols	daemon-method	documentSymbols	daemon-methods.md:11, 203-205; daemon-protocol.md:125	documentSymbols {"uri":"file://$F_CU"}	strict;has=$CU	n
+daemon-method.foldingRanges	daemon-method	foldingRanges	daemon-methods.md:11, 96, 203-205; daemon-protocol.md:125	foldingRanges {"uri":"file://$F_CU"}	strict	n
+daemon-method.semanticTokens	daemon-method	semanticTokens	daemon-methods.md:11, 203-205; daemon-protocol.md:125	semanticTokens {"uri":"file://$F_CU"}	strict	n
+daemon-method.inlayHints	daemon-method	inlayHints	daemon-methods.md:11, 96, 203-205; daemon-protocol.md:125	inlayHints {"uri":"file://$F_CU"}	strict	n
+daemon-method.codeActions	daemon-method	codeActions	daemon-methods.md:11, 203-205; daemon-protocol.md:125	codeActions {"uri":"file://$F_CU","line":$LN0,"character":$CH0}	loose	n
+daemon-method.search	daemon-method	search	daemon-methods.md:11, 96; daemon-protocol.md:125	search {"query":"$TBL","limit":5}	strict;has=$TBL	n
+daemon-method.object	daemon-method	object	daemon-methods.md:11, 96, 113, 118-119; daemon-protocol.md:125	object {"kind":"table","name":"$TBL"}	strict;has=$TBL	n
+daemon-method.byId	daemon-method	byId	daemon-methods.md:12, 96, 113, 118-119; daemon-protocol.md:125	byId {"kind":"table","id":$TBLID}	strict	n
+daemon-method.events	daemon-method	events	daemon-methods.md:12, 96; daemon-protocol.md:126	events {"name":"OnAfterPostSalesDoc"}	loose	n
+daemon-method.subscribers	daemon-method	subscribers	daemon-methods.md:12, 96; daemon-protocol.md:126	subscribers {"event":"OnAfterPostSalesDoc"}	strict	n
+daemon-method.composed	daemon-method	composed	daemon-methods.md:12, 103, 128; daemon-protocol.md:126	composed {"kind":"table","name":"$TBL"}	strict	n
+daemon-method.packages	daemon-method	packages	daemon-methods.md:12, 96; daemon-protocol.md:126	packages {}	strict	n
+daemon-method.deps	daemon-method	deps	daemon-methods.md:12; daemon-protocol.md:126	deps {}	strict	n
+daemon-method.lint	daemon-method	lint	daemon-methods.md:16, 203-205; ai-mcp.md:48	lint {"uri":"file://$F_CU"}	strict	n
+daemon-method.format	daemon-method	format	daemon-methods.md:16, 209-210	format {"uri":"file://$F_CU","check":true}	loose	n
+daemon-method.fix	daemon-method	fix	daemon-methods.md:16, 209-210; code-actions.md:68	fix {"uri":"file://$F_CU","dryRun":true}	loose	n
+daemon-method.fix.applicationArea	daemon-method	fix.applicationArea	daemon-methods.md:16	fix.applicationArea {"value":"All","dryRun":true}	strict	n
+daemon-method.fix.tooltips	daemon-method	fix.tooltips	daemon-methods.md:16	fix.tooltips {"fromTable":"$TBL","dryRun":true}	strict	n
+daemon-method.fix.dataClassification	daemon-method	fix.dataClassification	daemon-methods.md:16	fix.dataClassification {"value":"CustomerContent","dryRun":true}	strict	n
+daemon-method.rules	daemon-method	rules	daemon-methods.md:16, 96	rules {}	strict	n
+daemon-method.parse	daemon-method	parse	daemon-methods.md:17, 203-205	parse {"uri":"file://$F_CU"}	strict	n
+daemon-method.metrics	daemon-method	metrics	daemon-methods.md:17, 203-205	metrics {"uri":"file://$F_CU"}	strict	n
+daemon-method.sqlPatterns	daemon-method	sqlPatterns	daemon-methods.md:17, 96; ai-mcp.md:51	sqlPatterns {}	strict	n
+daemon-method.sortMembers	daemon-method	sortMembers	daemon-methods.md:17, 209-210; scaffolding-and-codegen.md:95	sortMembers {"uri":"file://$F_CU","dryRun":true}	strict	n
+daemon-method.organizeFiles	daemon-method	organizeFiles	daemon-methods.md:17; scaffolding-and-codegen.md:95	organizeFiles {"dryRun":true}	strict	n
+daemon-method.source	daemon-method	source	daemon-methods.md:17, 225-232	source {"name":"$CU","listProcedures":true}	strict	n
+daemon-method.eventSource	daemon-method	eventSource	daemon-methods.md:17	eventSource {"file":"$F_SUB","line":$SUBLN}	loose	n
+daemon-method.location	daemon-method	location	daemon-methods.md:18, 233-234	location {"name":"$CU"}	strict	n
+daemon-method.permissions	daemon-method	permissions	daemon-methods.md:18; scaffolding-and-codegen.md:95	permissions {"format":"al","name":"Journey10Perm","id":50190,"roleId":"JOURNEY10"}	loose	n
+daemon-method.compile	daemon-method	compile	daemon-methods.md:18, 60-65; daemon-protocol.md:206; native-app-emitter.md:135	compile {}	covered by stage 5	n
+daemon-method.package	daemon-method	package	daemon-methods.md:18; daemon-protocol.md:206; native-app-emitter.md:135	package {}	covered by stage 5	n
+daemon-method.publish	daemon-method	publish	daemon-methods.md:18, 26-28; native-app-emitter.md:189	publish {}	covered by stage 8	y
+daemon-method.newProject	daemon-method	newProject	daemon-methods.md:18, 196; scaffolding-and-codegen.md:95	newProject {}	covered by stage 1	n
+daemon-method.errorCodes	daemon-method	errorCodes	daemon-methods.md:18, 96	errorCodes {}	strict	n
+daemon-method.builtinTypes	daemon-method	builtinTypes	daemon-methods.md:18, 96	builtinTypes {}	strict	n
+daemon-method.setup	daemon-method	setup	daemon-methods.md:18	setup {}	loose	n
+daemon-method.clearCache	daemon-method	clearCache	daemon-methods.md:19	clearCache {}	strict	n
+daemon-method.authenticate	daemon-method	authenticate	daemon-methods.md:19	authenticate {"cmd":"status"}	loose	n
+daemon-method.downloadSymbols	daemon-method	downloadSymbols	daemon-methods.md:19; ai-mcp.md:46; project-trust.md:336	downloadSymbols {}	covered by stage 2	y
+daemon-method.snapshot	daemon-method	snapshot	daemon-methods.md:19, 196, 219-224; ai-mcp.md:44; project-trust.md:337; snapshot-debugging.md:12-13	snapshot {"cmd":"list"}	strict	y
+daemon-method.profiling	daemon-method	profiling	daemon-methods.md:19, 196; project-trust.md:337	profiling {}	covered by stage 9	y
+daemon-method.generate	daemon-method	generate	daemon-methods.md:19; scaffolding-and-codegen.md:95	generate {"kind":"test","name":"Journey10GenD","subject":"$CU"}	loose	n
+daemon-method.obsolete	daemon-method	obsolete	daemon-methods.md:19, 31-36, 96	obsolete {}	strict	n
+daemon-method.obsoleteUsages	daemon-method	obsoleteUsages	daemon-methods.md:20, 31-36, 96	obsoleteUsages {}	strict	n
+daemon-method.packageDiff	daemon-method	packageDiff	daemon-methods.md:20, 38-41, 104	packageDiff {"from":"$DEPAPP","to":"$DEPAPP","all":true}	loose	n
+daemon-method.audit.dataClassification	daemon-method	audit.dataClassification	daemon-methods.md:21, 96	audit.dataClassification {}	strict	n
+daemon-method.permissions.audit	daemon-method	permissions.audit	daemon-methods.md:21, 103	permissions.audit {}	strict	n
+daemon-method.deps.graph	daemon-method	deps.graph	daemon-methods.md:21, 238-240; ai-mcp.md:60	deps.graph {}	strict	n
+daemon-method.breaking	daemon-method	breaking	daemon-methods.md:21, 96, 217	breaking {"baselineSymbols":"$APP"}	loose	n
+daemon-method.arch.lint	daemon-method	arch.lint	daemon-methods.md:21, 96	arch.lint {}	strict	n
+daemon-method.duplicates	daemon-method	duplicates	daemon-methods.md:21, 96, 176; analysis-and-insight.md:62	duplicates {}	strict	n
+daemon-method.upgrade	daemon-method	upgrade	daemon-methods.md:22, 96, 217	upgrade {"baselineSymbols":"$APP"}	loose	n
+daemon-method.profiler.hints	daemon-method	profiler.hints	daemon-methods.md:22, 96	profiler.hints {"hotspots":[]}	loose	n
+daemon-method.freeIds	daemon-method	freeIds	daemon-methods.md:22, 50-58; ai-mcp.md:61	freeIds {"kind":"table","count":3}	strict	n
+daemon-method.xlf.generate	daemon-method	xlf.generate	daemon-methods.md:24, 196	xlf.generate {}	covered by stage 7	n
+daemon-method.xlf.refresh	daemon-method	xlf.refresh	daemon-methods.md:24, 196, 200; xliff-translation.md:88-89	xlf.refresh {}	covered by stage 7	n
+daemon-method.xlf.untranslated	daemon-method	xlf.untranslated	daemon-methods.md:24	xlf.untranslated {}	covered by stage 7	n
+daemon-method.xlf.suggest	daemon-method	xlf.suggest	daemon-methods.md:24	xlf.suggest {}	covered by stage 7	n
+daemon-method.tests.discover	daemon-method	tests.discover	daemon-methods.md:67, 96	tests.discover {}	strict	n
+daemon-method.tests.run	daemon-method	tests.run	daemon-methods.md:67; daemon-protocol.md:112; project-trust.md:336	tests.run {}	covered by stage 6	y
+daemon-method.tests.coverage	daemon-method	tests.coverage	daemon-methods.md:67; ai-mcp.md:57	tests.coverage {}	strict	n
+daemon-method.tests.run_batch	daemon-method	tests.run_batch	daemon-methods.md:67; project-trust.md:336	tests.run_batch {}	covered by stage 6	y
+daemon-method.tests.run_auto	daemon-method	tests.run_auto	daemon-methods.md:67; ai-mcp.md:49; project-trust.md:336	tests.run_auto {}	covered by stage 6	y
+daemon-method.tests.last_results	daemon-method	tests.last_results	daemon-methods.md:68	tests.last_results {}	strict	n
+daemon-method.tests.affected	daemon-method	tests.affected	daemon-methods.md:68, 103	tests.affected {"files":["$F_CU"]}	loose	n
+daemon-method.tests.classify	daemon-method	tests.classify	daemon-methods.md:68; ai-mcp.md:56	tests.classify {}	strict	n
+daemon-method.tests.snapshot_validate	daemon-method	tests.snapshot_validate	daemon-methods.md:68, 218	tests.snapshot_validate {"snapshotPath":"$SNAP"}	loose	n
+daemon-method.tests.snapshot_capture	daemon-method	tests.snapshot_capture	daemon-methods.md:69; ai-mcp.md:58; project-trust.md:337	tests.snapshot_capture {}	covered by stage 9	y
+daemon-method.tests.snapshot_replay	daemon-method	tests.snapshot_replay	daemon-methods.md:69, 219; ai-mcp.md:59; project-trust.md:337	tests.snapshot_replay {}	covered by stage 9	y
+daemon-method.tests.snapshot_diff	daemon-method	tests.snapshot_diff	daemon-methods.md:69, 220	tests.snapshot_diff {"pathA":"$SNAP","pathB":"$SNAP"}	loose	n
+daemon-method.tests.mutate	daemon-method	tests.mutate	daemon-methods.md:69	tests.mutate {}	covered by stage 6	n
+daemon-method.trace	daemon-method	trace	daemon-methods.md:73, 96, 177; daemon-protocol.md:130	trace {"event":"OnAfterPostSalesDoc","depth":10}	strict	n
+daemon-method.traceChain	daemon-method	traceChain	daemon-methods.md:73, 102, 177; daemon-protocol.md:130	traceChain {"event":"OnAfterPostSalesDoc"}	loose	n
+daemon-method.entrypoints	daemon-method	entrypoints	daemon-methods.md:73, 96, 128; daemon-protocol.md:130	entrypoints {"scope":"workspace"}	strict	n
+daemon-method.graphExport	daemon-method	graphExport	daemon-methods.md:73, 128, 176; daemon-protocol.md:130	graphExport {"format":"json","scope":"workspace"}	strict	n
+daemon-method.insightStats	daemon-method	insightStats	daemon-methods.md:73; daemon-protocol.md:130	insightStats {}	strict	n
+daemon-method.deadCode	daemon-method	deadCode	daemon-methods.md:73, 96; daemon-protocol.md:130	deadCode {}	strict	n
+daemon-method.nativeCheck	daemon-method	nativeCheck	daemon-methods.md:73, 96; daemon-protocol.md:131	nativeCheck {}	strict	n
+daemon-method.impact	daemon-method	impact	daemon-methods.md:74, 101, 128; daemon-protocol.md:131	impact {"symbol":"$TBL","scope":"workspace"}	strict	n
+daemon-method.tableImpact	daemon-method	tableImpact	daemon-methods.md:74, 101, 128; daemon-protocol.md:131	tableImpact {"table":"$TBL","scope":"workspace"}	loose	n
+daemon-method.suggestEvent	daemon-method	suggestEvent	daemon-methods.md:74, 102; daemon-protocol.md:131	suggestEvent {"table":"$TBL"}	loose	n
+daemon-method.eventMap	daemon-method	eventMap	daemon-methods.md:74, 101, 128; daemon-protocol.md:131	eventMap {"scope":"workspace"}	strict	n
+daemon-method.debug	daemon-method	debug	daemon-methods.md:78-82; daemon-protocol.md:138; project-trust.md:335	debug {"cmd":"state"}	loose;nosession	y
+cli.--json	cli	--json	cli-and-tui.md:41	search "$TBL" --json	json	n
+cli.al-explorer	cli	al-explorer	cli-and-tui.md:107	NONE	skip=no subcommand opens the TUI, needs a terminal (tui_smoke covers it)	n
+cli.al-lsp daemon	cli	al-lsp daemon	daemon-protocol.md:175	NONE	skip=long running server in the foreground, the daemon rows start one	n
+cli.al-lsp --version	cli	al-lsp --version	daemon-protocol.md:72	@lsp --version	has=al-lsp	n
+mcp-tool.al_debug start	mcp-tool	al_debug start	debugging-dap.md:171	NONE	covered by stage 9	y
+mcp-tool.al_debug breakpoint	mcp-tool	al_debug breakpoint	debugging-dap.md:172	al_debug {"cmd":"breakpoint","file":"$F_CU","line":$LN}	loose;nosession	y
+mcp-tool.al_debug state	mcp-tool	al_debug state	debugging-dap.md:173	al_debug {"cmd":"state"}	loose;nosession	y
+mcp-tool.al_debug stack	mcp-tool	al_debug stack	debugging-dap.md:174	al_debug {"cmd":"stack"}	loose;nosession	y
+mcp-tool.al_debug variables	mcp-tool	al_debug variables	debugging-dap.md:175	al_debug {"cmd":"variables"}	loose;nosession	y
+mcp-tool.al_debug globals	mcp-tool	al_debug globals	debugging-dap.md:176	al_debug {"cmd":"globals"}	loose;nosession	y
+mcp-tool.al_debug expand	mcp-tool	al_debug expand	debugging-dap.md:177	al_debug {"cmd":"expand","path":"Rec"}	loose;nosession	y
+mcp-tool.al_debug eval	mcp-tool	al_debug eval	debugging-dap.md:178	al_debug {"cmd":"eval","expression":"1+1"}	loose;nosession	y
+mcp-tool.al_debug continue	mcp-tool	al_debug continue	debugging-dap.md:179	al_debug {"cmd":"continue"}	loose;nosession	y
+mcp-tool.al_debug step	mcp-tool	al_debug step	debugging-dap.md:180	al_debug {"cmd":"step","stepType":"over"}	loose;nosession	y
+mcp-tool.al_debug history	mcp-tool	al_debug history	debugging-dap.md:181	al_debug {"cmd":"history"}	loose;nosession	n
+mcp-tool.al_debug stop	mcp-tool	al_debug stop	debugging-dap.md:182	al_debug {"cmd":"stop"}	loose;nosession	y
+cli.al-lsp stdio server	cli	al-lsp stdio server	language-server.md:6	NONE	skip=long running stdio server, the lsp-command rows drive it through journey-rpc	n
+cli.al-lsp Zed debug adapter	cli	al-lsp Zed debug adapter	project-trust.md:362	NONE	skip=no invocation in the doc	y
+cli.al-lsp legacy debug proxy	cli	al-lsp legacy debug proxy	project-trust.md:362	NONE	skip=stdio proxy for the old adapter, stage 8 drives the current adapter	y
+cli.build	cli	build	project-trust.md:172	build	rc=0	n
+cli.trust --show	cli	trust --show	project-trust.md:112	trust --show	rc=0,1;out	n
+cli.trust --revoke	cli	trust --revoke	project-trust.md:114	trust --revoke	last;rc=0,1	n
+cli.trust (CI)	cli	trust (CI)	project-trust.md:129-131	NONE	skip=needs the digest of the values, which only a person reading trust --show can supply	n
+cli.pack-native --validate	cli	pack-native --validate	native-app-emitter.md:150	NONE	skip=no invocation in the doc	n
+cli.al-explorer query commands	cli	al-explorer query commands	language-server.md:150-151	NONE	skip=group of rows already run one by one (hover, definition, references, signature, completions, symbols, folding, tokens, rename, hints)	n
+cli.make language	cli	make language	language-assets.md:13	NONE	skip=contributor make target that regenerates files in a checkout, not a developer journey command	n
+cli.make grammar	cli	make grammar	language-assets.md:14	NONE	skip=contributor make target that regenerates files in a checkout, not a developer journey command	n
+cli.make record-methods	cli	make record-methods	parsing-and-syntax.md:109	NONE	skip=contributor make target that regenerates files in a checkout, not a developer journey command	n
+cli.make microsoft-contracts	cli	make microsoft-contracts	native-app-emitter.md:67	NONE	skip=contributor make target that needs the Microsoft toolchain and a checkout	n
+cli.make live-bc-contracts	cli	make live-bc-contracts	native-test-runtime.md:330	NONE	skip=contributor make target that runs the live contract tests, needs a checkout	y
+cli.release hygiene check	cli	release hygiene check	language-assets.md:112	NONE	skip=contributor script in a checkout (scripts/check-release-hygiene.sh)	n
+lsp-command.al.showSubscribers	lsp-command	al.showSubscribers	catalog-00-summary.md:43	al.showSubscribers ["file://$F_CU"]	loose	n
+lsp-command.al.showEventSource	lsp-command	al.showEventSource	catalog-00-summary.md:44	al.showEventSource ["file://$F_SUB"]	loose	n
+lsp-command.al.showReport	lsp-command	al.showReport	catalog-00-summary.md:45	al.showReport ["file://$F_CU"]	loose	n
