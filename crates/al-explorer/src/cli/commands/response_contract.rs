@@ -133,6 +133,10 @@ pub(super) fn validate(method: &str, params: Option<&Value>, result: &Value) -> 
         "shutdown" => fields(result, "shutdown", &[("shutdownRequested", Kind::Boolean)]),
         "setup" => validate_setup(result),
         "downloadSymbols" => validate_download_symbols(result),
+        "environmentVersion" => {
+            optional_kind(result, "version", Kind::String, true)?;
+            optional_kind(result, "reason", Kind::String, false)
+        }
         "lint" => validate_lint(params, result),
         "format" => validate_format(params, result),
         "hover" => {
