@@ -5,7 +5,7 @@
 `crates/al-lsp/src/server/daemon/debug_dispatch.rs` (CLI/MCP control plane) + `src/dap.rs` (Zed
 glue) + `debug_adapter_schemas/al.json`.
 **Status:** ✅ shipped (core flow). Every field advertised by the native schema is
-consumed by Zed or the native adapter
+consumed by Zed or the native adapter (Microsoft launch keys outside the schema are ignored, see Limitations)
 
 The debugger is a **native Rust Debug Adapter Protocol (DAP) server** that talks directly to a
 Business Central server over SignalR + REST, with no Microsoft `EditorServices.Host` (it remains
@@ -319,3 +319,8 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   array element watches and strings over the normal limit may fail. A failed evaluation is also sent
   to BC twice (3-argument call, then 2-argument retry). See audit finding
   `dap-31-evaluate-array-index-and-large-strings`.
+- Microsoft launch keys that are not in the native schema are dropped without a warning:
+  `forceUpgrade`, `useSystemSessionForDeployment`, `applicationFamily`, `usePublicURLFromServer`,
+  `sandboxName`, `disableHttpRequestTimeout`, `vsCodeAuthenticationProvider`. Publish never sends
+  `ForceUpgrade` or `UseSystemSession`. `authentication` accepts only `MicrosoftEntraID` and `AAD`.
+  See audit finding `dap-33-launch-fields-silently-ignored`.
