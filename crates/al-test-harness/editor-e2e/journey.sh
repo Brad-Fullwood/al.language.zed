@@ -9,7 +9,7 @@ set -u
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../../.." && pwd)"
-TARGET_DIR="${JOURNEY_TARGET_DIR:-/home/bradf/.cache/al-zed-fix/target-journey}"
+TARGET_DIR="${JOURNEY_TARGET_DIR:-${CARGO_TARGET_DIR:-$ROOT/target}}"
 OUT=""
 STAGES="1,2,3,4,5,6,7,8,9,10"
 OFFLINE=0
