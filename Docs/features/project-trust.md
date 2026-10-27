@@ -384,8 +384,11 @@ digits and `-`), a target key such as `server`, `environmentType` or `applicatio
 spelled in another case, and a field it cannot read, such as a `port` written as a string.
 
 `publish` and `tests.run*` are in that list although they never read the OAuth cache: they
-send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The
-environment is the user's own decision, but which server receives it is the repository's, so
+send `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`, from the environment. The CLI
+reads these from its own environment and sends them with each `publish`, `tests.run*`,
+`snapshot`, `profiling` and `debug` request, so a daemon started without them still uses
+them. The daemon removes them from the request before logging and holds them for that one
+request only. The environment is the user's own decision, but which server receives it is the repository's, so
 the target is authorised and the refusal says "Business Central credentials" rather than
 naming a cached token. The Run Test code lens in the language server runs the same check
 before it starts a live test.
