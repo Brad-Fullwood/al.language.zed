@@ -67,10 +67,11 @@ sourcing/installing into the shell's completion directory. See the
 | --- | --- | --- |
 | New project | ✅ + Copilot and API templates, and an `agent` starter of two plain codeunits (no Agent API) | ✅ (`AL: Go!`, fewer templates) |
 | Page/report/test generators | ✅ CLI and daemon | partial (snippets, some wizards) |
-| Permission-set generation | ✅ (AL + XML, from objects) | ❌ (manual / generated permission set object) |
+| Permission-set generation | ✅ (AL + XML, from objects) | ✅ `AL: Generate permission set containing current extension objects` and its XML variant |
 
-Permission-set generation in particular is a native feature with no direct counterpart in the official
-extension.
+The Microsoft AL extension has two permission set commands (`al.generatePermissionSetForExtensionObjects`
+and `al.generatePermissionSetForExtensionObjectsAsXml`). The AL output here matches the extension's
+object set. Microsoft also writes `table` rows, this generator writes `tabledata` rows only.
 
 ## Why this approach
 

@@ -87,7 +87,7 @@ feature pages for implementation details and limitations.
 | Shared daemon (JSON-RPC) | ✅ | ❌ |
 | MCP server | ✅ complete shared dispatcher via `al_call`, plus named aliases | ✅ AL agent tools |
 | Project/object scaffolding | ✅ (+ Copilot/Agent/API templates) | ✅ (fewer templates) |
-| Permission-set generation | ✅ (AL + XML) | ❌ |
+| Permission-set generation | ✅ (AL + XML) | ✅ (`AL: Generate permission set containing current extension objects`, AL and XML) |
 | XLIFF generate/refresh/untranslated/suggest | ✅ translation-memory and symbol-name suggestions | partial (3rd-party common) |
 
 ## Where Microsoft is still the authority (by design)
