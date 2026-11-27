@@ -55,14 +55,69 @@ pub fn populate_call_edges_in_object(
     insight: &InsightGraph,
     call_graph: &mut CallGraph,
 ) {
+    populate_call_edges_from_nodes(
+        &find_procedures_in_node(
+            object_node,
+            source.as_bytes(),
+            &procedure_name.to_lowercase(),
+        ),
+        source,
+        object_kind,
+        object_name,
+        procedure_name,
+        symbols,
+        insight,
+        call_graph,
+    );
+}
+
+/// Every procedure and trigger declared under `object_node`, keyed by
+/// lowercase name, each list in document order. One walk of the object
+/// serves every name, where [`find_procedures_in_node`] walks it per name.
+pub(super) fn procedures_by_name<'a>(
+    object_node: tree_sitter::Node<'a>,
+    source: &[u8],
+) -> HashMap<String, Vec<tree_sitter::Node<'a>>> {
+    let mut found: HashMap<String, Vec<tree_sitter::Node<'a>>> = HashMap::new();
+    let mut stack = vec![object_node];
+    while let Some(node) = stack.pop() {
+        if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
+            if let Some(name) = node
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(source).ok())
+            {
+                found
+                    .entry(name.unquote_identifier().to_lowercase())
+                    .or_default()
+                    .push(node);
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.children(&mut cursor));
+    }
+    for nodes in found.values_mut() {
+        nodes.sort_by_key(|node| node.start_byte());
+    }
+    found
+}
+
+/// [`populate_call_edges_in_object`] for declarations already found.
+#[allow(clippy::too_many_arguments)]
+fn populate_call_edges_from_nodes(
+    proc_nodes: &[tree_sitter::Node<'_>],
+    source: &str,
+    object_kind: ObjectKind,
+    object_name: &str,
+    procedure_name: &str,
+    symbols: &SymbolIndex,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) {
     // Every declaration of the name adds its edges to the one node: each
     // field's `OnValidate`, each overload.
-    for proc_node in find_procedures_in_node(
-        object_node,
-        source.as_bytes(),
-        &procedure_name.to_lowercase(),
-    ) {
-        let calls = ProcedureCalls::from_node(proc_node, source);
+    for proc_node in proc_nodes {
+        let calls = ProcedureCalls::from_node(*proc_node, source);
         resolve_procedure_calls(
             &calls,
             object_kind,
@@ -86,16 +141,26 @@ pub struct ProcedureCalls {
     /// Lowercase variable or parameter name to object, for codeunit, page,
     /// report, xmlport, query and interface types.
     pub object_vars: std::collections::BTreeMap<String, String>,
+    /// Lowercase variable or parameter name to the declared kind of its
+    /// object, for the entries of `object_vars`. A codeunit variable
+    /// `Sales` calls the codeunit `Sales`, not a page of the same name.
+    #[serde(default)]
+    pub object_var_kinds: std::collections::BTreeMap<String, ObjectKind>,
 }
 
 impl ProcedureCalls {
     /// The calls in the section heads of one object, which no procedure holds.
     pub fn from_object_heads(object_node: tree_sitter::Node<'_>, source: &str) -> Self {
         let (record_vars, object_vars) = object_global_var_types(object_node, source);
+        let mut object_var_kinds = std::collections::BTreeMap::new();
+        if let Some(body) = object_node.child_by_field_name("body") {
+            declared_object_kinds(body, source.as_bytes(), &mut object_var_kinds);
+        }
         Self {
             call_sites: head_call_sites(object_node, source),
             record_vars: record_vars.into_iter().collect(),
             object_vars: object_vars.into_iter().collect(),
+            object_var_kinds,
         }
     }
 
@@ -103,9 +168,15 @@ impl ProcedureCalls {
     pub fn from_node(proc_node: tree_sitter::Node<'_>, source: &str) -> Self {
         // Variables of the object are visible in every procedure. The
         // procedure's own variables and parameters win on a clash.
-        let (mut record_vars, mut object_vars) = enclosing_object(proc_node)
+        let object = enclosing_object(proc_node);
+        let (mut record_vars, mut object_vars) = object
             .map(|object| object_global_var_types(object, source))
             .unwrap_or_default();
+        let mut object_var_kinds = std::collections::BTreeMap::new();
+        if let Some(body) = object.and_then(|object| object.child_by_field_name("body")) {
+            declared_object_kinds(body, source.as_bytes(), &mut object_var_kinds);
+        }
+        declared_object_kinds(proc_node, source.as_bytes(), &mut object_var_kinds);
         record_vars.extend(procedure_var_types_in_node(proc_node, source));
         // Object-typed variables (codeunit / page / report / xmlport /
         // query / interface), not just Record. Used to resolve
@@ -117,6 +188,48 @@ impl ProcedureCalls {
             call_sites: call_sites_in_node(proc_node, source),
             record_vars: record_vars.into_iter().collect(),
             object_vars: object_vars.into_iter().collect(),
+            object_var_kinds,
+        }
+    }
+}
+
+/// Add the declared object kind of each variable and parameter declared
+/// directly in `container` (an object body or a procedure) to `kinds`,
+/// keyed by lowercase name. A later declaration of a name replaces an
+/// earlier one, so a procedure's own variables win over the object's.
+///
+/// `object_global_var_types` and `procedure_object_var_types_in_node` in
+/// var_types.rs return the object name only, so this reads the type
+/// keyword of the same declarations with `parse_type_reference_for_record`.
+fn declared_object_kinds(
+    container: tree_sitter::Node<'_>,
+    source: &[u8],
+    kinds: &mut std::collections::BTreeMap<String, ObjectKind>,
+) {
+    let mut cursor = container.walk();
+    for child in container.children(&mut cursor) {
+        match child.kind() {
+            "var_section"
+            | "variable_declaration"
+            | "parameter_list"
+            | "object_var_section"
+            | "object_variable_declaration" => declared_object_kinds(child, source, kinds),
+            "regular_variable_declaration" | "parameter" => {
+                let (Some(name), Some(type_node)) = (
+                    child.child_by_field_name("name"),
+                    child.child_by_field_name("type"),
+                ) else {
+                    continue;
+                };
+                let Ok(name) = name.utf8_text(source) else {
+                    continue;
+                };
+                let (keyword, _) = parse_type_reference_for_record(type_node, source);
+                if let Ok(kind) = keyword.parse::<ObjectKind>() {
+                    kinds.insert(name.unquote_identifier().to_lowercase(), kind);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -199,8 +312,12 @@ fn resolve_calls_from(
 ) {
     let var_types = &calls.record_vars;
     let object_var_types = &calls.object_vars;
-    // Table code runs on a record of the table itself.
-    let own_table = (object_kind == ObjectKind::Table).then_some(object_name);
+    // Table and table extension code runs on a record of the table, page
+    // and page extension code on a record of the source table.
+    let own_table = self_targets("Rec", object_kind, object_name, symbols)
+        .and_then(|targets| targets.into_iter().next())
+        .map(|(_, table)| table);
+    let own_table = own_table.as_deref();
 
     for site in &calls.call_sites {
         match site {
@@ -230,7 +347,15 @@ fn resolve_calls_from(
                 // `this.Method()` and `Rec.Method()` name no variable: they
                 // call a member of this object, or of the record the page or
                 // table extension works on, and of that table's extensions.
-                if let Some(targets) = self_targets(object, object_kind, object_name, symbols) {
+                // `Cust.MyProc()` on `Cust: Record Customer` calls a member
+                // of the table or of one of its extensions.
+                let targets =
+                    self_targets(object, object_kind, object_name, symbols).or_else(|| {
+                        var_types
+                            .get(&object.to_lowercase())
+                            .map(|table| record_targets(table, symbols))
+                    });
+                if let Some(targets) = targets {
                     let method_lower = method.to_lowercase();
                     for (kind, name) in targets {
                         let callee =
@@ -256,10 +381,14 @@ fn resolve_calls_from(
                     .get(&object.to_lowercase())
                     .map(String::as_str)
                     .unwrap_or(object.as_str());
+                let declared_kind = calls.object_var_kinds.get(&object.to_lowercase());
                 let method_lower = method.to_lowercase();
                 let entries = symbols.get_by_name(resolved_object);
                 let mut saw_interface = false;
-                for entry in &entries {
+                for entry in entries
+                    .iter()
+                    .filter(|entry| declared_kind.is_none_or(|kind| entry.kind == *kind))
+                {
                     if entry.kind == ObjectKind::Interface {
                         saw_interface = true;
                     }
@@ -302,7 +431,11 @@ fn resolve_calls_from(
             // OnInsert/OnModify/OnDelete code runs, which is why subscribers
             // test `if not RunTrigger then exit`. `Cust.Modify()` reaches
             // them as surely as `Cust.Modify(true)`.
-            CallSite::RecordOp { variable, op, .. } => {
+            CallSite::RecordOp {
+                variable,
+                op,
+                run_trigger,
+            } => {
                 let table_name = match var_types.get(&variable.to_lowercase()) {
                     Some(table) => table.as_str(),
                     None => match own_table {
@@ -316,6 +449,9 @@ fn resolve_calls_from(
                     },
                 };
                 link_record_op_events(caller_id, table_name, *op, insight, call_graph);
+                if *run_trigger {
+                    link_record_trigger(caller_id, table_name, *op, insight, call_graph);
+                }
             }
             CallSite::CodeunitRun { target } => {
                 // `Codeunit.Run(Codeunit::"X")` dispatches to X.OnRun.
@@ -370,6 +506,12 @@ fn self_targets(
         }
         _ => return None,
     };
+    Some(record_targets(&table, symbols))
+}
+
+/// The table `table` and every table extension of it: the objects a
+/// procedure called on a record of `table` can sit in.
+fn record_targets(table: &str, symbols: &SymbolIndex) -> Vec<(ObjectKind, String)> {
     let table = table.unquote_identifier().into_owned();
     let mut targets = vec![(ObjectKind::Table, table.clone())];
     targets.extend(
@@ -379,7 +521,7 @@ fn self_targets(
             .filter(|entry| entry.kind == ObjectKind::TableExtension)
             .map(|entry| (ObjectKind::TableExtension, entry.name.clone())),
     );
-    Some(targets)
+    targets
 }
 
 /// A page from a dependency package stores `SourceTable` as the table's
@@ -423,6 +565,33 @@ fn link_record_op_events(
             // dropping the rest of the event stack.
             link_event_subscribers(caller_id, event_id, call_graph);
         }
+    }
+}
+
+/// Add a trigger edge from `caller_id` to the table trigger that `op` runs
+/// when its `RunTrigger` argument is true: `Insert(true)` runs `OnInsert`,
+/// `Modify(true)` and `ModifyAll(..., true)` run `OnModify`, `Delete(true)`
+/// and `DeleteAll(true)` run `OnDelete`.
+fn link_record_trigger(
+    caller_id: NodeId,
+    table: &str,
+    op: RecordOp,
+    insight: &InsightGraph,
+    call_graph: &mut CallGraph,
+) {
+    let trigger = match op {
+        RecordOp::Insert => "oninsert",
+        RecordOp::Modify | RecordOp::ModifyAll => "onmodify",
+        RecordOp::Delete | RecordOp::DeleteAll => "ondelete",
+        RecordOp::Validate | RecordOp::Rename => return,
+    };
+    let key = NodeKey::Procedure(
+        ObjectKind::Table,
+        table.unquote_identifier().to_lowercase(),
+        trigger.to_string(),
+    );
+    if let Some(trigger_id) = CallGraph::node_id_for(insight, &key) {
+        call_graph.add_trigger(caller_id, trigger_id);
     }
 }
 
@@ -620,6 +789,7 @@ pub fn populate_workspace_call_edges(
         let node = object_node(tree, info);
 
         let procedures = collect_procedure_names_from_tree(node, source.as_bytes());
+        let declarations = procedures_by_name(node, source.as_bytes());
         for proc_name in procedures {
             let proc_id =
                 callable_node_id(insight, ok, &info.name, &proc_name).ok_or_else(|| {
@@ -633,8 +803,17 @@ pub fn populate_workspace_call_edges(
             if call_graph.resolution_state(proc_id) == EdgeResolutionState::Unresolved {
                 call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolving);
 
-                populate_call_edges_in_object(
-                    node, source, ok, &info.name, &proc_name, symbols, insight, call_graph,
+                populate_call_edges_from_nodes(
+                    declarations
+                        .get(&proc_name.to_lowercase())
+                        .map_or(&[], Vec::as_slice),
+                    source,
+                    ok,
+                    &info.name,
+                    &proc_name,
+                    symbols,
+                    insight,
+                    call_graph,
                 );
 
                 call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
@@ -682,6 +861,7 @@ pub fn resolve_all_workspace_call_edges(
         let node = object_node(&tree, &info);
 
         let procedures = collect_procedure_names_from_tree(node, source.as_bytes());
+        let declarations = procedures_by_name(node, source.as_bytes());
         for proc_name in procedures {
             let proc_id =
                 callable_node_id(insight, ok, &info.name, &proc_name).ok_or_else(|| {
@@ -693,8 +873,17 @@ pub fn resolve_all_workspace_call_edges(
                     }
                 })?;
             if call_graph.resolution_state(proc_id) != EdgeResolutionState::Resolved {
-                populate_call_edges_in_object(
-                    node, &source, ok, &info.name, &proc_name, symbols, insight, call_graph,
+                populate_call_edges_from_nodes(
+                    declarations
+                        .get(&proc_name.to_lowercase())
+                        .map_or(&[], Vec::as_slice),
+                    &source,
+                    ok,
+                    &info.name,
+                    &proc_name,
+                    symbols,
+                    insight,
+                    call_graph,
                 );
                 call_graph.set_resolution_state(proc_id, EdgeResolutionState::Resolved);
                 resolved += 1;

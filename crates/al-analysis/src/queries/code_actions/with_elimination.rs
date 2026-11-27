@@ -817,6 +817,7 @@ mod tests {
             id: 50100,
             name: name.to_string(),
             extends: extends.map(str::to_string),
+            extends_app_id: None,
             implements: Vec::new(),
             package: "Test".to_string(),
             namespace: String::new(),

@@ -101,7 +101,7 @@ pub fn procedure_keyword_row(node: Node) -> Option<usize> {
 }
 
 /// Read one `object_declaration` node into an [`ObjectInfo`].
-fn object_declaration_info(node: Node, source: &[u8]) -> ObjectInfo {
+pub(crate) fn object_declaration_info(node: Node, source: &[u8]) -> ObjectInfo {
     let mut kind = String::new();
     if let Some(kind_node) = node.child_by_field_name("kind") {
         kind = kind_node.kind().to_string();

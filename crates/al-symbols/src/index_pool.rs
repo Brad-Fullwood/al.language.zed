@@ -12,6 +12,9 @@ use std::sync::{Arc, Mutex};
 pub const INDEX_NICE: i32 = 10;
 /// Upper bound of the default thread count.
 pub const DEFAULT_MAX_THREADS: usize = 4;
+/// Upper bound of a configured thread count. `al.indexThreads` above this is
+/// lowered to it.
+pub const MAX_INDEX_THREADS: usize = 64;
 
 struct State {
     configured: Option<usize>,
@@ -32,7 +35,9 @@ pub fn default_threads(available: usize) -> usize {
 /// next index build, builds already running keep their pool.
 pub fn set_index_threads(configured: Option<usize>) {
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
-    state.configured = configured.filter(|n| *n > 0);
+    state.configured = configured
+        .filter(|n| *n > 0)
+        .map(|n| n.min(MAX_INDEX_THREADS));
 }
 
 /// Thread count the pool uses right now.
@@ -56,16 +61,31 @@ pub fn index_pool() -> Arc<rayon::ThreadPool> {
             return Arc::clone(pool);
         }
     }
-    let pool = Arc::new(
+    let pool = Arc::new(build_pool(want));
+    state.pool = Some((want, Arc::clone(&pool)));
+    pool
+}
+
+/// A pool of `threads` workers. When the system refuses that many threads,
+/// the pool falls back to the default size and logs a warning.
+fn build_pool(threads: usize) -> rayon::ThreadPool {
+    let builder = |n: usize| {
         rayon::ThreadPoolBuilder::new()
-            .num_threads(want)
+            .num_threads(n)
             .thread_name(|i| format!("al-index-{i}"))
             .start_handler(|_| lower_priority())
             .build()
-            .expect("index thread pool"),
-    );
-    state.pool = Some((want, Arc::clone(&pool)));
-    pool
+    };
+    builder(threads).unwrap_or_else(|error| {
+        let fallback = default_threads(std::thread::available_parallelism().map_or(2, |n| n.get()));
+        tracing::warn!(
+            threads,
+            fallback,
+            %error,
+            "index thread pool could not start, using the default size"
+        );
+        builder(fallback).expect("index thread pool at the default size")
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -101,6 +121,12 @@ mod tests {
         assert_eq!(default_threads(8), 4);
         assert_eq!(default_threads(12), 4);
         assert_eq!(default_threads(64), 4);
+    }
+
+    #[test]
+    fn a_clamped_thread_count_builds() {
+        let pool = build_pool(100_000usize.min(MAX_INDEX_THREADS));
+        assert_eq!(pool.current_num_threads(), MAX_INDEX_THREADS);
     }
 
     #[test]

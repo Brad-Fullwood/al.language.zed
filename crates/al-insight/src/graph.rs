@@ -29,6 +29,53 @@ const EVENT_PUBLISHER_KINDS: [ObjectKind; 10] = [
     ObjectKind::ReportExtension,
 ];
 
+/// Events the platform raises for table and page triggers. No package or
+/// source file declares them, so a subscriber to one of these names on an
+/// existing object gets a synthesized Event node. Any other undeclared name
+/// leaves the subscriber an orphan.
+const PLATFORM_EVENTS: [(ObjectKind, &[&str]); 2] = [
+    (
+        ObjectKind::Table,
+        &[
+            "onafterdeleteevent",
+            "onafterinsertevent",
+            "onaftermodifyevent",
+            "onafterrenameevent",
+            "onaftervalidateevent",
+            "onbeforedeleteevent",
+            "onbeforeinsertevent",
+            "onbeforemodifyevent",
+            "onbeforerenameevent",
+            "onbeforevalidateevent",
+        ],
+    ),
+    (
+        ObjectKind::Page,
+        &[
+            "onafteractionevent",
+            "onaftergetcurrrecordevent",
+            "onaftergetrecordevent",
+            "onaftervalidateevent",
+            "onbeforeactionevent",
+            "onbeforevalidateevent",
+            "onclosepageevent",
+            "ondeleterecordevent",
+            "oninsertrecordevent",
+            "onmodifyrecordevent",
+            "onnewrecordevent",
+            "onopenpageevent",
+            "onqueryclosepageevent",
+        ],
+    ),
+];
+
+/// True when the platform raises `event_lower` for objects of `kind`.
+fn is_platform_event(kind: ObjectKind, event_lower: &str) -> bool {
+    PLATFORM_EVENTS
+        .iter()
+        .any(|(k, names)| *k == kind && names.contains(&event_lower))
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum InsightNode {
@@ -306,17 +353,19 @@ impl InsightGraph {
     /// Must run after ALL nodes are registered (packages + workspace).
     /// Idempotent: `add_edge` dedups, so re-running after a rebuild is safe.
     ///
-    /// When the target event has no declared Event node but the target
-    /// *object* exists (e.g. table-trigger events like `OnAfterInsertEvent`
-    /// which are platform-implicit, never declared in AL source), an Event
-    /// node is synthesized under that object so the chain stays traceable.
+    /// When the target event has no declared Event node, the target object
+    /// exists and the name is in [`PLATFORM_EVENTS`] for that object's kind
+    /// (e.g. `OnAfterInsertEvent` on a table), an Event node is synthesized
+    /// under that object so the chain stays traceable. A subscriber to any
+    /// other undeclared event gets no edge and is reported as an orphan.
     pub fn resolve_subscriber_edges(&mut self) {
         self.name_numeric_subscriber_targets();
-        let subscribers: Vec<(NodeIndex, String, String)> = self
+        let subscribers: Vec<(NodeIndex, Option<ObjectKind>, String, String)> = self
             .graph
             .node_indices()
             .filter_map(|idx| {
                 if let InsightNode::Subscriber {
+                    target_kind,
                     target_object,
                     target_event,
                     ..
@@ -327,6 +376,7 @@ impl InsightGraph {
                     }
                     Some((
                         idx,
+                        *target_kind,
                         target_object.to_lowercase(),
                         target_event.to_lowercase(),
                     ))
@@ -336,12 +386,16 @@ impl InsightGraph {
             })
             .collect();
 
-        // Same kind-search order as `resolve_relationships`: well-formed AL
-        // declares the publisher type in the attribute, but the parsed node
-        // doesn't carry it, so search the kinds that can publish events.
-        for (sub_idx, obj_lower, evt_lower) in subscribers {
+        // Same kind rule as `resolve_relationships`: the attribute's
+        // `ObjectType::` names the publisher kind. Without it, search every
+        // kind that can publish events.
+        for (sub_idx, target_kind, obj_lower, evt_lower) in subscribers {
+            let kinds: &[ObjectKind] = match &target_kind {
+                Some(kind) => std::slice::from_ref(kind),
+                None => &EVENT_PUBLISHER_KINDS,
+            };
             let mut connected = false;
-            for kind in EVENT_PUBLISHER_KINDS {
+            for &kind in kinds {
                 let key = NodeKey::Event(kind, obj_lower.clone(), evt_lower.clone());
                 let event_indices: Vec<NodeIndex> = self.get_nodes(&key).to_vec();
                 if event_indices.is_empty() {
@@ -356,9 +410,12 @@ impl InsightGraph {
             if connected {
                 continue;
             }
-            // No declared event — synthesize one under the target object if
-            // the object itself is known (implicit table/page trigger events).
-            for kind in EVENT_PUBLISHER_KINDS {
+            // No declared event. Synthesize a platform trigger event under the
+            // target object when the object is known.
+            for &kind in kinds {
+                if !is_platform_event(kind, &evt_lower) {
+                    continue;
+                }
                 let obj_key = NodeKey::Object(kind, obj_lower.clone());
                 let Some(obj_idx) = self.get_node(&obj_key) else {
                     continue;
@@ -1118,6 +1175,101 @@ mod tests {
                 .unwrap(),
             InsightEdge::SubscribesTo
         );
+    }
+
+    /// Number of `SubscribesTo` edges leaving the subscriber `object.method`
+    /// of a codeunit, after both resolution passes.
+    fn subscribes_to_count(entries: &[SymbolEntry], object: &str, method: &str) -> usize {
+        let index = SymbolIndex::new();
+        index.add_entries(entries);
+        let mut g = InsightGraph::new();
+        g.build_from_index(&index);
+        g.resolve_subscriber_edges();
+        let sub = g
+            .get_node(&NodeKey::Subscriber(
+                ObjectKind::Codeunit,
+                object.to_lowercase(),
+                method.to_lowercase(),
+            ))
+            .expect("subscriber node");
+        g.graph
+            .edges(sub)
+            .filter(|e| *e.weight() == InsightEdge::SubscribesTo)
+            .count()
+    }
+
+    #[test]
+    fn misspelled_event_subscriber_is_orphan() {
+        let entries = [
+            make_codeunit(50100, "Pub", vec![integration_event("OnAfterPost")]),
+            make_codeunit(
+                50101,
+                "Sub",
+                vec![event_subscriber(
+                    "Handle",
+                    "Codeunit",
+                    "Pub",
+                    "OnAfterPostTypo",
+                )],
+            ),
+        ];
+        assert_eq!(subscribes_to_count(&entries, "Sub", "Handle"), 0);
+    }
+
+    /// A page named like the target codeunit declares the event. The
+    /// attribute says `ObjectType::Codeunit`, so the page event is not it.
+    #[test]
+    fn subscriber_target_kind_is_respected() {
+        let mut page = make_codeunit(50100, "Pub", vec![integration_event("OnAfterPost")]);
+        page.kind = ObjectKind::Page;
+        let entries = [
+            page,
+            make_codeunit(50101, "Pub", vec![]),
+            make_codeunit(
+                50102,
+                "Sub",
+                vec![event_subscriber("Handle", "Codeunit", "Pub", "OnAfterPost")],
+            ),
+        ];
+        assert_eq!(subscribes_to_count(&entries, "Sub", "Handle"), 0);
+    }
+
+    #[test]
+    fn table_platform_event_subscriber_resolves() {
+        let entries = [
+            make_table(18, "Customer"),
+            make_codeunit(
+                50101,
+                "Sub",
+                vec![event_subscriber(
+                    "Handle",
+                    "Table",
+                    "Customer",
+                    "OnAfterInsertEvent",
+                )],
+            ),
+        ];
+        assert_eq!(subscribes_to_count(&entries, "Sub", "Handle"), 1);
+    }
+
+    #[test]
+    fn package_integration_event_subscriber_resolves() {
+        let mut publisher = make_codeunit(80, "Sales-Post", vec![integration_event("OnAfterPost")]);
+        publisher.package = "Base Application".to_string();
+        let entries = [
+            publisher,
+            make_codeunit(
+                50101,
+                "Sub",
+                vec![event_subscriber(
+                    "Handle",
+                    "Codeunit",
+                    "Sales-Post",
+                    "OnAfterPost",
+                )],
+            ),
+        ];
+        assert_eq!(subscribes_to_count(&entries, "Sub", "Handle"), 1);
     }
 
     #[test]

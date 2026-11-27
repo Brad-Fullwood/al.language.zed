@@ -51,10 +51,20 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
     });
     let base: Arc<SymbolEntry> = candidates.into_iter().next()?;
 
+    // An extension that names its target app joins only an object of that
+    // app. One without an id, or a base whose app id is unknown, matches by
+    // name.
+    let base_app_id = index
+        .package_key_of(&base)
+        .and_then(|key| key.strip_prefix("id:").map(|id| id.replace('-', "")));
     let extensions = index.get_extensions_of(name);
     let relevant_extensions: Vec<Arc<SymbolEntry>> = extensions
         .into_iter()
         .filter(|ext| ext.kind.base_kind() == Some(kind))
+        .filter(|ext| match (&ext.extends_app_id, &base_app_id) {
+            (Some(target), Some(base)) => target == base,
+            _ => true,
+        })
         .collect();
 
     Some(compose(base, relevant_extensions))
@@ -161,6 +171,7 @@ mod tests {
             id,
             name: name.to_string(),
             extends: None,
+            extends_app_id: None,
             implements: Vec::new(),
             namespace: String::new(),
             package: "Base".to_string(),
@@ -188,6 +199,7 @@ mod tests {
             id,
             name: name.to_string(),
             extends: Some(extends.to_string()),
+            extends_app_id: None,
             implements: Vec::new(),
             namespace: String::new(),
             package: "Extension".to_string(),
@@ -225,6 +237,7 @@ mod tests {
             id,
             name: name.to_string(),
             extends: Some(extends.to_string()),
+            extends_app_id: None,
             implements: Vec::new(),
             namespace: String::new(),
             package: "Extension".to_string(),
@@ -838,6 +851,43 @@ mod tests {
     /// When the same object exists both in a package and in the workspace,
     /// the composed base must be the workspace declaration regardless of the
     /// order the two were registered in.
+    #[test]
+    fn extension_composes_into_target_app_only() {
+        let index = SymbolIndex::new();
+        let table = |package: &str| SymbolEntry {
+            package: package.to_string(),
+            ..make_table(50100, "Setup", Vec::new(), Vec::new())
+        };
+        index.add_entries_owned_with_key(
+            vec![table("App A")],
+            Some("id:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string()),
+        );
+        index.add_entries_owned_with_key(
+            vec![table("App B")],
+            Some("id:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".to_string()),
+        );
+        index.add_entries_owned_with_key(
+            vec![SymbolEntry {
+                kind: ObjectKind::TableExtension,
+                id: 50100,
+                name: "X".to_string(),
+                extends: Some("Setup".to_string()),
+                extends_app_id: Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
+                package: "App C".to_string(),
+                ..Default::default()
+            }],
+            Some("id:cccccccc-cccc-cccc-cccc-cccccccccccc".to_string()),
+        );
+
+        let composed = get_composed(&index, ObjectKind::Table, "Setup").unwrap();
+        assert_eq!(composed.base.package, "App A");
+        assert!(
+            composed.extensions.is_empty(),
+            "X targets App B's Setup: {:?}",
+            composed.extensions
+        );
+    }
+
     #[test]
     fn base_choice_prefers_workspace_over_package_regardless_of_load_order() {
         for workspace_first in [true, false] {

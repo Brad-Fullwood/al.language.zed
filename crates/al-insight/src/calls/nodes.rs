@@ -84,7 +84,7 @@ pub fn register_workspace_nodes(
         });
     }
 
-    symbols.remove_package_entries("workspace");
+    symbols.remove_workspace_entries();
     if !workspace_entries.is_empty() {
         symbols.add_entries_owned(workspace_entries);
     }

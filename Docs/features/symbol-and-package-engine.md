@@ -35,15 +35,19 @@ concurrent in-memory maps.
 by lowercase name, by kind+id, by kind, by extension target (`extends`), and a composed-object cache.
 Common queries become direct map lookups. Package ZIP/JSON parsing runs in parallel, while the much
 shorter index commit is applied in input order. Reloading a package therefore replaces its previous
-generation deterministically instead of racing duplicate entries into secondary indexes. Package
+generation deterministically instead of racing duplicate entries into secondary indexes.
+Loading has no shared memory budget. The loader pool has half the cores, at least 2 and at most 4
+threads by default (`al.indexThreads` overrides it, up to 64). Each thread can hold one package
+payload of up to 200 MiB (`MAX_APP_FILE_SIZE`), and `load_packages_cached_lenient` keeps every
+loaded package until it applies them. Peak memory is about the thread count times the largest
+payload, plus the loaded packages. Package
 generations are keyed by a canonical identity (the manifest's app GUID, with the folded display
 name as fallback), so two vendors' apps that merely share a display name keep independent symbol
 generations and never evict each other on (re)load. Name-based path lookups over an ambiguous
 display name resolve deterministically. Search is
 stable and relevance-ranked (exact name, prefix, then substring), with synthetic pseudo-types kept
 out of user-facing results. A lazily-built ordered name catalogue lets bounded searches stop as soon
-as the requested deterministic window is full, without taxing package load. A pre-computed 30-entry
-default-completions slice answers the "blank completion at top level" path in O(1). On package
+as the requested deterministic window is full, without taxing package load. On package
 removal, all secondary indexes are pruned in lockstep, source/path
 caches are removed, and affected composed views are invalidated, so a hot reload cannot serve stale
 or dangling data. Synthetic pseudo-enums (generated for Option-typed fields, id = -1) are excluded
@@ -71,8 +75,8 @@ and size, plus a `CACHE_SCHEMA_VERSION`. Any mismatch silently re-parses. Writes
 rename), the cache directory is locked to 0700, and orphaned temp files from crashed writers are
 cleaned up. Warm starts therefore skip re-reading and re-parsing large `SymbolReference.json`
 payloads (the Base Application alone is ~6 MB). A bounded, best-effort garbage collection runs once
-per process: entries untouched for 30 days are deleted (orphans from removed/renamed package paths
-included) and the directory is capped at 4 GiB, oldest entries first. The virtual-source cache
+per process: cache files not rewritten for 30 days are deleted (orphans from removed/renamed package paths
+included, and a cache hit reads a file without rewriting it) and the directory is capped at 4 GiB, oldest entries first. The virtual-source cache
 (`~/.cache/al-lsp/symbols`) gets the same once-per-process sweep, since its hash-keyed files are
 re-minted on every package update.
 
@@ -121,7 +125,8 @@ Two download backends:
   identity/minimum-version before atomically publishing a file named `{publisher}_{name}_{version}.app` from the downloaded manifest
   (the requested version can differ from the one served, so the name shows the real version).
   A leftover file named after the requested version for the same app id is removed.
-  It caches the access token in an `RwLock` and clears it on 401/403 before retrying.
+  It caches the access token in an `RwLock`. A 401/403 clears it and returns `AuthenticationFailed`
+  without a retry.
 - **OAuth (`oauth/`):** Microsoft Entra authorization-code flow with **PKCE** (browser → localhost
   redirect) and a **device-code** fallback for headless environments, with disk-cached refresh
   tokens, tenant/GUID validation, env-var overrides (`BC_CLIENT_ID`/`BC_ACCESS_TOKEN`),

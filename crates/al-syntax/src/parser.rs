@@ -1,6 +1,5 @@
 //! Tree-sitter parser wrapper for AL.
 
-use super::traversal::walk_tree;
 use tree_sitter::{Language, Parser, Tree};
 
 /// The AL grammar, from the canonical `tree-sitter-al` binding crate.
@@ -94,6 +93,26 @@ impl AlParser {
         ParseResult { tree, errors }
     }
 
+    /// Parse with `symbols` defined, such as the `preprocessorSymbols` of the
+    /// project's `app.json`, so `#if` blocks on them are active.
+    pub fn parse_with_symbols<S: AsRef<str>>(&mut self, text: &str, symbols: &[S]) -> ParseResult {
+        tree_sitter_al::with_preprocessor_symbols(symbols, || self.parse(text))
+    }
+
+    /// Incremental form of [`Self::parse_with_symbols`]. `old_tree` must have
+    /// been parsed with the same symbols, because the scanner state stored in
+    /// the tree does not record them.
+    pub fn parse_incremental_with_symbols<S: AsRef<str>>(
+        &mut self,
+        text: &str,
+        old_tree: &Tree,
+        symbols: &[S],
+    ) -> ParseResult {
+        tree_sitter_al::with_preprocessor_symbols(symbols, || {
+            self.parse_incremental(text, old_tree)
+        })
+    }
+
     /// Extract syntax errors from an already-parsed tree.
     ///
     /// Used to obtain errors from a cached tree without re-parsing the source.
@@ -113,6 +132,12 @@ impl AlParser {
         }
         PARSER.with(|p| p.borrow_mut().parse(text))
     }
+
+    /// [`Self::parse_quick`] with `symbols` defined, see
+    /// [`Self::parse_with_symbols`].
+    pub fn parse_quick_with_symbols<S: AsRef<str>>(text: &str, symbols: &[S]) -> ParseResult {
+        tree_sitter_al::with_preprocessor_symbols(symbols, || Self::parse_quick(text))
+    }
 }
 
 impl Default for AlParser {
@@ -123,23 +148,36 @@ impl Default for AlParser {
 
 fn collect_errors(tree: &Tree, source: &[u8]) -> Vec<SyntaxError> {
     let mut errors = Vec::new();
-    walk_tree(tree.root_node(), &mut |node| {
+    let tokens = Tokens::new(tree.root_node());
+    // A cursor walk in pre-order. `walk_tree` hides the tree lifetime from its
+    // visitor, which the shared `tokens` needs.
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let node = cursor.node();
         if node.is_error() || node.is_missing() {
-            if let Some(mapped) = alc_errors(node, source) {
+            if let Some(mapped) = alc_errors(node, source, &tokens) {
                 errors.extend(mapped);
-                return;
+            } else {
+                errors.push(SyntaxError {
+                    message: if node.is_missing() {
+                        format!("Missing {}", node.kind())
+                    } else {
+                        "Syntax error".to_string()
+                    },
+                    range: node.range(),
+                    code: None,
+                });
             }
-            errors.push(SyntaxError {
-                message: if node.is_missing() {
-                    format!("Missing {}", node.kind())
-                } else {
-                    "Syntax error".to_string()
-                },
-                range: node.range(),
-                code: None,
-            });
         }
-    });
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
     errors
 }
 
@@ -153,8 +191,12 @@ fn alc_error(code: &'static str, message: String, range: tree_sitter::Range) -> 
 
 /// The alc errors for one tree-sitter error node, when its shape is one alc
 /// was recorded on (tests/alc_syntax_codes.rs). `None` keeps the generic error.
-fn alc_errors(node: tree_sitter::Node, source: &[u8]) -> Option<Vec<SyntaxError>> {
-    if let Some((_, range)) = missing_semicolon_shape(node) {
+fn alc_errors<'tree>(
+    node: tree_sitter::Node<'tree>,
+    source: &[u8],
+    tokens: &Tokens<'tree>,
+) -> Option<Vec<SyntaxError>> {
+    if let Some((_, range)) = missing_semicolon_shape(node, tokens) {
         return Some(vec![alc_error(
             ALC_MISSING_SEMICOLON_CODE,
             ALC_MISSING_SEMICOLON_MESSAGE.to_string(),
@@ -164,7 +206,7 @@ fn alc_errors(node: tree_sitter::Node, source: &[u8]) -> Option<Vec<SyntaxError>
     // Missing `)`: tree-sitter inserts a zero width MISSING node, alc reports
     // the token that stands where `)` belongs.
     if node.is_missing() && node.kind() == ")" {
-        let next = first_token_from(root_of(node), node.start_byte())?;
+        let next = tokens.first_from(node.start_byte())?;
         return Some(vec![alc_error(
             ALC_EXPECTED_TOKEN_CODE,
             "Syntax error, ')' expected".to_string(),
@@ -175,7 +217,7 @@ fn alc_errors(node: tree_sitter::Node, source: &[u8]) -> Option<Vec<SyntaxError>
     // statement starts, after a `;`. alc reports 'end' and ';' expected, both on
     // that keyword. The errors tree-sitter raises further on while recovering
     // stay generic.
-    if lone_token_error_after(node, &["semicolon"]).is_some()
+    if lone_token_error_after(node, &["semicolon"], tokens).is_some()
         && node.child(0)?.kind() == "identifier"
         && node
             .child(0)?
@@ -208,33 +250,73 @@ fn root_of(node: tree_sitter::Node) -> tree_sitter::Node {
     root
 }
 
-/// First non-empty, non-comment leaf that starts at or after `byte`.
-fn first_token_from(node: tree_sitter::Node, byte: usize) -> Option<tree_sitter::Node> {
-    if node.end_byte() <= byte || node.kind().contains("comment") {
-        return None;
+/// The non-empty leaf tokens of a tree outside comments, in source order.
+/// Built on the first lookup, so error collection walks the tree once however
+/// many errors ask for a neighbouring token.
+struct Tokens<'tree> {
+    root: tree_sitter::Node<'tree>,
+    leaves: std::cell::OnceCell<Vec<tree_sitter::Node<'tree>>>,
+}
+
+impl<'tree> Tokens<'tree> {
+    fn new(root: tree_sitter::Node<'tree>) -> Self {
+        Self {
+            root,
+            leaves: std::cell::OnceCell::new(),
+        }
     }
-    if node.child_count() == 0 {
-        return (node.start_byte() >= byte && node.start_byte() < node.end_byte()).then_some(node);
+
+    fn leaves(&self) -> &[tree_sitter::Node<'tree>] {
+        self.leaves.get_or_init(|| {
+            let mut leaves = Vec::new();
+            let mut cursor = self.root.walk();
+            'walk: loop {
+                let node = cursor.node();
+                let is_comment = node.kind().contains("comment");
+                if !is_comment && cursor.goto_first_child() {
+                    continue;
+                }
+                if !is_comment && node.child_count() == 0 && node.start_byte() < node.end_byte() {
+                    leaves.push(node);
+                }
+                while !cursor.goto_next_sibling() {
+                    if !cursor.goto_parent() {
+                        break 'walk;
+                    }
+                }
+            }
+            leaves
+        })
     }
-    let mut cursor = node.walk();
-    let children: Vec<_> = node.children(&mut cursor).collect();
-    children
-        .into_iter()
-        .find_map(|child| first_token_from(child, byte))
+
+    /// The last token that ends at or before `byte`.
+    fn last_before(&self, byte: usize) -> Option<tree_sitter::Node<'tree>> {
+        let leaves = self.leaves();
+        let count = leaves.partition_point(|leaf| leaf.end_byte() <= byte);
+        count.checked_sub(1).map(|idx| leaves[idx])
+    }
+
+    /// The first token that starts at or after `byte`.
+    fn first_from(&self, byte: usize) -> Option<tree_sitter::Node<'tree>> {
+        let leaves = self.leaves();
+        let idx = leaves.partition_point(|leaf| leaf.start_byte() < byte);
+        leaves.get(idx).copied()
+    }
 }
 
 /// An ERROR node holding exactly one leaf token, inside a `statement_list`
 /// and not inside another error. Returns the token before it when its kind is
 /// one of `previous_kinds`.
-fn lone_token_error_after<'a>(
-    error: tree_sitter::Node<'a>,
+fn lone_token_error_after<'tree>(
+    error: tree_sitter::Node<'tree>,
     previous_kinds: &[&str],
-) -> Option<tree_sitter::Node<'a>> {
+    tokens: &Tokens<'tree>,
+) -> Option<tree_sitter::Node<'tree>> {
     if !error.is_error() || error.child_count() != 1 || error.child(0)?.child_count() != 0 {
         return None;
     }
     in_statement_list(error)?;
-    let previous = last_token_before(root_of(error), error.start_byte())?;
+    let previous = tokens.last_before(error.start_byte())?;
     previous_kinds
         .contains(&previous.kind())
         .then_some(previous)
@@ -265,7 +347,7 @@ fn in_statement_list(node: tree_sitter::Node) -> Option<()> {
 /// line). Returns the byte offset where the `;` belongs, the end of the token
 /// before the error. A following `if` is handled by `missing_semicolon_shape`.
 pub fn missing_semicolon_insert_byte(error: tree_sitter::Node) -> Option<usize> {
-    missing_semicolon_shape(error).map(|(insert, _)| insert)
+    missing_semicolon_shape(error, &Tokens::new(root_of(error))).map(|(insert, _)| insert)
 }
 
 /// Where the `;` belongs and the range alc reports. Besides the single token
@@ -273,7 +355,10 @@ pub fn missing_semicolon_insert_byte(error: tree_sitter::Node) -> Option<usize> 
 /// the whole previous statement (a call expression) followed by an `if`
 /// statement. alc reports AL0111 on the `if` keyword only, the `;` belongs at
 /// the end of the error node.
-fn missing_semicolon_shape(error: tree_sitter::Node) -> Option<(usize, tree_sitter::Range)> {
+fn missing_semicolon_shape<'tree>(
+    error: tree_sitter::Node<'tree>,
+    tokens: &Tokens<'tree>,
+) -> Option<(usize, tree_sitter::Range)> {
     if let Some(previous) = lone_token_error_after(
         error,
         &[
@@ -285,6 +370,7 @@ fn missing_semicolon_shape(error: tree_sitter::Node) -> Option<(usize, tree_sitt
             "decimal",
             "string",
         ],
+        tokens,
     ) {
         return Some((previous.end_byte(), error.range()));
     }
@@ -299,17 +385,18 @@ fn missing_semicolon_shape(error: tree_sitter::Node) -> Option<(usize, tree_sitt
     if next.kind() != "statement" {
         return None;
     }
-    let keyword = first_token_from(next, next.start_byte())?;
+    let keyword = tokens.first_from(next.start_byte())?;
     if keyword.kind() != "kw_if" {
         return None;
     }
-    let before = last_token_before(root_of(error), error.start_byte())?;
+    let before = tokens.last_before(error.start_byte())?;
     matches!(before.kind(), "semicolon" | "kw_begin").then(|| (error.end_byte(), keyword.range()))
 }
 
 /// Same check for a diagnostic range: find the ERROR node that starts at
 /// `error_start_byte` and return where its `;` belongs.
 pub fn missing_semicolon_insert_byte_at(tree: &Tree, error_start_byte: usize) -> Option<usize> {
+    let tokens = Tokens::new(tree.root_node());
     let mut node = Some(
         tree.root_node()
             .descendant_for_byte_range(error_start_byte, error_start_byte)?,
@@ -322,41 +409,13 @@ pub fn missing_semicolon_insert_byte_at(tree: &Tree, error_start_byte: usize) ->
             .flatten()
             .filter(|candidate| candidate.is_error())
         {
-            if let Some((insert, range)) = missing_semicolon_shape(candidate) {
+            if let Some((insert, range)) = missing_semicolon_shape(candidate, &tokens) {
                 if range.start_byte == error_start_byte {
                     return Some(insert);
                 }
             }
         }
         node = current.parent();
-    }
-    None
-}
-
-fn last_token_before(node: tree_sitter::Node, byte: usize) -> Option<tree_sitter::Node> {
-    let mut children: Vec<_> = {
-        let mut cursor = node.walk();
-        node.children(&mut cursor).collect()
-    };
-    children.reverse();
-    for child in children {
-        // A child that ends after `byte` can still hold earlier tokens (an ancestor
-        // of the error), so only children that start at or after `byte` are skipped.
-        if child.start_byte() >= byte || child.start_byte() == child.end_byte() {
-            continue;
-        }
-        if child.kind().contains("comment") {
-            continue;
-        }
-        if child.child_count() == 0 {
-            if child.end_byte() <= byte {
-                return Some(child);
-            }
-            continue;
-        }
-        if let Some(found) = last_token_before(child, byte) {
-            return Some(found);
-        }
     }
     None
 }
@@ -541,5 +600,78 @@ mod tests {
         code.push_str("} }");
         let result = parser.parse(&code);
         let _ = result;
+    }
+
+    fn many_errors_source(line: &str, lines: usize) -> String {
+        let mut source = String::from("codeunit 50100 C\n{\n    procedure P()\n    begin\n");
+        for _ in 0..lines {
+            source.push_str("        ");
+            source.push_str(line);
+            source.push('\n');
+        }
+        source.push_str("    end;\n}\n");
+        source
+    }
+
+    /// Error collection on N errors stays close to linear. Each statement here
+    /// lacks its `;`, which takes the path that looks up the previous token.
+    #[test]
+    fn many_errors_parse_in_bounded_time() {
+        for line in ["x := ;", "x := 1"] {
+            let source = many_errors_source(line, 5_000);
+            let tree = AlParser::parse_quick(&source).tree;
+            let started = std::time::Instant::now();
+            let errors = AlParser::errors_from_tree(&tree, source.as_bytes());
+            let elapsed = started.elapsed();
+            eprintln!(
+                "many_errors {line:?}: {} errors in {elapsed:?}",
+                errors.len()
+            );
+            assert!(errors.len() >= 4_000, "{line:?}: {} errors", errors.len());
+            assert!(
+                elapsed < std::time::Duration::from_secs(2),
+                "{line:?} took {elapsed:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preprocessor_symbols_activate_if_block() {
+        let source =
+            "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi() begin end;\n#endif\n}\n";
+        let names = |result: ParseResult| -> Vec<String> {
+            fn walk(symbols: &[crate::SyntaxDocumentSymbol], out: &mut Vec<String>) {
+                for symbol in symbols {
+                    out.push(symbol.name.clone());
+                    walk(symbol.children.as_deref().unwrap_or_default(), out);
+                }
+            }
+            let mut out = Vec::new();
+            walk(
+                &crate::symbols::extract_document_symbols(&result.tree, source),
+                &mut out,
+            );
+            out
+        };
+        let has_new_api = |names: Vec<String>| names.iter().any(|name| name == "NewApi");
+
+        assert!(has_new_api(names(AlParser::parse_quick_with_symbols(
+            source,
+            &["CLEAN24"]
+        ))));
+        assert!(
+            has_new_api(names(AlParser::parse_quick_with_symbols(
+                source,
+                &["clean24"]
+            ))),
+            "a second parse with the symbols still sees the block"
+        );
+        assert!(
+            !has_new_api(names(AlParser::parse_quick(source))),
+            "a plain parse on the same thread does not inherit the symbols"
+        );
+        assert!(!has_new_api(names(
+            AlParser::new().parse_with_symbols(source, &["CLEAN25"])
+        )));
     }
 }

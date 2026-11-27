@@ -381,7 +381,11 @@ pub fn permission_set_audit(workspace: &Workspace) -> Result<PermissionAuditRepo
     let reference_counts = workspace_reference_counts(&scan_files);
     let over_broad = compute_over_broad(&reference_counts, &perm_sets, &declared_names);
 
-    let observed_writes = collect_observed_writes(&scan_files);
+    let scan_sources: Vec<&WorkspaceSource> = sources
+        .iter()
+        .filter(|source| !perm_set_paths.contains(&source.path))
+        .collect();
+    let observed_writes = collect_observed_writes(&scan_sources);
     let over_granted_rights = compute_over_granted_rights(
         &reference_counts,
         &perm_sets,
@@ -702,41 +706,68 @@ struct ObservedWrites {
     unresolved: BTreeSet<char>,
 }
 
-fn collect_observed_writes(scan_files: &[(String, tree_sitter::Tree)]) -> ObservedWrites {
+fn collect_observed_writes(scan_sources: &[&WorkspaceSource]) -> ObservedWrites {
     let mut writes = ObservedWrites::default();
+    let page_tables = page_source_tables(scan_sources);
 
-    for (text, tree) in scan_files {
+    for source in scan_sources {
+        let text = source.text.as_str();
         // Every declaration node, not every distinct declaration *name*. AL
         // repeats trigger names constantly (one `OnValidate` per field, one
         // `OnAction` per action), and a name-keyed lookup answers for the first
         // one only, so a write in any later one was invisible and its right was
         // then reported as removable.
-        for proc_node in al_insight::calls::collect_declaration_nodes(tree) {
-            let var_types = al_insight::calls::procedure_var_types_in_node(proc_node, text);
-            for site in al_insight::calls::call_sites_in_node(proc_node, text) {
-                let (variable, right) = match &site {
-                    CallSite::RecordOp { variable, op, .. } => match op {
-                        RecordOp::Insert => (variable, 'I'),
-                        RecordOp::Modify | RecordOp::ModifyAll => (variable, 'M'),
-                        RecordOp::Delete | RecordOp::DeleteAll => (variable, 'D'),
-                        RecordOp::Rename => (variable, 'M'),
+        let declarations = al_insight::calls::collect_declaration_nodes(&source.tree);
+        for (object, object_node) in source.object_nodes() {
+            let (globals, _) = al_insight::calls::object_global_var_types(object_node, text);
+            let own_table = implicit_record_table(object, object_node, text, &page_tables);
+            for proc_node in declarations.iter().filter(|node| {
+                node.start_byte() >= object_node.start_byte()
+                    && node.end_byte() <= object_node.end_byte()
+            }) {
+                let locals = al_insight::calls::procedure_var_types_in_node(*proc_node, text);
+                for site in al_insight::calls::call_sites_in_node(*proc_node, text) {
+                    // A receiverless `Modify()` is a record call on the
+                    // object's own record.
+                    let (variable, op) = match &site {
+                        CallSite::RecordOp { variable, op, .. } => (Some(variable.as_str()), *op),
+                        CallSite::BareCall { name } => match RecordOp::from_method_name(name) {
+                            Some(op) if own_table.is_some() => (None, op),
+                            _ => continue,
+                        },
+                        _ => continue,
+                    };
+                    let right = match op {
+                        RecordOp::Insert => 'I',
+                        RecordOp::Modify | RecordOp::ModifyAll | RecordOp::Rename => 'M',
+                        RecordOp::Delete | RecordOp::DeleteAll => 'D',
                         // Validate sets a field + runs OnValidate; it is not a
                         // persistence write on its own.
                         RecordOp::Validate => continue,
-                    },
-                    _ => continue,
-                };
+                    };
 
-                match var_types.get(&variable.to_lowercase()) {
-                    Some(table) => {
-                        writes
-                            .by_table
-                            .entry(table.to_lowercase())
-                            .or_default()
-                            .insert(right);
-                    }
-                    None => {
-                        writes.unresolved.insert(right);
+                    let table = match variable {
+                        None => own_table.clone(),
+                        Some(variable) => {
+                            let key = variable.to_lowercase();
+                            locals
+                                .get(&key)
+                                .or_else(|| globals.get(&key))
+                                .cloned()
+                                .or_else(|| (key == "rec").then(|| own_table.clone()).flatten())
+                        }
+                    };
+                    match table {
+                        Some(table) => {
+                            writes
+                                .by_table
+                                .entry(table.to_lowercase())
+                                .or_default()
+                                .insert(right);
+                        }
+                        None => {
+                            writes.unresolved.insert(right);
+                        }
                     }
                 }
             }
@@ -744,6 +775,67 @@ fn collect_observed_writes(scan_files: &[(String, tree_sitter::Tree)]) -> Observ
     }
 
     writes
+}
+
+/// The table behind the implicit `Rec` of a table, table extension, page or
+/// page extension, lowercase. `page_tables` maps lowercase page names to their
+/// `SourceTable` so a page extension can reach the table of its base page.
+fn implicit_record_table(
+    object: &crate::workspace_sources::WorkspaceObjectDeclaration,
+    object_node: tree_sitter::Node<'_>,
+    text: &str,
+    page_tables: &HashMap<String, String>,
+) -> Option<String> {
+    use al_symbols::ObjectKind;
+    match object.kind {
+        ObjectKind::Table => Some(object.info.name.to_lowercase()),
+        ObjectKind::TableExtension => super::dead_code::extends_target(object_node, text),
+        ObjectKind::Page => object_source_table(object_node, text),
+        ObjectKind::PageExtension => {
+            let page = super::dead_code::extends_target(object_node, text)?;
+            page_tables.get(&page).cloned()
+        }
+        _ => None,
+    }
+}
+
+/// Lowercase page name -> lowercase `SourceTable` for every workspace page.
+fn page_source_tables(scan_sources: &[&WorkspaceSource]) -> HashMap<String, String> {
+    let mut tables = HashMap::new();
+    for source in scan_sources {
+        for (object, node) in source.object_nodes() {
+            if object.kind != al_symbols::ObjectKind::Page {
+                continue;
+            }
+            if let Some(table) = object_source_table(node, &source.text) {
+                tables.insert(object.info.name.to_lowercase(), table);
+            }
+        }
+    }
+    tables
+}
+
+/// The object's `SourceTable` property value, unquoted and lowercase. Reads
+/// the same `property_assignment` fields as `TypeResolver::source_table_of`
+/// in al-syntax, which is private to the resolver.
+fn object_source_table(object_node: tree_sitter::Node<'_>, text: &str) -> Option<String> {
+    let body = object_node.child_by_field_name("body")?;
+    let bytes = text.as_bytes();
+    let mut cursor = body.walk();
+    let value = body
+        .children(&mut cursor)
+        .filter(|child| child.kind() == "property_assignment")
+        .find(|child| {
+            child
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(bytes).ok())
+                .is_some_and(|name| name.eq_ignore_ascii_case("SourceTable"))
+        })?
+        .child_by_field_name("value")?
+        .utf8_text(bytes)
+        .ok()?;
+    let table = al_syntax::clean_identifier(value.trim());
+    (!table.is_empty()).then(|| table.to_lowercase())
 }
 
 /// Read the `Permissions` property of a permission-set object.
@@ -1727,6 +1819,101 @@ table 50101 "Ship Setup"
             "the RecordRef Insert could be this table: {entry:?}"
         );
         assert_eq!(entry.over_granted, "MD");
+    }
+
+    fn over_granted_for(report: &PermissionAuditReport, object: &str) -> Option<String> {
+        report
+            .over_granted_rights
+            .iter()
+            .find(|entry| entry.object == object)
+            .map(|entry| entry.over_granted.clone())
+    }
+
+    #[test]
+    fn global_record_write_does_not_hide_over_grants() {
+        let ws = workspace_with(vec![
+            (
+                "/src/Tables.al",
+                r#"table 50100 Thing { fields { field(1; Id; Integer) { } } }
+table 50101 Other { fields { field(1; Id; Integer) { } } }"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50100 PS
+{
+    Permissions = tabledata Thing = RIMD, tabledata Other = RIMD;
+}"#,
+            ),
+            (
+                "/src/C.al",
+                r#"codeunit 50100 C
+{
+    var
+        G: Record Thing;
+    procedure P()
+    begin
+        G.Modify();
+    end;
+    procedure ReadOther()
+    var
+        O: Record Other;
+    begin
+        O.Get(1);
+    end;
+}"#,
+            ),
+        ]);
+
+        let report = permission_set_audit(&ws).unwrap();
+        assert_eq!(over_granted_for(&report, "Thing").as_deref(), Some("ID"));
+        assert_eq!(over_granted_for(&report, "Other").as_deref(), Some("IMD"));
+    }
+
+    #[test]
+    fn rec_modify_in_page_resolves_source_table() {
+        let ws = workspace_with(vec![
+            (
+                "/src/Thing.al",
+                r#"table 50100 Thing { fields { field(1; Id; Integer) { } } }
+table 50102 Other { fields { field(1; Id; Integer) { } } }"#,
+            ),
+            (
+                "/src/Card.al",
+                r#"page 50100 "Thing Card"
+{
+    SourceTable = Thing;
+    trigger OnOpenPage()
+    var
+        O: Record Other;
+    begin
+        O.Get(1);
+        Rec.Modify();
+    end;
+}"#,
+            ),
+            (
+                "/src/Ext.al",
+                r#"tableextension 50101 ThingExt extends Thing
+{
+    trigger OnBeforeInsert()
+    begin
+        Delete();
+    end;
+}"#,
+            ),
+            (
+                "/src/Perms.al",
+                r#"permissionset 50100 PS
+{
+    Permissions = tabledata Thing = RIMD, tabledata Other = RIMD;
+}"#,
+            ),
+        ]);
+
+        // An unresolved `Rec.Modify()` would keep M on every table, Other too.
+        let report = permission_set_audit(&ws).unwrap();
+        assert_eq!(over_granted_for(&report, "Thing").as_deref(), Some("I"));
+        assert_eq!(over_granted_for(&report, "Other").as_deref(), Some("IMD"));
     }
 
     /// A table granted `RIMD` that the workspace only *reads* (via `Get`) must

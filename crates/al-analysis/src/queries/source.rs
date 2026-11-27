@@ -447,7 +447,10 @@ fn try_package_source(
     entry: &SymbolEntry,
     member: Option<SourceMember<'_>>,
 ) -> Result<SourceResult, SourceLookupError> {
-    let app_path = workspace.symbols.app_path(&entry.package);
+    let app_path = workspace.symbols.app_path_for_entry(entry);
+    // An extraction failure (an embedded file that is not UTF-8, say) still
+    // leaves the outline from symbol metadata, so it goes into the note.
+    let mut extraction_error = None;
 
     if let Some(ref path) = app_path {
         let source_index = al_symbols::source_index::get_or_build(path).map_err(|error| {
@@ -458,14 +461,16 @@ fn try_package_source(
                 reason: error.to_string(),
             }
         })?;
-        let extracted = source_index
-            .extract_source_for_entry(entry)
-            .map_err(|error| SourceLookupError::PackageSourceUnavailable {
-                object: entry.name.clone(),
-                package: entry.package.clone(),
-                path: path.display().to_string(),
-                reason: error.to_string(),
-            })?;
+        let extracted = match source_index.extract_source_for_entry(entry) {
+            Ok(extracted) => extracted,
+            Err(error) => {
+                extraction_error = Some(format!(
+                    "Embedded source in {} could not be read: {error}",
+                    path.display()
+                ));
+                None
+            }
+        };
         if let Some(full_source) = extracted {
             if let Some(member) = member {
                 if let Some((code, sig)) = extract_member_from_text(&full_source, member) {
@@ -552,10 +557,10 @@ fn try_package_source(
             sig: Some(sig.clone()),
             range: None,
             code: sig,
-            note: Some(
-                "Rendered from symbol metadata — signature only, no implementation body"
-                    .to_string(),
-            ),
+            note: Some(with_extraction_error(
+                "Rendered from symbol metadata — signature only, no implementation body",
+                extraction_error.as_deref(),
+            )),
         });
     }
 
@@ -577,8 +582,15 @@ fn try_package_source(
         sig: None,
         range: None,
         code,
-        note: Some(note.to_string()),
+        note: Some(with_extraction_error(note, extraction_error.as_deref())),
     })
+}
+
+fn with_extraction_error(note: &str, extraction_error: Option<&str>) -> String {
+    match extraction_error {
+        Some(error) => format!("{note}. {error}"),
+        None => note.to_string(),
+    }
 }
 
 /// Find a typed procedure/trigger node and return (node, signature).
@@ -903,7 +915,8 @@ pub fn event_source(
         .get_cached_parse(file)
         .or_else(|| {
             let text = std::fs::read_to_string(file).ok()?;
-            let result = al_syntax::AlParser::parse_quick(&text);
+            let symbols = workspace.file_index.preprocessor_symbols_for(file);
+            let result = al_syntax::AlParser::parse_quick_with_symbols(&text, &symbols);
             Some((text, result.tree))
         })
         .ok_or_else(|| format!("Cannot read or parse '{}'", file.display()))?;
@@ -1258,6 +1271,58 @@ mod tests {
             }],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn invalid_utf8_source_falls_back_to_outline() {
+        use std::io::Write;
+        let workspace = Workspace::new();
+        let directory = tempfile::tempdir().unwrap();
+        let app_path = directory.path().join("Thing.app");
+        let manifest = r#"<?xml version="1.0" encoding="utf-8"?>
+<Package><App Id="00000000-0000-0000-0000-000000000077" Name="Thing App" Publisher="Test" Version="1.0.0.0" /></Package>"#;
+        let symbols = r#"{
+  "Tables": [
+    { "Id": 50100, "Name": "Thing", "Fields": [
+      { "Id": 1, "Name": "Id", "TypeDefinition": { "Name": "Integer" } }
+    ] }
+  ]
+}"#;
+        let mut embedded = b"table 50100 Thing { }".to_vec();
+        embedded.push(0xFF);
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"NAVX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&40u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 28]);
+        let mut archive_bytes = Vec::new();
+        {
+            let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut archive_bytes));
+            let options = zip::write::SimpleFileOptions::default();
+            archive.start_file("NavxManifest.xml", options).unwrap();
+            archive.write_all(manifest.as_bytes()).unwrap();
+            archive.start_file("SymbolReference.json", options).unwrap();
+            archive.write_all(symbols.as_bytes()).unwrap();
+            archive.start_file("src/Thing.Table.al", options).unwrap();
+            archive.write_all(&embedded).unwrap();
+            archive.finish().unwrap();
+        }
+        bytes.extend_from_slice(&archive_bytes);
+        std::fs::write(&app_path, bytes).unwrap();
+        workspace
+            .symbols
+            .load_packages(std::slice::from_ref(&app_path))
+            .expect("valid package");
+
+        let result = source(&workspace, "Thing", Some(ObjectKind::Table), None, None)
+            .expect("an extraction failure still gives the outline");
+        assert_eq!(result.src, SourceLevel::Outline);
+        assert_eq!(
+            result.source_availability,
+            SourceAvailability::GeneratedOutline
+        );
+        let note = result.note.unwrap_or_default();
+        assert!(note.contains("could not be read"), "{note}");
     }
 
     #[test]

@@ -403,6 +403,9 @@ internal class CodeAnalysisBridge
     // time, so the dependency symbols load on the first request only.
 
     private const int MaxCachedProjects = 4;
+    // Larger .al files are skipped when the project is loaded, so one huge
+    // sibling file cannot stall every request in the project.
+    private const long MaxProjectFileBytes = 16L * 1024 * 1024;
     private static readonly StringComparer PathComparer =
         OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
     private readonly Dictionary<string, ProjectCompilation> _projects = new(PathComparer);
@@ -470,7 +473,9 @@ internal class CodeAnalysisBridge
         if (project == null) return null;
         UpdateProjectTrees(project, root, openDocuments);
 
-        var tree = project.Trees[target].Tree;
+        if (!project.Trees.TryGetValue(target, out var entry))
+            throw new ArgumentException("target is not an AL file in the project");
+        var tree = entry.Tree;
         var model = GetSemanticModel(project.Compilation, tree);
         var diagnostics = ExtractDiagnostics(model, file, tree);
         if (analyzers.Count > 0) diagnostics.AddRange(RunAnalyzers(project.Compilation, analyzers, tree));
@@ -502,7 +507,9 @@ internal class CodeAnalysisBridge
         var openDocuments = ReadOpenDocuments(prms);
         openDocuments[target] = source;
         UpdateProjectTrees(project, root, openDocuments);
-        var tree = project.Trees[target].Tree;
+        if (!project.Trees.TryGetValue(target, out var entry))
+            throw new ArgumentException("target is not an AL file in the project");
+        var tree = entry.Tree;
         if (probe == null || probe == source) return (project.Compilation, tree);
 
         var probeTree = ParseProjectTree(probe, target, project);
@@ -528,6 +535,10 @@ internal class CodeAnalysisBridge
     private static string ProjectStamp(string root, string pkgCache)
     {
         var stamp = new StringBuilder(File.ReadAllText(Path.Combine(root, "app.json")));
+        var cacheRoot = string.IsNullOrEmpty(pkgCache)
+            ? ""
+            : Path.TrimEndingDirectorySeparator(Path.GetFullPath(pkgCache));
+        stamp.Append("\npackage cache|").Append(cacheRoot);
         if (!string.IsNullOrEmpty(pkgCache) && Directory.Exists(pkgCache))
         {
             foreach (var app in Directory.EnumerateFiles(pkgCache, "*.app").OrderBy(p => p, StringComparer.Ordinal))
@@ -702,6 +713,12 @@ internal class CodeAnalysisBridge
                     if (existing != null && existing.Length >= 0
                         && existing.Length == info.Length && existing.WriteTimeUtc == info.LastWriteTimeUtc)
                         continue;
+                    if (info.Length > MaxProjectFileBytes)
+                    {
+                        Console.Error.WriteLine($"skipped {path}: {info.Length} bytes exceeds the {MaxProjectFileBytes} byte limit");
+                        if (existing != null) { removed.Add(existing.Tree); project.Trees.Remove(path); }
+                        continue;
+                    }
                     text = File.ReadAllText(path);
                 }
                 catch (IOException)

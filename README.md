@@ -81,7 +81,7 @@ Symbol acquisition is native and parallel where it is safe:
 
 ### Less memory churn
 
-The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, on-demand member loading in the TUI, and `Arc<String>` document text keep editor workflows from making repeated copies or growing state without bound. Default completion results also have a small cache for the common "blank completion at top level" path.
+The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, on-demand member loading in the TUI, and `Arc<String>` document text keep editor workflows from making repeated copies or growing state without bound.
 
 ### Native Compile And Deterministic Build Loop
 
