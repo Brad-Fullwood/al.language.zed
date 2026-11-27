@@ -30,7 +30,7 @@ stage_08() {
 
   # 2. Publish through the dev endpoint.
   local prc=0
-  run_step "$s" publish 600 env -C "$PROJ" "$ALX" publish --config "Publish: CDX Sandbox" --json || prc=$?
+  run_step "$s" publish 600 env -C "$PROJ" "$ALX" publish --config "Publish: CDX Sandbox" --tenant "$CDX_TENANT" --json || prc=$?
   # The daemon reads BC_ACCESS_TOKEN from its own environment. One started earlier without the token
   # (stage 2 runs the NuGet route with the token unset) reports "Missing credentials". Restart it and retry.
   if [[ "$prc" != 0 ]] && grep -q 'Missing credentials' "$(step_log $s publish)"; then
@@ -38,7 +38,7 @@ stage_08() {
     cp "$(step_log $s publish)" "$OUT/$s/publish-first.log"
     run_step "$s" daemon-shutdown 60 env -C "$PROJ" "$ALX" daemon-shutdown --json
     prc=0
-    run_step "$s" publish 600 env -C "$PROJ" "$ALX" publish --config "Publish: CDX Sandbox" --json || prc=$?
+    run_step "$s" publish 600 env -C "$PROJ" "$ALX" publish --config "Publish: CDX Sandbox" --tenant "$CDX_TENANT" --json || prc=$?
   fi
   local body; body=$(tail -n +2 "$(step_log $s publish)")
   local pmsg; pmsg=$(jq -r '[.steps[]? | select(.success|not) | "\(.phase): \(.message)"] | join("; ")' <<<"$body" 2>/dev/null)

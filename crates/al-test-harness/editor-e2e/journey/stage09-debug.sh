@@ -34,8 +34,8 @@ stage_09() {
   # Line 19 is the SetRange statement in CountForCustomer (stage05), line 21 is its end;.
 
   # --- debugger: attach, breakpoint, state, history, stop ---
-  if journey_try "$s" debug-start 60 debug start --config "$attach"; then
-    journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 19 || true
+  if journey_try "$s" debug-start 60 debug start --config "$attach" --tenant "$CDX_TENANT"; then
+    journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 19 --tenant "$CDX_TENANT" || true
     # Stage 8 leaves its app installed until journey_cleanup runs before stage 10. A run of
     # stage 9 alone has no app on the server, so an unverified breakpoint is expected there.
     if grep -q 'unverified' "$(step_log $s debug-breakpoint)"; then
@@ -47,39 +47,38 @@ stage_09() {
     else
       record "$s" breakpoint-verified PASS "breakpoint verified on $bpfile line 19"
     fi
-    journey_try "$s" debug-state 60 debug state || true
-    journey_try "$s" debug-history 60 debug history || true
+    journey_try "$s" debug-state 60 debug state --tenant "$CDX_TENANT" || true
+    journey_try "$s" debug-history 60 debug history --tenant "$CDX_TENANT" || true
   else
     # Without a session the breakpoint call still shows whether it needs one.
-    journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 19 || true
+    journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 19 --tenant "$CDX_TENANT" || true
   fi
-  journey_try "$s" debug-stop 60 debug stop || true
+  journey_try "$s" debug-stop 60 debug stop --tenant "$CDX_TENANT" || true
 
   # --- snapshot: arm, status, finish ---
   local snap_rc=0
-  journey_alx "$s" snapshot-start 60 snapshot start --config "$attach" --break-on-next WebClient --snap "$bpfile:21" --json || snap_rc=$?
+  journey_alx "$s" snapshot-start 60 snapshot start --config "$attach" --break-on-next WebClient --snap "$bpfile:21" --tenant "$CDX_TENANT" --json || snap_rc=$?
   if [[ "$snap_rc" == 0 ]]; then
     local sb; sb=$(tail -n +2 "$(step_log $s snapshot-start)")
     record "$s" snapshot-start PASS "armed: context $(jq -r .debuggingContext <<<"$sb"), attach $(jq -r .attachKind <<<"$sb"), $(jq '.snappoints|length' <<<"$sb") snappoint(s)"
     jq -r '.warnings[]?' <<<"$sb" | while read -r w; do record "$s" snapshot-warning NIGGLE "$w"; done
-    journey_try "$s" snapshot-status 60 snapshot status --json || true
+    journey_try "$s" snapshot-status 60 snapshot status --tenant "$CDX_TENANT" --json || true
   else
     record "$s" snapshot-start FAIL "exit $snap_rc: $(journey_msg "$s" snapshot-start)"
-    journey_try "$s" snapshot-status 60 snapshot status --json || true
+    journey_try "$s" snapshot-status 60 snapshot status --tenant "$CDX_TENANT" --json || true
   fi
   # Always finish so nothing stays armed on the tenant.
-  journey_try "$s" snapshot-finish 60 snapshot finish --json || true
+  journey_try "$s" snapshot-finish 60 snapshot finish --tenant "$CDX_TENANT" --json || true
   journey_try "$s" snapshot-list 60 snapshot list --json || true
 
   # --- profiling: start, stop ---
-  # SaaS server URL as BC's web client base for the tenant. The token comes from BC_ACCESS_TOKEN, no password flags.
-  local server="https://businesscentral.dynamics.com/$CDX_TENANT/$CDX_ENV"
+  # The launch configuration names the server and company. The token comes from BC_ACCESS_TOKEN, no password flags.
   local prc=0
-  journey_alx "$s" profile-start 60 profile start --server "$server" --company "$CDX_COMPANY" --output-dir "$PROJ/profile" --json || prc=$?
+  journey_alx "$s" profile-start 60 profile start --config "$attach" --tenant "$CDX_TENANT" --json || prc=$?
   if [[ "$prc" == 0 ]]; then record "$s" profile-start PASS "exit 0: $(journey_msg "$s" profile-start)"; else record "$s" profile-start FAIL "exit $prc: $(journey_msg "$s" profile-start)"; fi
-  local sid; sid=$(tail -n +2 "$(step_log $s profile-start)" | jq -r '.sessionId // .session_id // empty' 2>/dev/null)
-  local -a stopargs=(profile stop --server "$server" --company "$CDX_COMPANY" --output-dir "$PROJ/profile" --json)
-  [[ -n "$sid" ]] && stopargs+=(--session-id "$sid")
+  local sid; sid=$(tail -n +2 "$(step_log $s profile-start)" | jq -r '.debuggingContext // empty' 2>/dev/null)
+  local -a stopargs=(profile stop --out "$PROJ/profile" --tenant "$CDX_TENANT" --json)
+  [[ -n "$sid" ]] && stopargs+=(--context "$sid")
   journey_try "$s" profile-stop 60 "${stopargs[@]}" || true
   local prof; prof=$(find "$PROJ/profile" -name '*.alcpuprofile' 2>/dev/null | head -n 1)
   if [[ -n "$prof" ]]; then
