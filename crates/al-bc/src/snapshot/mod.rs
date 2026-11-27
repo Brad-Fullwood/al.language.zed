@@ -5,7 +5,9 @@
 pub mod archive;
 pub mod state;
 
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Paths written by [`save_finished_snapshot`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +84,14 @@ async fn save_cpu_profile(
     }
 }
 
+/// Refuse bytes that are not a readable zip archive, such as a sign-in page a
+/// proxy answered with 200.
+pub fn check_zip(bytes: &[u8]) -> std::io::Result<()> {
+    zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map(|_| ())
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 /// `None` when the zip has no entry of that name (a sampling run that recorded
 /// nothing), so the zip is still saved.
 fn read_zip_entry(zip_bytes: &[u8], name: &str) -> std::io::Result<Option<Vec<u8>>> {
@@ -105,6 +115,77 @@ fn read_zip_entry(zip_bytes: &[u8], name: &str) -> std::io::Result<Option<Vec<u8
         ));
     }
     Ok(Some(out))
+}
+
+/// Counter for the names of temp recovery folders.
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// The folder `finish` writes a zip to when both the session store and the
+/// output folder refuse it. Under the user runtime dir it is
+/// `al-lsp/snapshot-recovery` (mode 0700). With no runtime dir, each call makes
+/// a new folder under the temp dir. It is a plain folder, because a `tempfile`
+/// folder would delete the zip on drop.
+pub fn private_recovery_dir() -> io::Result<PathBuf> {
+    recovery_dir_in(dirs::runtime_dir().as_deref(), &std::env::temp_dir())
+}
+
+fn recovery_dir_in(runtime: Option<&Path>, temp: &Path) -> io::Result<PathBuf> {
+    match runtime {
+        Some(runtime) => named_recovery_dir(&runtime.join("al-lsp").join("snapshot-recovery")),
+        None => new_temp_dir(temp),
+    }
+}
+
+fn named_recovery_dir(path: &Path) -> io::Result<PathBuf> {
+    dir_builder(true).create(path).map_err(|error| {
+        io::Error::new(
+            error.kind(),
+            format!(
+                "cannot create the recovery folder {}: {error}",
+                path.display()
+            ),
+        )
+    })?;
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        return Err(io::Error::other(format!(
+            "the recovery folder {} is a link or not a folder",
+            path.display()
+        )));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))?;
+    }
+    Ok(path.to_path_buf())
+}
+
+fn new_temp_dir(temp: &Path) -> io::Result<PathBuf> {
+    const ATTEMPTS: u32 = 100;
+    let pid = std::process::id();
+    let mut last_error = io::Error::other("no recovery folder name was free");
+    for _ in 0..ATTEMPTS {
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = temp.join(format!("al-lsp-snapshot-{pid}-{n}"));
+        match dir_builder(false).create(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => last_error = error,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last_error)
+}
+
+fn dir_builder(recursive: bool) -> std::fs::DirBuilder {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(recursive);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
 }
 
 #[cfg(test)]
@@ -203,6 +284,49 @@ mod tests {
         assert!(saved.cpu_profile.is_none());
         let error = saved.profile_error.expect("profile error is reported");
         assert!(error.contains("The CPU profile was not saved"), "{error}");
+    }
+
+    #[test]
+    fn check_zip_accepts_a_zip_and_refuses_html() {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file("a.txt", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut zip, b"hello").unwrap();
+        let bytes = zip.finish().unwrap().into_inner();
+        check_zip(&bytes).unwrap();
+        assert!(check_zip(b"<html>login</html>").is_err());
+    }
+
+    #[test]
+    fn recovery_dir_under_runtime_dir_is_private() {
+        let runtime = tempfile::tempdir().unwrap();
+        let dir = recovery_dir_in(Some(runtime.path()), runtime.path()).unwrap();
+        assert_eq!(dir, runtime.path().join("al-lsp").join("snapshot-recovery"));
+        assert!(dir.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&dir).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+    }
+
+    #[test]
+    fn recovery_dir_without_runtime_dir_is_a_new_temp_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let first = recovery_dir_in(None, temp.path()).unwrap();
+        let second = recovery_dir_in(None, temp.path()).unwrap();
+        assert_ne!(first, second);
+        for dir in [&first, &second] {
+            assert!(dir.starts_with(temp.path()), "{}", dir.display());
+            assert!(dir.is_dir());
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mode = std::fs::metadata(dir).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o700);
+            }
+        }
     }
 
     use super::*;

@@ -546,3 +546,26 @@ fn profiling_attach_body_carries_execution_context_kind_and_interval() {
     let body: serde_json::Value = serde_json::from_str(&attach_body(&request)).unwrap();
     assert!(body.get("Kind").is_none() && body.get("SamplingInterval").is_none());
 }
+
+#[tokio::test]
+async fn finish_with_html_body_is_an_error() {
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let server = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(200).set_body_string("<html>login</html>"))
+        .mount(&server)
+        .await;
+    let err = snapshot_finish(
+        &reqwest::Client::new(),
+        &config_for(&server, TENANT),
+        TOKEN,
+        false,
+        "ed75bfc5-a198-4fe6-ad81-54b95d34965a",
+        Some(COOKIE),
+    )
+    .await
+    .unwrap_err();
+    let text = err.to_string();
+    assert!(text.contains("not a zip (18 bytes)"), "{text}");
+}

@@ -682,6 +682,18 @@ pub async fn snapshot_finish(
     let bytes = al_bc::bc_client::read_binary_body_capped(sent.response)
         .await
         .map_err(|e| bad_response(OP, &correlation_id, e.to_string()))?;
+    if !bytes.is_empty() {
+        al_bc::snapshot::check_zip(&bytes).map_err(|_| {
+            bad_response(
+                OP,
+                &correlation_id,
+                format!(
+                    "finish returned a body that is not a zip ({} bytes)",
+                    bytes.len()
+                ),
+            )
+        })?;
+    }
     Ok(SnapshotFinishResult {
         zip: (!bytes.is_empty()).then_some(bytes),
         sampling,
