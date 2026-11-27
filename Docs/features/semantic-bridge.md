@@ -62,8 +62,8 @@ plausible empty results.
   helper Microsoft's language server uses for its `File` analysis scope. A file outside the project
   folder, such as a rendered symbol file, is compiled alone.
 - **Project context:** hover and completion forward `al.packageCachePath`, or the discovered project's
-  package directory. They still compile the document alone, so they do not see objects declared in
-  other project files.
+  package directory, and the project root. Inside the project they use the same project compilation
+  as diagnostics, so they see objects declared in other project files.
 - **Resource limits:** 16 MiB per document, 32 MiB per JSON request, 256 MiB max response. Paths crossing
   the JSON/FFI boundary must be valid UTF-8 and fail explicitly otherwise.
 
@@ -92,8 +92,8 @@ true) further gates whether the bridge is initialized at all.
 
 The bridge executes Microsoft's `CodeAnalysis` engine and compiler/analyzer diagnostic APIs. It does
 not reimplement their binding rules. It is not identical to the complete official AL Language Server:
-diagnostics come from a project compilation configured by `alc`'s own parser, hover and completion
-from a single-document compilation, while the official server owns more project/session configuration
+diagnostics, hover and completion come from a project compilation configured by `alc`'s own parser,
+while the official server owns more project/session configuration
 and editor behavior. Claims of parity should
 therefore be scoped to the CodeAnalysis operations actually exercised by the live contract test, not
 the whole official extension.
