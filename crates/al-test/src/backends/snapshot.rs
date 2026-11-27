@@ -667,6 +667,7 @@ mod tests {
             line,
             condition: None,
             verified: true,
+            message: None,
         }
     }
 

@@ -814,10 +814,18 @@ fn validate_snapshot(params: Option<&Value>, result: &Value) -> Result<(), Strin
                 &[
                     ("debuggingContext", Kind::String),
                     ("status", Kind::String),
-                    ("secondsSinceStarted", Kind::Unsigned),
                     ("warnings", Kind::Array),
                 ],
             )?;
+            // The daemon sends null until the server has answered Started once
+            // (SnapshotState::seconds_since_started), and the text printer reads
+            // a missing value as 0. Journey finding journey-05.
+            if result.get("secondsSinceStarted").is_none() {
+                return Err(
+                    "snapshot.status is missing required field 'secondsSinceStarted'".to_string(),
+                );
+            }
+            optional_kind(result, "secondsSinceStarted", Kind::Unsigned, true)?;
             string_array_field(result, "warnings")
         }
         "finish" => {
@@ -1747,6 +1755,19 @@ fn type_name(value: &Value) -> &'static str {
 mod tests {
     use super::validate;
 
+    /// Daemon answer to `snapshot status` for a session that has not started,
+    /// recorded from the CDX Sandbox (journey-05).
+    #[test]
+    fn snapshot_status_accepts_the_recorded_not_started_answer() {
+        let recorded: serde_json::Value = serde_json::from_str(
+            r#"{"cmd": "status", "debuggingContext": "7d420378-9356-42d6-81b3-9b6b5f52dbbe",
+            "status": "Initialized", "secondsSinceStarted": null, "warnings": []}"#,
+        )
+        .unwrap();
+        let params = serde_json::json!({ "cmd": "status" });
+        assert!(validate("snapshot", Some(&params), &recorded).is_ok());
+    }
+
     #[test]
     fn snapshot_responses_follow_the_daemon_shapes() {
         let ok = |cmd: &str, value: serde_json::Value| {
@@ -1813,6 +1834,13 @@ mod tests {
                 "status",
                 serde_json::json!({"debuggingContext": "c", "status": "Started",
                 "secondsSinceStarted": "3", "warnings": []})
+            )
+            .is_err()
+        );
+        assert!(
+            ok(
+                "status",
+                serde_json::json!({"debuggingContext": "c", "status": "Started", "warnings": []})
             )
             .is_err()
         );

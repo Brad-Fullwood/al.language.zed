@@ -902,6 +902,45 @@ mod clap_wiring_tests {
     }
 
     #[test]
+    fn profile_start_takes_config_tenant_and_interval() {
+        use super::super::ProfileCommands as P;
+        let cli = parse(&[
+            "--tenant",
+            "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d",
+            "profile",
+            "start",
+            "--config",
+            "Attach: CDX Sandbox",
+            "--break-on-next",
+            "WebServiceClient",
+            "--interval",
+            "50",
+        ])
+        .expect("profile start parses");
+        assert_eq!(
+            cli.tenant.as_deref(),
+            Some("1b7a9471-d313-4aa4-99e8-7a6c762c8e7d")
+        );
+        match cli.command {
+            Commands::Profile {
+                subcmd:
+                    P::Start {
+                        config,
+                        break_on_next,
+                        interval,
+                        ..
+                    },
+            } => {
+                assert_eq!(config.as_deref(), Some("Attach: CDX Sandbox"));
+                assert_eq!(break_on_next, "WebServiceClient");
+                assert_eq!(interval, Some(50));
+            }
+            _ => panic!("expected profile start"),
+        }
+        assert!(parse(&["profile", "start", "--interval", "7"]).is_err());
+    }
+
+    #[test]
     fn snapshot_subcommands_parse() {
         use super::super::SnapshotCommands as S;
         let cli = parse(&[
@@ -959,14 +998,34 @@ mod clap_wiring_tests {
 
         let cli = parse(&["snapshot", "status", "--context", "g"]).unwrap();
         assert!(
-            matches!(cli.command, Commands::Snapshot { subcmd: S::Status { context } }
-            if context.as_deref() == Some("g"))
+            matches!(cli.command, Commands::Snapshot { subcmd: S::Status { context, allow_production } }
+            if context.as_deref() == Some("g") && !allow_production)
         );
+        let cli = parse(&["snapshot", "status", "--allow-production"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Snapshot {
+                subcmd: S::Status {
+                    allow_production: true,
+                    ..
+                }
+            }
+        ));
         let cli = parse(&["snapshot", "finish", "--out", "caps"]).unwrap();
         assert!(
-            matches!(cli.command, Commands::Snapshot { subcmd: S::Finish { context, out } }
-            if context.is_none() && out.as_deref() == Some("caps"))
+            matches!(cli.command, Commands::Snapshot { subcmd: S::Finish { context, out, allow_production } }
+            if context.is_none() && out.as_deref() == Some("caps") && !allow_production)
         );
+        let cli = parse(&["snapshot", "finish", "--allow-production"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Snapshot {
+                subcmd: S::Finish {
+                    allow_production: true,
+                    ..
+                }
+            }
+        ));
         let cli = parse(&["snapshot", "list"]).unwrap();
         assert!(matches!(
             cli.command,

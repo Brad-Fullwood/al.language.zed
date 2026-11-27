@@ -438,6 +438,7 @@ dependencies = [
  "al-workspace",
  "libc",
  "portable-pty",
+ "reqwest",
  "serde_json",
  "tempfile",
  "tokio",

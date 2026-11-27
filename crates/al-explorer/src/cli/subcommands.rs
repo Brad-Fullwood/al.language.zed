@@ -138,6 +138,10 @@ pub enum SnapshotCommands {
         /// Debugging context (GUID). Default: the latest session.
         #[arg(long)]
         context: Option<String>,
+
+        /// Allow a Production environment
+        #[arg(long = "allow-production")]
+        allow_production: bool,
     },
     /// Finish a snapshot session and save the snapshot zip
     Finish {
@@ -147,6 +151,10 @@ pub enum SnapshotCommands {
         /// Folder for the zip, inside the project. Default: `.snapshots`.
         #[arg(long)]
         out: Option<String>,
+
+        /// Allow a Production environment
+        #[arg(long = "allow-production")]
+        allow_production: bool,
     },
     /// List the snapshot sessions started from this machine
     List,
@@ -181,8 +189,8 @@ pub enum ProfileCommands {
         /// Instrumentation gives a snapshot zip that `analyze` cannot read.
         #[arg(long, default_value = "sampling", value_parser = ["sampling", "instrumentation"])]
         kind: String,
-        /// Sampling interval in milliseconds
-        #[arg(long, value_parser = ["50", "100", "150"])]
+        /// Sampling interval in milliseconds: 50, 100 or 150 (the daemon rejects other values)
+        #[arg(long, value_parser = clap::value_parser!(u64).range(50..=150))]
         interval: Option<u64>,
         /// User to profile, as a user security id (GUID) or a user name
         #[arg(long)]

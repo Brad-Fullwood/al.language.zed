@@ -75,6 +75,10 @@ pub struct BreakpointInfo {
     pub line: u32,
     pub condition: Option<String>,
     pub verified: bool,
+    /// Why the breakpoint is not verified. Same meaning as the DAP
+    /// `Breakpoint.message` field (Microsoft's `DebugAdapterContract.Breakpoint`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +175,7 @@ mod tests {
             line: 10,
             condition: Some("Rec.\"No.\" = '10000'".to_string()),
             verified: true,
+            message: None,
         };
         let json = serde_json::to_string(&bp).unwrap();
         let parsed: BreakpointInfo = serde_json::from_str(&json).unwrap();

@@ -89,8 +89,20 @@ pub(crate) struct App {
 
 impl App {
     pub(crate) fn new() -> App {
-        let project_root =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        Self::new_in(std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")))
+    }
+
+    /// An app for a test. Its project root is a directory with no `app.json`,
+    /// so no code path it reaches can start an `al-lsp daemon`: the client
+    /// refuses such a directory. Tests used the working directory, which
+    /// `cargo test -p al-explorer` runs in `crates/al-explorer`, and left
+    /// daemons running there.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> App {
+        Self::new_in(std::env::temp_dir().join(format!("al-explorer-test-{}", std::process::id())))
+    }
+
+    fn new_in(project_root: std::path::PathBuf) -> App {
         App {
             view_mode: ViewMode::ObjectBrowser,
             active_pane: ActivePane::Search,

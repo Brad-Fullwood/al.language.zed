@@ -46,6 +46,9 @@ run_step() {
 
 # step_log STAGE ITEM -> path of the captured log
 step_log() { echo "$OUT/$1/$2.log"; }
+# step_body LOG: the step's output without the command line run_step writes first and without the
+# tenant notice a connecting command prints before its answer ("tenant CDX (<guid>) demo").
+step_body() { tail -n +2 "$1" | grep -Ev '^tenant .* \([0-9a-f-]{36}\) [a-z]+$'; }
 
 # check_cdx_launch FILE: fails unless every tenant in the launch.json is the CDX tenant.
 check_cdx_launch() {

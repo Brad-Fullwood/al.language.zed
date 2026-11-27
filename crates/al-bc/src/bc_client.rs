@@ -118,7 +118,8 @@ pub enum BcClientError {
     NoConfig,
     #[error(
         "Missing credentials: set BC_ACCESS_TOKEN (or BC_TOKEN) for AAD, or BC_USERNAME and BC_PASSWORD for UserPassword. \
-         (AAD has no interactive sign-in flow here; a pre-provisioned token is required.)"
+         (AAD has no interactive sign-in flow here; a pre-provisioned token is required.){}",
+        crate::http_auth::daemon_missing_credentials_hint()
     )]
     MissingCredentials,
     #[error("Invalid bearer-token environment: {0}")]
@@ -270,28 +271,101 @@ pub(crate) const MAX_ERROR_BODY_BYTES: u64 = 64 * 1024; // 64 KiB — far more t
 /// Read an error response body, refusing to buffer more than
 /// `MAX_ERROR_BODY_BYTES`, then scrub/truncate it via `sanitize_error_body`.
 ///
-/// Mirrors the `read_json_body_capped` hardening pattern: a body whose
-/// advertised `Content-Length` exceeds the cap (or that omits the header
-/// entirely) is not buffered at all, since `reqwest`'s `text()`/`bytes()`
-/// would otherwise pull the whole body into memory. A server that lies about a
-/// small `Content-Length` and then streams a huge body is still bounded by the
-/// post-read size re-check.
-pub async fn read_error_body_capped(response: reqwest::Response) -> String {
-    match response.content_length() {
-        Some(len) if len <= MAX_ERROR_BODY_BYTES => {
-            let bytes = match response.bytes().await {
-                Ok(b) => b,
-                Err(_) => return String::new(),
-            };
-            // Defend against a lied Content-Length: only retain the cap.
-            let end = (MAX_ERROR_BODY_BYTES as usize).min(bytes.len());
-            sanitize_error_body(&String::from_utf8_lossy(&bytes[..end]))
+/// A body whose advertised `Content-Length` exceeds the cap is not read. A body
+/// with no `Content-Length` (BC's gateway sends some errors that way) or a
+/// small one is streamed in chunks and cut at the cap, so a server that lies
+/// about the length stays bounded too.
+pub async fn read_error_body_capped(mut response: reqwest::Response) -> String {
+    if let Some(len) = response.content_length() {
+        if len > MAX_ERROR_BODY_BYTES {
+            return sanitize_error_body(&format!(
+                "<error body {len} bytes exceeds {MAX_ERROR_BODY_BYTES} byte cap — not read>"
+            ));
         }
-        Some(len) => sanitize_error_body(&format!(
-            "<error body {len} bytes exceeds {MAX_ERROR_BODY_BYTES} byte cap — not read>"
-        )),
-        None => sanitize_error_body("<error body has no Content-Length — not read>"),
     }
+    // No Content-Length (chunked, as BC sends some 404 pages) or a small one:
+    // stream chunks and stop at the cap, so a server that lies about the
+    // length or sends no length is still bounded.
+    let cap = MAX_ERROR_BODY_BYTES as usize;
+    let mut bytes: Vec<u8> = Vec::new();
+    while bytes.len() < cap {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let room = cap - bytes.len();
+                bytes.extend_from_slice(&chunk[..chunk.len().min(room)]);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    sanitize_error_body(&String::from_utf8_lossy(&bytes))
+}
+
+/// Query and target of one `POST dev/apps` upload, shared by the `al-publish`
+/// client and the DAP launch publish so the URL is built in one place.
+pub struct DevAppsUpload<'a> {
+    /// The dev endpoint, `.../dev`, without a trailing slash.
+    pub dev_url: &'a str,
+    /// Value for `?tenant=`, omitted when `None`.
+    pub tenant: Option<&'a str>,
+    pub schema_update_mode: &'a str,
+    pub dependency_publishing_option: &'a str,
+    /// Adds `IsRad=true` (RAD incremental deploy).
+    pub is_rad: bool,
+}
+
+/// `POST {dev_url}/apps` with the `.app` as a multipart part named after the
+/// file (`AppsApiClient.cs:61`). Success is the HTTP status. On failure the
+/// error body is read through [`read_error_body_capped`]. `authorize` adds the
+/// caller's credentials to the request.
+/// Standard route checked: reqwest multipart covers the body, no custom encoder.
+pub async fn upload_dev_app(
+    client: &Client,
+    upload: &DevAppsUpload<'_>,
+    app_path: &Path,
+    authorize: impl FnOnce(reqwest::RequestBuilder) -> Result<reqwest::RequestBuilder, BcClientError>,
+) -> Result<(), BcClientError> {
+    let url = format!("{}/apps", upload.dev_url);
+    let app_bytes = read_app_capped(app_path).await?;
+    let file_name = app_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("extension.app")
+        .to_string();
+
+    debug!(url = %url, file = %file_name, bytes = app_bytes.len(), is_rad = upload.is_rad, "Publishing app");
+
+    let part = reqwest::multipart::Part::bytes(app_bytes).file_name(file_name.clone());
+    let form = reqwest::multipart::Form::new().part(file_name, part);
+    let mut query: Vec<(&str, &str)> = Vec::new();
+    if let Some(tenant) = upload.tenant {
+        query.push(("tenant", tenant));
+    }
+    query.push(("SchemaUpdateMode", upload.schema_update_mode));
+    if upload.is_rad {
+        query.push(("IsRad", "true"));
+    }
+    query.push((
+        "DependencyPublishingOption",
+        upload.dependency_publishing_option,
+    ));
+
+    let req = authorize(client.post(&url).query(&query).multipart(form))?;
+    let response = req.send().await?;
+    let status = response.status();
+    if status.is_success() {
+        return Ok(());
+    }
+    let message = read_error_body_capped(response).await;
+    if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
+        return Err(BcClientError::AuthenticationFailed {
+            status: status.as_u16(),
+            message,
+        });
+    }
+    Err(BcClientError::ServerError {
+        status: status.as_u16(),
+        message,
+    })
 }
 
 /// HTTP client for the BC Dev API.
@@ -337,37 +411,19 @@ impl BcClient {
     }
 
     async fn post_dev_apps(&self, app_path: &Path, is_rad: bool) -> Result<(), BcClientError> {
-        let url = format!("{}/dev/apps", self.base_url);
-        let app_bytes = read_app_capped(app_path).await?;
-        let file_name = app_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("extension.app")
-            .to_string();
-
-        debug!(url = %url, file = %file_name, bytes = app_bytes.len(), is_rad, "Publishing app");
-
-        // Microsoft names the form part after the file (`AppsApiClient.cs:61`).
+        let dev_url = format!("{}/dev", self.base_url);
         // Query values are the lower-cased enum names (`AppsApiClient.cs:53,67`).
-        // The standard route (reqwest multipart) covers the body, no custom encoder.
-        let part = reqwest::multipart::Part::bytes(app_bytes).file_name(file_name.clone());
-        let form = reqwest::multipart::Form::new().part(file_name, part);
-        let mut query = vec![("SchemaUpdateMode", "synchronize")];
-        if is_rad {
-            query.push(("IsRad", "true"));
-        }
-        query.push(("DependencyPublishingOption", "default"));
-
-        let mut req = self.client.post(&url).query(&query).multipart(form);
-        req = self.apply_auth(req)?;
-        req = self.apply_tenant_query(req);
-
-        let response = req.send().await?;
-        let status = response.status();
-        if status.is_success() {
-            return Ok(());
-        }
-        self.map_error_response(status, response).await
+        let upload = DevAppsUpload {
+            dev_url: &dev_url,
+            tenant: self
+                .tenant
+                .as_deref()
+                .filter(|t| !t.is_empty() && *t != "default"),
+            schema_update_mode: "synchronize",
+            dependency_publishing_option: "default",
+            is_rad,
+        };
+        upload_dev_app(&self.client, &upload, app_path, |req| self.apply_auth(req)).await
     }
 
     fn apply_auth(
@@ -414,49 +470,6 @@ impl BcClient {
             }
         }
         Ok(req)
-    }
-
-    /// Attach the tenant as the `?tenant=` query parameter BC's dev endpoints
-    /// actually read (see `launch.rs::dev_packages_url`, which the
-    /// symbol-download path uses) — NOT a custom header. An `X-Tenant`
-    /// header is not recognised by BC and multitenant on-prem publishes would
-    /// silently target the default tenant instead.
-    fn apply_tenant_query(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.tenant {
-            Some(t) if !t.is_empty() && t != "default" => req.query(&[("tenant", t.as_str())]),
-            _ => req,
-        }
-    }
-
-    async fn map_error_response<T>(
-        &self,
-        status: StatusCode,
-        response: reqwest::Response,
-    ) -> Result<T, BcClientError> {
-        // Read + scrub via the capped reader so a hostile BC server cannot
-        // stream a multi-gigabyte error body that `response.text()` would
-        // buffer entirely into memory before truncation. The
-        // capped reader rejects oversize/absent Content-Length without
-        // buffering and re-checks the actual size post-read, then runs
-        // `sanitize_error_body` itself — never propagating the full BC error
-        // body into logs/JSON-RPC responses. BC servers can
-        // echo request URL parameters (incl. tenant) into error pages, and a
-        // verbose 401 page sometimes mirrors the Authorization header family;
-        // we keep enough text to be useful for debugging without leaving a
-        // tail of unbounded credential surface.
-        let message = read_error_body_capped(response).await;
-
-        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err(BcClientError::AuthenticationFailed {
-                status: status.as_u16(),
-                message,
-            });
-        }
-
-        Err(BcClientError::ServerError {
-            status: status.as_u16(),
-            message,
-        })
     }
 }
 
@@ -976,6 +989,97 @@ mod tests {
         );
     }
 
+    /// Serve one raw HTTP response with no Content-Length (the body ends when
+    /// the connection closes, as with BC's 404 pages from the gateway).
+    async fn serve_without_content_length(head: &'static str, body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 65536];
+            let _ = sock.read(&mut buf).await;
+            let reply = format!("{head}\r\nConnection: close\r\n\r\n{body}");
+            sock.write_all(reply.as_bytes()).await.unwrap();
+            let _ = sock.shutdown().await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn read_error_body_capped_reads_a_body_without_content_length() {
+        let url = serve_without_content_length(
+            "HTTP/1.1 404 Not Found",
+            "{\"error\":{\"code\":\"NotFound\",\"message\":\"No HTTP resource was found\"}}",
+        )
+        .await;
+        let resp = reqwest::Client::new().post(&url).send().await.unwrap();
+        assert!(resp.content_length().is_none());
+        let msg = read_error_body_capped(resp).await;
+        assert!(msg.contains("No HTTP resource was found"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn upload_dev_app_reports_a_404_that_has_no_content_length() {
+        // Recorded from CDX 2026-10-27: the gateway answers an unknown dev route
+        // with 404, no Content-Length and an empty body. The error carries the
+        // status, not a "not read" sentinel.
+        let url = serve_without_content_length("HTTP/1.1 404 Not Found", "").await;
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+        let upload = DevAppsUpload {
+            dev_url: &format!("{url}/dev"),
+            tenant: None,
+            schema_update_mode: "synchronize",
+            dependency_publishing_option: "default",
+            is_rad: false,
+        };
+        let err = upload_dev_app(&reqwest::Client::new(), &upload, &app, Ok)
+            .await
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(text.contains("404"), "{text}");
+        assert!(!text.contains("not read"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn upload_dev_app_builds_the_dev_apps_url_and_query() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v2.0/T/Sandbox/dev/apps"))
+            .and(wiremock::matchers::query_param("tenant", "T"))
+            .and(wiremock::matchers::query_param(
+                "SchemaUpdateMode",
+                "forcesync",
+            ))
+            .and(wiremock::matchers::query_param("IsRad", "true"))
+            .and(wiremock::matchers::query_param(
+                "DependencyPublishingOption",
+                "default",
+            ))
+            .and(wiremock::matchers::header("authorization", "Bearer tok"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+        let upload = DevAppsUpload {
+            dev_url: &format!("{}/v2.0/T/Sandbox/dev", server.uri()),
+            tenant: Some("T"),
+            schema_update_mode: "forcesync",
+            dependency_publishing_option: "default",
+            is_rad: true,
+        };
+        upload_dev_app(&reqwest::Client::new(), &upload, &app, |r| {
+            Ok(r.bearer_auth("tok"))
+        })
+        .await
+        .unwrap();
+    }
+
     #[tokio::test]
     async fn read_error_body_capped_refuses_oversize_content_length() {
         // An error body whose advertised length exceeds the 64 KiB cap is
@@ -1023,8 +1127,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_response_error_path_uses_capped_error_reader() {
-        // The non-2xx branch routes through `map_error_response`, which must
-        // use `read_error_body_capped`. An
+        // The non-2xx branch of `upload_dev_app` must read the body through
+        // `read_error_body_capped`. An
         // error body advertising a Content-Length above the 64 KiB cap must
         // NOT be buffered — the returned message carries the sentinel instead
         // of the body.
@@ -1182,8 +1286,8 @@ mod tests {
         // The mock has NO query_param matcher: it must match regardless of
         // whether wiremock decides to inspect the query string, but the real
         // assertion is that request-building itself doesn't panic/error for
-        // the "default" and "" tenant sentinels, mirroring `apply_tenant_query`'s
-        // skip condition.
+        // the "default" and "" tenant sentinels, mirroring the tenant filter in
+        // `BcClient::post_dev_apps`.
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/BC/dev/apps"))
             .respond_with(

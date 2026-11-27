@@ -155,7 +155,7 @@ and writes paths only inside the project it has loaded. See
 | --- | --- | --- |
 | `debug` | `start [--config]`, `breakpoint <file> <line> [--condition]`, `state`, `eval <expr>`, `continue`, `step [over\|into\|out]`, `history [--var]`, `stop` | Drive a debug session |
 | `snapshot` | `start [--config <name>] --break-on-next <WebClient\|WebServiceClient\|Background\|ClientService> [--snap <spec>]... [--user] [--session-id] [--verbosity snappoint\|full] [--allow-production]`, `status [--context]`, `finish [--context] [--out]`, `list`, `show <zip> [--vars] [--fields] [--stop]` | Business Central snapshot debugging, see [snapshot-debugging](../features/snapshot-debugging.md) |
-| `profile` | `start [--kind sampling\|instrumentation] [--interval 50\|100\|150] [--break-on-next] [--user] [--config]`, `status [--context]`, `stop [--context] [--out]`, `analyze <path> [--top N]` | CPU profiling through the snapshot debugger. `stop` saves `<context>.alcpuprofile` for sampling |
+| `profile` | `start [--config <launch configuration>] [--kind sampling\|instrumentation] [--interval 50\|100\|150] [--break-on-next] [--user]` (server and token come from the launch configuration, `--tenant` is the global flag), `status [--context]`, `stop [--context] [--out]`, `analyze <path> [--top N]` | CPU profiling through the snapshot debugger. `stop` saves `<context>.alcpuprofile` for sampling |
 
 ## Tests
 

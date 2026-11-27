@@ -254,7 +254,7 @@ impl BcServerClient {
                 Err(BcServerError::AuthenticationFailed {
                     status,
                     // Truncate and scrub: never propagate the full BC error body.
-                    // This is the same helper used by `bc_client::map_error_response`.
+                    // This is the same helper `bc_client::upload_dev_app` uses.
                     message: read_error_body_capped(response).await,
                 })
             }

@@ -539,7 +539,7 @@ mod details_items_tests {
     }
 
     fn app_with(entry: types::SymbolEntry) -> App {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.current_objects = vec![Arc::new(entry)];
         app.object_list_state.select(Some(0));
         app
@@ -645,7 +645,7 @@ mod details_items_tests {
 
     #[test]
     fn no_selection_renders_the_placeholder() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.update_details_items();
         assert_eq!(rendered(&app), vec!["No object selected".to_string()]);
     }

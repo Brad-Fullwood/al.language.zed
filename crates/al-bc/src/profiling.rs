@@ -468,6 +468,21 @@ mod tests {
         assert_eq!(result.hotspots.len(), 0);
     }
 
+    /// The profile body a CDX Sandbox returned when no sampled session ran
+    /// (recorded 2026-10-27): no nodes, no times.
+    #[tokio::test]
+    async fn analyze_profile_file_accepts_the_recorded_empty_cdx_profile() {
+        let path = std::env::temp_dir().join(format!(
+            "al-profiling-cdx-empty-{}.alcpuprofile",
+            std::process::id()
+        ));
+        std::fs::write(&path, br#"{"kind":1}"#).unwrap();
+        let result = analyze_profile_file(&path, 10).await.unwrap();
+        assert!(result.hotspots.is_empty());
+        assert_eq!(result.duration_ms, 0.0);
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[tokio::test]
     async fn analyze_profile_file_reads_and_sets_path() {
         let dir = std::env::temp_dir().join(format!(

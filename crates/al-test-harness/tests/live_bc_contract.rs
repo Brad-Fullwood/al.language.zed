@@ -84,10 +84,21 @@ fn breakpoint_path(project: &Path, configured: &str) -> AnyResult<PathBuf> {
     Ok(canonical)
 }
 
-fn cli_json(project: &Path, args: &[&str]) -> AnyResult<Value> {
+/// Run `al-explorer --json <args> --tenant <tenant>` in the project. Every call
+/// types the tenant GUID, as the CLI requires for any command that may connect.
+fn cli_json(contract: &LiveContract, args: &[&str]) -> AnyResult<Value> {
+    let project = &contract.project;
+    let tenant = contract.tenant()?;
+    let deadline = contract.timeout_ms.to_string();
     let output = Command::new(al_explorer_binary())
         .arg("--json")
         .args(args)
+        .args([
+            "--tenant",
+            tenant.as_str(),
+            "--timeout-ms",
+            deadline.as_str(),
+        ])
         .current_dir(project)
         .output()
         .map_err(|error| failure(format!("run al-explorer {}: {error}", args.join(" "))))?;
@@ -160,6 +171,15 @@ struct LiveContract {
 }
 
 impl LiveContract {
+    /// The tenant GUID the launch configuration names.
+    fn tenant(&self) -> AnyResult<String> {
+        self.server
+            .tenant
+            .clone()
+            .filter(|tenant| !tenant.trim().is_empty())
+            .ok_or_else(|| failure("UNAVAILABLE: the launch configuration has no tenant").into())
+    }
+
     fn from_env() -> AnyResult<Self> {
         let project = PathBuf::from(required_env("AL_LIVE_BC_PROJECT")?).canonicalize()?;
         if !project.join("app.json").is_file() {
@@ -605,7 +625,7 @@ fn exercise_cli_live_test_and_snapshots(contract: &LiveContract) -> AnyResult<()
     let codeunit_id_string = contract.codeunit_id.to_string();
     let timeout_string = contract.timeout_ms.to_string();
     let live_run = cli_json(
-        &contract.project,
+        contract,
         &[
             "test-run",
             &codeunit_id_string,
@@ -631,7 +651,7 @@ fn exercise_cli_live_test_and_snapshots(contract: &LiveContract) -> AnyResult<()
     let snapshot_string = snapshot.to_string_lossy().into_owned();
     let breakpoint = format!("{}:{}", contract.breakpoint_file, contract.breakpoint_line);
     let capture = cli_json(
-        &contract.project,
+        contract,
         &[
             "test-snapshot",
             "capture",
@@ -656,10 +676,7 @@ fn exercise_cli_live_test_and_snapshots(contract: &LiveContract) -> AnyResult<()
         ))
         .into());
     }
-    let validated = cli_json(
-        &contract.project,
-        &["test-snapshot", "validate", &snapshot_string],
-    )?;
+    let validated = cli_json(contract, &["test-snapshot", "validate", &snapshot_string])?;
     if validated["sampleCount"].as_u64().unwrap_or(0) == 0 {
         return Err(failure(format!(
             "captured snapshot did not validate with samples: {validated}"
@@ -667,7 +684,7 @@ fn exercise_cli_live_test_and_snapshots(contract: &LiveContract) -> AnyResult<()
         .into());
     }
     let replay = cli_json(
-        &contract.project,
+        contract,
         &[
             "test-snapshot",
             "replay",
@@ -690,7 +707,7 @@ fn exercise_cli_live_test_and_snapshots(contract: &LiveContract) -> AnyResult<()
         .into());
     }
     let diff = cli_json(
-        &contract.project,
+        contract,
         &["test-snapshot", "diff", &snapshot_string, &snapshot_string],
     )?;
     if diff["divergences"]
@@ -795,6 +812,13 @@ fn repository_live_fixture_builds_and_routes_the_exact_test_to_live_bc() -> AnyR
         .into());
     }
 
+    // The API page has SourceTable Customer, which needs the base app symbols
+    // that the live run downloads first. This offline build checks the rest.
+    let api_page = temp.path().join(SNAPPOINT_FILE);
+    if !std::fs::read_to_string(&api_page)?.contains("LIVE_BC_SNAPPOINT") {
+        return Err(failure("repository live fixture API page has no snappoint marker").into());
+    }
+    std::fs::remove_file(&api_page)?;
     let build = al_compile::native_compile(temp.path());
     if !build.success {
         return Err(failure(format!(
@@ -825,7 +849,7 @@ fn repository_live_fixture_builds_and_routes_the_exact_test_to_live_bc() -> AnyR
     let exact = classified
         .iter()
         .find(|entry| {
-            entry.codeunit_id == 50100
+            entry.codeunit_id == 98100
                 && entry.codeunit_name == "Live Contract Tests"
                 && entry.method_name == "PublishDebugAndSnapshot"
         })
@@ -908,12 +932,427 @@ fn repository_live_fixture_rejects_an_unsafe_tenant_before_network() -> AnyResul
     Ok(())
 }
 
+/// What one contract step reports.
+enum Outcome {
+    Pass(String),
+    Skip(String),
+}
+
+struct StepReport {
+    name: &'static str,
+    api: &'static str,
+    result: Result<Outcome, String>,
+}
+
+impl StepReport {
+    fn status(&self) -> &'static str {
+        match &self.result {
+            Ok(Outcome::Pass(_)) => "PASS",
+            Ok(Outcome::Skip(_)) => "SKIP",
+            Err(_) => "FAIL",
+        }
+    }
+
+    fn detail(&self) -> String {
+        match &self.result {
+            Ok(Outcome::Pass(detail)) | Ok(Outcome::Skip(detail)) => detail.clone(),
+            Err(message) => message.clone(),
+        }
+    }
+}
+
+fn pass(detail: impl Into<String>) -> AnyResult<Outcome> {
+    Ok(Outcome::Pass(detail.into()))
+}
+
+/// The text on one line, at most 1600 characters.
+fn first_line(text: &str) -> String {
+    let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    joined.chars().take(1600).collect()
+}
+
+/// Where the fixture app's API page sets its snappoint.
+const SNAPPOINT_FILE: &str = "src/LiveContractApi.Page.al";
+
+/// Business Central API root for the selected Sandbox, used only to create
+/// server activity for the snapshot and profiling steps.
+fn api_base(contract: &LiveContract) -> AnyResult<String> {
+    let environment =
+        contract.server.environment_name.clone().ok_or_else(|| {
+            failure("UNAVAILABLE: the launch configuration has no environmentName")
+        })?;
+    Ok(format!(
+        "https://api.businesscentral.dynamics.com/v2.0/{}/{}/api",
+        contract.tenant()?,
+        environment
+    ))
+}
+
+struct Activity {
+    requests: u32,
+    failures: u32,
+    last_status: u16,
+}
+
+/// Standard API GETs on the Sandbox. Each one is a WebServiceClient session
+/// on the server, which is what the snapshot and profiling steps arm for.
+/// `heavy` adds the large reads (general ledger entries, items) that give a
+/// sampling profile something to sample.
+async fn generate_activity(
+    contract: &LiveContract,
+    duration: Duration,
+    heavy: bool,
+) -> AnyResult<Activity> {
+    let token = al_bc::http_auth::access_token_from_env()?
+        .ok_or_else(|| failure("UNAVAILABLE: BC_ACCESS_TOKEN or BC_TOKEN is required"))?;
+    let base = api_base(contract)?;
+    let client = reqwest::Client::new();
+    let get = |url: String| {
+        let client = client.clone();
+        let token = token.clone();
+        async move {
+            client
+                .get(url)
+                .bearer_auth(token)
+                .header("Accept", "application/json")
+                .send()
+                .await
+        }
+    };
+    let companies = get(format!("{base}/v2.0/companies")).await?;
+    if !companies.status().is_success() {
+        return Err(failure(format!(
+            "GET /api/v2.0/companies answered {}",
+            companies.status()
+        ))
+        .into());
+    }
+    let body: Value = companies.json().await?;
+    let company = body["value"]
+        .as_array()
+        .and_then(|rows| {
+            rows.iter()
+                .find(|row| row["name"] == "CRONUS UK Ltd.")
+                .or_else(|| rows.first())
+        })
+        .and_then(|row| row["id"].as_str())
+        .ok_or_else(|| failure("the Sandbox lists no company"))?
+        .to_string();
+    let mut urls = vec![
+        // The fixture's API page runs AL code that a snappoint and a sampling
+        // profile can see.
+        format!("{base}/alzed/contract/v1.0/companies({company})/liveCustomers"),
+        format!("{base}/v2.0/companies({company})/customers"),
+        format!("{base}/v2.0/companies({company})/salesInvoices"),
+    ];
+    if heavy {
+        urls.push(format!(
+            "{base}/v2.0/companies({company})/generalLedgerEntries?$top=5000"
+        ));
+        urls.push(format!("{base}/v2.0/companies({company})/items?$top=2000"));
+    }
+    let mut activity = Activity {
+        requests: 1,
+        failures: 0,
+        last_status: 200,
+    };
+    let deadline = std::time::Instant::now() + duration;
+    loop {
+        for url in &urls {
+            let response = get(url.clone()).await?;
+            activity.requests += 1;
+            activity.last_status = response.status().as_u16();
+            if !response.status().is_success() {
+                activity.failures += 1;
+            }
+            // Read the body so the server finishes the request.
+            let _ = response.bytes().await?;
+        }
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
+    }
+    Ok(activity)
+}
+
+/// publish (POST dev/apps)
+async fn step_publish(contract: &LiveContract) -> AnyResult<Outcome> {
+    publish_succeeds_on_http_status(&contract.project, &contract.config_name).await?;
+    pass("uploaded and installed through dev/apps")
+}
+
+/// DAP attach, breakpoint, stepping and evaluate (Debugger hub, dev/debug).
+/// The breakpoint is hit by running the test codeunit through
+/// `TestRunnerClient::run_codeunit`, which returns `LiveBcNotImplemented`
+/// until the TestRunnerHub client exists (testing-01). The step cannot pass,
+/// so it is reported SKIP. `AL_LIVE_BC_TRY_DAP=1` runs it.
+async fn step_dap(contract: &LiveContract) -> AnyResult<Outcome> {
+    if std::env::var("AL_LIVE_BC_TRY_DAP").as_deref() != Ok("1") {
+        return Ok(Outcome::Skip(
+            "testing-01: the breakpoint needs a live test run, and TestRunnerClient::run_codeunit \
+             returns LiveBcNotImplemented"
+                .to_string(),
+        ));
+    }
+    exercise_native_dap(contract).await?;
+    pass("breakpoint verified, hit, locals and evaluate answered")
+}
+
+/// live test run (TestRunnerHub). The client does not exist (finding
+/// testing-01, Docs/testing-guide.md), so the step is reported SKIP and never
+/// counted as a pass. `AL_LIVE_BC_TRY_TEST_RUN=1` runs the old CLI route.
+fn step_test_run(contract: &LiveContract) -> AnyResult<Outcome> {
+    if std::env::var("AL_LIVE_BC_TRY_TEST_RUN").as_deref() != Ok("1") {
+        return Ok(Outcome::Skip(
+            "testing-01: no TestRunnerHub client, so a live test run is not attempted".to_string(),
+        ));
+    }
+    exercise_cli_live_test_and_snapshots(contract)?;
+    pass("test-run and test-snapshot capture, validate, replay and diff")
+}
+
+/// The 1-based line of `marker` in a project file.
+fn marker_line(project: &Path, file: &str, marker: &str) -> AnyResult<usize> {
+    let text = std::fs::read_to_string(project.join(file))
+        .map_err(|error| failure(format!("read {file}: {error}")))?;
+    text.lines()
+        .position(|line| line.contains(marker))
+        .map(|index| index + 1)
+        .ok_or_else(|| failure(format!("{file} has no {marker} marker")).into())
+}
+
+/// snapshot debugging (snapshotdebugger attach, status, finish, then show)
+async fn step_snapshot(contract: &LiveContract) -> AnyResult<Outcome> {
+    let _daemon = DaemonGuard::reset(&contract.project);
+    let line = marker_line(&contract.project, SNAPPOINT_FILE, "LIVE_BC_SNAPPOINT")?;
+    let snap = format!("{SNAPPOINT_FILE}:{line}");
+    let started = cli_json(
+        contract,
+        &[
+            "snapshot",
+            "start",
+            "--break-on-next",
+            "WebServiceClient",
+            "--snap",
+            &snap,
+            "--config",
+            &contract.config_name,
+        ],
+    )?;
+    let context = started["debuggingContext"]
+        .as_str()
+        .ok_or_else(|| {
+            failure(format!(
+                "snapshot start returned no debuggingContext: {started}"
+            ))
+        })?
+        .to_string();
+    let before = cli_json(contract, &["snapshot", "status", "--context", &context]);
+    let activity = generate_activity(contract, Duration::from_secs(5), false).await;
+    // The server forgets a session that has run, so a status after the
+    // activity may answer 404. It is reported, not required.
+    let after = cli_json(contract, &["snapshot", "status", "--context", &context]);
+    let finished = cli_json(contract, &["snapshot", "finish", "--context", &context]);
+    let before = before?;
+    let activity = activity?;
+    if activity.failures > 0 {
+        return Err(failure(format!(
+            "API activity had {} failed requests, last status {}",
+            activity.failures, activity.last_status
+        ))
+        .into());
+    }
+    let after_text = match &after {
+        Ok(status) => first_line(status["status"].as_str().unwrap_or("no status")),
+        Err(error) => first_line(&error.to_string()),
+    };
+    let finished = finished.map_err(|error| {
+        failure(format!(
+            "finish failed. Status before activity {}, after activity {after_text}. {error}",
+            before["status"]
+        ))
+    })?;
+    match finished["zipPath"].as_str() {
+        Some(zip) if Path::new(zip).is_file() => {
+            let shown = cli_json(contract, &["snapshot", "show", zip])?;
+            let stops = shown["stops"].as_array().map_or(0, Vec::len);
+            if stops == 0 {
+                return Err(failure(format!("snapshot zip has no stops: {shown}")).into());
+            }
+            pass(format!("snapshot zip saved, show lists {stops} stops"))
+        }
+        _ => Err(failure(format!(
+            "finish returned no snapshot for a snappoint at {snap}: {}. Status after activity: {after_text}",
+            first_line(finished["message"].as_str().unwrap_or("no message"))
+        ))
+        .into()),
+    }
+}
+
+/// profiling (snapshotdebugger attach with ExecutionContext Profiling, sampling)
+async fn step_profile(contract: &LiveContract) -> AnyResult<Outcome> {
+    let _daemon = DaemonGuard::reset(&contract.project);
+    let started = cli_json(
+        contract,
+        &[
+            "profile",
+            "start",
+            "--break-on-next",
+            "WebServiceClient",
+            "--config",
+            &contract.config_name,
+        ],
+    )?;
+    let context = started["debuggingContext"]
+        .as_str()
+        .ok_or_else(|| {
+            failure(format!(
+                "profile start returned no debuggingContext: {started}"
+            ))
+        })?
+        .to_string();
+    let seconds = std::env::var("AL_LIVE_BC_PROFILE_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(60);
+    let activity = generate_activity(contract, Duration::from_secs(seconds), true).await;
+    let status = cli_json(contract, &["profile", "status", "--context", &context]);
+    let stopped = cli_json(contract, &["profile", "stop", "--context", &context]);
+    let activity = activity?;
+    if activity.failures > 0 {
+        return Err(failure(format!(
+            "API activity had {} failed requests, last status {}",
+            activity.failures, activity.last_status
+        ))
+        .into());
+    }
+    status?;
+    let stopped = stopped?;
+    let load = format!(
+        "{} API requests over {seconds} s, {} failed",
+        activity.requests, activity.failures
+    );
+    match stopped["profilePath"].as_str() {
+        Some(path) if Path::new(path).is_file() => {
+            let analysis = cli_json(contract, &["profile", "analyze", path])?;
+            let nodes = std::fs::read_to_string(path)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .map_or(0, |profile| {
+                    profile["nodes"].as_array().map_or(0, Vec::len)
+                        + profile["samples"].as_array().map_or(0, Vec::len)
+                });
+            if nodes == 0 {
+                let head = std::fs::read_to_string(path).unwrap_or_default();
+                return Err(failure(format!(
+                    "profile file holds no nodes or samples after {load}. File: {}. Analyze: {analysis}",
+                    first_line(&head.chars().take(300).collect::<String>())
+                ))
+                .into());
+            }
+            pass(format!(
+                "profile with {nodes} nodes and samples after {load}"
+            ))
+        }
+        _ => Err(failure(format!(
+            "no profile came back after {load}: {}",
+            first_line(&stopped.to_string())
+        ))
+        .into()),
+    }
+}
+
+/// symbol download (server route, dev/packages)
+fn step_symbols(contract: &LiveContract) -> AnyResult<Outcome> {
+    let result = cli_json(contract, &["download-symbols", "--source", "server"])?;
+    let downloaded = result["downloaded"].as_u64().unwrap_or(0);
+    let failed = result["failed"].as_u64().unwrap_or(0);
+    if downloaded == 0 || failed > 0 {
+        return Err(failure(format!(
+            "download-symbols --source server: {downloaded} downloaded, {failed} failed: {result}"
+        ))
+        .into());
+    }
+    let packages = std::fs::read_dir(contract.project.join(".alpackages"))?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "app"))
+        .count();
+    if packages == 0 {
+        return Err(failure("download-symbols left no .app in .alpackages").into());
+    }
+    pass(format!("{downloaded} packages downloaded"))
+}
+
+fn print_summary(reports: &[StepReport]) {
+    println!("\n=== Live BC contract summary ===");
+    println!("{:<20} {:<6} {:<46} detail", "step", "result", "BC API");
+    for report in reports {
+        println!(
+            "{:<20} {:<6} {:<46} {}",
+            report.name,
+            report.status(),
+            report.api,
+            first_line(&report.detail())
+        );
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires explicit live Business Central inputs; run via make live-bc-contracts"]
 async fn live_bc_publish_dap_test_and_snapshot_contract() -> AnyResult<()> {
     let contract = LiveContract::from_env()?;
-    publish_succeeds_on_http_status(&contract.project, &contract.config_name).await?;
-    exercise_native_dap(&contract).await?;
-    exercise_cli_live_test_and_snapshots(&contract)?;
+    // Every step runs. One failing step does not hide the others, and the test
+    // fails at the end if any step failed. SKIP is not a pass.
+    let mut reports = Vec::new();
+    macro_rules! step {
+        ($name:expr, $api:expr, $run:expr) => {{
+            println!("--- step {} ---", $name);
+            let result = $run.await.map_err(|error| error.to_string());
+            reports.push(StepReport {
+                name: $name,
+                api: $api,
+                result,
+            });
+        }};
+    }
+    // The publish compiles the fixture against .alpackages, so the symbol
+    // download runs first. Its row is moved to the end of the table.
+    step!(
+        "symbol download",
+        "GET /dev/packages (server route)",
+        async { step_symbols(&contract) }
+    );
+    let symbols = reports.remove(0);
+    step!("publish", "POST /dev/apps", step_publish(&contract));
+    step!(
+        "dap attach",
+        "debugger hub, dev/debug breakpoints",
+        step_dap(&contract)
+    );
+    step!(
+        "live test run",
+        "TestRunnerHub (no client, testing-01)",
+        async { step_test_run(&contract) }
+    );
+    step!(
+        "snapshot debugging",
+        "v2.0/{env}/snapshotdebugger/attach|status|finish",
+        step_snapshot(&contract)
+    );
+    step!(
+        "profiling",
+        "snapshotdebugger attach, ExecutionContext Profiling",
+        step_profile(&contract)
+    );
+    reports.push(symbols);
+    print_summary(&reports);
+    let failed: Vec<&str> = reports
+        .iter()
+        .filter(|report| report.status() == "FAIL")
+        .map(|report| report.name)
+        .collect();
+    if !failed.is_empty() {
+        return Err(failure(format!("live contract steps failed: {}", failed.join(", "))).into());
+    }
     Ok(())
 }

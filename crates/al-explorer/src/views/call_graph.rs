@@ -322,7 +322,7 @@ mod tests {
     /// outlive the query that produced it.
     #[test]
     fn escape_clears_the_query_and_its_rows() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.call_graph.input_focused = true;
         for c in "Post".chars() {
             press(&mut app, KeyCode::Char(c));
@@ -342,7 +342,7 @@ mod tests {
     /// bound.
     #[test]
     fn the_query_stops_at_the_input_cap() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.call_graph.input_focused = true;
         for _ in 0..(MAX_INPUT_LEN + 25) {
             press(&mut app, KeyCode::Char('x'));
@@ -354,7 +354,7 @@ mod tests {
     /// moving into an empty list.
     #[test]
     fn focus_stays_in_the_query_box_while_there_are_no_rows() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.call_graph.input_focused = true;
         press(&mut app, KeyCode::Down);
         assert!(app.call_graph.input_focused);
@@ -366,7 +366,7 @@ mod tests {
     /// query box.
     #[test]
     fn the_row_list_walks_and_returns_focus() {
-        let mut app = App::new();
+        let mut app = App::for_test();
         app.call_graph.input_focused = false;
         app.call_graph.rows = vec![
             CallRow {

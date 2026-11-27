@@ -355,6 +355,16 @@ pub(super) async fn acquire_bc_token(
     match al_bc::http_auth::access_token_from_env() {
         Ok(Some(token)) => Ok(token),
         Ok(None) => {
+            // A daemon request that carried no credentials has nobody to answer
+            // a browser or device code prompt: it waited out the CLI's 30 s
+            // deadline. Standard route checked: the OAuth cache
+            // with Auto sign-in. It is kept for the cached token and its
+            // refresh, and sign-in is switched off for this case.
+            let sign_in = if al_bc::http_auth::daemon_request_lacks_credentials() {
+                al_symbols::oauth::SignInMode::CachedOnly
+            } else {
+                al_symbols::oauth::SignInMode::Auto
+            };
             let client = reqwest::Client::new();
             let settings = match workspace.project.try_read() {
                 Ok(guard) => guard.as_ref().map_or_else(
@@ -378,24 +388,36 @@ pub(super) async fn acquire_bc_token(
                 &client,
                 &config.tenant,
                 &settings,
-                al_symbols::oauth::SignInMode::Auto,
+                sign_in,
                 |message| {
                     tracing::info!("Business Central authentication: {message}");
                     al_symbols::oauth::announce(message);
                 },
             )
             .await
-            .map_err(|error| {
-                (
-                    error_codes::INTERNAL_ERROR,
-                    format!("Business Central authentication failed: {error}"),
-                )
-            })
+            .map_err(token_failure)
         }
         Err(error) => Err((
             error_codes::INVALID_PARAMS,
             format!("Invalid bearer-token environment: {error}"),
         )),
+    }
+}
+
+/// The answer for a failed token request. Only "no cached sign-in" becomes
+/// MissingCredentials, which tells the caller to pass credentials. A failed
+/// refresh or a configuration error keeps its own text.
+fn token_failure(error: al_symbols::oauth::OAuthError) -> (i32, String) {
+    use al_protocol::jsonrpc::error_codes;
+    match error {
+        al_symbols::oauth::OAuthError::SignInRequired => (
+            error_codes::INVALID_PARAMS,
+            al_bc::bc_client::BcClientError::MissingCredentials.to_string(),
+        ),
+        error => (
+            error_codes::INTERNAL_ERROR,
+            format!("Business Central authentication failed: {error}"),
+        ),
     }
 }
 
@@ -1019,6 +1041,34 @@ pub(super) async fn dispatch_debug(
 }
 
 #[cfg(test)]
+mod token_failure_tests {
+    use super::token_failure;
+
+    #[test]
+    fn only_a_missing_cached_sign_in_reads_as_missing_credentials() {
+        use al_protocol::jsonrpc::error_codes;
+        use al_symbols::oauth::OAuthError;
+
+        assert_eq!(
+            token_failure(OAuthError::SignInRequired),
+            (
+                error_codes::INVALID_PARAMS,
+                al_bc::bc_client::BcClientError::MissingCredentials.to_string()
+            )
+        );
+
+        let (code, message) = token_failure(OAuthError::Other(
+            "BC_CLIENT_ID must be a well-formed GUID".to_string(),
+        ));
+        assert_eq!(code, error_codes::INTERNAL_ERROR);
+        assert_eq!(
+            message,
+            "Business Central authentication failed: BC_CLIENT_ID must be a well-formed GUID"
+        );
+    }
+}
+
+#[cfg(test)]
 mod pick_named_config_tests {
     use super::{
         debug_config_from_server_config, debug_uses_oauth, has_inline_debug_config,
@@ -1298,6 +1348,121 @@ mod acquire_bc_token_tests {
         .await
         .expect("a fixed Microsoft endpoint is always authorised");
         assert_eq!(token, "caller-token");
+    }
+
+    fn request_credentials() -> al_bc::http_auth::Credentials {
+        al_bc::http_auth::Credentials {
+            access_token: Some("request-token".to_string()),
+            basic: None,
+        }
+    }
+
+    /// A daemon started without `BC_ACCESS_TOKEN` spends the token the CLI
+    /// sent with the request (journey-07).
+    #[tokio::test]
+    async fn a_token_carried_by_the_request_is_spent_on_an_online_target() {
+        let (_dir, workspace) = untrusted_project();
+        let config = BcDebugConfig {
+            environment_type: "Sandbox".to_string(),
+            environment_name: Some("SANDBOX".to_string()),
+            authentication: "AAD".to_string(),
+            tenant: al_bc::tenant_guard::install_test_registry().to_string(),
+            ..BcDebugConfig::default()
+        };
+        let token = al_bc::http_auth::scope(request_credentials(), async {
+            acquire_bc_token(
+                &workspace,
+                &config,
+                "",
+                al_project::trust::TargetSource::Repository,
+            )
+            .await
+        })
+        .await
+        .expect("an online target needs no project trust");
+        assert_eq!(token, "request-token");
+    }
+
+    /// A daemon request with no credentials, no environment token and no cached
+    /// sign-in is answered with MissingCredentials at once. It used to start a
+    /// browser sign-in nobody could answer and ran into the CLI's 30 s deadline
+    ///.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_request_without_credentials_and_without_a_cached_sign_in_fails_at_once() {
+        /// No bearer token in the environment.
+        struct NoEnvToken(Vec<(&'static str, Option<std::ffi::OsString>)>);
+        impl NoEnvToken {
+            fn new() -> Self {
+                let saved = ["BC_ACCESS_TOKEN", "BC_TOKEN"]
+                    .map(|name| (name, std::env::var_os(name)))
+                    .to_vec();
+                for (name, _) in &saved {
+                    std::env::remove_var(name);
+                }
+                Self(saved)
+            }
+        }
+        impl Drop for NoEnvToken {
+            fn drop(&mut self) {
+                for (name, value) in &self.0 {
+                    if let Some(value) = value {
+                        std::env::set_var(name, value);
+                    }
+                }
+            }
+        }
+        let _no_token = NoEnvToken::new();
+        let (_dir, workspace) = untrusted_project();
+        let config = BcDebugConfig {
+            environment_type: "Sandbox".to_string(),
+            environment_name: Some("SANDBOX".to_string()),
+            authentication: "AAD".to_string(),
+            // The OS secret store holds a sign-in for the real CDX tenant, so
+            // this test names a registered tenant nobody signed in to.
+            tenant: {
+                al_bc::tenant_guard::install_test_registry();
+                al_bc::tenant_guard::TEST_UNSIGNED_TENANT.to_string()
+            },
+            ..BcDebugConfig::default()
+        };
+        let started = std::time::Instant::now();
+        let (code, message) =
+            al_bc::http_auth::scope(al_bc::http_auth::Credentials::default(), async {
+                acquire_bc_token(
+                    &workspace,
+                    &config,
+                    "",
+                    al_project::trust::TargetSource::Repository,
+                )
+                .await
+            })
+            .await
+            .expect_err("no credential anywhere");
+        assert_eq!(code, al_protocol::jsonrpc::error_codes::INVALID_PARAMS);
+        assert!(message.contains("Missing credentials"), "{message}");
+        assert!(message.contains("daemon-shutdown"), "{message}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    /// The request's token does not stand in for the project trust check: an
+    /// untrusted repository still cannot name a server that receives it.
+    #[tokio::test]
+    async fn a_token_carried_by_the_request_does_not_skip_the_trust_check() {
+        let (_dir, workspace) = untrusted_project();
+        let (_code, message) = al_bc::http_auth::scope(request_credentials(), async {
+            acquire_bc_token(
+                &workspace,
+                &repository_config(),
+                "",
+                al_project::trust::TargetSource::Repository,
+            )
+            .await
+        })
+        .await
+        .expect_err("an untrusted repository target must not receive the request token");
+        assert!(message.contains("not trusted"), "{message}");
+        assert!(!message.contains("request-token"), "{message}");
     }
 }
 

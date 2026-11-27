@@ -65,7 +65,7 @@ The repository corpus clones the projects configured in
 repository revisions and result when grammar behavior changes. The editor GUI
 test remains separate; see [Docs/testing-guide.md](Docs/testing-guide.md).
 
-Tenant-backed publish, DAP, test, and snapshot changes additionally require the
+Tenant-backed publish, DAP, snapshot, profiling and symbol download changes additionally require the
 strict `make live-bc-contracts` profile. Missing external inputs exit 2 as
 `UNAVAILABLE`; they are not a successful skip. See the testing guide for the
 required tenant/environment/version/token contract. The default repository

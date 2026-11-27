@@ -1,4 +1,4 @@
-codeunit 50100 "Live Contract Tests"
+codeunit 98100 "Live Contract Tests"
 {
     Subtype = Test;
 

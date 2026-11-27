@@ -184,7 +184,9 @@ pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
             client
         })
         .map_err(|e| {
-            if e.contains("No such file") || e.contains("Connection refused") {
+            if e.contains("no daemon was started") {
+                e
+            } else if e.contains("No such file") || e.contains("Connection refused") {
                 format!(
                     "{e}\n\nHint: Is the daemon running? Start it with: al-lsp daemon --project {}",
                     root.display()
@@ -597,6 +599,30 @@ const CONNECTING_METHODS: [&str; 11] = [
     "tests.snapshot_replay",
 ];
 
+/// Add `BC_ACCESS_TOKEN` (or `BC_TOKEN`) and `BC_USERNAME`/`BC_PASSWORD` from
+/// this process's environment to the request. Nothing is added when none is set.
+fn with_caller_credentials(
+    method: &str,
+    params: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    attach_credentials(method, params, al_bc::http_auth::Credentials::from_env())
+}
+
+fn attach_credentials(
+    method: &str,
+    mut params: Option<serde_json::Value>,
+    credentials: Option<al_bc::http_auth::Credentials>,
+) -> Option<serde_json::Value> {
+    let Some(credentials) =
+        credentials.filter(|_| al_protocol::methods::CREDENTIAL_METHODS.contains(&method))
+    else {
+        return params;
+    };
+    let target = params.get_or_insert_with(|| serde_json::json!({}));
+    credentials.insert_into(target);
+    params
+}
+
 pub fn set_caller_tenant(tenant: Option<String>, purpose: Option<String>) {
     let _ = CALLER_TENANT.set(al_bc::tenant_guard::Declaration { tenant, purpose });
 }
@@ -763,7 +789,8 @@ pub fn request_checked(
     method: &str,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let mut sent = with_caller_tenant(method, with_projection(params));
+    let mut sent =
+        with_caller_credentials(method, with_caller_tenant(method, with_projection(params)));
     // At most two passes: the second carries the text for a file the daemon
     // may not open, and `params_with_text` returns None once it is attached.
     loop {
@@ -887,6 +914,44 @@ mod lint_target_tests {
 
         let targets = resolve_lint_targets(&parts);
         assert_eq!(targets, vec![path.to_string_lossy().into_owned()]);
+    }
+}
+
+#[cfg(test)]
+mod credential_params_tests {
+    use super::attach_credentials;
+    use al_bc::http_auth::Credentials;
+
+    fn token() -> Option<Credentials> {
+        Some(Credentials {
+            access_token: Some("tok".into()),
+            basic: None,
+        })
+    }
+
+    #[test]
+    fn spending_methods_carry_the_credentials_and_others_do_not() {
+        for method in [
+            "publish",
+            "debug",
+            "snapshot",
+            "profiling",
+            "tests.run_auto",
+            "downloadSymbols",
+            "environmentVersion",
+        ] {
+            let sent = attach_credentials(method, Some(serde_json::json!({"a": 1})), token());
+            assert_eq!(
+                sent.unwrap()["credentials"]["accessToken"],
+                "tok",
+                "{method}"
+            );
+        }
+        let sent = attach_credentials("hover", Some(serde_json::json!({"a": 1})), token());
+        assert!(sent.unwrap().get("credentials").is_none());
+        let sent = attach_credentials("publish", None, token());
+        assert_eq!(sent.unwrap()["credentials"]["accessToken"], "tok");
+        assert_eq!(attach_credentials("publish", None, None), None);
     }
 }
 

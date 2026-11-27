@@ -3,6 +3,7 @@
 
 use std::path::Path;
 
+use al_bc::bc_client::{upload_dev_app, BcClientError, DevAppsUpload};
 use reqwest::header::AUTHORIZATION;
 use tracing::info;
 
@@ -11,62 +12,33 @@ use crate::dap::{DapError, Result};
 use super::session_config::BcDebugConfig;
 use super::wire::percent_encode_url;
 
+/// Launch publish. The upload itself is `al_bc::bc_client::upload_dev_app`, the
+/// function `al-publish` uses, so the URL and body are built in one place.
 pub async fn publish_app(
     http: &reqwest::Client,
     config: &BcDebugConfig,
     access_token: &str,
     app_path: &Path,
 ) -> Result<()> {
-    let base = config.base_url();
-    let url = format!(
-        "{base}/apps?tenant={}&SchemaUpdateMode={}&DependencyPublishingOption={}",
-        percent_encode_url(&config.tenant),
-        config.schema_update_mode,
-        config.dependency_publishing_option
-    );
-
-    info!("Publishing package to {url}");
-
-    let app_bytes = tokio::fs::read(app_path)
-        .await
-        .map_err(|e| DapError::PublishFailed(format!("Failed to read .app file: {e}")))?;
-
-    let file_name = app_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("app.app")
-        .to_string();
-
-    let part = reqwest::multipart::Part::bytes(app_bytes)
-        .file_name(file_name)
-        .mime_str("application/octet-stream")
-        .map_err(|e| DapError::PublishFailed(format!("MIME error: {e}")))?;
-
-    let form = reqwest::multipart::Form::new().part("file", part);
-
-    let resp = http
-        .post(&url)
-        .header(AUTHORIZATION, format!("Bearer {access_token}"))
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| DapError::PublishFailed(format!("Publish request failed: {e}")))?;
-
-    if resp.status().is_success() {
-        info!("Package published successfully");
-        Ok(())
-    } else {
-        let status = resp.status();
-        let body = al_bc::bc_client::sanitize_error_body(
-            &resp
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("<body read failed: {e}>")),
-        );
-        Err(DapError::PublishFailed(format!(
-            "Publish failed (HTTP {status}): {body}"
-        )))
-    }
+    let dev_url = config.base_url();
+    let upload = DevAppsUpload {
+        dev_url: &dev_url,
+        tenant: Some(&config.tenant),
+        schema_update_mode: &config.schema_update_mode,
+        dependency_publishing_option: &config.dependency_publishing_option,
+        is_rad: false,
+    };
+    info!("Publishing package to {dev_url}/apps");
+    upload_dev_app(http, &upload, app_path, |req| {
+        Ok(req.bearer_auth(access_token))
+    })
+    .await
+    .map_err(|e| match e {
+        BcClientError::Io(e) => DapError::PublishFailed(format!("Failed to read .app file: {e}")),
+        other => DapError::PublishFailed(format!("Publish failed: {other}")),
+    })?;
+    info!("Package published successfully");
+    Ok(())
 }
 
 pub async fn get_metadata(

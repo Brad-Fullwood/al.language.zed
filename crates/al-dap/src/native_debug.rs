@@ -155,17 +155,33 @@ impl NativeDebugSession {
                             warn!(bp_id, error = %e, "Failed to remove mis-targeted breakpoint");
                         }
                     }
+                    let message = if !verified {
+                        Some(format!("BC returned no breakpoint id, answer: {resp}"))
+                    } else if !object_matches {
+                        Some("BC armed the breakpoint for a different object".to_string())
+                    } else {
+                        None
+                    };
                     results.push(make_bp_info(
                         file,
                         line,
                         cond,
                         bp_id,
-                        verified && bp_id != 0 && object_matches,
+                        verified && object_matches,
+                        message,
                     ));
                 }
                 Err(e) => {
                     warn!(line, error = %e, "Failed to add breakpoint");
-                    results.push(make_bp_info(file, line, cond, 0, false));
+                    // The server error text is the reason the CLI shows (journey-08).
+                    results.push(make_bp_info(
+                        file,
+                        line,
+                        cond,
+                        0,
+                        false,
+                        Some(e.to_string()),
+                    ));
                 }
             }
         }
@@ -482,7 +498,14 @@ impl NativeDebugSession {
     }
 }
 
-fn make_bp_info(file: &str, line: u32, condition: &str, id: i64, verified: bool) -> BreakpointInfo {
+fn make_bp_info(
+    file: &str,
+    line: u32,
+    condition: &str,
+    id: i64,
+    verified: bool,
+    message: Option<String>,
+) -> BreakpointInfo {
     BreakpointInfo {
         id,
         file: file.to_string(),
@@ -493,6 +516,7 @@ fn make_bp_info(file: &str, line: u32, condition: &str, id: i64, verified: bool)
             Some(condition.to_string())
         },
         verified,
+        message,
     }
 }
 
@@ -818,7 +842,7 @@ mod make_bp_info_tests {
         // unconditional breakpoint arrives here as "". That must serialise as
         // `condition: None`, not `Some("")` — clients distinguish "no condition"
         // from "empty condition expression".
-        let info = make_bp_info("src/Foo.al", 42, "", 7, true);
+        let info = make_bp_info("src/Foo.al", 42, "", 7, true, None);
         assert_eq!(info.condition, None);
         assert_eq!(info.id, 7);
         assert_eq!(info.file, "src/Foo.al");
@@ -828,7 +852,7 @@ mod make_bp_info_tests {
 
     #[test]
     fn non_empty_condition_is_preserved() {
-        let info = make_bp_info("src/Bar.al", 10, "x > 5", 3, true);
+        let info = make_bp_info("src/Bar.al", 10, "x > 5", 3, true, None);
         assert_eq!(info.condition.as_deref(), Some("x > 5"));
     }
 
@@ -837,10 +861,20 @@ mod make_bp_info_tests {
         // Error path mirror: when add_breakpoint fails, set_breakpoints builds
         // an info with id=0 / verified=false so the client sees the breakpoint
         // was rejected rather than silently dropping it.
-        let info = make_bp_info("src/Baz.al", 1, "", 0, false);
+        let info = make_bp_info(
+            "src/Baz.al",
+            1,
+            "",
+            0,
+            false,
+            Some("no object 50141".to_string()),
+        );
         assert_eq!(info.id, 0);
         assert!(!info.verified);
         assert_eq!(info.condition, None);
+        assert_eq!(info.message.as_deref(), Some("no object 50141"));
+        let json = serde_json::to_value(&info).unwrap();
+        assert_eq!(json["message"], "no object 50141");
     }
 }
 

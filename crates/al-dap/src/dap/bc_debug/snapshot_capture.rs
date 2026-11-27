@@ -605,7 +605,10 @@ pub async fn finish(
         &dir,
         &record.debugging_context,
         zip,
-        finished.sampling,
+        // The cloud server sends no ETag on finish (recorded from CDX
+        // 2026-10-27), so Microsoft's ETag test alone would never extract the
+        // profile. The record knows the attach asked for a sampling profile.
+        finished.sampling || record.profile.as_deref() == Some("Sampling"),
     )
     .await
     .map_err(|error| internal(format!("cannot save the snapshot: {error}")))?;
