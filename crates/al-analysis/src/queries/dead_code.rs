@@ -419,7 +419,7 @@ fn variable_types(
 }
 
 /// The lowercase name after `extends` in an extension object's header.
-fn extends_target(object: tree_sitter::Node<'_>, text: &str) -> Option<String> {
+pub(crate) fn extends_target(object: tree_sitter::Node<'_>, text: &str) -> Option<String> {
     let mut cursor = object.walk();
     let clause = object.children(&mut cursor).find(|c| {
         c.kind() == "implements_clause"
