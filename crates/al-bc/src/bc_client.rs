@@ -1127,8 +1127,8 @@ mod tests {
 
     #[tokio::test]
     async fn handle_response_error_path_uses_capped_error_reader() {
-        // The non-2xx branch routes through `map_error_response`, which must
-        // use `read_error_body_capped`. An
+        // The non-2xx branch of `upload_dev_app` must read the body through
+        // `read_error_body_capped`. An
         // error body advertising a Content-Length above the 64 KiB cap must
         // NOT be buffered — the returned message carries the sentinel instead
         // of the body.
@@ -1286,8 +1286,8 @@ mod tests {
         // The mock has NO query_param matcher: it must match regardless of
         // whether wiremock decides to inspect the query string, but the real
         // assertion is that request-building itself doesn't panic/error for
-        // the "default" and "" tenant sentinels, mirroring `apply_tenant_query`'s
-        // skip condition.
+        // the "default" and "" tenant sentinels, mirroring the tenant filter in
+        // `BcClient::post_dev_apps`.
         wiremock::Mock::given(wiremock::matchers::method("POST"))
             .and(wiremock::matchers::path("/BC/dev/apps"))
             .respond_with(
