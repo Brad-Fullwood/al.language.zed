@@ -1775,7 +1775,7 @@ fn privileged_changes(
             .map(|entry| {
                 with_project_contents(
                     hashes,
-                    entry,
+                    crate::analyzers::without_analyzer_folder(entry),
                     project_root,
                     Beside::Assemblies,
                     Outside::Hashed,

@@ -2959,3 +2959,44 @@ fn an_unparseable_launch_file_is_reported_as_such() {
     assert!(!advisory.contains("not trusted"), "{advisory}");
     assert!(!advisory.contains("Sandboclaclx"), "{advisory}");
 }
+
+/// `resolve` strips `${analyzerFolder}`, so the record has to hash the file
+/// the stripped path names. It hashed nothing for the prefixed text, and a
+/// changed DLL outside the project left the record trusted.
+#[test]
+fn analyzer_folder_prefix_outside_project_is_hashed() {
+    let _config = ScratchConfig::new();
+    let outside = tempfile::tempdir().unwrap();
+    write_file(outside.path(), "A.dll", b"reviewed analyzer");
+    let entry = format!(
+        "${{analyzerFolder}}{}",
+        outside.path().join("A.dll").display()
+    );
+    let project =
+        project_with_settings(&serde_json::json!({ "al.codeAnalyzers": [entry] }).to_string());
+    grant(project.path()).unwrap();
+    assert!(decide(project.path()).unwrap().is_trusted());
+
+    write_file(outside.path(), "A.dll", b"replaced analyzer");
+
+    assert_eq!(decide(project.path()).unwrap().state, TrustState::Stale);
+}
+
+/// A bare name with the prefix finds the project's `.netpackages` copy, as
+/// the same name without it does.
+#[test]
+fn analyzer_folder_prefix_finds_netpackages_copy() {
+    let _config = ScratchConfig::new();
+    let project = project_with_settings(r#"{"al.codeAnalyzers": ["${analyzerFolder}Custom.dll"]}"#);
+    let root = project.path();
+    write_file(root, ".netpackages/Custom.dll", b"project analyzer");
+    grant(root).unwrap();
+
+    let resolved = crate::analyzers::CustomAnalyzerSearch::new(root, &[])
+        .resolve("${analyzerFolder}Custom.dll")
+        .unwrap();
+    assert!(
+        resolved.is_some_and(|path| path.ends_with(".netpackages/Custom.dll")),
+        "the project's copy must resolve"
+    );
+}

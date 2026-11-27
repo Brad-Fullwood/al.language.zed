@@ -232,9 +232,9 @@ pub(crate) struct RepositoryPaths<'a> {
 
 impl RepositoryPaths<'_> {
     fn writes_analyzer(&self, entry: &str) -> bool {
-        self.analyzers
-            .iter()
-            .any(|written| written.trim() == entry.trim())
+        self.analyzers.iter().any(|written| {
+            without_analyzer_folder(written.trim()) == without_analyzer_folder(entry.trim())
+        })
     }
 
     fn writes_probing_path(&self, path: &Path) -> bool {
@@ -535,7 +535,7 @@ fn find_in_editor_extensions(
 /// An `al.codeAnalyzers` entry with VS Code's `${analyzerFolder}` prefix
 /// removed. The prefix names the AL extension's analyzer folder, which
 /// [`find_in_editor_extensions`] searches for the bare file name.
-fn without_analyzer_folder(entry: &str) -> &str {
+pub(crate) fn without_analyzer_folder(entry: &str) -> &str {
     entry.strip_prefix("${analyzerFolder}").unwrap_or(entry)
 }
 
@@ -580,7 +580,8 @@ pub(crate) fn find_in_project(
     assembly_probing_paths: &[PathBuf],
     repository: RepositoryPaths<'_>,
 ) -> Option<PathBuf> {
-    let entry = entry.trim();
+    // `resolve` strips the prefix, so the trust record names the same file.
+    let entry = without_analyzer_folder(entry.trim());
     if entry.is_empty() || is_builtin_analyzer(entry) {
         return None;
     }
