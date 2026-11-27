@@ -1340,7 +1340,7 @@ pagecustomization "Local Card Custom" customizes "Local Card"
     }
 
     #[test]
-    fn verified_build_rejects_single_branch_return_without_fallback() {
+    fn verified_build_warns_on_single_branch_return_without_fallback() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("app.json"),
@@ -1362,9 +1362,11 @@ pagecustomization "Local Card Custom" customizes "Local Card"
         )
         .unwrap();
 
+        // alc accepts the missing fallback and returns the default value, so
+        // ALN2210 only warns and the app is still written.
         let result =
             build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
-        assert!(result.app.is_none());
+        assert!(result.app.is_some(), "{:?}", result.diagnostics);
         assert!(result
             .diagnostics
             .iter()
@@ -1421,7 +1423,7 @@ pagecustomization "Local Card Custom" customizes "Local Card"
         .unwrap();
         std::fs::write(
             dir.path().join("Events.al"),
-            "codeunit 50100 Publisher { [IntegrationEvent(false, false)] procedure OnPosted(Value: Integer) begin end; } codeunit 50101 Subscriber { [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnPosted', '', false, false)] procedure HandlePosted() begin end; }",
+            "codeunit 50100 Publisher { [IntegrationEvent(false, false)] procedure OnPosted(Value: Integer) begin end; } codeunit 50101 Subscriber { [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnPosted', '', false, false)] procedure HandlePosted(Other: Integer) begin end; }",
         )
         .unwrap();
 

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 use al_symbols::model::{ObjectKind, SymbolEntry};
 use serde::Serialize;
 
-use crate::{EmitObject, ExternalSymbols, SourceFile, SymbolRefMeta};
+use crate::{binding::SYSTEM_FIELDS, EmitObject, ExternalSymbols, SourceFile, SymbolRefMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -117,6 +117,16 @@ pub(crate) fn verify_manifest(app_json: &serde_json::Value) -> Vec<VerificationD
                 "app.json",
                 "ALN0103",
                 format!("app.json field `version` must contain four numeric components: {version}"),
+            ));
+        }
+    }
+
+    if let Some(runtime) = app_json.get("runtime").and_then(|value| value.as_str()) {
+        if !is_runtime_version(runtime) {
+            diagnostics.push(VerificationDiagnostic::error(
+                "app.json",
+                "ALN0103",
+                format!("app.json field `runtime` is not a valid version: {runtime}"),
             ));
         }
     }
@@ -248,6 +258,19 @@ fn is_al_version(value: &str) -> bool {
     }) && components.next().is_none()
 }
 
+/// `runtime` names a platform release as two to four numeric parts (`14.0`,
+/// `13.0.1.0`). `is_al_version` requires exactly four, so it does not fit.
+/// Each part must be ASCII digits, because `u32::from_str` also accepts a `+`.
+fn is_runtime_version(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('.').collect();
+    (2..=4).contains(&parts.len())
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && part.parse::<u32>().is_ok()
+        })
+}
+
 /// A report layout file that is not in the project, reported on the
 /// report's `LayoutFile` line. It used to surface only when the package was
 /// assembled, as one ALN0000 on `app.json` naming no report.
@@ -293,7 +316,10 @@ pub(crate) fn verify_layout_files(
 }
 
 /// Codes of the heuristic body checks reported as warnings.
-const HEURISTIC_CODES: &[&str] = &["ALN2202", "ALN2203", "ALN2208", "ALN2209"];
+const HEURISTIC_CODES: &[&str] = &[
+    "ALN2202", "ALN2203", "ALN2204", "ALN2205", "ALN2206", "ALN2207", "ALN2208", "ALN2209",
+    "ALN2210",
+];
 
 /// AL keywords that can be followed by a parenthesised expression. They are
 /// operators and statement words, never procedure names.
@@ -914,24 +940,43 @@ fn verify_local_event_contracts(objects: &[EmitObject], out: &mut Vec<Verificati
                 if selected.is_empty() {
                     continue;
                 }
-                if selected.len() > 1 || selected[0].1.parameters.len() != method.parameters.len() {
-                    let detail = if selected.len() > 1 {
-                        "is ambiguous between local publishers".to_string()
-                    } else {
-                        format!(
-                            "expects {} parameter(s), but subscriber has {}",
-                            selected[0].1.parameters.len(),
-                            method.parameters.len()
-                        )
-                    };
+                if selected.len() > 1 {
                     out.push(VerificationDiagnostic::error_for_object(
                         object,
                         "ALN2301",
                         format!(
-                            "EventSubscriber procedure '{}' for '{}' {detail}",
+                            "EventSubscriber procedure '{}' for '{}' is ambiguous between local publishers",
                             method.name, event_name
                         ),
                     ));
+                    continue;
+                }
+                // A subscriber may declare fewer parameters than its publisher, so each
+                // subscriber parameter must match a publisher parameter by name.
+                // `Sender` is the publisher instance, not a declared parameter.
+                let publisher = selected[0].1;
+                let publisher_name = &selected[0].0.entry.name;
+                for parameter in &method.parameters {
+                    let name = parameter.name.unquote_identifier();
+                    if name.eq_ignore_ascii_case("sender") {
+                        continue;
+                    }
+                    let declared = publisher.parameters.iter().any(|candidate| {
+                        candidate
+                            .name
+                            .unquote_identifier()
+                            .eq_ignore_ascii_case(&name)
+                    });
+                    if !declared {
+                        out.push(VerificationDiagnostic::error_for_object(
+                            object,
+                            "ALN2301",
+                            format!(
+                                "EventSubscriber procedure '{}' for '{}' has parameter '{}' that publisher '{}' does not declare",
+                                method.name, event_name, parameter.name, publisher_name
+                            ),
+                        ));
+                    }
                 }
             }
         }
@@ -1386,7 +1431,11 @@ fn verify_permissions(
 
     for object in objects {
         for permission in &object.permissions {
-            let Some(kind) = permission_object_kind(&permission.object_type) else {
+            // `system` names no object, so there is no object to look up. Its flags
+            // are still checked below.
+            let system = permission.object_type.trim().eq_ignore_ascii_case("system");
+            let kind = permission_object_kind(&permission.object_type);
+            if kind.is_none() && !system {
                 out.push(VerificationDiagnostic::error_for_object(
                     object,
                     "ALN2101",
@@ -1396,7 +1445,7 @@ fn verify_permissions(
                     ),
                 ));
                 continue;
-            };
+            }
             let flags = permission.permission.to_ascii_uppercase();
             let valid_flags = !flags.is_empty()
                 && flags
@@ -1417,21 +1466,23 @@ fn verify_permissions(
                     ),
                 ));
             }
-            require_object(
-                &available,
-                kind,
-                &permission.object_name.unquote_identifier(),
-                object,
-                "ALN2103",
-                format!(
-                    "{} '{}' grants permission to unknown {} '{}'",
-                    object.entry.kind,
-                    object.entry.name,
-                    permission.object_type,
-                    permission.object_name
-                ),
-                out,
-            );
+            if let Some(kind) = kind {
+                require_object(
+                    &available,
+                    kind,
+                    &permission.object_name.unquote_identifier(),
+                    object,
+                    "ALN2103",
+                    format!(
+                        "{} '{}' grants permission to unknown {} '{}'",
+                        object.entry.kind,
+                        object.entry.name,
+                        permission.object_type,
+                        permission.object_name
+                    ),
+                    out,
+                );
+            }
         }
     }
 }
@@ -1747,7 +1798,9 @@ fn verify_members(objects: &[EmitObject], out: &mut Vec<VerificationDiagnostic>)
                 .collect();
             for key in entry.keys.iter().chain(object.field_groups.iter()) {
                 for field in &key.field_names {
-                    if !fields.contains(&field.to_lowercase()) {
+                    // SYSTEM_FIELDS (binding.rs) lists the system fields every table has.
+                    let system = SYSTEM_FIELDS.contains(&field.to_ascii_lowercase().as_str());
+                    if !fields.contains(&field.to_lowercase()) && !system {
                         out.push(VerificationDiagnostic::error_for_object(
                             object,
                             "ALN1107",
