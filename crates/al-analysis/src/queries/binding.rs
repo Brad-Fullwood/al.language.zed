@@ -161,9 +161,10 @@ fn qualifier_before(text: &str, byte: usize) -> String {
         };
     }
     let start = before
-        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .map(|index| index + 1)
-        .unwrap_or(0);
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |(index, c)| index + c.len_utf8());
     before[start..].to_lowercase()
 }
 
@@ -267,6 +268,19 @@ pub(crate) fn enclosing_declaration_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn receiver_scan_handles_nbsp() {
+        // NBSP and section sign are two bytes each. The scan must step over
+        // the whole character, not `index + 1`, or the slice panics.
+        let nbsp = "x\u{a0}Cust.Name";
+        assert_eq!(qualifier_before(nbsp, nbsp.find("Name").unwrap()), "cust");
+        let section = "x\u{a7}Cust.Name";
+        assert_eq!(
+            qualifier_before(section, section.find("Name").unwrap()),
+            "cust"
+        );
+    }
 
     fn decl_loc(workspace: &Workspace, uri: &Url, position: Position) -> BindKey {
         super::decl_loc(workspace, uri, position).unwrap()
