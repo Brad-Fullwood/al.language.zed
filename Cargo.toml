@@ -92,3 +92,11 @@ rayon = "1"
 [profile.dev.package."*"]
 opt-level = 2
 debug = false
+
+# The build `make install` gives the editor. The debug build ran al-lsp's
+# native analysis 6 to 20 times slower than this one on a 146 file project, so
+# its diagnostics came after the next keystroke and were thrown away. Release
+# optimisation without LTO keeps the build near five minutes.
+[profile.editor]
+inherits = "release"
+lto = false

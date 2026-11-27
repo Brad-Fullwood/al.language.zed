@@ -13,6 +13,14 @@ The native workspace requires stable Rust. The semantic bridge and Microsoft
 compatibility checks require .NET 8. Full grammar regeneration additionally
 requires the `tree-sitter` CLI and an installed Microsoft AL extension.
 
+`make build` builds the debug workspace the tests use. `make install` builds
+`al-lsp` and `al-explorer` with the `editor` cargo profile (release
+optimisation without LTO, output in `target/editor`), the WASM extension and
+the bridges, and copies the binaries where Zed runs them. `make install-lsp`
+rebuilds and copies only `al-lsp`. Test processes get a private data, state
+and runtime directory from `al-test-harness` (`src/test_env.rs`), so a test run
+does not write to the log, state or sockets of the editor's `al-lsp`.
+
 ## Generated files
 
 Edit sources, not generated output:
