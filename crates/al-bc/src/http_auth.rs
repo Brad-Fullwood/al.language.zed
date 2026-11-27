@@ -154,11 +154,7 @@ impl Credentials {
         };
         let credentials = Credentials {
             access_token: text("accessToken").map(|token| token.trim().to_string()),
-            basic: text("username").zip(
-                wire.get("password")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-            ),
+            basic: text("username").zip(text("password")),
         };
         (!credentials.is_empty()).then_some(credentials)
     }
@@ -288,6 +284,19 @@ mod tests {
             serde_json::json!({"credentials": {"accessToken": "  ", "username": "alice"}});
         assert!(Credentials::take_from(&mut params).is_none());
         assert!(params.get(CREDENTIALS_PARAM).is_none());
+    }
+
+    #[test]
+    fn a_blank_password_leaves_the_pair_absent() {
+        let mut params = serde_json::json!({"credentials": {"username": "alice", "password": " "}});
+        assert!(Credentials::take_from(&mut params).is_none());
+
+        let mut params = serde_json::json!({
+            "credentials": {"accessToken": "tok", "username": "alice", "password": ""}
+        });
+        let taken = Credentials::take_from(&mut params).expect("the token is kept");
+        assert_eq!(taken.access_token.as_deref(), Some("tok"));
+        assert_eq!(taken.basic, None);
     }
 
     #[tokio::test]
