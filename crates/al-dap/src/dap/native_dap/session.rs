@@ -15,7 +15,7 @@ use crate::dap::bc_debug::{get_web_endpoint, publish_app, BcDebugConfig, BcDebug
 use crate::dap::DapError;
 use crate::dap::Result;
 
-use super::browser::{build_debug_browser_url, open_browser};
+use super::browser::{build_debug_browser_url_with_affinity, open_browser};
 use super::{make_event, make_response, write_dap, NativeDapState, ResolvedObject};
 
 impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
@@ -330,8 +330,14 @@ where
 
                 // Capture connection ID before moving session into Arc+mutex
                 let conn_id = debug_session.connection_id.clone();
+                let affinity = debug_session.affinity_cookie.clone();
                 let web_url = if command == "launch" && config.launch_browser {
-                    match build_debug_browser_url(&config, &conn_id, onprem_web_base.as_deref()) {
+                    match build_debug_browser_url_with_affinity(
+                        &config,
+                        &conn_id,
+                        affinity.as_deref(),
+                        onprem_web_base.as_deref(),
+                    ) {
                         Ok(url) => Some(url),
                         Err(error) => {
                             self.reply_failure(

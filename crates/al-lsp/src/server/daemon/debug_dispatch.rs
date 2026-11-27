@@ -514,9 +514,10 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
         Ok(session) => {
             let session_id = session.session_id().to_string();
             let browser_url = if launch_browser {
-                match al_dap::dap::native_dap::build_debug_browser_url(
+                match al_dap::dap::native_dap::build_debug_browser_url_with_affinity(
                     &session.config,
                     &session_id,
+                    session.session.affinity_cookie.as_deref(),
                     onprem_web_base.as_deref(),
                 ) {
                     Ok(url) => Some(url),
@@ -532,6 +533,7 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
                 None
             };
             *workspace.debug_session.lock().await = Some(session);
+            spawn_bind_pump(workspace.debug_session.clone(), session_id.clone());
             Response {
                 id,
                 result: Some(serde_json::json!({
@@ -554,6 +556,28 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
             ..Default::default()
         },
     }
+}
+
+/// Poll the session every 100 ms until BC's bind callback has been handled.
+/// The DAP adapter does the same from its event forwarder
+/// (`native_dap/events.rs`). The task ends when the session is stopped or
+/// replaced.
+fn spawn_bind_pump(
+    slot: std::sync::Arc<tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>>,
+    session_id: String,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let mut guard = slot.lock().await;
+            let Some(session) = guard.as_mut() else {
+                return;
+            };
+            if session.session_id() != session_id || session.bind_pending().await {
+                return;
+            }
+        }
+    });
 }
 
 async fn debug_breakpoint(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {

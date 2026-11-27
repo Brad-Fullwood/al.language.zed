@@ -456,8 +456,10 @@ pub struct Workspace {
     /// The daemon's native debug session. Its methods take `&mut self`, so each
     /// debug command holds this lock across its Business Central call. Each such
     /// call ends at the SignalR invoke timeout, and nothing it awaits takes this
-    /// lock.
-    pub debug_session: tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>,
+    /// lock. It is shared so `debug start` can run a task that handles BC's
+    /// bind callback as it arrives.
+    pub debug_session:
+        std::sync::Arc<tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>>,
     /// Optional callback for user-visible notifications (bridge failures, etc.).
     ///
     /// Set by al-lsp after workspace construction. In the LSP path the closure
@@ -606,7 +608,7 @@ impl Workspace {
             semantic_init_failure_reported: std::sync::atomic::AtomicBool::new(false),
             package_info: std::sync::RwLock::new(Vec::new()),
             semantic_cache: std::sync::RwLock::new(SemanticCache::new()),
-            debug_session: tokio::sync::Mutex::new(None),
+            debug_session: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             notify_sink: std::sync::OnceLock::new(),
             trust_advisory: std::sync::OnceLock::new(),
             insight_graph: std::sync::RwLock::new(None),
