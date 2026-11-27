@@ -125,16 +125,21 @@ fn tool_schema(tool: &ToolDef) -> serde_json::Value {
         });
     }
     if super::daemon::list_target(tool.method).is_some() {
-        properties.insert(
-            "limit".into(),
-            serde_json::json!({
-                "type": "integer",
-                "minimum": 0,
-                "description": format!(
-                    "Rows to return; defaults to {MCP_DEFAULT_LIMIT}. The result reports total and truncated."
-                ),
-            }),
-        );
+        let own_maximum = properties
+            .get("limit")
+            .and_then(|limit| limit.get("maximum"))
+            .cloned();
+        let mut limit = serde_json::json!({
+            "type": "integer",
+            "minimum": 0,
+            "description": format!(
+                "Rows to return; defaults to {MCP_DEFAULT_LIMIT}. The result reports total and truncated."
+            ),
+        });
+        if let Some(maximum) = own_maximum {
+            limit["maximum"] = maximum;
+        }
+        properties.insert("limit".into(), limit);
         properties.insert(
             "offset".into(),
             serde_json::json!({
@@ -228,7 +233,7 @@ fn result_schema(tool_name: &str) -> serde_json::Value {
                 "output": {"type": "string"},
                 "backend": {"type": "string"},
                 "validated": {"type": "boolean"},
-                "verificationLevel": {"type": "string"},
+                "verificationLevel": {"type": ["string", "null"]},
             }),
             &["success", "diagnostics", "appPath", "output"],
         ),
@@ -244,8 +249,11 @@ fn result_schema(tool_name: &str) -> serde_json::Value {
             }),
             &["source", "downloaded", "failed", "results"],
         ),
-        "al_symbolsearch" | "al_getdiagnostics" | "al_deadcode" | "al_sqlscan"
-        | "al_entrypoints" | "al_trace_event" => object_array(),
+        // `lint` is not a list method, so its array is not paged.
+        "al_getdiagnostics" => serde_json::json!({"type": "array", "items": {"type": "object"}}),
+        "al_symbolsearch" | "al_deadcode" | "al_sqlscan" | "al_entrypoints" | "al_trace_event" => {
+            object_array()
+        }
         "al_freeids" => object_result_schema(
             serde_json::json!({
                 "mode": {"type": "string", "enum": ["object", "summary", "field", "value"]},
@@ -925,7 +933,7 @@ fn tools() -> &'static [ToolDef] {
                           source. Returns each object's kind, id, name and package; \
                           fetch its members with al_call object or byId, passing \
                           waitForMembers: true for a workspace object. Args: query \
-                          (string), limit (integer, default 20, maximum 500000), summary \
+                          (string), limit (integer, default 50, maximum 500000), summary \
                           (boolean, default true; false includes every member).",
             schema: || {
                 obj_schema(
@@ -936,7 +944,7 @@ fn tools() -> &'static [ToolDef] {
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 500000,
-                            "default": 20
+                            "default": 50
                         }
                     }),
                     &["query"],
@@ -1338,13 +1346,21 @@ async fn agent_diagnostics(
         ));
     }
 
-    if matches!(method, "lint" | "hover" | "completions" | "signatureHelp") {
-        let bridge_enabled = workspace.config.read().await.enable_code_analysis;
+    // `signatureHelp` is native only. With background analysis off the bridge
+    // is not started for a diagnostic note.
+    if matches!(method, "lint" | "hover" | "completions") {
+        let (analysis_enabled, background_enabled) = {
+            let config = workspace.config.read().await;
+            (config.enable_code_analysis, config.background_code_analysis)
+        };
+        let bridge_enabled = analysis_enabled && background_enabled;
         let bridge_available =
             bridge_enabled && al_workspace::get_or_init_bridge(workspace).await.is_some();
         if !bridge_available {
-            let reason = if !bridge_enabled {
+            let reason = if !analysis_enabled {
                 "The optional Microsoft CodeAnalysis semantic bridge is disabled by al.enableCodeAnalysis. Native syntax and workspace diagnostics still run, but bridge-only semantic enrichment is absent."
+            } else if !background_enabled {
+                "The optional Microsoft CodeAnalysis semantic bridge is not started because al.backgroundCodeAnalysis is off. Native syntax and workspace diagnostics still run, but bridge-only semantic enrichment is absent."
             } else if workspace.toolchain.read().await.is_none() {
                 "The Microsoft AL toolchain was not discovered, so the optional semantic bridge cannot initialize. Native syntax and workspace diagnostics still run, but Microsoft CodeAnalysis enrichment is absent."
             } else {
@@ -1419,6 +1435,10 @@ async fn agent_diagnostics(
 /// twenty rows or fewer. An agent that needs more asks for it by `limit` or
 /// pages with `offset`; the response says `total` and `truncated` either way.
 pub(crate) const MCP_DEFAULT_LIMIT: u64 = 50;
+
+/// Tool calls that run at once. Later calls wait for a permit. The daemon
+/// allows the same number per connection (`MAX_IN_FLIGHT_PER_CONNECTION`).
+const MAX_MCP_CALLS_IN_FLIGHT: usize = 8;
 
 /// The package scope an MCP caller gets when it does not say.
 ///
@@ -1832,6 +1852,7 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
     let mut lifecycle = McpLifecycle::default();
     let mut in_flight: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
         std::collections::HashMap::new();
+    let call_permits = Arc::new(tokio::sync::Semaphore::new(MAX_MCP_CALLS_IN_FLIGHT));
     loop {
         // Bounded read: an unbounded `read_line` lets one huge client line
         // allocate without limit before it is even parsed. Same 64 MB cap the
@@ -1893,13 +1914,25 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
             let task_workspace = Arc::clone(&workspace);
             let task_shutdown = Arc::clone(&shutdown);
             let task_stdout = Arc::clone(&stdout);
+            let task_permits = Arc::clone(&call_permits);
             let handle = tokio::spawn(async move {
+                // The reader keeps reading while a call waits here, so `ping`
+                // and cancellation are still answered when the limit is hit.
+                let Ok(_permit) = task_permits.acquire_owned().await else {
+                    return;
+                };
                 if let Some(response) =
                     handle_mcp_message(&task_workspace, &task_shutdown, msg).await
                 {
-                    if let Err(error) = write_mcp_frame(&task_stdout, &response).await {
-                        tracing::warn!(%error, "mcp: failed to write tools/call response");
-                    }
+                    // A cancellation aborts this task. The write runs in its
+                    // own task, which the abort does not reach, so a frame is
+                    // written whole or not started.
+                    let writer = tokio::spawn(async move {
+                        if let Err(error) = write_mcp_frame(&task_stdout, &response).await {
+                            tracing::warn!(%error, "mcp: failed to write tools/call response");
+                        }
+                    });
+                    let _ = writer.await;
                 }
             });
             in_flight.insert(key, handle);

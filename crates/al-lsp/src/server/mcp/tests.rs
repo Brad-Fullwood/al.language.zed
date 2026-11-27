@@ -1093,3 +1093,117 @@ async fn a_tool_error_carries_repository_controls_as_escapes() {
     }
     assert_eq!(text, structured);
 }
+
+/// A2-neon-04: every tool that reaches Business Central takes the tenant
+/// guard parameters.
+#[test]
+fn every_business_central_tool_accepts_cli_tenant_and_purpose() {
+    let mut checked = 0;
+    for tool in tools().iter().filter(|tool| tool.name != "al_call") {
+        if !connects_to_bc(tool.method) {
+            continue;
+        }
+        let schema = tool_schema(tool);
+        for property in ["cliTenant", "cliPurpose"] {
+            assert!(
+                schema["properties"][property].is_object(),
+                "{} schema missing {property}",
+                tool.name
+            );
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 6,
+        "only {checked} tools connect to Business Central"
+    );
+    let debug = tools()
+        .iter()
+        .find(|tool| tool.name == "al_debug")
+        .expect("al_debug ToolDef");
+    assert_eq!(
+        validate_tool_arguments(
+            debug,
+            &serde_json::json!({
+                "cmd": "start",
+                "cliTenant": "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d",
+            }),
+        ),
+        Ok(())
+    );
+}
+
+/// A2-neon-16: the structured content of `al_getdiagnostics` and of both
+/// `al_build` backends matches the advertised output schema.
+#[test]
+fn structured_content_matches_output_schema() {
+    let diagnostics = serde_json::json!({
+        "success": true,
+        "tool": "al_getdiagnostics",
+        "method": "lint",
+        "result": [{"message": "Field has no DataClassification", "line": 3}],
+    });
+    validate_schema_value(
+        &diagnostics,
+        &output_schema("al_getdiagnostics"),
+        "structuredContent",
+    )
+    .expect("lint array matches the schema");
+
+    for verification_level in [
+        serde_json::Value::Null,
+        serde_json::json!("native-syntax-project-binding-symbol-graph"),
+    ] {
+        let build = serde_json::json!({
+            "success": true,
+            "tool": "al_build",
+            "method": "compile",
+            "result": {
+                "success": true,
+                "diagnostics": [],
+                "appPath": null,
+                "output": "",
+                "backend": "alc",
+                "validated": true,
+                "verificationLevel": verification_level,
+            },
+        });
+        validate_schema_value(&build, &output_schema("al_build"), "structuredContent")
+            .expect("build result matches the schema");
+    }
+}
+
+/// A2-neon-19: `al_symbolsearch` states the limit MCP applies and keeps its
+/// maximum.
+#[test]
+fn symbol_search_limit_says_default_50_and_keeps_its_maximum() {
+    let tool = tools()
+        .iter()
+        .find(|tool| tool.name == "al_symbolsearch")
+        .expect("al_symbolsearch ToolDef");
+    let schema = tool_schema(tool);
+    assert_eq!(schema["properties"]["limit"]["maximum"], 500_000);
+    assert!(!tool.description.contains("default 20"));
+}
+
+/// A2-neon-18: with background analysis off, a diagnostic note for `hover`
+/// does not start the semantic bridge.
+#[tokio::test]
+async fn agent_diagnostics_do_not_start_the_bridge_without_background_analysis() {
+    let workspace = ws();
+    {
+        let mut config = workspace.config.write().await;
+        config.enable_code_analysis = true;
+        config.background_code_analysis = false;
+    }
+
+    let notes = agent_diagnostics(&workspace, "hover", None, None).await;
+
+    assert!(workspace.semantic.read().await.is_none());
+    assert!(notes.iter().any(
+        |note| note["code"] == "AL_AGENT_SEMANTIC_BRIDGE_UNAVAILABLE"
+            && note["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("backgroundCodeAnalysis"))
+    ));
+}
