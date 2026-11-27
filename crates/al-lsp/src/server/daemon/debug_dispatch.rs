@@ -387,12 +387,13 @@ pub(super) async fn acquire_bc_token(
     match al_bc::http_auth::access_token_from_env() {
         Ok(Some(token)) => Ok(token),
         Ok(None) => {
-            // A daemon request that carried no credentials has nobody to answer
+            // A daemon request that carried no access token (none at all, or
+            // only a username and password) has nobody to answer
             // a browser or device code prompt: it waited out the CLI's 30 s
             // deadline. Standard route checked: the OAuth cache
             // with Auto sign-in. It is kept for the cached token and its
             // refresh, and sign-in is switched off for this case.
-            let sign_in = if al_bc::http_auth::daemon_request_lacks_credentials() {
+            let sign_in = if al_bc::http_auth::daemon_request_lacks_access_token() {
                 al_symbols::oauth::SignInMode::CachedOnly
             } else {
                 al_symbols::oauth::SignInMode::Auto

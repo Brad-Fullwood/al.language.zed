@@ -620,11 +620,18 @@ const CONNECTING_METHODS: [&str; 12] = [
 
 /// Add `BC_ACCESS_TOKEN` (or `BC_TOKEN`) and `BC_USERNAME`/`BC_PASSWORD` from
 /// this process's environment to the request. Nothing is added when none is set.
+/// Invalid token variables stop the request, so the daemon does not spend its
+/// own credentials in their place.
 fn with_caller_credentials(
     method: &str,
     params: Option<serde_json::Value>,
-) -> Option<serde_json::Value> {
-    attach_credentials(method, params, al_bc::http_auth::Credentials::from_env())
+) -> Result<Option<serde_json::Value>, String> {
+    if !al_protocol::methods::CREDENTIAL_METHODS.contains(&method) {
+        return Ok(params);
+    }
+    let credentials =
+        al_bc::http_auth::Credentials::from_env().map_err(|error| error.to_string())?;
+    Ok(attach_credentials(method, params, credentials))
 }
 
 fn attach_credentials(
@@ -814,7 +821,7 @@ pub fn request_checked(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let mut sent =
-        with_caller_credentials(method, with_caller_tenant(method, with_projection(params)));
+        with_caller_credentials(method, with_caller_tenant(method, with_projection(params)))?;
     // At most two passes: the second carries the text for a file the daemon
     // may not open, and `params_with_text` returns None once it is attached.
     loop {
