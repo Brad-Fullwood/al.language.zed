@@ -1,12 +1,13 @@
 //! The check that the AL extension and this `al-lsp` come from the same build.
 //!
 //! The Zed extension passes `--extension-build <version>+git.<commit>[.dirty]`
-//! on every launch it builds. A stale `al-lsp` on PATH or in `~/.local/bin`
-//! used to run silently against a newer extension. Here the binary compares
-//! version and commit with its own and records one warning on a mismatch.
-//! No flag (an older extension, another editor) means no check. Unknown flags
-//! are ignored by the argument scan in `bin/al-lsp.rs`, so an older `al-lsp`
-//! started with this flag still starts.
+//! on every launch it builds. After `make install` the extension runs
+//! `dev/al-lsp`. Without that it runs the release download for its version.
+//! A stale `al-lsp` used to run silently against a newer extension. Here the
+//! binary compares version and commit with its own and records one warning on
+//! a mismatch. No flag (an older extension, another editor) means no check.
+//! Unknown flags are ignored by the argument scan in `bin/al-lsp.rs`, so an
+//! older `al-lsp` started with this flag still starts.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -22,6 +23,21 @@ pub fn flag_value(args: &[String]) -> Option<&str> {
     args.get(at + 1)
         .map(String::as_str)
         .filter(|value| !value.is_empty())
+}
+
+/// `args` without every [`FLAG`] and the value after it. A [`FLAG`] at the
+/// end has no value and is dropped alone. Other arguments keep their order.
+pub fn without_flag(args: &[String]) -> Vec<String> {
+    let mut kept = Vec::with_capacity(args.len());
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg == FLAG {
+            rest.next();
+        } else {
+            kept.push(arg.clone());
+        }
+    }
+    kept
 }
 
 /// An extension build stamp split into its parts.
@@ -65,10 +81,11 @@ pub fn mismatch_message(args: &[String], own: &BuildIdentity, exe: &Path) -> Opt
     }
     Some(format!(
         "al-lsp {} ({}) at {} does not match the AL extension {stamp}. \
-         Run `make install` in the extension repo, or remove al-lsp from PATH \
+         Run `make install` in the extension repo, or delete {} \
          to use the release download.",
         own.version,
         own.build,
+        exe.display(),
         exe.display()
     ))
 }
@@ -117,6 +134,11 @@ mod tests {
         assert!(message.contains("/home/u/.local/bin/al-lsp"), "{message}");
         assert!(message.contains("0.5.0+git.aaaaaaaaaaaa"), "{message}");
         assert!(message.contains("make install"), "{message}");
+        assert!(!message.contains("PATH"), "{message}");
+        assert!(
+            message.contains("delete /home/u/.local/bin/al-lsp "),
+            "{message}"
+        );
     }
 
     #[test]
@@ -145,5 +167,18 @@ mod tests {
     fn a_flag_without_a_value_is_ignored() {
         let args = vec![FLAG.to_string()];
         assert_eq!(flag_value(&args), None);
+    }
+
+    #[test]
+    fn without_flag_drops_the_extension_build_pair() {
+        let args =
+            ["--official-lsp", "--extension-build", "0.5.0+git.a", "--x"].map(str::to_string);
+        assert_eq!(without_flag(&args), ["--official-lsp", "--x"]);
+    }
+
+    #[test]
+    fn without_flag_keeps_args_without_the_flag() {
+        let args = ["--stdio"].map(str::to_string);
+        assert_eq!(without_flag(&args), ["--stdio"]);
     }
 }

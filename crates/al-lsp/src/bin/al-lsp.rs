@@ -359,11 +359,9 @@ async fn run() {
             );
             std::process::exit(1);
         };
-        let forward: Vec<String> = args
-            .iter()
-            .skip(1)
+        let forward: Vec<String> = al_lsp::extension_build::without_flag(&args[1..])
+            .into_iter()
             .filter(|a| a.as_str() != "--official-lsp" && a.as_str() != "--stdio")
-            .cloned()
             .collect();
         tracing::info!(
             altool = %altool.display(),
