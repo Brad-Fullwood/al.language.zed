@@ -645,6 +645,21 @@ fn run_procedure_interp(
     if eval_succeeded(&result) {
         result = eval_named_procedure(root, source, codeunit_name, proc_name, &mut stack, &mut ctx);
     }
+    // BC fails a test whose `[HandlerFunctions]` handler never ran. A body that
+    // already failed keeps its own error.
+    if eval_succeeded(&result) {
+        let missing = unexecuted_handlers(cu, proc_name, &ctx.handlers_called);
+        if !missing.is_empty() {
+            result = Eval::Error(al_runtime::interpreter::value::ErrorInfo {
+                message: format!(
+                    "The following UI handlers were not executed: {}",
+                    missing.join(", ")
+                ),
+                error_type: None,
+                source: None,
+            });
+        }
+    }
     for cleanup in &cu.test_cleanups {
         let lifecycle = eval_named_procedure(
             root,
@@ -663,6 +678,27 @@ fn run_procedure_interp(
 
 fn eval_succeeded(result: &Eval) -> bool {
     matches!(result, Eval::Normal(_) | Eval::Exit(_))
+}
+
+/// The `[HandlerFunctions]` names of the test that never ran, in declaration
+/// order. `called` holds lowercased names.
+fn unexecuted_handlers(
+    cu: &TestCodeunit,
+    proc_name: &str,
+    called: &std::collections::HashSet<String>,
+) -> Vec<String> {
+    let Some(test) = cu
+        .tests
+        .iter()
+        .find(|test| test.name.eq_ignore_ascii_case(proc_name))
+    else {
+        return Vec::new();
+    };
+    test.handler_functions
+        .iter()
+        .filter(|name| !called.contains(&name.to_ascii_lowercase()))
+        .cloned()
+        .collect()
 }
 
 fn configured_handlers(
@@ -1994,5 +2030,130 @@ mod tests {
         assert!(events.iter().any(|event| {
             matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
         }), "deterministic handlers should execute and write back Choice: {events:?}");
+    }
+
+    #[tokio::test]
+    async fn confirm_default_is_not_a_placeholder_value() {
+        let source = r#"codeunit 50146 "Default Reply Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    [HandlerFunctions('HandleConfirm')]
+    procedure DefaultReply()
+    var
+        Answer: Boolean;
+    begin
+        Answer := Confirm('Delete %1?', true, 'DOC-001');
+    end;
+
+    [ConfirmHandler]
+    procedure HandleConfirm(Question: Text[1024]; var Reply: Boolean)
+    begin
+        if Question <> 'Delete %1?' then
+            Error('wrong question: %1', Question);
+        if not Reply then
+            Error('Reply did not start at the Default argument');
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/DefaultReplyTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50146,
+                codeunit_name: "Default Reply Tests".to_string(),
+                method_name: Some("DefaultReply".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(events.iter().any(|event| {
+            matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+        }), "Reply should start at the Default argument and the question should be unformatted: {events:?}");
+    }
+
+    #[tokio::test]
+    async fn unused_handler_fails_the_test() {
+        let source = r#"codeunit 50148 "Unused Handler Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    [HandlerFunctions('HandleMessage')]
+    procedure NoMessage()
+    begin
+    end;
+
+    [MessageHandler]
+    procedure HandleMessage(Msg: Text[1024])
+    begin
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/UnusedHandlerTests.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50148,
+                codeunit_name: "Unused Handler Tests".to_string(),
+                method_name: Some("NoMessage".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(
+            events.iter().any(|event| {
+                matches!(event, TestEvent::CaseResult { result, .. }
+                if result.status == TestStatus::Fail
+                    && result.error.as_deref()
+                        == Some("The following UI handlers were not executed: HandleMessage"))
+            }),
+            "an unused handler must fail the test with BC's message: {events:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn variable_storage_dequeue_writes_back() {
+        let source = r#"codeunit 50147 "Variable Storage Round Trip"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure RoundTrip()
+    var
+        LibraryVariableStorage: Codeunit "Library - Variable Storage";
+        Assert: Codeunit "Library Assert";
+        Result: Variant;
+    begin
+        LibraryVariableStorage.Enqueue('ABC');
+        LibraryVariableStorage.Dequeue(Result);
+        Assert.AreEqual('ABC', Result, '');
+    end;
+}"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/VariableStorageRoundTrip.Codeunit.al"),
+            source.to_string(),
+        );
+        let events = collect_events(
+            &InterpMode::new(Arc::new(workspace)),
+            vec![TestId {
+                codeunit_id: 50147,
+                codeunit_name: "Variable Storage Round Trip".to_string(),
+                method_name: Some("RoundTrip".to_string()),
+            }],
+            RunOptions::default(),
+        )
+        .await;
+        assert!(events.iter().any(|event| {
+            matches!(event, TestEvent::CaseResult { result, .. } if result.status == TestStatus::Pass)
+        }), "Dequeue must write the value back to its var argument: {events:?}");
     }
 }

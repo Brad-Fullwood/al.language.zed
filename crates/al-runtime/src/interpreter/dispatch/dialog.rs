@@ -32,16 +32,27 @@ pub(super) fn builtin_error(args: &[Value]) -> Eval {
     })
 }
 
-pub(super) fn formatted_dialog_text(args: &[Value]) -> Result<String, String> {
-    let message = match args.first() {
-        Some(Value::Text(text)) | Some(Value::Code(text)) => text.clone(),
-        Some(value) => render_value(value),
-        None => String::new(),
+/// The text of a dialog message with `%1`, `%2`, … replaced by `values`.
+/// Empty `values` returns the text unchanged.
+pub(super) fn formatted_dialog_text_from(
+    message: &Value,
+    values: &[Value],
+) -> Result<String, String> {
+    let text = match message {
+        Value::Text(text) | Value::Code(text) => text.clone(),
+        value => render_value(value),
     };
-    if args.len() > 1 {
-        substitute_placeholders(&message, &args[1..])
+    if values.is_empty() {
+        Ok(text)
     } else {
-        Ok(message)
+        substitute_placeholders(&text, values)
+    }
+}
+
+pub(super) fn formatted_dialog_text(args: &[Value]) -> Result<String, String> {
+    match args.first() {
+        Some(message) => formatted_dialog_text_from(message, &args[1..]),
+        None => Ok(String::new()),
     }
 }
 

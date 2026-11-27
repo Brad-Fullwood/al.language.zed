@@ -42,7 +42,9 @@ pub const CATALOGS: &[StubCatalog] = &[
         codeunit_name: "Library - Variable Storage",
         codeunit_ids: &[131004],
         resolve: library_variable_storage::resolve,
-        context_members: &[],
+        // Dequeue and Peek write their value to the var argument, which needs
+        // the interpreter context.
+        context_members: &["dequeue", "peek"],
     },
     StubCatalog {
         codeunit_name: "Library Random",
@@ -69,6 +71,7 @@ pub const CATALOGS: &[StubCatalog] = &[
 pub fn reset_thread_local_state() {
     library_variable_storage::reset_queue();
     library_random::reset_lcg();
+    any::reset_seed();
 }
 
 /// The catalog a receiver names, by codeunit name or by any of its IDs.

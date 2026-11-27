@@ -177,6 +177,9 @@ pub struct DispatchCtx {
     /// non-workspace calls leave it empty.
     pub var_writebacks: Vec<(usize, Value)>,
     pub test_handlers: TestHandlers,
+    /// Lowercased names of the handler procedures that ran during the test.
+    /// The test runner compares this with the `[HandlerFunctions]` list.
+    pub handlers_called: std::collections::HashSet<String>,
     /// Allocator for per-record-variable view handles. Each record variable
     /// gets its own filter/cursor/buffer view over the shared table store
     /// (BC semantics); the handle is stored on the variable's `RecordValue`.
@@ -264,6 +267,7 @@ impl DispatchCtx {
             condition_trace_stack: Vec::new(),
             var_writebacks: Vec::new(),
             test_handlers: TestHandlers::default(),
+            handlers_called: std::collections::HashSet::new(),
             next_record_handle: 0,
             stmt_position: false,
             last_error: None,
