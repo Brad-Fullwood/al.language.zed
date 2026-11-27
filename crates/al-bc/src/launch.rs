@@ -74,13 +74,9 @@ impl BcServerConfig {
 
         match self.environment_type {
             EnvironmentType::OnPrem => {
-                let server = server_with_scheme(self.server.as_deref()?)?;
+                let base =
+                    onprem_origin(self.server.as_deref()?, self.port, DEFAULT_ONPREM_DEV_PORT)?;
                 let instance = self.server_instance.as_deref()?;
-                let base = if let Some(port) = self.port {
-                    format!("{}:{}", server.trim_end_matches('/'), port)
-                } else {
-                    server.trim_end_matches('/').to_string()
-                };
                 let tenant_param = self
                     .tenant
                     .as_deref()
@@ -363,6 +359,19 @@ pub fn server_with_scheme(server: &str) -> Option<String> {
         return Some(server.to_string());
     }
     Some(format!("https://{server}"))
+}
+
+/// BC's documented on-premises dev services port. Used when neither the
+/// `port` field nor the `server` string names a port.
+pub const DEFAULT_ONPREM_DEV_PORT: u16 = 7049;
+
+/// Scheme, host and port of an on-premises BC server, with no path.
+pub fn onprem_origin(server: &str, port: Option<u16>, default_port: u16) -> Option<String> {
+    let with_scheme = server_with_scheme(server)?;
+    let mut url = url::Url::parse(&with_scheme).ok()?;
+    let port = port.or(url.port()).unwrap_or(default_port);
+    url.set_port(Some(port)).ok()?;
+    Some(format!("{}://{}:{}", url.scheme(), url.host()?, port))
 }
 
 fn read_launch_file_capped(path: &Path) -> Result<String, Box<dyn std::error::Error>> {
@@ -954,10 +963,35 @@ mod tests {
     }
 
     #[test]
+    fn origin_keeps_port_in_server() {
+        assert_eq!(
+            onprem_origin("https://bc.corp.local:7049", None, 7049).as_deref(),
+            Some("https://bc.corp.local:7049")
+        );
+    }
+
+    #[test]
+    fn origin_port_field_wins() {
+        assert_eq!(
+            onprem_origin("https://bc:1234", Some(7049), 7049).as_deref(),
+            Some("https://bc:7049")
+        );
+    }
+
+    #[test]
+    fn origin_defaults_to_7049() {
+        // A bare host is https (`server_with_scheme`).
+        assert_eq!(
+            onprem_origin("bc.corp.local", None, 7049).as_deref(),
+            Some("https://bc.corp.local:7049")
+        );
+    }
+
+    #[test]
     fn dev_packages_url_onprem_minimal() {
         let url = onprem_config().dev_packages_url(&make_dep()).unwrap();
         assert!(
-            url.starts_with("http://localhost/BC/dev/packages?"),
+            url.starts_with("http://localhost:7049/BC/dev/packages?"),
             "unexpected URL: {url}"
         );
         // Query params are percent-encoded ("My App" -> "My%20App").
