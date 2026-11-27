@@ -367,7 +367,7 @@ impl DocumentStore {
     ) -> Result<(), DocumentMutationError> {
         self.validate_size(&uri, text.len())?;
         self.docs.insert(
-            uri,
+            uri.clone(),
             Document {
                 text: Rope::from_str(&text),
                 text_cache: std::sync::Arc::new(text),
@@ -375,6 +375,9 @@ impl DocumentStore {
                 client_version,
             },
         );
+        // A reopen keeps version 0, so a tree cached for the previous text
+        // would still pass the version check.
+        self.trees.remove(&uri);
         Ok(())
     }
 
@@ -885,6 +888,21 @@ mod tests {
         let mut parser = tree_sitter::Parser::new();
         parser.set_language(&al_syntax::parser::language()).unwrap();
         parser.parse(src, None).unwrap()
+    }
+
+    #[test]
+    fn reopen_with_new_text_drops_tree() {
+        let store = DocumentStore::new();
+        let uri = test_uri("reopen");
+        store.open(uri.clone(), "codeunit 1 A {}".to_string()).unwrap();
+        store.cache_tree(&uri, 0, parse_al("codeunit 1 A {}"));
+        assert!(store.get_cached_tree(&uri).is_some());
+
+        store.open(uri.clone(), "codeunit 1 B {}".to_string()).unwrap();
+        assert!(
+            store.get_cached_tree(&uri).is_none(),
+            "the tree parsed from the old text must not be served for the new text"
+        );
     }
 
     #[test]
