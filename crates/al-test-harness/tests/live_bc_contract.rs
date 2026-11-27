@@ -965,7 +965,7 @@ fn pass(detail: impl Into<String>) -> AnyResult<Outcome> {
     Ok(Outcome::Pass(detail.into()))
 }
 
-/// The text on one line, at most 700 characters.
+/// The text on one line, at most 1600 characters.
 fn first_line(text: &str) -> String {
     let joined = text.split_whitespace().collect::<Vec<_>>().join(" ");
     joined.chars().take(1600).collect()
