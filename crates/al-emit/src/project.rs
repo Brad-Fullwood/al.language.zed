@@ -8,7 +8,9 @@ use super::assemble::{assemble_app, SourceFile};
 use super::manifest::AppManifest;
 use super::package::{random_package_guid, EmitError};
 use super::symbol_extract::{extract_objects_from_tree, EmitObject};
-use super::symbol_reference::{build_symbol_reference, ExternalSymbols, ObjectRef, SymbolRefMeta};
+use super::symbol_reference::{
+    build_symbol_reference_with_internals, version_key, ExternalSymbols, ObjectRef, SymbolRefMeta,
+};
 use super::verification::{
     verify_artifact, verify_manifest, verify_project_objects, VerificationDiagnostic,
     VerificationSeverity,
@@ -97,8 +99,17 @@ fn default_dependency_packages(project_dir: &Path) -> Result<Vec<PathBuf>, EmitE
                 directory.display()
             ))
         })?;
+        // `file_type` does not follow links, so a symlink is dropped before
+        // `is_file`, which does follow them.
+        let file_type = entry.file_type().map_err(|error| {
+            EmitError::Project(format!(
+                "inspecting dependency package {}: {error}",
+                directory.display()
+            ))
+        })?;
         let path = entry.path();
-        if path.is_file()
+        if !file_type.is_symlink()
+            && path.is_file()
             && path
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
@@ -107,7 +118,38 @@ fn default_dependency_packages(project_dir: &Path) -> Result<Vec<PathBuf>, EmitE
         }
     }
     packages.sort();
-    Ok(packages)
+    Ok(keep_highest_versions(packages))
+}
+
+/// Keep only the highest four-part version of each `<publisher>_<name>` package
+/// in `.alpackages`, the rule al-project's `dedup_package_versions` applies.
+/// Packages whose name has no parseable version are kept. Versions are read
+/// with `version_key`, the parse al-emit already uses.
+fn keep_highest_versions(packages: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut best: std::collections::HashMap<String, ([u32; 4], PathBuf)> =
+        std::collections::HashMap::new();
+    let mut kept = Vec::new();
+    for path in packages {
+        let parsed = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.rsplit_once('_'))
+            .and_then(|(prefix, version)| {
+                version_key(version).map(|key| (prefix.to_lowercase(), key))
+            });
+        match parsed {
+            Some((name, version)) => match best.get(&name) {
+                Some((existing, _)) if *existing >= version => {}
+                _ => {
+                    best.insert(name, (version, path));
+                }
+            },
+            None => kept.push(path),
+        }
+    }
+    kept.extend(best.into_values().map(|(_, path)| path));
+    kept.sort();
+    kept
 }
 
 /// Index the project's default `.alpackages/*.app` symbol files into an
@@ -172,8 +214,17 @@ fn parse_external_symbols(package_paths: &[PathBuf]) -> Result<ExternalSymbols, 
     let mut table_id_to_name: std::collections::HashMap<i32, String> =
         std::collections::HashMap::new();
     for pkg in &packages {
-        ext.package_ids
-            .insert(pkg.app_id.trim_matches(['{', '}']).to_lowercase());
+        let app_id = pkg.app_id.trim_matches(['{', '}']).to_lowercase();
+        ext.package_ids.insert(app_id.clone());
+        // Keep the highest version per id. A version that does not parse never
+        // replaces one that does.
+        let known_is_higher = ext
+            .package_versions
+            .get(&app_id)
+            .is_some_and(|known| version_key(known) >= version_key(&pkg.version));
+        if !known_is_higher {
+            ext.package_versions.insert(app_id, pkg.version.clone());
+        }
         for obj in &pkg.objects {
             ext.object_kinds.insert((obj.kind, obj.name.to_lowercase()));
             // The resolver answers "which app declares this object", for
@@ -533,15 +584,21 @@ pub fn build_verified_app_from_project_with_packages(
         publisher: publisher.clone(),
         version: version.clone(),
     };
-    let symbol_reference = build_symbol_reference(&objects, &meta, external.as_ref());
+    let manifest = AppManifest::from_app_json(&app_json, compiler_version, build_timestamp);
+    let symbol_reference = build_symbol_reference_with_internals(
+        &objects,
+        &meta,
+        external.as_ref(),
+        &manifest.internals_visible_to,
+    );
     let symbol_json = serde_json::to_vec(&symbol_reference)
         .map_err(|e| EmitError::Project(format!("serializing SymbolReference.json: {e}")))?;
 
-    let manifest = AppManifest::from_app_json(&app_json, compiler_version, build_timestamp);
     let bytes = assemble_app(
         &manifest,
         &sources,
         &objects,
+        external.as_ref(),
         &symbol_json,
         random_package_guid()?,
         Some(project_dir),
@@ -1498,5 +1555,43 @@ pagecustomization "Local Card Custom" customizes "Local Card"
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, vec!["Own.al".to_string()]);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn default_packages_keep_highest_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let alpackages = dir.path().join(".alpackages");
+        std::fs::create_dir(&alpackages).unwrap();
+        for name in [
+            "Pub_Alpha_1.0.2.0.app",
+            "Pub_Alpha_1.0.10.0.app",
+            "Pub_Alpha_1.0.9.0.app",
+            "pub_alpha_1.0.1.0.app",
+            "Pub_Beta_3.0.0.0.app",
+            "System.app",
+        ] {
+            std::fs::write(alpackages.join(name), b"").unwrap();
+        }
+        // A link is not a package. The higher version it names must not win.
+        std::os::unix::fs::symlink(
+            alpackages.join("Pub_Alpha_1.0.10.0.app"),
+            alpackages.join("Pub_Alpha_9.0.0.0.app"),
+        )
+        .unwrap();
+
+        let names: Vec<String> = default_dependency_packages(dir.path())
+            .unwrap()
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "Pub_Alpha_1.0.10.0.app",
+                "Pub_Beta_3.0.0.0.app",
+                "System.app"
+            ]
+        );
     }
 }

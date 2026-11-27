@@ -1003,3 +1003,121 @@ fn runtime_14_0_is_accepted() {
     let codes = codes_for_with_manifest(&app_json, &[CUSTOMER_TABLE]);
     assert_silent(&codes, "ALN0103");
 }
+
+/// A dependency app at `version`, with one table, built into `.app` bytes.
+const DEP_APP_JSON: &str = r#"{
+  "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+  "name": "DepApp",
+  "publisher": "Pub",
+  "version": "VERSION",
+  "brief": "",
+  "description": "",
+  "platform": "1.0.0.0",
+  "application": "24.0.0.0",
+  "runtime": "13.0",
+  "idRanges": [ { "from": 50100, "to": 50199 } ],
+  "dependencies": []
+}
+"#;
+
+const DEP_TABLE: (&str, &str) = (
+    "Item.Table.al",
+    "table 50100 \"Dep Item\"\n{\n    DataClassification = CustomerContent;\n    fields\n    {\n        field(1; Code; Code[20]) { }\n    }\n}\n",
+);
+
+fn dependency_app_bytes(version: &str) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(
+        dir.path(),
+        &DEP_APP_JSON.replace("VERSION", version),
+        &[DEP_TABLE],
+    );
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("dependency project must build");
+    assert!(
+        !built.has_errors(),
+        "dependency {version} must build, got {:?}",
+        built.diagnostics
+    );
+    built.app.expect("dependency app is written").bytes
+}
+
+/// Build a consumer that depends on `DepApp` at `required`, with `packages` in
+/// `.alpackages`. Returns the ALN1007 messages.
+fn consumer_aln1007(required: &str, packages: &[(&str, Vec<u8>)]) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let app_json = format!(
+        r#"{{
+  "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "name": "VerifyApp",
+  "publisher": "Pub",
+  "version": "1.0.0.0",
+  "brief": "",
+  "description": "",
+  "platform": "1.0.0.0",
+  "application": "24.0.0.0",
+  "runtime": "13.0",
+  "idRanges": [ {{ "from": 50100, "to": 50199 }} ],
+  "dependencies": [ {{ "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", "name": "DepApp", "publisher": "Pub", "version": "{required}" }} ]
+}}
+"#
+    );
+    write_project(dir.path(), &app_json, &[]);
+    let alpackages = dir.path().join(".alpackages");
+    std::fs::create_dir_all(&alpackages).unwrap();
+    for (file, bytes) in packages {
+        std::fs::write(alpackages.join(file), bytes).unwrap();
+    }
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("consumer project must run");
+    built
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "ALN1007")
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+#[test]
+fn dependency_below_required_version_is_rejected() {
+    let dep_9 = dependency_app_bytes("9.0.0.0");
+    let dep_10 = dependency_app_bytes("10.0.0.0");
+
+    // The loaded package is below the required version: one ALN1007 with both versions.
+    let below = consumer_aln1007("10.0.0.0", &[("Pub_DepApp_9.0.0.0.app", dep_9.clone())]);
+    assert_eq!(
+        below,
+        vec![
+            "Dependency 'DepApp' (bbbbbbbb-cccc-dddd-eeee-ffffffffffff) requires version 10.0.0.0 but the highest loaded package is 9.0.0.0"
+                .to_string()
+        ],
+        "a loaded 9.0.0.0 must not satisfy a required 10.0.0.0"
+    );
+
+    // Equal versions satisfy the requirement (control).
+    let equal = consumer_aln1007("9.0.0.0", &[("Pub_DepApp_9.0.0.0.app", dep_9.clone())]);
+    assert!(
+        equal.is_empty(),
+        "an equal version must pass, got {equal:?}"
+    );
+
+    // Numeric comparison: 10.0.0.0 is above 9.0.0.0, although text order puts "10" first.
+    let numeric = consumer_aln1007("9.0.0.0", &[("Pub_DepApp_10.0.0.0.app", dep_10.clone())]);
+    assert!(
+        numeric.is_empty(),
+        "10.0.0.0 must satisfy a required 9.0.0.0, got {numeric:?}"
+    );
+
+    // The highest loaded version counts, not the first one found.
+    let highest = consumer_aln1007(
+        "10.0.0.0",
+        &[
+            ("Pub_DepApp_9.0.0.0.app", dep_9),
+            ("Pub_DepApp_10.0.0.0.app", dep_10),
+        ],
+    );
+    assert!(
+        highest.is_empty(),
+        "the highest loaded 10.0.0.0 must satisfy a required 10.0.0.0, got {highest:?}"
+    );
+}

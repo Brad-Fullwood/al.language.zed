@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use al_symbols::model::{ObjectKind, SymbolEntry};
 use serde::Serialize;
 
+use crate::symbol_reference::version_key;
 use crate::{binding::SYSTEM_FIELDS, EmitObject, ExternalSymbols, SourceFile, SymbolRefMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -984,10 +985,12 @@ fn verify_local_event_contracts(objects: &[EmitObject], out: &mut Vec<Verificati
 }
 
 fn procedure_body<'a>(source: &'a str, name: &str) -> Option<(usize, &'a str)> {
-    let needle = format!("procedure {name}");
-    let start = source
-        .to_ascii_lowercase()
-        .find(&needle.to_ascii_lowercase())?;
+    // The symbol name is unquoted, so a quoted declaration needs its own needle.
+    let lower = source.to_ascii_lowercase();
+    let start = [format!("procedure {name}"), format!("procedure \"{name}\"")]
+        .iter()
+        .filter_map(|needle| lower.find(&needle.to_ascii_lowercase()))
+        .min()?;
     let rest = &source[start..];
     let begin = rest.to_ascii_lowercase().find("begin")?;
     let body = &rest[begin + 5..];
@@ -1554,11 +1557,11 @@ fn verify_dependencies(
             continue;
         };
         let normalized = id.trim_matches(['{', '}']).to_lowercase();
+        let name = dependency
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unnamed dependency");
         if !external.package_ids.contains(&normalized) {
-            let name = dependency
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unnamed dependency");
             out.push(VerificationDiagnostic::error(
                 "app.json",
                 "ALN1007",
@@ -1566,6 +1569,28 @@ fn verify_dependencies(
                     "Dependency '{name}' ({id}) is declared but no matching package was loaded from .alpackages"
                 ),
             ));
+        }
+        // alc reports a loaded dependency below the required version as AL1022.
+        // Both versions must parse, so an unknown version keeps this check silent.
+        let required = dependency
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let loaded = external
+            .package_versions
+            .get(&normalized)
+            .map_or("", String::as_str);
+        if let (Some(required_key), Some(loaded_key)) = (version_key(required), version_key(loaded))
+        {
+            if loaded_key < required_key {
+                out.push(VerificationDiagnostic::error(
+                    "app.json",
+                    "ALN1007",
+                    format!(
+                        "Dependency '{name}' ({id}) requires version {required} but the highest loaded package is {loaded}"
+                    ),
+                ));
+            }
         }
     }
 }

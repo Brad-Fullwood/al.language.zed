@@ -792,7 +792,7 @@ fn extract_methods(body: Node, src: &[u8]) -> Vec<MethodSymbol> {
 fn extract_procedure(node: Node, src: &[u8]) -> MethodSymbol {
     let name = node
         .child_by_field_name("name")
-        .map(|n| text(n, src).to_string())
+        .map(|n| unquote(text(n, src)))
         .unwrap_or_default();
     let parameters = node
         .child_by_field_name("parameters")
@@ -1181,18 +1181,20 @@ fn strip_property_attributes(s: &str) -> &str {
     s
 }
 
-/// Strip a property value's surrounding quotes — single (`'…'` string) or
-/// double (`"…"` identifier, e.g. an object reference like `RoleCenter`). Only a
-/// *single* quoted token is unwrapped: a multi-token expression like
-/// `"Sweep Hdr"."No."` (a TableRelation) keeps its quotes verbatim, detected by
-/// an inner occurrence of the same quote.
+/// Strip a property value's surrounding quotes. A single quoted token is
+/// unwrapped and each doubled quote inside it becomes one quote, so
+/// `'Customer''s Name'` gives `Customer's Name`. A multi-token expression like
+/// `"Sweep Hdr"."No."` (a TableRelation) keeps its quotes verbatim, because its
+/// inner quote is not doubled.
 fn unquote_prop_value(s: &str) -> String {
     let t = strip_property_attributes(s).trim();
     let q = t.chars().next();
     if t.len() >= 2 && (q == Some('\'') || q == Some('"')) && t.ends_with(q.unwrap()) {
+        let quote = q.unwrap();
         let inner = &t[1..t.len() - 1];
-        if !inner.contains(q.unwrap()) {
-            return inner.to_string();
+        let doubled = format!("{quote}{quote}");
+        if !inner.replace(&doubled, "").contains(quote) {
+            return inner.replace(&doubled, &quote.to_string());
         }
     }
     t.to_string()
@@ -1276,6 +1278,26 @@ mod tests {
         assert_eq!(
             strip_property_attributes("'Hello, world', Locked = true"),
             "'Hello, world'"
+        );
+    }
+
+    #[test]
+    fn doubled_apostrophe_caption_is_unescaped() {
+        let objects = extract_objects(
+            "table 50100 Widget { fields { field(2; Name; Text[100]) \
+             { Caption = 'Customer''s Name'; } } }",
+            "src/Widget.al",
+        );
+        let field = &objects[0].entry.fields[0];
+        let caption = field
+            .properties
+            .iter()
+            .find(|property| property.name.eq_ignore_ascii_case("Caption"))
+            .expect("field caption");
+        assert_eq!(caption.value, "Customer's Name");
+        assert_eq!(
+            unquote_prop_value("\"Sweep Hdr\".\"No.\""),
+            "\"Sweep Hdr\".\"No.\""
         );
     }
 

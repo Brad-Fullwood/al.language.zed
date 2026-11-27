@@ -1,0 +1,22 @@
+<Package xmlns="http://schemas.microsoft.com/navx/2015/manifest">
+  <App Id="0c1a0001-0000-4000-8000-000000000015" Name="Check Internals" Publisher="Checks" Brief="" Description="" Version="1.0.0.0" CompatibilityId="0.0.0.0" PrivacyStatement="" EULA="" Help="" HelpBaseUrl="" Url="" Logo="" Platform="28.0.0.0" Application="28.0.0.0" Runtime="16.0" Target="Cloud" ShowMyCode="False" />
+  <IdRanges>
+    <IdRange MinObjectId="50100" MaxObjectId="50199" />
+  </IdRanges>
+  <Dependencies />
+  <InternalsVisibleTo>
+    <Module Id="0c1a0001-0000-4000-8000-0000000000aa" Name="Test App" Publisher="P" />
+  </InternalsVisibleTo>
+  <ScreenShots />
+  <SupportedLocales />
+  <Features>
+    <Feature>NOIMPLICITWITH</Feature>
+  </Features>
+  <PreprocessorSymbols />
+  <SuppressWarnings />
+  <ResourceExposurePolicy />
+  <KeyVaultUrls />
+  <Source />
+  <Build Timestamp="2026-11-27T10:17:47.5001240Z" CompilerVersion="18.1.43.24897" />
+  <AlternateIds />
+</Package>

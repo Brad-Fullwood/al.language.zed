@@ -9,6 +9,7 @@
 use al_syntax::IdentifierText;
 use serde_json::{json, Map, Value};
 
+use super::manifest::InternalsVisibleTo;
 use super::method_id::{combine_hash, fnv1_hash, fnv1_hash_bytes, member_id, method_id, ParamSig};
 use super::symbol_extract::{
     ControlChange, EmitObject, PageControl, PermissionDecl, QueryElement, ReportLayout,
@@ -82,9 +83,25 @@ pub struct ExternalSymbols {
     /// package. Used to reject an explicitly declared dependency that is absent
     /// from `.alpackages` instead of emitting against an incomplete symbol set.
     pub package_ids: std::collections::HashSet<String>,
+    /// Lowercase, brace-free app ID → the highest version loaded for it, as the
+    /// package states it. Compare with [`version_key`].
+    pub package_versions: std::collections::HashMap<String, String>,
     /// `(table, procedure)` for every procedure a dependency's table, or a
     /// dependency's extension of a table, declares. Lowercase.
     pub table_methods: std::collections::HashSet<(String, String)>,
+}
+
+/// The four `u32` parts of an app version such as `1.2.3.4`. A missing part
+/// counts as 0. `None` when a part is not a number or there are more than four.
+pub(crate) fn version_key(version: &str) -> Option<[u32; 4]> {
+    let mut parts = [0u32; 4];
+    for (count, text) in version.trim().split('.').enumerate() {
+        if count == 4 {
+            return None;
+        }
+        parts[count] = text.parse().ok()?;
+    }
+    Some(parts)
 }
 
 const OBJECT_GROUPS: &[(&str, Option<ObjectKind>, bool)] = &[
@@ -163,11 +180,23 @@ fn merged_resolver(objects: &[EmitObject], external: &Resolver) -> Resolver {
 
 /// Build the full `SymbolReference.json` document. `external` resolves object
 /// references (and base table field types / page source tables) that live in
-/// referenced apps (System/Base) to their id + module.
+/// referenced apps (System/Base) to their id + module. The document lists no
+/// `InternalsVisibleToModules`. Use `build_symbol_reference_with_internals` for that.
 pub fn build_symbol_reference(
     objects: &[EmitObject],
     meta: &SymbolRefMeta,
     external: &ExternalSymbols,
+) -> Value {
+    build_symbol_reference_with_internals(objects, meta, external, &[])
+}
+
+/// `build_symbol_reference` with the app's `internalsVisibleTo` list, written as
+/// `InternalsVisibleToModules` in the same order.
+pub fn build_symbol_reference_with_internals(
+    objects: &[EmitObject],
+    meta: &SymbolRefMeta,
+    external: &ExternalSymbols,
+    internals_visible_to: &[InternalsVisibleTo],
 ) -> Value {
     let resolver = merged_resolver(objects, &external.resolver);
 
@@ -243,7 +272,11 @@ pub fn build_symbol_reference(
         );
     }
 
-    root.insert("InternalsVisibleToModules".into(), json!([]));
+    let internals: Vec<Value> = internals_visible_to
+        .iter()
+        .map(|m| json!({"AppId": m.id, "Name": m.name, "Publisher": m.publisher}))
+        .collect();
+    root.insert("InternalsVisibleToModules".into(), Value::Array(internals));
     root.insert("AppId".into(), json!(meta.app_id));
     root.insert("Name".into(), json!(meta.name));
     root.insert("Publisher".into(), json!(meta.publisher));
