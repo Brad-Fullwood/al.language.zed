@@ -6,7 +6,7 @@ use super::cache::{load_cached_token, now_unix, save_cached_token, token_cache_p
 use super::encoding::percent_encode;
 use super::pkce::{generate_code_verifier, generate_random_string, pkce_challenge};
 use super::redirect::{open_browser, wait_for_auth_callback};
-use super::settings::AuthSettings;
+use super::settings::{check_entra_authority, oauth_http_client, AuthSettings};
 use super::validation::{is_valid_tenant, is_well_formed_guid};
 use super::{OAuthError, TokenResponse};
 use serde::Deserialize;
@@ -106,9 +106,11 @@ pub fn acquire_token_blocking(
 
 /// [`acquire_token`] with explicit sign-in settings (launch.json
 /// `entraIdAuthentication`) and mode. `BC_CLIENT_ID` still wins over the
-/// settings' client id.
+/// settings' client id. The token exchange uses its own client with certificate
+/// checks on and redirects kept to the same origin. The `client` argument is
+/// not used for it.
 pub async fn acquire_token_with_settings(
-    client: &reqwest::Client,
+    _client: &reqwest::Client,
     tenant: &str,
     settings: &AuthSettings,
     mode: SignInMode,
@@ -118,13 +120,16 @@ pub async fn acquire_token_with_settings(
     // URLs. A typical tenant is a GUID, an `*.onmicrosoft.com` domain, or one
     // of the well-known reserved names. Anything else — slashes, query
     // strings, embedded URLs — could redirect/poison the request even though
-    // the host (login.microsoftonline.com) is hardcoded.
+    // the host is checked against the Entra allowlist.
     if !is_valid_tenant(tenant) {
         return Err(OAuthError::Other(format!(
             "Invalid tenant '{tenant}': expected a GUID, domain, or one of \
              'common'/'organizations'/'consumers'"
         )));
     }
+    check_entra_authority(&settings.endpoint)?;
+    let oauth_client = oauth_http_client()?;
+    let client = &oauth_client;
     let mut auth = settings.clone();
     auth.client_id = configured_client_id(&settings.client_id)?;
     let cache_path = token_cache_path(tenant);
@@ -705,6 +710,31 @@ mod tests {
         match err {
             OAuthError::Other(msg) => assert!(msg.contains("Invalid tenant"), "got {msg}"),
             other => panic!("expected Other(Invalid tenant), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn acquire_token_refuses_unlisted_endpoint_before_network() {
+        // The endpoint check runs before the cache is read, so a refresh token
+        // is never sent to a host outside the Entra allowlist.
+        let settings = AuthSettings {
+            endpoint: "https://evil.example".into(),
+            ..Default::default()
+        };
+        let err = acquire_token_with_settings(
+            &reqwest::Client::new(),
+            "0d1f5c7e-3b2a-4c6d-9e8f-1a2b3c4d5e6f",
+            &settings,
+            SignInMode::CachedOnly,
+            |_| {},
+        )
+        .await
+        .unwrap_err();
+        match err {
+            OAuthError::Other(msg) => {
+                assert!(msg.contains("login.microsoftonline.com"), "got {msg}");
+            }
+            other => panic!("expected Other(allowed hosts), got {other:?}"),
         }
     }
 }
