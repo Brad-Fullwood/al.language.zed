@@ -6,12 +6,24 @@
 //! re-verified with a `breakpoint` event.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::dap::bc_debug::position::client_line_to_debugger;
 use crate::dap::bc_debug::BcDebugSession;
 use crate::dap::Result;
 
 use super::{make_event, write_dap, BpRequest, NativeDapState, PendingBreakpoints, ResolvedObject};
+
+/// The id the client sees for a verified breakpoint. BC's own ids are 64-bit
+/// values that can be negative or above 2^53 (CDX Sandbox, 2026-11-27:
+/// -1489521033646964736 and 8590952301680656384), which a client that reads
+/// DAP integers as unsigned or as JavaScript numbers cannot hold. BC's id
+/// stays in the adapter for RemoveBreakpoint.
+static NEXT_CLIENT_BREAKPOINT_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_client_breakpoint_id() -> u64 {
+    NEXT_CLIENT_BREAKPOINT_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
 where
@@ -161,7 +173,7 @@ where
                         Some(bp_id) => {
                             new_ids.push(bp_id);
                             result_bps.push(serde_json::json!({
-                                "id": bp_id,
+                                "id": next_client_breakpoint_id(),
                                 "verified": true,
                                 "line": line,
                             }));
@@ -427,7 +439,8 @@ mod tests {
         );
         fake.reply_ok(
             "AddBreakpoint",
-            crate::dap::bc_debug::test_fixtures::breakpoint_definition(502),
+            // An id BC returned on the CDX Sandbox: negative.
+            crate::dap::bc_debug::test_fixtures::breakpoint_definition(-1489521033646964736),
         );
 
         let (mut client, server) = tokio::io::duplex(64 * 1024);
@@ -463,6 +476,11 @@ mod tests {
             .map(|e| e["body"]["breakpoint"]["line"].as_i64().unwrap())
             .collect();
         assert_eq!(lines, vec![10, 20], "verification events preserve order");
+        let ids: Vec<u64> = events
+            .iter()
+            .map(|e| e["body"]["breakpoint"]["id"].as_u64().expect("unsigned id"))
+            .collect();
+        assert!(ids[0] > 0 && ids[1] > ids[0], "small adapter ids: {ids:?}");
 
         // The pending queue is drained and the newly-added BC ids are now
         // tracked under `breakpoints` for future replace/remove.
@@ -474,7 +492,7 @@ mod tests {
                 .await
                 .get("/proj/src/Foo.al")
                 .cloned(),
-            Some(vec![501, 502])
+            Some(vec![501, -1489521033646964736])
         );
     }
 
