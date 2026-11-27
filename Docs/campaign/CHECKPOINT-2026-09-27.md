@@ -1,5 +1,7 @@
 # Checkpoint: campaign paused on 2026-09-27
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Brad paused the campaign at 22:41 BST on 2026-09-27 to work on something else. This file records
 the state at the pause. `.campaign/STOP` is in place, so the watchdog starts no headless session
 until it is removed.

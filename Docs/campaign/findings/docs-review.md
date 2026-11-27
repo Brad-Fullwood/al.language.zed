@@ -1,5 +1,7 @@
 # Docs review: user docs against the code (workstream H)
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Branch `campaign/docs-review`, based on `campaign/2026-09-21` at 8dff1393.
 
 Scope: `README.md`, `ROADMAP.md`, `Docs/` (except `Docs/campaign/` and

@@ -1,5 +1,7 @@
 # Audit backlog triage
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Source: `AUDIT-BACKLOG.md` (227 findings, written 2026-07-31, before the campaign started).
 Checked against the detached worktree `.claude/worktrees/agent-audit-triage` at commit
 2b7bce37 (campaign branch tip) plus `git log -S`/`git log --oneline` in that worktree, and

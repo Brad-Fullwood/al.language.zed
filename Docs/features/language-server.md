@@ -172,12 +172,12 @@ give the same answers.
 
 The Zed extension resolves `al-lsp` in this order:
 
-1. `dev/al-lsp` in the extension's work directory (`~/.local/share/zed/extensions/work/al`
-   on Linux). `make install` copies `al-lsp`, `al-explorer` and the bridge there and writes
+1. `dev/al-lsp` in the extension's work directory (`$XDG_DATA_HOME/zed/extensions/work/al`
+   on Linux, default `~/.local/share/zed/extensions/work/al`). `make install` copies `al-lsp`, `al-explorer` and the bridge there and writes
    `dev/BUILD`, the `al-lsp --version` line of the copy, after checking that the copy reports it.
-2. The GitHub release tagged `v<extension version>`, for an extension installed from Zed's
-   extension list. It is never "latest". Directories of other versions are deleted. A missing
-   release or a failed download gives one error naming the version and both routes.
+2. The GitHub release tagged `v<extension version>`. It is never "latest". Directories of other versions
+   are deleted. A missing release or a failed download gives one error naming the version and both
+   routes.
 
 `al-lsp` on `PATH` is not consulted. The extension passes `--extension-build
 <version>+git.<commit>[.dirty]` on every launch. `al-lsp` (`crates/al-lsp/src/extension_build.rs`)
@@ -207,5 +207,5 @@ From MCP, `al_call` exposes the daemon equivalents (`hover`, `definition`, `refe
   instead of issuing one serialized CLR compilation for every unopened file.
 - References and subscribers inside `.app` dependencies come from the AL source a package embeds.
   A package without embedded source carries public API metadata and no call-site bodies.
-- Settings-schema autocomplete only lights up on Zed 0.8+ extension API (see the
-  [settings reference](../reference/settings.md)).
+- No settings-schema autocomplete in v0.5.0: the extension builds against Zed extension API 0.7 (see
+  the [settings reference](../reference/settings.md)).

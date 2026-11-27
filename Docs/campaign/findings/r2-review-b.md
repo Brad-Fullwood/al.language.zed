@@ -1,5 +1,7 @@
 # r2 review B: al-lsp, al-protocol, al-explorer, al-project, al-compile, al-bc, al-publish, al-dap, extension, plugin, scripts, CI, docs
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial re-review of `git diff dev..campaign/2026-09-21` over the half listed above.
 Read-only. Every finding checked against code with file:line and a concrete input.
 

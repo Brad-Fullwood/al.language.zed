@@ -1,5 +1,7 @@
 # Round 2: regressions found after the round 1 merges
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Failures seen running the whole `al-test-harness` suite on
 `campaign/2026-09-21` after the six round 1 fix branches merged. Everything
 here reproduces from a clean worktree with `al-explorer` and `al-lsp` built

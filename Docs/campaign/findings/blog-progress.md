@@ -1,5 +1,7 @@
 # Blog progress: articles written, facts used, and what the final pass must re-check
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Companion to `blog-plan.md`. One section per drafted article. Every fact below was verified against
 the source or a command on branch `campaign/2026-09-21` (grammar submodule `38368a0`) on 2026-09-21,
 not against the fact sheet alone.

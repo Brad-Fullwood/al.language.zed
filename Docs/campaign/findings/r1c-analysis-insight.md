@@ -1,5 +1,7 @@
 # R1c review: al-analysis and al-insight, the remainder
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial read-only review of every file under `crates/al-analysis/src` and
 `crates/al-insight/src` that neither `r1-analysis-insight.md` nor
 `r1b-analysis-insight.md` ticked. `scaffold.rs` and `generators.rs` are out of

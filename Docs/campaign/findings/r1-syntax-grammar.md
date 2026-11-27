@@ -1,5 +1,7 @@
 # R1 review: al-syntax and tree-sitter-al
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial read-only review of `crates/al-syntax`, the `tree-sitter-al` submodule
 (grammar, scanner, queries, generator, bindings) and `languages/al/*.scm`.
 Baseline: the 2026-07-31 audit in `AUDIT-BACKLOG.md` section "Syntax & Grammar".

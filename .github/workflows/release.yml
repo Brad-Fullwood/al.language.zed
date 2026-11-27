@@ -54,10 +54,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64 (native)
+          # Linux x86_64 (built in the cross 0.2.5 image for its older glibc, checked against the floor below)
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             artifact_name: linux-x86_64
+            cross: true
 
           # Linux aarch64 (cross-compiled)
           - target: aarch64-unknown-linux-gnu
@@ -101,7 +102,7 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
-      - name: Install cross (Linux aarch64 only)
+      - name: Install cross (Linux cross legs)
         if: matrix.cross
         run: cargo install cross --version 0.2.5 --locked
 
@@ -118,11 +119,11 @@ jobs:
       # Release al-lsp builds include the semantic bridge.
       - name: Build al-lsp binary (native)
         if: "!matrix.cross"
-        run: cargo build -p al-lsp --bin al-lsp --release --features semantic --target ${{ matrix.target }}
+        run: cargo build -p al-lsp --bin al-lsp --release --features semantic --target ${{ matrix.target }} --locked
 
       - name: Build al-explorer binary (native)
         if: "!matrix.cross"
-        run: cargo build -p al-explorer --release --target ${{ matrix.target }}
+        run: cargo build -p al-explorer --release --target ${{ matrix.target }} --locked
 
       # Build the platform-independent bridge on the host for the cross image.
       - name: Pre-build semantic bridge on host (cross)
@@ -136,11 +137,11 @@ jobs:
           # cross mounts the workspace at its host path, so the container sees
           # the prebuilt bridge at the same path as the host.
           CROSS_CONTAINER_OPTS: "-e AL_BRIDGE_PREBUILT=${{ github.workspace }}/prebuilt-bridge"
-        run: cross build -p al-lsp --bin al-lsp --release --features semantic --target ${{ matrix.target }}
+        run: cross build -p al-lsp --bin al-lsp --release --features semantic --target ${{ matrix.target }} --locked
 
       - name: Build al-explorer binary (cross)
         if: matrix.cross
-        run: cross build -p al-explorer --release --target ${{ matrix.target }}
+        run: cross build -p al-explorer --release --target ${{ matrix.target }} --locked
 
       # Keep binaries at the archive root for extension binary resolution.
       - name: Package artifacts (Unix)
@@ -170,6 +171,11 @@ jobs:
               | while IFS= read -r file; do sha256sum "$file"; done ) \
             | sed "s|  |  $OUT.tar.gz/|" > "$OUT.binaries.sha256"
           cat "$OUT.binaries.sha256"
+
+      # Fail when a Linux binary needs a glibc symbol newer than the 2.31 floor.
+      - name: Check glibc floor (Linux cross legs)
+        if: matrix.cross
+        run: ./scripts/check-glibc-floor.sh 2.31 "target/${{ matrix.target }}/release/al-lsp" "target/${{ matrix.target }}/release/al-explorer"
 
       - name: Upload binary artifact (Unix)
         if: "!matrix.windows"
@@ -250,7 +256,7 @@ jobs:
 
       - name: Build zed-al WASM extension
         run: |
-          cargo build -p zed-al --target wasm32-wasip2 --release
+          cargo build -p zed-al --target wasm32-wasip2 --release --locked
           scripts/check-zed-wasm-component.sh target/wasm32-wasip2/release/zed_al.wasm
 
       - name: Collect WASM artifact

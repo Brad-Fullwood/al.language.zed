@@ -1,5 +1,7 @@
 # R4 review: 2026-09-24 session changes
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git log c8af935..HEAD` (today's fix/feat/refactor commits; the three
 merged 2026-09-22 branches skimmed). Read-only review; nothing built or run.
 

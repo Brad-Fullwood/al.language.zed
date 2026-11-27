@@ -1,5 +1,7 @@
 # R1 review: al-emit, al-compile, al-bc, al-publish, al-snapshot, al-explorer
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section
 "Emit, BC & Explorer" (2026-07-31). Findings below are verified against current code.
 

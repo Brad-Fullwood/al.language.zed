@@ -1,5 +1,7 @@
 # R1 review: Runtime & DAP (al-runtime, al-test, al-test-harness, al-dap)
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial read-only review, 2026-09-21. Baseline: AUDIT-BACKLOG.md section "Runtime & DAP"
 (2026-07-31). Findings already fixed in current code are not repeated. Items from that audit
 that are still open are tagged [STILL-OPEN].

@@ -1,5 +1,7 @@
 # desloppify review queue worked to empty
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Branch: `campaign/slop-review-queue`, from `campaign/2026-09-21`.
 Scope: the 112 subjective design findings the review import added to the desloppify queue
 (`Docs/campaign/findings/desloppify.md`, section "Where the 112 review findings attach"). The tool

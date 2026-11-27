@@ -1,5 +1,7 @@
 # Round 8 security review: the round 7 fixes and the open items behind them
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Reviewer brief: the eighth security round. Re-read each SEC7 fix with its test, revert the fix by hand to see its test fail, run a scenario the test does not cover, read around the open SEC7 findings for siblings their fix briefs would leave, and settle the items `Docs/campaign/STATE.md` queues for this round. Review only, no code changes.
 
 Scope: the tree at `f4eb117a` on `campaign/2026-09-21`, with weight on `crates/al-project/src/trust.rs` and `analyzers.rs` (SEC7-2, SEC7-4, R13-TRUST-1, R13-TRUST-2), `crates/al-explorer/src/cli` (SEC7-1 and `tests/cli_text_escaping.rs`), `crates/al-lsp/src/server/daemon` (SEC7-7, `containment.rs`, the registry test), `crates/al-runtime` (SEC7-3, SEC7-5, R13-RT-1 to R13-RT-4) and `crates/al-lsp/src/server/lsp` (R13-LSP-1). The fixes read are dfd6df9b (SEC7-1), 7d75b777 (SEC7-2), 5f0720d0 (SEC7-3), 57653831 (SEC7-4), 8495e4e1 and c7168021 (SEC7-5), 18d575b4 (SEC7-7). SEC7-6 and SEC7-8 to SEC7-15 are open with fix agents on them and are not reported again here.

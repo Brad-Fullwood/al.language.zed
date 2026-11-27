@@ -1,5 +1,7 @@
 # Async locking and correctness lints (desloppify batch 10)
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Branch: `campaign/slop-async-locking`. Scope is batch 10 in section 4 of `desloppify.md`, the
 detectors `rust_async_locking` (36 open), `smells` (55 open), `rust_error_boundary` (13) and
 `rust_unsafe_api` (2).

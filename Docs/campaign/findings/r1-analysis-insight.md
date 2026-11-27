@@ -1,5 +1,7 @@
 # R1 review: al-analysis and al-insight
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial read-only review. Baseline: AUDIT-BACKLOG.md section "Analysis & Insight" (2026-07-31).
 Findings marked [STILL-OPEN] were in that audit and are still present in current code.
 

@@ -1110,6 +1110,23 @@ fn a_repository_dotnet_host_is_dropped_until_the_project_is_trusted() {
 }
 
 #[test]
+fn a_context_server_dotnet_path_from_an_untrusted_repository_is_dropped() {
+    let _config = ScratchConfig::new();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".zed")).unwrap();
+    std::fs::write(dir.path().join("app.json"), "{}").unwrap();
+    std::fs::write(
+        dir.path().join(".zed/settings.json"),
+        r#"{"context_servers":{"al-tools":{"settings":{"al.dotnetPath":"/usr/bin/x"}}}}"#,
+    )
+    .unwrap();
+    std::env::set_var(crate::toolchain::DOTNET_PATH_ENV, "/usr/bin/x");
+
+    assert!(enforce_dotnet_path(dir.path()).is_some());
+    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+}
+
+#[test]
 fn a_dotnet_host_outside_the_project_is_left_alone() {
     let _config = ScratchConfig::new();
     let project = project_with_settings("{}");

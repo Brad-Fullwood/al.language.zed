@@ -1,5 +1,7 @@
 # Hand-off: grammar work for tree-sitter-al
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 For an agent picking up the grammar changes the campaign asked for. Written 2026-09-27 at the
 pause. Read `CHECKPOINT-2026-09-27.md` and `CHECKPOINT-2026-09-27-close.md` first for the
 repository state.

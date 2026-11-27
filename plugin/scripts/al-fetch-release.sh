@@ -47,9 +47,11 @@ AL_PIN_RELEASE_TAG="${AL_PIN_RELEASE_TAG:-v0.2.2}"
 # archive. A listing whose digest differs is refused before the archive is
 # fetched.
 #
-# v0.2.2 publishes no binary-checksums.txt, so the pin holds the placeholder
-# "unset" and every download refuses until a release publishes the file and
-# the pin is filled. When bumping the tag, fill the pin from the new release:
+# v0.4.0 already publishes binary-checksums.txt with bridge entries (its
+# .github/workflows/release.yml has the "Collect per-binary checksums" step).
+# The pin stays "unset" by choice until a commit after the v0.5.0 tag, so every
+# download refuses until then. When bumping the tag, fill the pin from the new
+# release:
 #
 #   gh release download <tag> --repo Brad-Fullwood/al.language.zed \
 #     --pattern binary-checksums.txt --dir /tmp/al-pin
@@ -86,18 +88,11 @@ have_pair() {
 	[ -x "$1/al-explorer" ] && [ -x "$1/al-lsp" ]
 }
 
-# 1. Already available: PATH, or the plugin's own cache from an earlier
-# session. Nothing to do, and nothing worth telling the agent. This does not
-# check that both names resolve to the same directory the way al-bin.sh's
-# full resolution does; two unrelated installs happening to both be on PATH
-# is unlikely enough not to duplicate that logic here, and al-bin.sh still
-# gives its own clear error if that ever happens.
-if command -v al-explorer >/dev/null 2>&1 && command -v al-lsp >/dev/null 2>&1; then
-	log "al-explorer and al-lsp are already on PATH; nothing to download"
-	exit 0
-fi
-if have_pair "$bin_dir"; then
-	log "al-explorer and al-lsp are already in $bin_dir; nothing to download"
+# 1. Already available: al-bin.sh finds a complete pair through AL_BIN_DIR, an
+# enclosing target/ directory, PATH or the plugin data directory. Nothing to
+# do, and nothing worth telling the agent.
+if "$(dirname "$0")/al-bin.sh" --resolve >/dev/null; then
+	log "al-explorer and al-lsp are already available; nothing to download"
 	exit 0
 fi
 
@@ -305,25 +300,22 @@ while IFS=' ' read -r _ listed_name; do
 	fi
 done < <(listing_entries "$checksums_path")
 
-if ! have_pair "$stage_dir"; then
-	report "$asset_name from release $AL_PIN_RELEASE_TAG has verified digests but is missing al-explorer or al-lsp at its root. Nothing was installed"
-	exit 0
-fi
-
-# have_pair uses -x, which is true for a directory and for a symlink to an
-# executable, neither of which is a hashed, verified file. The member scan
-# above already refuses a symlink anywhere in the archive. Check the two
-# binaries specifically, since a directory named al-lsp or al-explorer passes
-# that scan (a directory is a valid member type) but must not be installed
-# as if it were the verified file.
+# Check the two binaries, then chmod them, before have_pair: have_pair tests -x,
+# which a 0644 file fails. A directory named al-lsp or al-explorer passes the
+# member scan above (a directory is a valid member type), so it is refused here.
 for name in al-explorer al-lsp; do
 	if [ ! -f "$stage_dir/$name" ] || [ -L "$stage_dir/$name" ]; then
-		report "$asset_name from release $AL_PIN_RELEASE_TAG has $name as something other than a regular file at its root. Nothing was installed"
+		report "$asset_name from release $AL_PIN_RELEASE_TAG has $name as something other than a regular file at its root, or no $name at all. Nothing was installed"
 		exit 0
 	fi
 done
 
 chmod +x "$stage_dir/al-explorer" "$stage_dir/al-lsp"
+
+if ! have_pair "$stage_dir"; then
+	report "$asset_name from release $AL_PIN_RELEASE_TAG has verified digests but is missing al-explorer or al-lsp at its root. Nothing was installed"
+	exit 0
+fi
 
 # Each step has to name itself on failure, or a broken step here reports
 # "installed" over binaries that never moved. The old bin_dir is removed only

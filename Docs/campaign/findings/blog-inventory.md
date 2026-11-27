@@ -1,5 +1,7 @@
 # Blog inventory: technically-business-central
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Read-only inventory of `/home/bradf/Projects/Personal/technically-business-central`, for planning the deletion/update of the six al.language.zed posts. Nothing in that repo was modified.
 
 ## 1. How the blog is wired

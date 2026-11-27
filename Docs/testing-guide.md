@@ -345,8 +345,10 @@ does not replace focused valid/invalid fixtures or editor inspection.
 
 ## 7. Release dry-run
 
-`make release-dryrun` is a **read-only** release-readiness gate and does not
-publish. Its numbered output is the authoritative order:
+`make release-dryrun` is a release-readiness gate. It does not publish, but it rewrites files in the
+checkout (step 9 regenerates `languages/al`). The release hygiene checks
+refuse to start a generator while `git status --porcelain -- languages/al tree-sitter-al`
+lists any change, so commit or revert those paths first. Its numbered output is the authoritative order:
 
 1. Grammar crate tests.
 2. Grammar generator tests.
@@ -394,6 +396,9 @@ library publication, publish in dependency order: the owned grammar package is
 `tree-sitter-al-bc` (consumed locally through the `tree-sitter-al` Rust alias),
 followed by foundation crates and then their dependants. The Zed extension
 release does not upload these independent libraries.
+
+After the tag, `.github/workflows/release.yml` builds and publishes the release assets, including
+`binary-checksums.txt`. After the registry entry exists, check it shows the version.
 
 ## Minimal reproducible-report template
 

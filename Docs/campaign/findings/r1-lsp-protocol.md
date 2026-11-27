@@ -1,5 +1,7 @@
 # R1 review: al-lsp and al-protocol
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial read-only review of `crates/al-lsp` and `crates/al-protocol`.
 Baseline: AUDIT-BACKLOG.md section "LSP & Protocol" (2026-07-31). Items from that
 audit that are still present in current code are tagged [STILL-OPEN].

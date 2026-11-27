@@ -1,5 +1,7 @@
 # Persisted symbol and source index
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Build list item 10 in `ai-tooling-ideas.md`: a second cold daemon start on the same
 `.alpackages` should not rebuild the dependency source index.
 

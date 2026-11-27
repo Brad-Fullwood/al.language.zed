@@ -1,5 +1,7 @@
 # R10 review: merges since the round 9 review
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git diff a0e85e0b..9e3f26a1 -- crates plugin` (49 files, 29 commits that are not
 merges). That covers the round 8 last batch (merge 8f70b75e: a table publisher's `Sender`,
 keyword-named variables, signed case labels, a subscriber bound by a bare object ID, call graph
