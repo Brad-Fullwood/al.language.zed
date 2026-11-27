@@ -2246,8 +2246,11 @@ mod startup_error_tests {
                 }
                 // A real daemon unlinks its endpoint as it stops. Do the same,
                 // so the test exercises the wait the client actually performs.
-                drop(listener);
+                // The file goes first: a replacement fake binds the same path
+                // as soon as a connect fails, and it has no `clear_endpoint`
+                // step to remove a file this thread has yet to unlink.
                 let _ = std::fs::remove_file(&sock);
+                drop(listener);
             });
 
             Self {
