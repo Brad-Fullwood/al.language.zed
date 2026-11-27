@@ -7,7 +7,7 @@ use super::super::XlfCommands;
 
 use super::{
     connect, print_json, project_root, report_error, request_checked, run_command,
-    run_command_with_exit, terminal_lines, terminal_text, text_field,
+    run_command_with_exit, set_command_timeout, terminal_lines, terminal_text, text_field,
 };
 
 /// Print a build/package result in human-readable form and return the exit code.
@@ -107,7 +107,7 @@ pub fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    client.set_request_timeout(BUILD_TIMEOUT);
+    set_command_timeout(&mut client, BUILD_TIMEOUT);
     match request_checked(&mut client, "compile", None) {
         Ok(result) => print_build_result(&result, json),
         Err(e) => report_error(&e, json),
@@ -128,7 +128,7 @@ pub fn cmd_publish(config: Option<&str>, incremental: bool, json: bool) -> ExitC
         Ok(client) => client,
         Err(error) => return report_error(&error, json),
     };
-    client.set_request_timeout(PUBLISH_TIMEOUT);
+    set_command_timeout(&mut client, PUBLISH_TIMEOUT);
     let mut params = serde_json::json!({ "incremental": incremental });
     if let Some(config) = config {
         params["config"] = serde_json::json!(config);
@@ -202,7 +202,7 @@ pub fn cmd_package(json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    client.set_request_timeout(BUILD_TIMEOUT);
+    set_command_timeout(&mut client, BUILD_TIMEOUT);
     match request_checked(&mut client, "package", None) {
         Ok(result) => print_build_result(&result, json),
         Err(e) => report_error(&e, json),

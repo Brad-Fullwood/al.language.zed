@@ -11,7 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 
-use crate::cli::commands::request_checked;
+use crate::cli::commands::{request_checked, set_command_timeout};
 use crate::{App, ViewMode, advance_list_selection, ensure_daemon_client};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -107,7 +107,7 @@ impl TestRunnerView {
         std::thread::spawn(move || {
             let outcome = match DaemonClient::connect(&root) {
                 Ok(mut client) => {
-                    client.set_request_timeout(TEST_RUN_TIMEOUT);
+                    set_command_timeout(&mut client, TEST_RUN_TIMEOUT);
                     request_checked(&mut client, method, params)
                         .map(|_| ())
                         .map_err(|error| format!("Daemon error ({method}): {error}"))
