@@ -137,7 +137,7 @@ pub struct ObjectEntry {
 }
 
 /// The `app.json` facts the index needs to rank owners of one object name.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct AppIdentity {
     id: String,
     dependency_ids: Vec<String>,
@@ -520,11 +520,29 @@ impl FileIndex {
         let metadata = strict_metadata_for_paths(&paths)?;
         let mut staged = Vec::new();
 
+        // An edited `app.json` changes how every file of that app parses
+        // (`preprocessorSymbols`) and how its objects rank. Reread each known
+        // app and reparse the files of an app whose identity changed.
+        let mut stale_apps = std::collections::HashSet::new();
+        let known_apps: Vec<PathBuf> = self.apps.iter().map(|e| e.key().clone()).collect();
+        for app_root in known_apps {
+            let fresh = AppIdentity::read(&app_root.join("app.json"));
+            if self.apps.get(&app_root).is_some_and(|old| *old != fresh) {
+                self.apps.insert(app_root.clone(), fresh);
+                stale_apps.insert(app_root);
+            }
+        }
+
         for (path, current_meta) in &metadata {
-            let unchanged = self
-                .file_metadata
-                .get(path)
-                .is_some_and(|prev| *prev == *current_meta);
+            let app_changed = !stale_apps.is_empty()
+                && self
+                    .app_root_for(path)
+                    .is_some_and(|app_root| stale_apps.contains(&app_root));
+            let unchanged = !app_changed
+                && self
+                    .file_metadata
+                    .get(path)
+                    .is_some_and(|prev| *prev == *current_meta);
             if unchanged && !self.racy.contains(path) {
                 continue;
             }

@@ -915,7 +915,8 @@ pub fn event_source(
         .get_cached_parse(file)
         .or_else(|| {
             let text = std::fs::read_to_string(file).ok()?;
-            let result = al_syntax::AlParser::parse_quick(&text);
+            let symbols = workspace.file_index.preprocessor_symbols_for(file);
+            let result = al_syntax::AlParser::parse_quick_with_symbols(&text, &symbols);
             Some((text, result.tree))
         })
         .ok_or_else(|| format!("Cannot read or parse '{}'", file.display()))?;

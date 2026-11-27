@@ -162,12 +162,15 @@ where
     // Discovery goes through the source index's walker so a bulk fix cannot
     // disagree with the workspace about which paths belong to the project.
     let files = al_source::file_index::collect_al_files(project_dir)?;
+    // Only used to look up each file's `preprocessorSymbols` from its app.json.
+    let apps = al_source::file_index::FileIndex::new();
     let mut changes = Vec::new();
     for path in files {
         let source = al_source::file_index::read_source_file(&path)?.ok_or_else(|| {
             BulkFixError::Refused(format!("Workspace source disappeared: {}", path.display()))
         })?;
-        let parsed = al_syntax::AlParser::parse_quick(&source);
+        let symbols = apps.preprocessor_symbols_for(&path);
+        let parsed = al_syntax::AlParser::parse_quick_with_symbols(&source, &symbols);
         if parsed.tree.root_node().has_error() {
             let details = parsed
                 .errors
@@ -208,7 +211,7 @@ where
             )));
         }
         if changes_count > 0 {
-            let verification = al_syntax::AlParser::parse_quick(&updated);
+            let verification = al_syntax::AlParser::parse_quick_with_symbols(&updated, &symbols);
             if verification.tree.root_node().has_error()
                 || al_syntax::find_object_declaration(&verification.tree, &updated).is_none()
             {
@@ -669,6 +672,27 @@ page 50100 P { layout { area(Content) { field(Id; Rec.Id) { } } } }\n";
         let page_start = with_area.find("page 50100").unwrap();
         assert!(!with_area[..page_start].contains("ApplicationArea"));
         assert!(with_area[page_start..].contains("ApplicationArea = All;"));
+    }
+
+    /// A file whose active branch depends on the app's `preprocessorSymbols`
+    /// parses with those symbols, so the plan does not refuse it.
+    #[test]
+    fn plan_parses_files_with_the_app_preprocessor_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":["CLEAN24"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("T.Table.al"),
+            "table 50100 T\n{\n    fields\n    {\n#if CLEAN24\n        field(1; Id; Integer) { }\n#else\n        field(1; Id; Integer) { ((( }\n#endif\n    }\n}\n",
+        )
+        .unwrap();
+
+        let plan = plan_data_classification(dir.path(), "CustomerContent").unwrap();
+
+        assert_eq!(plan.changes.len(), 1);
     }
 
     fn parse(source: &str) -> tree_sitter::Tree {
