@@ -3,7 +3,7 @@
 #
 # The Zed extension downloads its `al-lsp` release assets from a hardcoded
 # repository slug (`GITHUB_REPO` in src/lib.rs). If that slug does not match the
-# repository that actually publishes the releases, `latest_github_release()`
+# repository that actually publishes the releases, `github_release_by_tag_name()`
 # fails with "repository not found" and a fresh user's language server never
 # spawns. This script fails CI if the slug drifts from extension.toml or
 # (when available) the `origin` git remote.
@@ -54,7 +54,7 @@ MANIFEST_SLUG="$(slug_from_url "${MANIFEST_URL}")" \
 
 if [ "${CODE_SLUG}" != "${MANIFEST_SLUG}" ]; then
     fail "GITHUB_REPO (${CODE_SLUG}) != extension.toml repository (${MANIFEST_SLUG}).
-A mismatch makes latest_github_release() fail and the LSP never downloads for new users."
+A mismatch makes github_release_by_tag_name() fail and the LSP never downloads for new users."
 fi
 
 # --- 3. Slug of the actual git remote (source of truth, when present) --------

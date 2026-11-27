@@ -193,6 +193,15 @@ check_versions() {
             || fail "Cargo.lock ${product_name} version (${product_lock}) != ${product_toml} version (${product_version})"
     done
 
+    # The root package (zed-al) is not in the product loop above, so its lock entry is checked here.
+    local root_name root_lock
+    root_name="$(package_name Cargo.toml)"
+    [ -n "${root_name}" ] || fail "could not parse package name from Cargo.toml"
+    root_lock="$(lock_version_for "${root_name}")"
+    [ -n "${root_lock}" ] || fail "Cargo.lock has no package entry for ${root_name}"
+    [ "${root_lock}" = "${root_version}" ] \
+        || fail "Cargo.lock ${root_name} version (${root_lock}) != Cargo.toml version (${root_version})"
+
     if [ -n "${TAG_NAME}" ]; then
         local tag="${TAG_NAME#refs/tags/}"
         local expected="v${extension_version}"
@@ -208,6 +217,33 @@ check_versions() {
     fi
 
     ok "versions aligned at ${extension_version}"
+}
+
+# examples/zed-settings.jsonc tells users which schema to load. A URL that names an
+# older tag loads a schema that no longer matches this release, so every tag in
+# those URLs must equal the extension version.
+check_example_schema_tag() {
+    local expected="v$(package_version extension.toml)"
+    local file="examples/zed-settings.jsonc"
+    local re='raw\.githubusercontent\.com/Brad-Fullwood/al\.language\.zed/([^/"]+)/schemas/'
+    [ -f "${file}" ] || fail "missing ${file}"
+
+    local hits=() hit line_no bad=0
+    mapfile -t hits < <(grep -nE "${re}" "${file}" || true)
+    if [ "${#hits[@]}" -eq 0 ]; then
+        warn "no schema URLs in ${file}; nothing to check"
+        return 0
+    fi
+    for hit in "${hits[@]}"; do
+        line_no="${hit%%:*}"
+        [[ "${hit}" =~ ${re} ]] || fail "could not read the schema tag at ${file}:${line_no}"
+        if [ "${BASH_REMATCH[1]}" != "${expected}" ]; then
+            echo "ERROR: ${file}:${line_no} uses schema tag ${BASH_REMATCH[1]}, expected ${expected}" >&2
+            bad=1
+        fi
+    done
+    [ "${bad}" -eq 0 ] || fail "example schema URLs must use ${expected} (the extension.toml version)"
+    ok "example schema URLs use ${expected}"
 }
 
 check_submodule_and_grammar_rev() {
@@ -469,7 +505,20 @@ path_state_fingerprint() {
     } | git hash-object --stdin
 }
 
+# The generators rewrite languages/al and tree-sitter-al. Uncommitted edits there
+# would be overwritten, and the before/after comparison could not show them.
+# `git status --porcelain` also lists untracked files.
+refuse_uncommitted_generated_paths() {
+    local dirty
+    dirty="$(git status --porcelain -- languages/al tree-sitter-al)"
+    if [ -n "${dirty}" ]; then
+        printf '%s\n' "${dirty}" >&2
+        fail "uncommitted changes under languages/al or tree-sitter-al (listed above); commit or revert them before running a generator"
+    fi
+}
+
 check_zed_language_generated() {
+    refuse_uncommitted_generated_paths
     local before after
     before="$(path_state_fingerprint languages/al)"
     cargo run --manifest-path tree-sitter-al/generator/Cargo.toml --release --bin al-gen -- --zed-language-only
@@ -484,6 +533,7 @@ check_zed_language_generated() {
 
 check_regenerate_clean() {
     [ "${REGENERATE}" -eq 1 ] || return 0
+    refuse_uncommitted_generated_paths
     local paths=(
         tree-sitter-al/grammar.js tree-sitter-al/src tree-sitter-al/queries
         tree-sitter-al/data themes/bc-themes.json languages/al
@@ -501,6 +551,7 @@ check_regenerate_clean() {
 
 check_full_regenerate_clean() {
     [ "${FULL_REGENERATE}" -eq 1 ] || return 0
+    refuse_uncommitted_generated_paths
     [ -n "${AL_EXTENSION_PATH:-}" ] \
         || fail "--full-regenerate requires AL_EXTENSION_PATH to name a pinned unpacked Microsoft AL extension"
     [ -d "${AL_EXTENSION_PATH}" ] \
@@ -627,6 +678,7 @@ elif [ -z "${CHANGED_SINCE}" ] && [ -n "${TAG_NAME}" ]; then
 fi
 
 check_versions
+check_example_schema_tag
 check_submodule_and_grammar_rev
 check_actions_sha_pinned
 check_generated_files_exist
