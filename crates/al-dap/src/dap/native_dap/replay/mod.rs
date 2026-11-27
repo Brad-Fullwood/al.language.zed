@@ -451,7 +451,7 @@ impl ReplaySession {
         let end = if levels == 0 {
             total
         } else {
-            (start + levels).min(total)
+            start.saturating_add(levels).min(total)
         };
         json!({ "stackFrames": frames[start..end], "totalFrames": total })
     }

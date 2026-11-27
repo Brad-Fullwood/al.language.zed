@@ -303,6 +303,18 @@ fn events<'a>(msgs: &'a [Value], name: &str) -> Vec<&'a Value> {
 }
 
 #[test]
+fn stack_trace_with_huge_levels_does_not_panic() {
+    let mut p = Probe::new();
+    p.req("configurationDone", json!({}));
+    let st = p.req("stackTrace", json!({"startFrame": 1, "levels": u64::MAX}));
+    assert_eq!(st[0]["success"], true, "{st:?}");
+    let total = st[0]["body"]["totalFrames"].as_u64().unwrap();
+    assert_eq!(total, 1);
+    let frames = st[0]["body"]["stackFrames"].as_array().unwrap();
+    assert_eq!(frames.len() as u64, total - 1);
+}
+
+#[test]
 fn configuration_done_runs_to_the_first_snappoint() {
     let mut p = Probe::new();
     let m = p.req("configurationDone", json!({}));
@@ -530,6 +542,38 @@ async fn sources_are_written_read_only_and_a_planted_link_is_not_followed() {
     }
     // A second replay overwrites the read-only file.
     sources::write_sources(&snap, &archive()).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sources_dir_that_is_a_symlink_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real");
+    let link = dir.path().join("link");
+    std::fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let err = match sources::write_sources(&link, &archive()).await {
+        Ok(_) => panic!("a symbolic link was accepted as the sources folder"),
+        Err(e) => e,
+    };
+    assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    assert_eq!(std::fs::read_dir(&real).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn sources_dir_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let sources_dir = dir.path().join("new").join("sources");
+    sources::write_sources(&sources_dir, &archive())
+        .await
+        .unwrap();
+    let mode = std::fs::metadata(&sources_dir)
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o077, 0, "mode is {mode:o}");
 }
 
 #[tokio::test]
