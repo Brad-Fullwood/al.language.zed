@@ -2169,7 +2169,8 @@ pub fn authorize_cached_credential(
 /// Neither reaches `AlConfig`: `dotnetPath` is filtered out of the merge
 /// because it becomes the `AL_DOTNET_PATH` environment entry, and `binary.path`
 /// is Zed's own key. Both name a program to run, so both are read straight from
-/// the file.
+/// the file. The `al-tools` context server's `dotnetPath` is read the same way,
+/// from its own settings block.
 fn executable_path_privileges(
     value: &serde_json::Value,
     source: &str,
@@ -2186,10 +2187,19 @@ fn executable_path_privileges(
         .or_else(|| settings.get("al.dotnetPath"))
         .or_else(|| settings.get("al").and_then(|al| al.get("dotnetPath")));
     let binary = value.pointer("/lsp/al-lsp/binary/path");
+    let context_server = value.pointer("/context_servers/al-tools/settings");
+    let context_dotnet = context_server.and_then(|settings| {
+        settings
+            .get("dotnetPath")
+            .or_else(|| settings.get("al.dotnetPath"))
+            .or_else(|| settings.get("al").and_then(|al| al.get("dotnetPath")))
+    });
+    let context_source = format!("{source} context_servers.al-tools.settings");
 
-    for (key, candidate) in [
-        ("al.dotnetPath", dotnet),
-        ("lsp.al-lsp.binary.path", binary),
+    for (key, candidate, label) in [
+        ("al.dotnetPath", dotnet, source),
+        ("lsp.al-lsp.binary.path", binary, source),
+        ("al.dotnetPath", context_dotnet, context_source.as_str()),
     ] {
         let Some(path) = candidate.and_then(serde_json::Value::as_str).map(str::trim) else {
             continue;
@@ -2212,10 +2222,10 @@ fn executable_path_privileges(
             &mut unhashable,
         );
         ask.settings
-            .push(PrivilegedSetting::new(key, &recorded, source));
+            .push(PrivilegedSetting::new(key, &recorded, label));
         for reason in unhashable {
             ask.settings
-                .push(PrivilegedSetting::new(UNHASHABLE_PATH_KEY, &reason, source));
+                .push(PrivilegedSetting::new(UNHASHABLE_PATH_KEY, &reason, label));
         }
     }
 
