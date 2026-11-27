@@ -346,7 +346,9 @@ does not replace focused valid/invalid fixtures or editor inspection.
 ## 7. Release dry-run
 
 `make release-dryrun` is a release-readiness gate. It does not publish, but it rewrites files in the
-checkout (step 9 regenerates `languages/al`). Its numbered output is the authoritative order:
+checkout (step 9 regenerates `languages/al`). The release hygiene checks
+refuse to start a generator while `git status --porcelain -- languages/al tree-sitter-al`
+lists any change, so commit or revert those paths first. Its numbered output is the authoritative order:
 
 1. Grammar crate tests.
 2. Grammar generator tests.

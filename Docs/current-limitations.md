@@ -146,13 +146,15 @@ live in [ROADMAP.md](../ROADMAP.md).
   on `PATH` is not consulted. A `binary.path` in user settings no longer chooses
   it, which is the cost of the rule.
 - `dotnetPath` is different, because al-lsp is already running when it matters,
-  and al-lsp can read the repository's files. Only the language server route
-  filters by location: `language_server_command` (src/lib.rs:538-539) drops a
-  relative path, or an absolute path under the worktree root
-  (`settings::is_worktree_resident_program`). The debug adapter (src/dap.rs:88)
-  and the AL Tools context server (`context_server_command`, src/lib.rs:666)
-  pass the value on without that filter. al-lsp runs its own check in its
-  language server, DAP and MCP modes. It drops an `AL_DOTNET_PATH` that this
+  and al-lsp can read the repository's files. The language server and debug
+  adapter routes filter by location: a relative path, or an absolute path
+  under the worktree root, is not used (`settings::is_worktree_resident_program`,
+  called in `language_server_command` and `src/dap.rs`). The AL Tools context
+  server reads its own `al.dotnetPath` setting, and a `Project` has no root path
+  to filter against, so al-lsp's check covers that route. The trust digest
+  includes `context_servers.al-tools.settings`, so a trusted project that sets
+  it there asks for trust once more after upgrading to v0.5.0. al-lsp runs its
+  own check in its language server, DAP and MCP modes. It drops an `AL_DOTNET_PATH` that this
   project's settings supplied unless the project is trusted, and the process
   then falls back to `dotnet` from `PATH`. See
   [project trust](features/project-trust.md).
@@ -199,8 +201,9 @@ live in [ROADMAP.md](../ROADMAP.md).
   and does not keep the archive, and the API has no way to unpack a local file.
   It checks the extracted `al-lsp`, `al-explorer` and every file under
   `bridge/` against the release's `binary-checksums.txt` instead, before either
-  program is marked executable. Releases made before the bridge was hashed list
-  no bridge file, and for those only the two executables are checked.
+  program is marked executable. A listing with no `bridge/` entry is refused.
+  The archive is extracted into `al-lsp-<tag>.partial` and renamed to
+  `al-lsp-<tag>` only after every check passes.
   `checksums.txt` still covers the archives for a manual `sha256sum -c` of a
   hand-downloaded asset.
 - That check shows a download arrived intact. It does not show who produced it.
@@ -229,8 +232,6 @@ live in [ROADMAP.md](../ROADMAP.md).
   along with the archives and can be checked the same way. The check is manual:
   the extension cannot run it, and releases made before the attestation step
   have none.
-- Releases published before `binary-checksums.txt` existed carry no per-binary
-  digests, and the extension starts from them unverified. Their absence comes
-  from the GitHub API asset listing rather than the asset download, so a
-  tampered download cannot cause the check to be skipped for a release that
-  does publish them.
+- A release without a `binary-checksums.txt` asset is refused, and nothing from
+  it is made executable. The extension only fetches the release tagged with its
+  own version, and every release since v0.4.0 publishes the file.
