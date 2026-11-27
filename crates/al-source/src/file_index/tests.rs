@@ -1339,3 +1339,35 @@ fn get_cached_parse_never_returns_torn_pair_under_concurrency() {
         h.join().unwrap();
     }
 }
+
+/// A scan parses each file with the `preprocessorSymbols` of its own app, so a
+/// procedure under `#if` on a symbol the app defines is indexed.
+#[test]
+fn scan_uses_the_preprocessor_symbols_of_the_owning_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    begin\n    end;\n#endif\n}\n";
+    for (app, symbols) in [("defines", r#"["CLEAN24"]"#), ("plain", "[]")] {
+        let root = dir.path().join(app);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("app.json"),
+            format!(r#"{{"id":"00000000-0000-0000-0000-00000000000{}","name":"{app}","preprocessorSymbols":{symbols}}}"#, app.len()),
+        )
+        .unwrap();
+        fs::write(root.join("src").join("C.Codeunit.al"), source).unwrap();
+    }
+
+    let index = FileIndex::new();
+    index.scan(dir.path()).unwrap();
+    let owners: Vec<PathBuf> = index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|procedure| procedure.file)
+        .collect();
+    assert_eq!(
+        owners,
+        vec![dir.path().join("defines").join("src").join("C.Codeunit.al")],
+        "only the app that defines CLEAN24 has NewApi"
+    );
+}

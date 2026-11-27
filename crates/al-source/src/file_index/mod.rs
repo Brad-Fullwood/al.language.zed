@@ -141,6 +141,8 @@ pub struct ObjectEntry {
 struct AppIdentity {
     id: String,
     dependency_ids: Vec<String>,
+    /// `preprocessorSymbols` from `app.json`.
+    preprocessor_symbols: std::sync::Arc<[String]>,
 }
 
 impl AppIdentity {
@@ -170,7 +172,21 @@ impl AppIdentity {
                     .collect()
             })
             .unwrap_or_default();
-        Self { id, dependency_ids }
+        let preprocessor_symbols = value
+            .get("preprocessorSymbols")
+            .and_then(|v| v.as_array())
+            .map(|symbols| {
+                symbols
+                    .iter()
+                    .filter_map(|symbol| symbol.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            id,
+            dependency_ids,
+            preprocessor_symbols,
+        }
     }
 }
 
@@ -575,7 +591,8 @@ impl FileIndex {
             }
             self.file_metadata.insert(path.clone(), m);
         }
-        let result = al_syntax::AlParser::parse_quick(&content);
+        let symbols = self.preprocessor_symbols_for(&path);
+        let result = al_syntax::AlParser::parse_quick_with_symbols(&content, &symbols);
         self.replace_file_entries(path, content, &result.tree);
     }
 
@@ -878,6 +895,14 @@ impl FileIndex {
             self.dir_app_root.insert(dir, found.clone());
         }
         found
+    }
+
+    /// The `preprocessorSymbols` of the app that owns `file`, empty when the
+    /// file has no app or the app defines none.
+    pub fn preprocessor_symbols_for(&self, file: &Path) -> std::sync::Arc<[String]> {
+        self.app_root_for(file)
+            .map(|root| self.app_identity(&root).preprocessor_symbols)
+            .unwrap_or_default()
     }
 
     fn app_identity(&self, app_root: &Path) -> AppIdentity {

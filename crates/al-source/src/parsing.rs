@@ -67,7 +67,8 @@ pub fn get_or_parse(
     }
 
     tracing::debug!(uri = %uri, version, len = text.len(), "get_or_parse: parsing");
-    let tree = AlParser::parse_quick(&text).tree;
+    let symbols = documents.preprocessor_symbols(uri);
+    let tree = AlParser::parse_quick_with_symbols(&text, &symbols).tree;
     documents.cache_tree(uri, version, tree.clone());
     Some((text, tree))
 }
@@ -94,6 +95,24 @@ mod tests {
 
     fn test_uri(name: &str) -> Url {
         Url::parse(&format!("file:///test/{}.al", name)).unwrap()
+    }
+
+    /// A reparse after the tree left the cache uses the document's recorded
+    /// symbols, and a change of symbols drops the old tree.
+    #[test]
+    fn get_or_parse_uses_the_documents_preprocessor_symbols() {
+        let store = DocumentStore::new();
+        let uri = test_uri("symbols");
+        let source = "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    begin\n    end;\n#endif\n}\n";
+        store.open(uri.clone(), source.to_string()).unwrap();
+        let has_procedure = |store: &DocumentStore| {
+            let (_, tree) = get_or_parse(store, &uri).unwrap();
+            tree.root_node().to_sexp().contains("procedure_declaration")
+        };
+
+        assert!(!has_procedure(&store));
+        store.set_preprocessor_symbols(&uri, std::sync::Arc::from(["CLEAN24".to_string()]));
+        assert!(has_procedure(&store), "new symbols drop the cached tree");
     }
 
     #[test]
