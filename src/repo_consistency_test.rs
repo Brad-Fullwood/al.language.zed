@@ -830,6 +830,23 @@ fn binaries_are_verified_before_they_are_made_executable() {
     );
 }
 
+/// The staged release moves into place only after its binaries are executable.
+/// Moving it first would install binaries that were never made executable.
+#[test]
+fn the_release_is_committed_after_it_is_made_executable() {
+    let lib = include_str!("lib.rs");
+    let make_executable = lib
+        .find("zed::make_file_executable(path)")
+        .expect("download_matching_release must make the binaries executable");
+    let commit = lib
+        .find("commit_release_dir(&")
+        .expect("download_matching_release must commit the staged release");
+    assert!(
+        make_executable < commit,
+        "src/lib.rs commits the staged release before making its binaries executable"
+    );
+}
+
 /// The extension, the root crate and `al-lsp` ship together, so their versions
 /// are one number. A mismatch would make every `--extension-build` check warn.
 #[test]

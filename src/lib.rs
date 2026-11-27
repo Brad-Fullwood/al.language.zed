@@ -53,10 +53,12 @@ const MERGE_JSON_MAX_DEPTH: u32 = 64;
 
 /// Validate that a GitHub release version is safe to interpolate into a
 /// filesystem path. Allows the chars a normal semver tag uses
-/// (`0-9`, `a-z`, `A-Z`, `.`, `-`, `_`, `+`) and nothing else — in particular,
-/// no `/` or `..` segments. An empty string is rejected.
+/// (`0-9`, `a-z`, `A-Z`, `.`, `-`, `_`, `+`) and nothing else. Any `..` is
+/// rejected too, since it names the parent directory. An empty string is
+/// rejected.
 fn is_safe_version(v: &str) -> bool {
     !v.is_empty()
+        && !v.contains("..")
         && v.chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
 }
@@ -139,15 +141,13 @@ pub fn expected_sha256<'a>(listing: &'a str, name: &str) -> Option<&'a str> {
 /// al-lsp loads `bridge/AlBridge.dll` and the assemblies beside it into its own
 /// process, so a substituted bridge inside an otherwise good archive ran with
 /// the verified executable. Every file must be listed with a matching digest,
-/// and every listed file must be there. `Ok(false)` when the listing names
-/// nothing under `bridge/`, which is every release made before the bridge was
-/// hashed. The listing comes with the release over TLS, so that absence is the
-/// release's own, not something a tampered archive can arrange.
+/// and every listed file must be there. A listing with no `bridge/` entry is an
+/// error: the bridge would load with nothing to check it against.
 pub fn check_bridge_files(
     listing: &str,
     asset_name: &str,
     files: &[(String, Vec<u8>)],
-) -> std::result::Result<bool, String> {
+) -> std::result::Result<(), String> {
     let prefix = format!("{asset_name}/bridge/");
     let listed: Vec<&str> = listing
         .lines()
@@ -158,7 +158,9 @@ pub fn check_bridge_files(
         })
         .collect();
     if listed.is_empty() {
-        return Ok(false);
+        return Err(format!(
+            "{BINARY_CHECKSUMS_ASSET} lists no file under {prefix}, so the bridge cannot be verified and is not loaded"
+        ));
     }
     for (relative, bytes) in files {
         let key = format!("{asset_name}/{relative}");
@@ -186,7 +188,7 @@ pub fn check_bridge_files(
             ));
         }
     }
-    Ok(true)
+    Ok(())
 }
 
 /// Every regular file below `dir`, as `(path relative to dir's parent, bytes)`,
@@ -237,6 +239,42 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex
 }
 
+fn remove_dir_if_present(dir: &str) -> std::result::Result<(), String> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("Failed to remove {dir}: {error}")),
+    }
+}
+
+/// Replaces `final_dir` with the verified `staging` directory. The old
+/// directory is removed only after `staging` is confirmed to exist.
+fn commit_release_dir(staging: &str, final_dir: &str) -> std::result::Result<(), String> {
+    if !std::path::Path::new(staging).is_dir() {
+        return Err(format!(
+            "{staging} is missing, so the release was not installed"
+        ));
+    }
+    remove_dir_if_present(final_dir)?;
+    fs::rename(staging, final_dir)
+        .map_err(|error| format!("Failed to move {staging} to {final_dir}: {error}"))
+}
+
+/// The checksum file of `release`. Without it the executables cannot be
+/// verified, so the release is refused instead of installed unchecked.
+fn checksums_asset(release: &zed::GithubRelease) -> Result<&zed::GithubReleaseAsset> {
+    release
+        .assets
+        .iter()
+        .find(|asset| asset.name == BINARY_CHECKSUMS_ASSET)
+        .ok_or_else(|| {
+            format!(
+                "Release {} publishes no {BINARY_CHECKSUMS_ASSET}, so its executables cannot be verified. Nothing was made executable.",
+                release.version
+            )
+        })
+}
+
 impl AlExtension {
     /// The already downloaded binary of release directory `version_dir`, if
     /// both sidecars are on disk. No network.
@@ -276,23 +314,16 @@ impl AlExtension {
     /// path. `binary-checksums.txt` covers the extracted executables instead,
     /// which is a stronger check: it is the bytes that actually run.
     ///
-    /// Returns `Ok(false)` when the release publishes no such asset, which is
-    /// every release made before it existed. The asset list comes from the
-    /// GitHub API rather than the asset CDN, so its absence is not something a
-    /// tampered download can fake.
+    /// Returns an error when the release publishes no such asset. The asset list
+    /// comes from the GitHub API rather than the asset CDN, so its absence is not
+    /// something a tampered download can fake.
     fn verify_extracted_binaries(
         release: &zed::GithubRelease,
         asset_name: &str,
         extracted: &[(&str, &str)],
         version_dir: &str,
-    ) -> Result<bool> {
-        let Some(asset) = release
-            .assets
-            .iter()
-            .find(|asset| asset.name == BINARY_CHECKSUMS_ASSET)
-        else {
-            return Ok(false);
-        };
+    ) -> Result<()> {
+        let asset = checksums_asset(release)?;
 
         let listing_path = format!("{version_dir}/{BINARY_CHECKSUMS_ASSET}");
         zed::download_file(
@@ -334,7 +365,7 @@ impl AlExtension {
                 release.version
             )
         })?;
-        Ok(true)
+        Ok(())
     }
 
     /// Resolves an explicit, cached, installed, or downloadable `al-lsp` binary.
@@ -457,8 +488,12 @@ impl AlExtension {
             zed::Os::Windows => ("al-lsp.exe", "al-explorer.exe"),
             _ => ("al-lsp", "al-explorer"),
         };
-        let binary_path = format!("{version_dir}/{binary_name}");
-        let explorer_path = format!("{version_dir}/{explorer_name}");
+        // zed_extension_api 0.7 has no atomic install. The archive is extracted
+        // into a staging directory, and only a fully verified one is renamed to
+        // `version_dir`, so rejected bytes never sit where the cache looks.
+        let staging_dir = format!("{version_dir}.partial");
+        let staged_binary = format!("{staging_dir}/{binary_name}");
+        let staged_explorer = format!("{staging_dir}/{explorer_name}");
 
         if let Some(id) = status_id {
             zed::set_language_server_installation_status(
@@ -467,38 +502,46 @@ impl AlExtension {
             );
         }
 
-        zed::download_file(&asset.download_url, &version_dir, archive_type)
-            .map_err(|e| unavailable(&format!("download failed: {e}")))?;
+        let install = || -> Result<()> {
+            remove_dir_if_present(&staging_dir)?;
+            zed::download_file(&asset.download_url, &staging_dir, archive_type)
+                .map_err(|e| unavailable(&format!("download failed: {e}")))?;
 
-        for (tool, path) in [("al-lsp", &binary_path), ("al-explorer", &explorer_path)] {
-            if !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
-                let _ = fs::remove_dir_all(&version_dir);
-                return Err(format!(
-                    "Downloaded release archive does not contain the required {tool} \
-                     sidecar at {path}"
-                ));
+            for (tool, path) in [
+                ("al-lsp", &staged_binary),
+                ("al-explorer", &staged_explorer),
+            ] {
+                if !fs::metadata(path).is_ok_and(|metadata| metadata.is_file()) {
+                    return Err(format!(
+                        "Downloaded release archive does not contain the required {tool} \
+                         sidecar at {path}"
+                    ));
+                }
             }
-        }
 
-        // Verify before anything becomes executable. A failed check takes the
-        // directory with it, so the next start downloads again rather than
-        // finding the rejected bytes cached.
-        let extracted = [
-            (binary_name, binary_path.as_str()),
-            (explorer_name, explorer_path.as_str()),
-        ];
-        if let Err(error) =
-            Self::verify_extracted_binaries(&release, &asset_name, &extracted, &version_dir)
-        {
-            let _ = fs::remove_dir_all(&version_dir);
+            // Verify before anything becomes executable.
+            let extracted = [
+                (binary_name, staged_binary.as_str()),
+                (explorer_name, staged_explorer.as_str()),
+            ];
+            Self::verify_extracted_binaries(&release, &asset_name, &extracted, &staging_dir)?;
+
+            for (tool, path) in [
+                ("al-lsp", &staged_binary),
+                ("al-explorer", &staged_explorer),
+            ] {
+                zed::make_file_executable(path)
+                    .map_err(|e| format!("Failed to make {tool} executable: {e}"))?;
+            }
+
+            commit_release_dir(&staging_dir, &version_dir)
+        };
+        if let Err(error) = install() {
+            let _ = fs::remove_dir_all(&staging_dir);
             return Err(error);
         }
 
-        for (tool, path) in [("al-lsp", &binary_path), ("al-explorer", &explorer_path)] {
-            zed::make_file_executable(path)
-                .map_err(|e| format!("Failed to make {tool} executable: {e}"))?;
-        }
-
+        let binary_path = format!("{version_dir}/{binary_name}");
         Self::prune_release_dirs(&version_dir);
 
         self.cached_binary_path = Some(binary_path.clone());
