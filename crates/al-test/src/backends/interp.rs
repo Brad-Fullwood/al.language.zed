@@ -25,13 +25,14 @@ use tracing::warn;
 use tree_sitter::Node;
 
 use crate::error::TestRunnerError;
-use crate::result::{TestCodeunitResult, TestMethodResult, TestStatus};
+use crate::result::{TestCodeunitResult, TestFailureKind, TestMethodResult, TestStatus};
 use crate::session::{method_name_matches, RunOptions, TestEvent, TestId, TestSession};
 use al_analysis::queries::tests::{discover_tests, TestCodeunit};
 use al_runtime::interpreter::coverage::{Coverage, DynamicCoverageReport};
 use al_runtime::interpreter::dispatch::{DispatchCtx, DispatchMode, TestHandlers};
 use al_runtime::interpreter::eval_stmt::eval_stmt;
 use al_runtime::interpreter::scope::{CallFrame, Eval, ScopeStack};
+use al_runtime::interpreter::value::ERROR_TYPE_TIMEOUT;
 use al_workspace::Workspace;
 
 /// Interpreter backend: runs test procedures without a live BC server.
@@ -409,7 +410,7 @@ fn run_codeunit_interp(
                         DEADLINE_GRACE.as_millis(),
                         timeout_dur.as_millis()
                     ),
-                    error_type: None,
+                    error_type: Some(ERROR_TYPE_TIMEOUT.to_string()),
                     source: None,
                 }),
                 None,
@@ -445,8 +446,13 @@ fn run_codeunit_interp(
                 _ => None,
             },
             duration_ms: Some(duration_ms),
-            // The interpreter ran the body, so a failure is the AL code's.
-            failure_kind: None,
+            // The interpreter ran the body, so a failure is the AL code's, unless the deadline stopped it.
+            failure_kind: match &result {
+                Eval::Error(e) if e.error_type.as_deref() == Some(ERROR_TYPE_TIMEOUT) => {
+                    Some(TestFailureKind::Timeout)
+                }
+                _ => None,
+            },
         };
         method_results.push(method_result.clone());
         events.push(TestEvent::CaseResult {
@@ -1391,7 +1397,10 @@ mod tests {
 
     [Test]
     procedure TestAssertEqual()
+    var
+        Assert: Codeunit "Library Assert";
     begin
+        Assert.AreEqual(1, 1, '');
     end;
 }
 "#;
@@ -1419,27 +1428,20 @@ mod tests {
             events.push(evt);
         }
 
-        let case_result = events
+        let results: Vec<&TestMethodResult> = events
             .iter()
-            .find(|e| matches!(e, TestEvent::CaseResult { .. }));
-
-        match case_result {
-            Some(TestEvent::CaseResult { result, .. }) => {
-                assert_eq!(
-                    result.status,
-                    TestStatus::Pass,
-                    "empty test body should pass; error: {:?}",
-                    result.error
-                );
-            }
-            None => {
-                let session_complete = events
-                    .iter()
-                    .find(|e| matches!(e, TestEvent::SessionComplete { .. }));
-                assert!(session_complete.is_some(), "must emit SessionComplete");
-            }
-            Some(other) => panic!("unexpected event: {:?}", other),
-        }
+            .filter_map(|e| match e {
+                TestEvent::CaseResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 1, "expected one CaseResult, got {events:?}");
+        assert_eq!(
+            results[0].status,
+            TestStatus::Pass,
+            "Assert.AreEqual(1, 1, '') should pass; error: {:?}",
+            results[0].error
+        );
     }
 
     #[tokio::test]
@@ -1596,8 +1598,10 @@ mod tests {
 
     [Test]
     procedure TestExpectedFail()
+    var
+        Assert: Codeunit "Library Assert";
     begin
-        error('expected failure');
+        Assert.AreEqual(1, 2, 'expected');
     end;
 }
 "#;
@@ -1625,29 +1629,88 @@ mod tests {
             events.push(evt);
         }
 
-        let case_result = events
+        let results: Vec<&TestMethodResult> = events
             .iter()
-            .find(|e| matches!(e, TestEvent::CaseResult { .. }));
+            .filter_map(|e| match e {
+                TestEvent::CaseResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 1, "expected one CaseResult, got {events:?}");
+        assert_eq!(
+            results[0].status,
+            TestStatus::Fail,
+            "expected Fail status; got {:?}",
+            results[0]
+        );
+        let error = results[0].error.as_deref().unwrap_or_default();
+        assert!(
+            error.contains("expected"),
+            "the Assert message should reach the error; got {error:?}"
+        );
+    }
 
-        match case_result {
-            Some(TestEvent::CaseResult { result, .. }) => {
-                assert_eq!(
-                    result.status,
-                    TestStatus::Fail,
-                    "expected Fail status; got {:?}",
-                    result
-                );
-            }
-            None => {
-                assert!(
-                    events
-                        .iter()
-                        .any(|e| matches!(e, TestEvent::SessionComplete { .. })),
-                    "must emit SessionComplete even if no tests found"
-                );
-            }
-            Some(other) => panic!("unexpected CaseResult shape: {:?}", other),
-        }
+    #[tokio::test]
+    async fn deadline_in_asserterror_fails_as_timeout() {
+        let source = r#"codeunit 50150 "Deadline Tests"
+{
+    Subtype = Test;
+
+    [Test]
+    procedure Spins()
+    begin
+        asserterror Loop();
+    end;
+
+    local procedure Loop()
+    begin
+        while true do;
+    end;
+}
+"#;
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/DeadlineTests.al"),
+            source.to_string(),
+        );
+        let session = InterpMode::new(Arc::new(workspace));
+        let tests = vec![TestId {
+            codeunit_id: 50150,
+            codeunit_name: "Deadline Tests".to_string(),
+            method_name: Some("Spins".to_string()),
+        }];
+        let opts = RunOptions {
+            timeout_ms: Some(50),
+            ..RunOptions::default()
+        };
+        let events = collect_events(&session, tests, opts).await;
+        let results: Vec<&TestMethodResult> = events
+            .iter()
+            .filter_map(|e| match e {
+                TestEvent::CaseResult { result, .. } => Some(result),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 1, "expected one CaseResult, got {events:?}");
+        let result = results[0];
+        assert_eq!(result.status, TestStatus::Fail, "{result:?}");
+        assert_eq!(
+            result.failure_kind,
+            Some(TestFailureKind::Timeout),
+            "{result:?}"
+        );
+
+        // asserterror must not catch the deadline, so the JUnit entry is an error, not a failure.
+        let codeunit = TestCodeunitResult::from_methods(
+            "Deadline Tests".to_string(),
+            50150,
+            vec![result.clone()],
+        );
+        let mut xml = Vec::new();
+        crate::output::write_junit(&[codeunit], &mut xml).expect("write JUnit");
+        let xml = String::from_utf8(xml).expect("JUnit output is UTF-8");
+        assert!(xml.contains("<error"), "{xml}");
+        assert!(xml.contains(r#"type="Timeout""#), "{xml}");
     }
 
     #[tokio::test]

@@ -621,18 +621,12 @@ mod tests {
     /// Validate generated reports against the Jenkins xunit plugin schema.
     /// Schema: `tests/fixtures/junit-10.xsd`, see `tests/fixtures/README.md`
     /// for its source. Rust XSD validation is not in the workspace, so the
-    /// check shells out to `xmllint` and is skipped when that is missing.
+    /// check shells out to `xmllint`. It is ignored by default. Run it with
+    /// `cargo test -p al-test -- --ignored` where `xmllint` is installed.
     #[test]
+    #[ignore = "needs xmllint"]
     fn output_validates_against_junit_10_xsd() {
         let xsd = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/junit-10.xsd");
-        if std::process::Command::new("xmllint")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
-            eprintln!("SKIPPED: xmllint is not installed, junit-10.xsd validation not run");
-            return;
-        }
         let cases: Vec<(&str, Vec<TestCodeunitResult>)> = vec![
             ("empty", vec![]),
             (

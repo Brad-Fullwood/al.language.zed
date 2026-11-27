@@ -842,6 +842,11 @@ pub struct ErrorInfo {
     pub source: Option<String>,
 }
 
+/// `ErrorInfo::error_type` for an interpreter deadline. `asserterror` passes it through.
+pub const ERROR_TYPE_TIMEOUT: &str = "Timeout";
+/// `ErrorInfo::error_type` for a cancelled run. `asserterror` passes it through.
+pub const ERROR_TYPE_CANCELLED: &str = "Cancelled";
+
 impl Value {
     /// Move the values this value holds into `into`: an Array's elements, a
     /// Variant's value, and the contents of a List or Dictionary when this

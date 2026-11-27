@@ -335,6 +335,17 @@ impl MockRecord {
         }
     }
 
+    /// Replace this table's rows with a copy of the rows in `saved`. `asserterror`
+    /// uses it to undo the writes its statement made.
+    pub fn restore_rows_from(&mut self, saved: &MockRecord) {
+        self.rows.clone_from(&saved.rows);
+    }
+
+    /// Remove every row from this table.
+    pub fn clear_rows(&mut self) {
+        self.rows.clear();
+    }
+
     /// Attach the table's per-field zero values, recovered from the workspace
     /// table definition.
     pub fn with_field_defaults(mut self, field_defaults: HashMap<FieldNo, Value>) -> Self {
