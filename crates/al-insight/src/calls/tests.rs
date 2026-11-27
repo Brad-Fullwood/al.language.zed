@@ -605,6 +605,84 @@ end;
 }
 
 #[test]
+fn multi_name_record_declaration_records_each_name() {
+    let source = r#"codeunit 50100 "My CU"
+{
+procedure Run()
+var
+    A, B: Record Customer;
+begin
+end;
+}
+"#;
+    let result = al_syntax::AlParser::parse_quick(source);
+    let types = extract_procedure_var_types(&result.tree, source, "Run");
+
+    assert_eq!(types.get("a").map(|s| s.as_str()), Some("Customer"));
+    assert_eq!(types.get("b").map(|s| s.as_str()), Some("Customer"));
+}
+
+#[test]
+fn workspace_object_global_record_is_resolved() {
+    let source = r#"codeunit 50100 C
+{
+var
+    A, B: Record Customer;
+
+procedure Run()
+begin
+    B.Modify();
+end;
+}
+"#;
+    let result = al_syntax::AlParser::parse_quick(source);
+    let index = SymbolIndex::new();
+    index.add_entries(&[
+        make_codeunit(50100, "C", vec![regular_method("Run")]),
+        make_table(
+            18,
+            "Customer",
+            vec![
+                integration_event("OnBeforeModifyEvent"),
+                integration_event("OnAfterModifyEvent"),
+            ],
+        ),
+    ]);
+    let mut insight = InsightGraph::new();
+    insight.build_from_index(&index);
+    let mut call_graph = CallGraph::build_from_insight(&insight);
+    populate_call_edges_for_procedure(
+        &result.tree,
+        source,
+        ObjectKind::Codeunit,
+        "C",
+        "Run",
+        &index,
+        &insight,
+        &mut call_graph,
+    );
+    let caller = CallGraph::node_id_for(
+        &insight,
+        &NodeKey::Procedure(ObjectKind::Codeunit, "c".into(), "run".into()),
+    )
+    .expect("caller node");
+    let reached: Vec<_> = call_graph
+        .callees_of(caller)
+        .iter()
+        .filter(|e| e.kind == super::super::index::EdgeKind::RecordTrigger)
+        .map(|e| e.to)
+        .collect();
+    for event in ["onbeforemodifyevent", "onaftermodifyevent"] {
+        let node = CallGraph::node_id_for(
+            &insight,
+            &NodeKey::Event(ObjectKind::Table, "customer".into(), event.into()),
+        )
+        .expect("table event node");
+        assert!(reached.contains(&node), "B.Modify() should reach {event}");
+    }
+}
+
+#[test]
 fn fanout_score_counts_calls() {
     let source = r#"codeunit 50100 "Test CU"
 {
