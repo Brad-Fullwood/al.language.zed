@@ -9,11 +9,16 @@ const NOTICE: &str =
 
 /// Run `al-explorer` with a scratch trust store, so no record from the
 /// machine trusts the project, and a toolchain directory with no alc in it,
-/// so `--validate` stops after reading the project's settings.
+/// so `--validate` stops after reading the project's settings. Its data,
+/// state and runtime directories go under the same scratch directory, so the
+/// log and any daemon socket stay out of the user's own.
 fn al_explorer(args: &[&str], config_home: &Path, tool_path: &Path) -> Output {
     Command::new(env!("CARGO_BIN_EXE_al-explorer"))
         .args(args)
         .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_DATA_HOME", config_home.join("data"))
+        .env("XDG_STATE_HOME", config_home.join("state"))
+        .env("XDG_RUNTIME_DIR", config_home)
         .env("AL_TOOL_PATH", tool_path)
         .output()
         .expect("al-explorer runs")
