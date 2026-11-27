@@ -27,6 +27,29 @@ use crate::views::profiler::{handle_profiler_key, render_profiler};
 use crate::views::test_runner::{handle_test_runner_key, render_test_runner};
 use crate::{App, ViewMode};
 
+/// Notices al-protocol raised while the TUI owns the terminal. `App::poll_init`
+/// moves the latest one into `App::daemon_notice` on each tick.
+static DAEMON_NOTICES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+fn queue_daemon_notice(message: &str) {
+    let mut notices = DAEMON_NOTICES.lock().unwrap_or_else(|e| e.into_inner());
+    notices.push(format!("al-lsp: {message}"));
+}
+
+/// The most recent queued notice, dropping older ones.
+pub(crate) fn take_daemon_notice() -> Option<String> {
+    let mut notices = DAEMON_NOTICES.lock().unwrap_or_else(|e| e.into_inner());
+    let last = notices.pop();
+    notices.clear();
+    last
+}
+
+/// Route al-protocol notices away from stderr, which would print across the
+/// alternate screen. Called before the terminal is switched.
+fn install_tui_notice_sink() {
+    al_protocol::set_notice_sink(Some(std::sync::Arc::new(queue_daemon_notice)));
+}
+
 pub(crate) fn run_tui() -> Result<(), Box<dyn Error>> {
     // Pre-flight: refuse with a human-readable message instead of letting
     // crossterm propagate ENXIO (code 6) when stdin/stdout aren't a TTY.
@@ -47,6 +70,7 @@ pub(crate) fn run_tui() -> Result<(), Box<dyn Error>> {
         original_hook(info);
     }));
 
+    install_tui_notice_sink();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     // From here every exit path runs `TerminalGuard::drop`. Leaving mouse
@@ -65,6 +89,7 @@ pub(crate) fn run_tui() -> Result<(), Box<dyn Error>> {
     app.start_init_workspace();
 
     let res = run_app(&mut terminal, app);
+    al_protocol::set_notice_sink(None);
 
     let _ = terminal.show_cursor();
 
@@ -227,4 +252,24 @@ fn render_mode_bar(f: &mut Frame, area: Rect, mode: ViewMode) {
     all_spans.push(quit_hint);
 
     f.render_widget(Paragraph::new(Line::from(all_spans)), area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tui_setup_replaces_stderr_with_a_queue_the_app_reads() {
+        al_protocol::set_notice_sink(None);
+        assert!(!al_protocol::notice_sink_is_set());
+        install_tui_notice_sink();
+        assert!(al_protocol::notice_sink_is_set());
+        al_protocol::set_notice_sink(None);
+
+        let _ = take_daemon_notice();
+        queue_daemon_notice("daemon was built from other code");
+        queue_daemon_notice("second");
+        assert_eq!(take_daemon_notice().as_deref(), Some("al-lsp: second"));
+        assert_eq!(take_daemon_notice(), None);
+    }
 }

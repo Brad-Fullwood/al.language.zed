@@ -182,11 +182,10 @@ it at the pinned toolchain, or move the pin deliberately with
 `make record-methods`.
 
 Supported toolchain for `make microsoft-contracts`: the build pinned in
-`record_methods.json` (18.0.43.1464, the `dotnet tool` net8.0 directory).
-AL 18.1 (2842859, the Cursor extension `bin/`) loads in the bridge: the five
-`live_bridge` tests pass on it (82 s). The profile still exits 2 on 18.1
-because the pin check reports `PROVENANCE DRIFT` (the 82 Record methods are
-identical). The steps after the pin check were not run on 18.1.
+`record_methods.json` (AL 18.1.2842859, the Cursor extension `bin/` directory). The
+profile passed on it on 2026-10-27 with `AL_TEST_REQUEST_TIMEOUT_MS=120000` and
+`AL_TEST_DIAG_TIMEOUT_MS=90000`. The 82 Record methods are the same as in the earlier
+pin, dotnet tool 18.0.43.1464, which now stops at `PROVENANCE DRIFT`.
 
 Do not treat that external profile alone as complete. After bridge or lifecycle
 changes, also run the consumer finish gate:

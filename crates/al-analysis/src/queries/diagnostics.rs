@@ -704,7 +704,7 @@ fn collect_diagnostics_from_tree(
 
     let lines = al_syntax::SourceLines::new(text.as_bytes());
 
-    for err in al_syntax::AlParser::errors_from_tree(tree) {
+    for err in al_syntax::AlParser::errors_from_tree(tree, text.as_bytes()) {
         let ts_range = err.range;
         diags.push(SyntaxDiagnostic {
             message: err.message,

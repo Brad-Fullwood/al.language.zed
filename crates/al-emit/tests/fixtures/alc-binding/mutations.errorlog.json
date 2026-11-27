@@ -239,8 +239,64 @@
               "uri": "src/Mut.Codeunit.al",
               "region": {
                 "startLine": 24,
-                "startColumn": 14,
+                "startColumn": 9,
                 "endLine": 24,
+                "endColumn": 19
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "The name 'NoSuchProc' does not exist in the current context.",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al118?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0118",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 25,
+                "startColumn": 19,
+                "endLine": 25,
+                "endColumn": 29
+              }
+            }
+          ]
+        }
+      ],
+      "fullMessage": "The name 'NoSuchFunc' does not exist in the current context.",
+      "properties": {
+        "severity": "Error",
+        "defaultSeverity": "Error",
+        "category": "Compiler",
+        "helpLink": "https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/diagnostics/diagnostic-al118?wt.mc_id=d365bc_inproduct_alextension",
+        "isEnabledByDefault": "True",
+        "isSuppressedInSource": "False",
+        "customTags": "Compiler;Telemetry;NotConfigurable"
+      }
+    },
+    {
+      "ruleId": "AL0118",
+      "locations": [
+        {
+          "analysisTarget": [
+            {
+              "uri": "src/Mut.Codeunit.al",
+              "region": {
+                "startLine": 26,
+                "startColumn": 14,
+                "endLine": 26,
                 "endColumn": 25
               }
             }

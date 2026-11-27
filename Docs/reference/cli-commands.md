@@ -27,6 +27,9 @@ means a request error or a completed check with blocking findings, and `75` is w
 returns while the daemon has not finished its first workspace and package load. Commands that
 report findings, such as `metrics`, `dead-code`, `sql-scan`, `duplicates`, `arch-lint`, `breaking`,
 `upgrade`, `audit-data`, and `permission-audit`, print their findings and exit non-zero.
+`dead-code` exits 1 only when a finding has medium or high confidence. Low confidence findings
+(symbols reached through reflection or other channels static analysis cannot see) are printed
+and exit 0.
 
 Daemon-backed commands use the same dispatcher as MCP and checkout-local contributor tasks. From
 MCP, call the corresponding daemon method through `al_call` with the same parameter object.
@@ -132,7 +135,7 @@ and writes paths only inside the project it has loaded. See
 | `impact <symbol>` | `--table` | Who consumes this symbol/table |
 | `suggest-event` | `--object <x> [--kind <k>] [--procedure/--event <x>]`, or `--table <x> [--field <x>]` | Integration-point discovery (`--event` needs `--object`, `--kind` picks one object when the name exists in more than one kind) |
 | `metrics <file>` or `metrics --all` | `--all --threshold-cyclomatic N --threshold-cognitive N` | Complexity. Needs a file or `--all`, otherwise the daemon answers that it needs a `uri`/`file` parameter or `all: true` |
-| `dead-code` | | Unused procedures/fields/subscribers (with confidence) |
+| `dead-code` | | Unused procedures/fields/subscribers (with confidence). Exit 1 on a medium or high confidence finding, exit 0 when all findings are low |
 | `sql-scan` | | SQL anti-patterns |
 | `duplicates` | `--min-tokens N --min-similarity R` | Duplicate code blocks |
 | `arch-lint` | | `.alarch.json` architecture rules |

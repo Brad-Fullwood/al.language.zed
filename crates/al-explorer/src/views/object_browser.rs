@@ -436,7 +436,11 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
         } else {
             Style::default().fg(Color::Yellow)
         };
-        let loading = Paragraph::new(status.as_str())
+        let text = match &app.daemon_notice {
+            Some(notice) => format!("{status}\n\n{notice}"),
+            None => status.clone(),
+        };
+        let loading = Paragraph::new(text)
             .style(style)
             .wrap(ratatui::widgets::Wrap { trim: true })
             .block(
@@ -462,12 +466,17 @@ pub(crate) fn render_object_browser(f: &mut Frame, area: Rect, app: &mut App) {
             })
             .collect();
 
+        let mut objects_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(obj_style);
+        if let Some(notice) = &app.daemon_notice {
+            objects_block = objects_block.title(Span::styled(
+                format!(" {notice} "),
+                Style::default().fg(Color::Yellow),
+            ));
+        }
         let objects_list = List::new(objects)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(obj_style),
-            )
+            .block(objects_block)
             .highlight_style(
                 Style::default()
                     .bg(Color::Blue)

@@ -35,7 +35,10 @@ path uses LSP handlers directly and does not go through the daemon. See
   `connect` asks a daemon it did not start which build it came from and compares that with its own.
   A mismatch, or a daemon too old to answer `handshake`, is asked to shut down. The client waits for
   the endpoint to stop accepting, starts the `al-lsp` beside its own executable, and retries
-  once. `AL_ALLOW_MISMATCHED_DAEMON` keeps the running daemon instead. The identity is the
+  once. `AL_ALLOW_MISMATCHED_DAEMON` keeps the running daemon instead.
+  The "built from other code" notice comes from `notify()` in `al-protocol` (not from `al-lsp --extension-build`). CLI
+  commands print it to stderr. The al-explorer TUI installs a notice sink (`set_notice_sink`) before it enters the alternate
+  screen, so the notice shows in the objects pane instead and stderr stays untouched. The identity is the
   `al-lsp` version plus the git commit with a dirty marker, and a hash of the `al-lsp` executable's
   size and mtime when the tree is dirty or is not a git checkout. A rebuild of uncommitted work
   does not change the commit, and the executable hash catches that case. `connect_existing` checks
