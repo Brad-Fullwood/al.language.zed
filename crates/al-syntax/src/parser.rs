@@ -263,7 +263,7 @@ fn in_statement_list(node: tree_sitter::Node) -> Option<()> {
 /// a token that can end an expression. alc reports AL0111 on that same token
 /// (checked on a statement start, an `exit`, and a second statement on the same
 /// line). Returns the byte offset where the `;` belongs, the end of the token
-/// before the error. A following `if` is handled by [`missing_semicolon_shape`].
+/// before the error. A following `if` is handled by `missing_semicolon_shape`.
 pub fn missing_semicolon_insert_byte(error: tree_sitter::Node) -> Option<usize> {
     missing_semicolon_shape(error).map(|(insert, _)| insert)
 }

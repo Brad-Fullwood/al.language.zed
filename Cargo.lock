@@ -168,7 +168,6 @@ dependencies = [
  "clap",
  "clap_complete",
  "crossterm",
- "dirs",
  "libc",
  "ratatui",
  "regex",
@@ -312,7 +311,6 @@ name = "al-semantic"
 version = "0.1.0"
 dependencies = [
  "al-types",
- "dirs",
  "netcorehost",
  "serde",
  "serde_json",
@@ -422,7 +420,6 @@ dependencies = [
  "tracing",
  "tree-sitter",
  "url",
- "urlencoding",
  "wiremock",
 ]
 

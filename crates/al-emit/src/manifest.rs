@@ -82,7 +82,7 @@ pub struct AppManifest {
     pub show_my_code: bool,
     pub id_ranges: Vec<(i64, i64)>,
     pub dependencies: Vec<Dependency>,
-    /// `<Features>` entries: upper-case names from [`COMPILER_FEATURES`], in alc's order.
+    /// `<Features>` entries: upper-case names from `COMPILER_FEATURES`, in alc's order.
     pub features: Vec<String>,
     pub resource_exposure_policy: ResourceExposurePolicy,
     /// `<Build CompilerVersion="…">` — the producing compiler's version.

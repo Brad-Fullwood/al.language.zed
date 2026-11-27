@@ -77,10 +77,10 @@ const APPSOURCE_RANGE: (u64, u64) = (1_000_000, 74_999_999);
 /// `app.json` signal: `target` only takes `Cloud` or `OnPrem` and a per-tenant
 /// extension is `Cloud` too.
 ///
-/// - AppSourceCop.json: https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/analyzers/appsourcecop#configuration
-/// - Object ranges: https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-object-ranges
-/// - PTE range 50,000-99,999: https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/analyzers/pertenantextensioncop-pte0001
-/// - app.json `target`: https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-json-files#appjson-file
+/// - AppSourceCop.json: <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/analyzers/appsourcecop#configuration>
+/// - Object ranges: <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-object-ranges>
+/// - PTE range 50,000-99,999: <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/analyzers/pertenantextensioncop-pte0001>
+/// - app.json `target`: <https://learn.microsoft.com/dynamics365/business-central/dev-itpro/developer/devenv-json-files#appjson-file>
 #[must_use]
 pub fn is_appsource_project(project_root: &Path) -> bool {
     if project_root.join("AppSourceCop.json").is_file() {
