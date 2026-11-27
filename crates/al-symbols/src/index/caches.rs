@@ -198,18 +198,22 @@ impl SymbolIndex {
     /// package identity. An entry the index does not hold falls back to the
     /// name lookup.
     pub fn app_path_for_entry(&self, entry: &SymbolEntry) -> Option<std::path::PathBuf> {
-        let package_key = self
-            .all
-            .iter()
-            .find(|indexed| std::ptr::eq(indexed.value().arc.as_ref(), entry))
-            .map(|indexed| indexed.value().package_key.clone());
-        match package_key {
+        match self.package_key_of(entry) {
             Some(key) => self
                 .app_paths
                 .get(&key)
                 .map(|record| record.value().path.clone()),
             None => self.app_path(&entry.package),
         }
+    }
+
+    /// The package identity key (`id:<guid>` or `name:<name>`) of the indexed
+    /// record holding `entry`, found by address.
+    pub(crate) fn package_key_of(&self, entry: &SymbolEntry) -> Option<String> {
+        self.all
+            .iter()
+            .find(|indexed| std::ptr::eq(indexed.value().arc.as_ref(), entry))
+            .map(|indexed| indexed.value().package_key.clone())
     }
 
     /// Return every file-backed package path currently published in the index.

@@ -413,6 +413,7 @@ impl SymbolIndex {
                 synthetic: false,
                 name: re.name.clone(),
                 extends: None,
+                extends_app_id: None,
                 implements: Vec::new(),
                 package: "Runtime".to_string(),
                 namespace: String::new(),

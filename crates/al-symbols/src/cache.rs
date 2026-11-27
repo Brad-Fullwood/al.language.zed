@@ -22,8 +22,9 @@ use super::model::SymbolPackage;
 /// can't repair — old caches are then rejected and the .app re-parsed.
 /// Version 1 added the `synthetic` flag. Older caches contain
 /// fabricated Option-enums that would deserialize as `synthetic: false`
-/// and reappear in search results.
-const CACHE_SCHEMA_VERSION: u32 = 1;
+/// and reappear in search results. Version 2 added `extends_app_id`, which
+/// older caches would load as `None`.
+const CACHE_SCHEMA_VERSION: u32 = 2;
 /// A cache serializes the already-capped (200 MB) SymbolReference payload plus
 /// a small header. Refuse pathological/corrupt files before allocating them.
 const MAX_CACHE_FILE_BYTES: u64 = 256 * 1024 * 1024;
