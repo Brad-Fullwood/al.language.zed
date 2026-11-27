@@ -145,8 +145,15 @@ fn assert_contains(args: &[&str], needle: &str, expect_success: bool) {
 
 #[test]
 fn cli_commands_use_the_real_project_daemon() {
+    // This crate has its own version, so the product version is read from
+    // al-explorer's manifest.
+    let product_version = include_str!("../../al-explorer/Cargo.toml")
+        .lines()
+        .find_map(|line| line.strip_prefix("version = \"")?.strip_suffix('"'))
+        .expect("crates/al-explorer/Cargo.toml has a version line");
+    assert_contains(&["version"], &format!("al {product_version}"), true);
+
     let cases: &[(&[&str], &str, bool)] = &[
-        (&["version"], "al 0.4", true),
         (&["diag"], "symbolCount", true),
         (&["parse", "src/HelloWorld.al"], "0 errors", true),
         (&["symbols", "src/HelloWorld.al"], "Hello World", true),
