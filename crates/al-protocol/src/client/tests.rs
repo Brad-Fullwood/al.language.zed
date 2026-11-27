@@ -308,3 +308,19 @@ fn project_dir_check_accepts_a_subdirectory_of_a_project() {
     std::fs::create_dir_all(&sub).unwrap();
     assert!(require_project_dir(&sub).is_ok());
 }
+
+#[test]
+fn project_dir_check_accepts_a_project_in_a_direct_child_folder() {
+    let dir = scratch_dir("child-project");
+    let app = dir.join("App");
+    std::fs::create_dir_all(&app).unwrap();
+    std::fs::write(app.join("app.json"), "{}").unwrap();
+    assert!(require_project_dir(&dir).is_ok());
+
+    let skipped = scratch_dir("skipped-children");
+    for name in [".alpackages", "node_modules"] {
+        std::fs::create_dir_all(skipped.join(name)).unwrap();
+        std::fs::write(skipped.join(name).join("app.json"), "{}").unwrap();
+    }
+    assert!(require_project_dir(&skipped).is_err());
+}

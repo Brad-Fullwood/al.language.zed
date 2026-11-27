@@ -1246,23 +1246,41 @@ pub fn wait_for_endpoint_closed(endpoint: &Path, timeout: Duration) -> bool {
 ///
 /// A daemon for such a directory indexes whatever it finds there and keeps
 /// running. Test runs and shell sessions in a non-project directory left
-/// several of them behind. `al-project::find_project` is the full discovery,
-/// but al-protocol does not depend on it and the daemon only needs to know
-/// that an `app.json` exists at or above the directory, so this walks up the
-/// ancestors the same way.
+/// several of them behind. al-protocol does not depend on al-project, so this
+/// mirrors the places `al_project::project::find_project` looks for an
+/// `app.json`: the directory, its ancestors, and its direct child folders
+/// other than hidden ones and `node_modules`. It checks only that the file
+/// exists, and the daemon reports a manifest it cannot load.
 pub fn require_project_dir(project_root: &Path) -> Result<(), String> {
     let absolute = std::path::absolute(project_root).unwrap_or_else(|_| project_root.to_path_buf());
     if absolute
         .ancestors()
         .any(|dir| dir.join("app.json").is_file())
+        || has_project_child(&absolute)
     {
         return Ok(());
     }
     Err(format!(
-        "No AL project: there is no app.json in {} or any parent directory, so no daemon was started. \
-         Run the command from an AL project directory or pass --project <dir>.",
+        "No AL project: there is no app.json in {}, any parent directory or any direct child folder, \
+         so no daemon was started. Run the command from an AL project directory or pass --project <dir>.",
         absolute.display()
     ))
+}
+
+/// Whether a direct child folder of `dir` holds an `app.json`, skipping the
+/// folders `find_project` skips. Symbolic links are not followed, as there.
+fn has_project_child(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        entry.file_type().is_ok_and(|kind| kind.is_dir())
+            && !name.starts_with('.')
+            && !name.eq_ignore_ascii_case("node_modules")
+            && entry.path().join("app.json").is_file()
+    })
 }
 
 /// Locate the `al-lsp` this client should start.
