@@ -1771,3 +1771,155 @@ fn an_interface_reaches_the_procedures_of_its_implementers() {
         "Other is not an IFoo member"
     );
 }
+
+fn callee_ids(cg: &CallGraph, caller: NodeId) -> Vec<NodeId> {
+    cg.callees_of(caller).iter().map(|edge| edge.to).collect()
+}
+
+#[test]
+fn record_member_call_links_to_table_procedure() {
+    let (insight, cg) = build_resolved_call_graph(&[
+        (
+            "/ws/Thing.Table.al",
+            "table 50100 Thing { fields { field(1; Id; Integer) { } } procedure Touch() begin end; }\n",
+        ),
+        (
+            "/ws/Thing.Page.al",
+            "page 50100 Thing { procedure Touch() begin end; }\n",
+        ),
+        (
+            "/ws/C.Codeunit.al",
+            r#"codeunit 50100 C
+{
+    procedure Run()
+    var
+        T: Record Thing;
+    begin
+        T.Touch();
+    end;
+}
+"#,
+        ),
+    ]);
+    let run = proc_node(&insight, ObjectKind::Codeunit, "C", "Run");
+    let touch = proc_node(&insight, ObjectKind::Table, "Thing", "Touch");
+    assert_eq!(callee_ids(&cg, run), vec![touch]);
+}
+
+#[test]
+fn member_call_respects_variable_kind() {
+    let (insight, cg) = build_resolved_call_graph(&[
+        (
+            "/ws/Sales.Codeunit.al",
+            "codeunit 50101 Sales { procedure Go() begin end; }\n",
+        ),
+        (
+            "/ws/Sales.Page.al",
+            "page 50101 Sales { procedure Go() begin end; }\n",
+        ),
+        (
+            "/ws/D.Codeunit.al",
+            r#"codeunit 50102 D
+{
+    procedure Run()
+    var
+        S: Codeunit Sales;
+    begin
+        S.Go();
+    end;
+}
+"#,
+        ),
+    ]);
+    let run = proc_node(&insight, ObjectKind::Codeunit, "D", "Run");
+    let go = proc_node(&insight, ObjectKind::Codeunit, "Sales", "Go");
+    assert_eq!(callee_ids(&cg, run), vec![go]);
+}
+
+#[test]
+fn insert_true_links_on_insert_trigger() {
+    let (insight, cg) = build_resolved_call_graph(&[
+        (
+            "/ws/Thing.Table.al",
+            r#"table 50100 Thing
+{
+    fields { field(1; Id; Integer) { } }
+
+    trigger OnInsert()
+    begin
+    end;
+}
+"#,
+        ),
+        (
+            "/ws/C.Codeunit.al",
+            r#"codeunit 50100 C
+{
+    procedure WithTrigger()
+    var
+        T: Record Thing;
+    begin
+        T.Insert(true);
+    end;
+
+    procedure WithoutTrigger()
+    var
+        T: Record Thing;
+    begin
+        T.Insert();
+    end;
+}
+"#,
+        ),
+    ]);
+    let on_insert = proc_node(&insight, ObjectKind::Table, "Thing", "OnInsert");
+    let with = proc_node(&insight, ObjectKind::Codeunit, "C", "WithTrigger");
+    let without = proc_node(&insight, ObjectKind::Codeunit, "C", "WithoutTrigger");
+    assert!(callee_ids(&cg, with).contains(&on_insert));
+    assert!(!callee_ids(&cg, without).contains(&on_insert));
+}
+
+#[test]
+fn page_rec_modify_links_source_table() {
+    let (insight, cg) = build_resolved_call_graph(&[
+        (
+            "/ws/Thing.Table.al",
+            "table 50100 Thing { fields { field(1; Id; Integer) { } } }\n",
+        ),
+        (
+            "/ws/Thing.Page.al",
+            r#"page 50100 "Thing Card"
+{
+    SourceTable = Thing;
+
+    trigger OnOpenPage()
+    begin
+        Rec.Modify();
+    end;
+}
+"#,
+        ),
+        (
+            "/ws/Sub.Codeunit.al",
+            r#"codeunit 50101 "Thing Sub"
+{
+    [EventSubscriber(ObjectType::Table, Database::Thing, 'OnAfterModifyEvent', '', false, false)]
+    local procedure AfterModify(var Rec: Record Thing; var xRec: Record Thing; RunTrigger: Boolean)
+    begin
+    end;
+}
+"#,
+        ),
+    ]);
+    let open = proc_node(&insight, ObjectKind::Page, "Thing Card", "OnOpenPage");
+    let after_modify = CallGraph::node_id_for(
+        &insight,
+        &NodeKey::Subscriber(
+            ObjectKind::Codeunit,
+            "thing sub".into(),
+            "aftermodify".into(),
+        ),
+    )
+    .expect("subscriber node");
+    assert!(cg.reachable_callers([after_modify]).contains(&open));
+}
