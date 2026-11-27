@@ -244,7 +244,8 @@ pub fn prune_project_data_dirs_under(al_lsp_data: &std::path::Path) -> PruneRepo
             report.unknown += 1;
             continue;
         };
-        if short_hash(root.as_bytes()) != name {
+        // A relative root would resolve against this process's directory.
+        if short_hash(root.as_bytes()) != name || !std::path::Path::new(&root).is_absolute() {
             report.unknown += 1;
             continue;
         }
@@ -659,6 +660,8 @@ mod tests {
         };
         let live_dir = mark(&live);
         let gone_dir = mark(&gone);
+        // A relative root names no fixed directory, so it is not trusted.
+        let relative = mark(std::path::Path::new("missing-relative-project"));
         let al_lsp = data.path().join("al-lsp");
         // Written before markers existed: the project is unknown.
         let legacy = al_lsp.join("0123456789abcdef");
@@ -682,11 +685,12 @@ mod tests {
             PruneReport {
                 removed: 1,
                 kept: 1,
-                unknown: 2
+                unknown: 3
             }
         );
         assert!(!gone_dir.exists());
         assert!(live_dir.exists() && legacy.exists() && mismatched.exists() && logs.exists());
+        assert!(relative.exists());
     }
 
     #[tokio::test]
