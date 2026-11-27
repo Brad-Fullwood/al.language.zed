@@ -37,6 +37,16 @@ struct DefinitionSummary {
 pub fn obsolete_usages(
     workspace: &Workspace,
 ) -> Result<Vec<ObsoleteUsageFinding>, super::WorkspaceQueryError> {
+    obsolete_usages_in(workspace, None)
+}
+
+/// [`obsolete_usages`] whose call sites come only from `only`, when given.
+/// The definitions still come from every source and package, so a finding in
+/// `only` is the same as in the whole-project run.
+pub fn obsolete_usages_in(
+    workspace: &Workspace,
+    only: Option<&std::path::Path>,
+) -> Result<Vec<ObsoleteUsageFinding>, super::WorkspaceQueryError> {
     let sources = crate::workspace_sources::snapshot(workspace)?;
     let mut definitions: HashMap<String, DefinitionSummary> = HashMap::new();
 
@@ -121,7 +131,10 @@ pub fn obsolete_usages(
     }
 
     let mut findings = Vec::new();
-    for source in sources {
+    for source in sources
+        .into_iter()
+        .filter(|source| only.is_none_or(|only| source.path == only))
+    {
         let resolver = al_syntax::TypeResolver::new(&source.tree, &source.text);
         for (name, range) in al_syntax::collect_call_sites(&source.tree, &source.text) {
             if !partly_obsolete.contains(&name) {

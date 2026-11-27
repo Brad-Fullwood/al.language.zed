@@ -133,7 +133,7 @@ pub fn syntax_diagnostics_at_root(
     let mut diagnostics = collect_diagnostics_from_tree(&tree, &text, config);
     if let Ok(path) = uri.to_file_path() {
         diagnostics.extend(
-            native_workspace_diagnostics_at_root(workspace, config, project_root)
+            native_workspace_diagnostics_impl(workspace, config, project_root, true, Some(&path))
                 .into_iter()
                 .filter_map(|(finding_path, diagnostic)| {
                     (finding_path == path).then_some(diagnostic)
@@ -160,7 +160,7 @@ pub fn syntax_diagnostics_fast_at_root(
     let mut diagnostics = collect_diagnostics_from_tree(&tree, &text, config);
     if let Ok(path) = uri.to_file_path() {
         diagnostics.extend(
-            native_workspace_diagnostics_impl(workspace, config, project_root, false)
+            native_workspace_diagnostics_impl(workspace, config, project_root, false, Some(&path))
                 .into_iter()
                 .filter_map(|(finding_path, diagnostic)| {
                     (finding_path == path).then_some(diagnostic)
@@ -247,6 +247,7 @@ pub fn native_workspace_diagnostics(
 fn native_binding_diagnostics(
     workspace: &Workspace,
     config: &AlConfig,
+    only: Option<&std::path::Path>,
 ) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
     let wanted = ["AL0118", "AL0132"];
     if !wanted.iter().any(|code| config.is_lint_rule_enabled(code)) {
@@ -275,7 +276,10 @@ fn native_binding_diagnostics(
         for object in al_emit::extract_objects_from_tree(&source, &path.to_string_lossy(), &tree) {
             symbols.add_entry(&object.entry);
         }
-        files.push((path, source, tree));
+        // Every file declares symbols, but only the files asked for are bound.
+        if only.is_none_or(|only| path == only) {
+            files.push((path, source, tree));
+        }
     }
     let mut out = Vec::new();
     for (path, source, tree) in &files {
@@ -311,7 +315,7 @@ pub fn native_workspace_diagnostics_at_root(
     config: &AlConfig,
     project_root: Option<&std::path::Path>,
 ) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
-    native_workspace_diagnostics_impl(workspace, config, project_root, true)
+    native_workspace_diagnostics_impl(workspace, config, project_root, true, None)
 }
 
 /// `AL-NL003` and `AL-NL004` from the resolved call graph.
@@ -388,11 +392,17 @@ pub fn transaction_diagnostics_for_uri(
         .collect()
 }
 
+/// The native workspace rules. With `only`, the result is limited to the
+/// findings of that file, and the rules whose per-file work is independent
+/// (binding, obsolete calls) run that work for `only` alone. Their
+/// project-wide inputs are still read from every file, so each finding is the
+/// same as in the run without `only`.
 fn native_workspace_diagnostics_impl(
     workspace: &Workspace,
     config: &AlConfig,
     project_root: Option<&std::path::Path>,
     transaction: bool,
+    only: Option<&std::path::Path>,
 ) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
     if !config.enable_native_lint {
         return Vec::new();
@@ -407,6 +417,9 @@ fn native_workspace_diagnostics_impl(
             || diagnostic_anchor_path(workspace, project_root),
             std::path::PathBuf::from,
         );
+        if only.is_some_and(|only| path != only) {
+            continue;
+        }
         let location = native_finding_range(workspace, &path, &finding);
         let severity = SyntaxDiagnosticSeverity::from(finding.severity);
         let (range, severity, message) = match location {
@@ -433,7 +446,7 @@ fn native_workspace_diagnostics_impl(
         ));
     }
 
-    diagnostics.extend(native_binding_diagnostics(workspace, config));
+    diagnostics.extend(native_binding_diagnostics(workspace, config, only));
 
     if transaction {
         diagnostics.extend(native_transaction_diagnostics(
@@ -444,7 +457,7 @@ fn native_workspace_diagnostics_impl(
     }
 
     if config.is_lint_rule_enabled(super::obsolete_usage::OBSOLETE_USAGE) {
-        match super::obsolete_usage::obsolete_usages(workspace) {
+        match super::obsolete_usage::obsolete_usages_in(workspace, only) {
             Ok(findings) => {
                 diagnostics.extend(findings.into_iter().map(|finding| {
                     (
@@ -496,6 +509,9 @@ fn native_workspace_diagnostics_impl(
             Ok(violations) => {
                 for violation in violations {
                     let file = std::path::PathBuf::from(&violation.file);
+                    if only.is_some_and(|only| file != only) {
+                        continue;
+                    }
                     let Some(line) = violation.line.checked_sub(1) else {
                         diagnostics.push((
                             file,
