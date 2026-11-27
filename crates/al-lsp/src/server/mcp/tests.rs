@@ -574,6 +574,46 @@ async fn al_snapshot_is_listed_with_its_actions() {
     assert!(description.contains("allowProduction"), "{description}");
 }
 
+/// The tools that connect to Business Central list the tenant declaration,
+/// and `al_snapshot` validates a call that carries it.
+#[tokio::test]
+async fn connecting_tools_accept_the_declaration() {
+    let resp = handle_mcp_message(
+        &ws(),
+        &Notify::new(),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}),
+    )
+    .await
+    .expect("response");
+    let list = resp["result"]["tools"].as_array().expect("tools array");
+    for name in ["al_debug", "al_snapshot"] {
+        let tool = list
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("{name} definition"));
+        for property in ["cliTenant", "cliPurpose"] {
+            assert!(
+                tool["inputSchema"]["properties"][property].is_object(),
+                "{name} schema missing {property}"
+            );
+        }
+    }
+    let snapshot = tools()
+        .iter()
+        .find(|tool| tool.name == "al_snapshot")
+        .expect("al_snapshot ToolDef");
+    assert_eq!(
+        validate_tool_arguments(
+            snapshot,
+            &serde_json::json!({
+                "action": "status",
+                "cliTenant": "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d",
+            }),
+        ),
+        Ok(())
+    );
+}
+
 /// A call to `al_snapshot` reaches the daemon `snapshot` method: `action`
 /// arrives as `cmd`. The store is an empty temp folder, so no BC call is made.
 #[tokio::test]
