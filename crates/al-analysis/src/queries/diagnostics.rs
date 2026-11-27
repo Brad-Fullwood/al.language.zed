@@ -253,11 +253,16 @@ fn native_binding_diagnostics(
         return Vec::new();
     }
     let mut symbols = al_emit::binding::BindingSymbols::new();
-    for entry in workspace.symbols.all_entries() {
-        symbols.add_entry(&entry);
-    }
     // Packages are in `workspace.symbols`. Workspace objects are read from the
-    // cached parse trees, the way the native build reads them.
+    // cached parse trees, the way the native build reads them. The
+    // `workspace` entries of `workspace.symbols` are left out: only a call
+    // graph build refreshes them, so after an edit they still held a removed
+    // field and hid its AL0132 until the next build.
+    for entry in workspace.symbols.all_entries() {
+        if entry.package != "workspace" {
+            symbols.add_entry(&entry);
+        }
+    }
     let mut seen = std::collections::HashSet::new();
     let mut files = Vec::new();
     for (path, _) in al_insight::calls::indexed_objects(&workspace.file_index) {
@@ -1191,6 +1196,121 @@ mod tests {
         assert_eq!(
             name.message,
             "The name 'Undeclared' does not exist in the current context."
+        );
+    }
+
+    /// `SyntaxDiagnostic` has no `PartialEq`, so lists compare by their debug
+    /// form in a fixed order.
+    fn sorted(mut diagnostics: Vec<SyntaxDiagnostic>) -> Vec<String> {
+        diagnostics.sort_by(|a, b| {
+            (
+                a.range.start.line,
+                a.range.start.character,
+                &a.code,
+                &a.message,
+            )
+                .cmp(&(
+                    b.range.start.line,
+                    b.range.start.character,
+                    &b.code,
+                    &b.message,
+                ))
+        });
+        diagnostics
+            .iter()
+            .map(|diagnostic| format!("{diagnostic:?}"))
+            .collect()
+    }
+
+    /// Each per-file run must report what the whole-project run reports for
+    /// that file. The fast run leaves out only the transaction rules.
+    fn assert_per_file_matches_project(ws: &Workspace, uris: &[Url]) {
+        let config = AlConfig::default();
+        let project = workspace_syntax_diagnostics_at_root(ws, &config, None).unwrap();
+        for uri in uris {
+            let path = uri.to_file_path().unwrap();
+            let expected: Vec<SyntaxDiagnostic> = project
+                .iter()
+                .filter(|(file, _)| file == &path)
+                .flat_map(|(_, diagnostics)| diagnostics.clone())
+                .collect();
+            let full = syntax_diagnostics_at_root(ws, uri, &config, None);
+            assert_eq!(
+                sorted(full),
+                sorted(expected.clone()),
+                "full per-file run of {uri}"
+            );
+            let fast = syntax_diagnostics_fast_at_root(ws, uri, &config, None);
+            let expected_fast: Vec<SyntaxDiagnostic> = expected
+                .into_iter()
+                .filter(|diagnostic| {
+                    diagnostic.code != super::super::transaction_lint::COMMIT_AFTER_DATABASE_CHANGE
+                        && diagnostic.code
+                            != super::super::transaction_lint::DATABASE_WRITE_IN_TRY_STACK
+                })
+                .collect();
+            assert_eq!(
+                sorted(fast),
+                sorted(expected_fast),
+                "fast per-file run of {uri}"
+            );
+        }
+    }
+
+    fn open_and_index(ws: &Workspace, uri: &Url, text: &str) {
+        ws.documents
+            .replace_or_open(uri.clone(), text.to_string())
+            .unwrap();
+        al_workspace::on_document_change(ws, uri, text);
+    }
+
+    #[test]
+    fn per_file_native_lint_matches_project_run_before_and_after_a_cross_file_edit() {
+        let ws = Workspace::new();
+        let legacy = Url::parse("file:///proj/Legacy.al").unwrap();
+        let buffer = Url::parse("file:///proj/Buffer.al").unwrap();
+        let caller = Url::parse("file:///proj/Caller.al").unwrap();
+        let legacy_obsolete = "codeunit 50100 Legacy\n{\n    [Obsolete('Use NewMethod', '25.0')]\n    procedure OldMethod()\n    begin\n    end;\n}\n";
+        let legacy_active =
+            "codeunit 50100 Legacy\n{\n    procedure OldMethod()\n    begin\n    end;\n}\n";
+        let buffer_code = "table 50100 \"Item Buffer\"\n{\n    fields\n    {\n        field(1; \"Code\"; Code[20]) { }\n    }\n}\n";
+        let buffer_key = "table 50100 \"Item Buffer\"\n{\n    fields\n    {\n        field(1; \"Key\"; Code[20]) { }\n    }\n}\n";
+        let caller_text = "codeunit 50101 Caller\n{\n    trigger OnRun()\n    var\n        Buffer: Record \"Item Buffer\";\n    begin\n        OldMethod();\n        Buffer.\"Code\" := '';\n    end;\n}\n";
+        open_and_index(&ws, &legacy, legacy_obsolete);
+        open_and_index(&ws, &buffer, buffer_code);
+        open_and_index(&ws, &caller, caller_text);
+        let uris = [legacy.clone(), buffer.clone(), caller.clone()];
+        let codes_of = |ws: &Workspace| -> Vec<String> {
+            syntax_diagnostics_at_root(ws, &caller, &AlConfig::default(), None)
+                .into_iter()
+                .map(|diagnostic| diagnostic.code)
+                .collect()
+        };
+
+        assert_per_file_matches_project(&ws, &uris);
+        let before = codes_of(&ws);
+        assert!(
+            before
+                .iter()
+                .any(|code| code == super::super::obsolete_usage::OBSOLETE_USAGE),
+            "the call to the obsolete procedure is reported: {before:?}"
+        );
+        assert!(!before.iter().any(|code| code == "AL0132"), "{before:?}");
+
+        // Edits in the other two files change the caller's findings.
+        open_and_index(&ws, &legacy, legacy_active);
+        open_and_index(&ws, &buffer, buffer_key);
+        assert_per_file_matches_project(&ws, &uris);
+        let after = codes_of(&ws);
+        assert!(
+            !after
+                .iter()
+                .any(|code| code == super::super::obsolete_usage::OBSOLETE_USAGE),
+            "{after:?}"
+        );
+        assert!(
+            after.iter().any(|code| code == "AL0132"),
+            "the renamed field is reported in the caller: {after:?}"
         );
     }
 }
