@@ -1219,6 +1219,13 @@ async fn step_profile(contract: &LiveContract) -> AnyResult<Outcome> {
     let status = cli_json(contract, &["profile", "status", "--context", &context]);
     let stopped = cli_json(contract, &["profile", "stop", "--context", &context]);
     let activity = activity?;
+    if activity.failures > 0 {
+        return Err(failure(format!(
+            "API activity had {} failed requests, last status {}",
+            activity.failures, activity.last_status
+        ))
+        .into());
+    }
     status?;
     let stopped = stopped?;
     let load = format!(
