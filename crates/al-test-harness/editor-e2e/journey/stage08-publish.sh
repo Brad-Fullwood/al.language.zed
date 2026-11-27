@@ -40,7 +40,7 @@ stage_08() {
     prc=0
     run_step "$s" publish 600 env -C "$PROJ" "$ALX" publish --config "Publish: CDX Sandbox" --tenant "$CDX_TENANT" --json || prc=$?
   fi
-  local body; body=$(tail -n +2 "$(step_log $s publish)")
+  local body; body=$(step_body "$(step_log $s publish)")
   local pmsg; pmsg=$(jq -r '[.steps[]? | select(.success|not) | "\(.phase): \(.message)"] | join("; ")' <<<"$body" 2>/dev/null)
   if [[ "$prc" == 0 ]]; then record "$s" publish PASS "publish exit 0: $(jq -c 'del(.timings)' <<<"$body" 2>/dev/null | head -c 200)"; else record "$s" publish FAIL "publish exit $prc, ${pmsg:-$(head -c 200 <<<"$body" | tr '\n' ' ')}"; fi
   if grep -q -i 'eyJ' "$(step_log $s publish)"; then record "$s" token-in-output FAIL "a bearer token appears in publish output"; fi

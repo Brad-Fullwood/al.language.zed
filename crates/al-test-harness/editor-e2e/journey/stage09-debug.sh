@@ -4,7 +4,7 @@
 
 # journey_msg STAGE ITEM: first useful line of a step's output (error message or JSON error), for the note.
 journey_msg() {
-  local body; body=$(tail -n +2 "$(step_log "$1" "$2")")
+  local body; body=$(step_body "$(step_log "$1" "$2")")
   local m; m=$(jq -r '.error // .message // (.steps? // [] | map(select(.success|not) | .message) | first) // empty' <<<"$body" 2>/dev/null)
   [[ -n "$m" ]] || m=$(grep -m1 -v '^\s*[{}\[]' <<<"$body")
   printf '%s' "${m:-no output}" | tr '\n' ' ' | cut -c1-240
@@ -59,7 +59,7 @@ stage_09() {
   local snap_rc=0
   journey_alx "$s" snapshot-start 60 snapshot start --config "$attach" --break-on-next WebClient --snap "$bpfile:21" --tenant "$CDX_TENANT" --json || snap_rc=$?
   if [[ "$snap_rc" == 0 ]]; then
-    local sb; sb=$(tail -n +2 "$(step_log $s snapshot-start)")
+    local sb; sb=$(step_body "$(step_log $s snapshot-start)")
     record "$s" snapshot-start PASS "armed: context $(jq -r .debuggingContext <<<"$sb"), attach $(jq -r .attachKind <<<"$sb"), $(jq '.snappoints|length' <<<"$sb") snappoint(s)"
     jq -r '.warnings[]?' <<<"$sb" | while read -r w; do record "$s" snapshot-warning NIGGLE "$w"; done
     journey_try "$s" snapshot-status 60 snapshot status --tenant "$CDX_TENANT" --json || true
@@ -76,7 +76,7 @@ stage_09() {
   local prc=0
   journey_alx "$s" profile-start 60 profile start --config "$attach" --tenant "$CDX_TENANT" --json || prc=$?
   if [[ "$prc" == 0 ]]; then record "$s" profile-start PASS "exit 0: $(journey_msg "$s" profile-start)"; else record "$s" profile-start FAIL "exit $prc: $(journey_msg "$s" profile-start)"; fi
-  local sid; sid=$(tail -n +2 "$(step_log $s profile-start)" | jq -r '.debuggingContext // empty' 2>/dev/null)
+  local sid; sid=$(step_body "$(step_log $s profile-start)" | jq -r '.debuggingContext // empty' 2>/dev/null)
   local -a stopargs=(profile stop --out "$PROJ/profile" --tenant "$CDX_TENANT" --json)
   [[ -n "$sid" ]] && stopargs+=(--context "$sid")
   journey_try "$s" profile-stop 60 "${stopargs[@]}" || true
