@@ -196,35 +196,30 @@ pub(crate) async fn initialize_workspace(
             // doesn't strand the editor — but warm starts no longer race
             // package symbol load against the first hover/completion.
             let package_paths = project.packages.clone();
-            let (staged_symbols, loaded_packages) = match tokio::task::spawn_blocking(move || {
-                let staged = al_symbols::SymbolIndex::new();
-                let cache = al_symbols::cache::SymbolCache::default_location();
-                let loaded = staged.load_packages_cached(&package_paths, &cache)?;
-                staged.load_runtime_enums();
-                Ok::<_, al_symbols::PackageLoadError>((staged, loaded))
-            })
-            .await
-            {
-                Ok(Ok(staged)) => staged,
-                Ok(Err(error)) => {
-                    tracing::error!(%error, "configured AL symbol package load failed");
-                    let message = format!(
-                        "AL workspace initialization failed; no partial package batch was indexed: {error}"
-                    );
-                    client
-                        .show_message(MessageType::ERROR, message.clone())
-                        .await;
-                    return Err(WorkspaceInitError(message));
-                }
-                Err(error) => {
-                    let message = format!("AL workspace package-index worker failed: {error}");
-                    tracing::error!(%error, "AL workspace package-index worker failed");
-                    client
-                        .show_message(MessageType::ERROR, message.clone())
-                        .await;
-                    return Err(WorkspaceInitError(message));
-                }
-            };
+            // One unreadable `.app` (an interrupted download) skips that
+            // package only, as the daemon's start does in al-workspace.
+            let (staged_symbols, loaded_packages, failures) =
+                match tokio::task::spawn_blocking(move || {
+                    let staged = al_symbols::SymbolIndex::new();
+                    let cache = al_symbols::cache::SymbolCache::default_location();
+                    let (loaded, failures) =
+                        staged.load_packages_cached_lenient(&package_paths, &cache);
+                    staged.load_runtime_enums();
+                    (staged, loaded, failures)
+                })
+                .await
+                {
+                    Ok(staged) => staged,
+                    Err(error) => {
+                        let message = format!("AL workspace package-index worker failed: {error}");
+                        tracing::error!(%error, "AL workspace package-index worker failed");
+                        client
+                            .show_message(MessageType::ERROR, message.clone())
+                            .await;
+                        return Err(WorkspaceInitError(message));
+                    }
+                };
+            show_package_load_failures(&client, &failures).await;
             if session_cancelled(&session) {
                 return Ok(());
             }
@@ -300,7 +295,8 @@ pub(crate) async fn initialize_workspace(
                     }
                     if !downloaded.is_empty() {
                         match refresh_current_symbol_generation(&workspace).await {
-                            Ok((loaded, total_symbols)) => {
+                            Ok((loaded, total_symbols, failures)) => {
+                                show_package_load_failures(&client, &failures).await;
                                 info!(
                                     loaded,
                                     total_symbols, "Published symbol packages (post-download)"
@@ -427,11 +423,11 @@ pub(crate) async fn initialize_workspace(
         {
             if response.is_some_and(|action| action.title == "Yes") {
                 match tokio::task::spawn_blocking(apply_recommended_settings).await {
-                    Ok(Ok(())) => {
+                    Ok(Ok(backup)) => {
                         client
                             .show_message(
                                 MessageType::INFO,
-                                "Applied recommended AL settings. Reload Zed to activate.",
+                                applied_settings_message(backup.as_deref()),
                             )
                             .await;
                     }
@@ -568,9 +564,35 @@ async fn publish_complete_generation(
         .fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
-async fn refresh_current_symbol_generation(
+/// Show one warning per symbol package the lenient loader skipped.
+pub(crate) async fn show_package_load_failures(
+    client: &Client,
+    failures: &[al_symbols::PackageLoadFailure],
+) {
+    for failure in failures {
+        tracing::warn!(
+            path = %failure.path.display(),
+            message = %failure.message,
+            "skipping unreadable symbol package"
+        );
+        client
+            .show_message(
+                MessageType::WARNING,
+                format!(
+                    "AL symbol package {} was skipped: {}",
+                    failure.path.display(),
+                    failure.message
+                ),
+            )
+            .await;
+    }
+}
+
+/// Stage and publish the project's packages. Returns the loaded package
+/// count, the symbol count and the packages that could not be read.
+pub(crate) async fn refresh_current_symbol_generation(
     workspace: &Workspace,
-) -> Result<(usize, usize), String> {
+) -> Result<(usize, usize, Vec<al_symbols::PackageLoadFailure>), String> {
     loop {
         let generation = workspace.generation_lock.read().await;
         // Keyed on the package revision, not the source revision: staging
@@ -594,15 +616,14 @@ async fn refresh_current_symbol_generation(
                 .map_err(|error| error.to_string())?;
             let symbols = al_symbols::SymbolIndex::new();
             let cache = al_symbols::cache::SymbolCache::default_location();
-            let loaded = symbols
-                .load_packages_cached(&project.packages, &cache)
-                .map_err(|error| error.to_string())?;
+            let (loaded, failures) =
+                symbols.load_packages_cached_lenient(&project.packages, &cache);
             symbols.load_runtime_enums();
-            Ok::<_, String>((project, symbols, loaded))
+            Ok::<_, String>((project, symbols, loaded, failures))
         })
         .await;
 
-        let (mut project, symbols, loaded) = match staged {
+        let (mut project, symbols, loaded, failures) = match staged {
             Ok(Ok(staged)) => staged,
             Ok(Err(error)) => return Err(error),
             Err(error) => return Err(format!("package-index worker failed: {error}")),
@@ -625,7 +646,7 @@ async fn refresh_current_symbol_generation(
         workspace
             .generation_revision
             .fetch_add(1, std::sync::atomic::Ordering::Release);
-        let counts = (loaded.len(), workspace.symbols.len());
+        let counts = (loaded.len(), workspace.symbols.len(), failures);
         drop(publication);
         return Ok(counts);
     }
@@ -1348,7 +1369,10 @@ pub(crate) async fn download_symbols_command(
     let (loaded_count, symbol_count) = match refresh_current_symbol_generation(&server.workspace)
         .await
     {
-        Ok(counts) => counts,
+        Ok((loaded, symbols, failures)) => {
+            show_package_load_failures(&server.client, &failures).await;
+            (loaded, symbols)
+        }
         Err(error) => {
             tracing::error!(%error, "downloaded symbol generation rejected");
             server
@@ -1537,12 +1561,29 @@ fn zed_has_al_settings() -> bool {
 ///
 /// Reads the current settings, merges recommended AL-specific settings,
 /// and writes back. Creates the file (and parent directories) if needed.
-pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// Returns the path of the backup copy when the old file had comments or
+/// trailing commas, which the rewritten file does not keep.
+pub(crate) fn apply_recommended_settings(
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
     let settings_path = zed_settings_path().ok_or("Cannot determine Zed settings path")?;
+    apply_recommended_settings_at(&settings_path)
+}
 
+pub(crate) fn apply_recommended_settings_at(
+    settings_path: &Path,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut backup = None;
     let current: serde_json::Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(&settings_path)?;
-        strip_jsonc_comments_and_parse(&content)?
+        let content = std::fs::read_to_string(settings_path)?;
+        let stripped = al_types::jsonc::strip_json_comments(&content);
+        if stripped != content {
+            let mut name = settings_path.as_os_str().to_owned();
+            name.push(".bak");
+            let backup_path = PathBuf::from(name);
+            std::fs::write(&backup_path, content.as_bytes())?;
+            backup = Some(backup_path);
+        }
+        serde_json::from_str(&stripped)?
     } else {
         serde_json::json!({})
     };
@@ -1550,11 +1591,29 @@ pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Err
     let recommended = recommended_al_settings();
     let merged = deep_merge(&current, &recommended);
 
-    ensure_parent_dir(&settings_path)?;
+    ensure_parent_dir(settings_path)?;
     let output = serde_json::to_string_pretty(&merged)?;
-    std::fs::write(&settings_path, output)?;
+    let mut temp_name = settings_path.as_os_str().to_owned();
+    temp_name.push(format!(".al-lsp-{}.tmp", std::process::id()));
+    let temp_path = PathBuf::from(temp_name);
+    std::fs::write(&temp_path, output)?;
+    if let Err(error) = std::fs::rename(&temp_path, settings_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error.into());
+    }
 
-    Ok(())
+    Ok(backup)
+}
+
+/// The message shown after the settings were written.
+pub(crate) fn applied_settings_message(backup: Option<&Path>) -> String {
+    match backup {
+        Some(path) => format!(
+            "Applied recommended AL settings. Reload Zed to activate. The new settings.json has no comments, the old file with its comments is in {}.",
+            path.display()
+        ),
+        None => "Applied recommended AL settings. Reload Zed to activate.".to_string(),
+    }
 }
 
 fn zed_settings_path() -> Option<PathBuf> {
@@ -1575,7 +1634,12 @@ fn zed_settings_path() -> Option<PathBuf> {
         let home = std::env::var("HOME").ok()?;
         Some(PathBuf::from(home).join("Library/Application Support/Zed/settings.json"))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        let app_data = std::env::var_os("APPDATA")?;
+        Some(PathBuf::from(app_data).join("Zed").join("settings.json"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         None
     }
@@ -1647,3 +1711,44 @@ fn recommended_al_settings() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    /// A2-neon-14: comments in settings.json survive in a byte exact backup.
+    #[test]
+    fn settings_with_comments_leave_a_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = "// note\n{\"a\":1}";
+        std::fs::write(&path, original).unwrap();
+
+        let backup = apply_recommended_settings_at(&path).unwrap();
+
+        let backup = backup.expect("a file with comments gets a backup");
+        assert_eq!(backup, dir.path().join("settings.json.bak"));
+        assert_eq!(std::fs::read(&backup).unwrap(), original.as_bytes());
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["a"], 1);
+        assert_eq!(written["languages"]["AL"]["language_servers"][0], "al-lsp");
+        assert!(applied_settings_message(Some(&backup)).contains("settings.json.bak"));
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "the temporary file is renamed away");
+    }
+
+    #[test]
+    fn settings_without_comments_get_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"a\":1}").unwrap();
+
+        assert!(apply_recommended_settings_at(&path).unwrap().is_none());
+        assert!(!dir.path().join("settings.json.bak").exists());
+    }
+}

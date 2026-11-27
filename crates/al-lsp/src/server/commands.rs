@@ -497,12 +497,12 @@ pub(super) async fn apply_recommended_settings(server: &AlServer) {
         .map_err(|e| e.to_string())
         .and_then(|r| r.map_err(|e| e.to_string()));
     match result {
-        Ok(()) => {
+        Ok(backup) => {
             server
                 .client
                 .show_message(
                     MessageType::INFO,
-                    "Applied recommended AL settings. Reload Zed to activate.",
+                    crate::server::workspace::applied_settings_message(backup.as_deref()),
                 )
                 .await;
         }

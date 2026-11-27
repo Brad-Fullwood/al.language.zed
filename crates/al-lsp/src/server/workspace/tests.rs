@@ -853,8 +853,9 @@ async fn malformed_project_is_returned_as_failed_initialization_state() {
     assert!(server.workspace.project.read().await.is_none());
 }
 
+/// A2-codex-06: one unreadable `.app` is skipped and the rest loads.
 #[tokio::test]
-async fn failed_reindex_retains_the_previous_complete_generation() {
+async fn unreadable_package_is_skipped_and_initialization_succeeds() {
     let root = tempfile::tempdir().expect("temporary workspace");
     std::fs::write(
         root.path().join("app.json"),
@@ -872,60 +873,41 @@ async fn failed_reindex_retains_the_previous_complete_generation() {
     )
     .unwrap();
     std::fs::create_dir(root.path().join(".alpackages")).unwrap();
-    std::fs::write(
-        root.path().join(".alpackages/Broken.app"),
-        b"not a NAVX package",
+    std::fs::write(root.path().join(".alpackages/x.app"), b"").unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/fixtures/representative.app"),
+        root.path().join(".alpackages/Representative.app"),
     )
     .unwrap();
 
     let service = test_server();
     let server = service.inner();
-    let old_path = PathBuf::from("/previous/Stable.al");
-    server
-        .workspace
-        .file_index
-        .add_file(old_path.clone(), r#"codeunit 50100 Stable { }"#.to_string());
-    server
-        .workspace
-        .symbols
-        .add_entries(&[al_symbols::SymbolEntry {
-            kind: al_symbols::ObjectKind::Codeunit,
-            id: 50_100,
-            name: "Stable".to_string(),
-            package: "Previous".to_string(),
-            ..Default::default()
-        }]);
-
+    let state = server.workspace_init_state.clone();
     let result = initialize_workspace(
         Arc::clone(&server.workspace),
         server.client.clone(),
         Some(Url::from_directory_path(root.path()).expect("workspace URI")),
-        None,
+        Some(state.clone()),
         None,
     )
     .await;
 
-    assert!(result.is_err(), "invalid replacement package must fail");
-    assert_eq!(
-        server
-            .workspace
-            .file_index
-            .get_content(&old_path)
-            .as_deref(),
-        Some(r#"codeunit 50100 Stable { }"#),
-        "failed reindex must leave the old source generation intact"
-    );
     assert!(
-        server.workspace.symbols.find_by_name("Stable").is_some(),
-        "failed reindex must leave the old symbol generation intact"
+        result.is_ok(),
+        "a zero byte package must not fail: {result:?}"
     );
+    assert!(matches!(*state.borrow(), WorkspaceInitState::Ready));
     assert!(
         server
             .workspace
             .file_index
             .find_by_object_name("Replacement")
-            .is_none(),
-        "staged replacement sources must not leak into the active index"
+            .is_some(),
+        "the project sources are indexed"
+    );
+    assert!(
+        !server.workspace.symbols.is_empty(),
+        "the readable package is indexed"
     );
 }
 
@@ -1186,7 +1168,7 @@ async fn symbol_staging_converges_while_documents_are_edited() {
         "document edits must not move the package generation"
     );
 
-    let (loaded, _symbols) = tokio::time::timeout(
+    let (loaded, _symbols, _failures) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         refresh_current_symbol_generation(&workspace),
     )
