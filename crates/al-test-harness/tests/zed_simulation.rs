@@ -873,8 +873,12 @@ async fn test_fixture_codeunit_scope_access() {
         .await
         .expect("Codeunit:: scope target must have hover information");
     let text = hover_content(&name_hover).unwrap_or("");
+    // The hover writes `Codeunit` once the workspace package is indexed and
+    // `codeunit` from the file index before that, so the kind is compared
+    // without case. The macOS runner asked before the package was indexed.
     assert!(
-        text.contains("Codeunit") && text.contains("Work Order Post Task"),
+        text.to_ascii_lowercase().contains("codeunit 50131")
+            && text.contains("Work Order Post Task"),
         "Hover should reference the codeunit. Got: {text:?}"
     );
 
