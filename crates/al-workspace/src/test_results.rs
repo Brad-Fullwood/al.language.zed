@@ -34,7 +34,11 @@ impl TestResultStore {
         project_root: &std::path::Path,
     ) -> Result<Self, PersistenceError> {
         let path = canonical_path_for(project_root)?;
-        Self::open(path).await
+        let store = Self::open(path).await?;
+        if let Some(dir) = store.path.parent() {
+            write_project_root_marker(dir, project_root).await;
+        }
+        Ok(store)
     }
 
     pub fn path(&self) -> &std::path::Path {
@@ -184,6 +188,73 @@ pub(crate) fn project_data_dir_under(
     data_dir
         .join("al-lsp")
         .join(short_hash(project_root.to_string_lossy().as_bytes()))
+}
+
+/// The file in a project data directory that names the project it belongs
+/// to. The directory name is a one-way hash of the project root, so without
+/// it nothing can tell whether the project still exists.
+const PROJECT_ROOT_MARKER: &str = "project-root";
+
+async fn write_project_root_marker(dir: &std::path::Path, project_root: &std::path::Path) {
+    let marker = dir.join(PROJECT_ROOT_MARKER);
+    if fs::try_exists(&marker).await.unwrap_or(false) {
+        return;
+    }
+    if let Err(error) = fs::write(&marker, project_root.to_string_lossy().as_bytes()).await {
+        tracing::debug!(%error, marker = %marker.display(), "cannot write project root marker");
+    }
+}
+
+/// What [`prune_project_data_dirs_under`] found.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct PruneReport {
+    /// Directories removed because the project they name no longer exists.
+    pub removed: usize,
+    /// Directories kept because their project exists.
+    pub kept: usize,
+    /// Directories kept because they have no marker (written before markers
+    /// existed), so their project is unknown.
+    pub unknown: usize,
+}
+
+/// Remove the per project data directories under `<user data dir>/al-lsp`
+/// whose project root no longer exists. See [`prune_project_data_dirs_under`].
+pub fn prune_project_data_dirs() -> Option<PruneReport> {
+    al_project::project::user_data_dir()
+        .map(|data| prune_project_data_dirs_under(&data.join("al-lsp")))
+}
+
+/// Remove each directory in `al_lsp_data` that is named like a project data
+/// directory, holds a project root marker whose hash matches the directory
+/// name, and names a path that no longer exists. Anything else is left alone.
+pub fn prune_project_data_dirs_under(al_lsp_data: &std::path::Path) -> PruneReport {
+    let mut report = PruneReport::default();
+    let Ok(entries) = std::fs::read_dir(al_lsp_data) else {
+        return report;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let is_hash = name.len() == 16 && name.bytes().all(|b| b.is_ascii_hexdigit());
+        if !is_hash || !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let dir = entry.path();
+        let Ok(root) = std::fs::read_to_string(dir.join(PROJECT_ROOT_MARKER)) else {
+            report.unknown += 1;
+            continue;
+        };
+        if short_hash(root.as_bytes()) != name {
+            report.unknown += 1;
+            continue;
+        }
+        if std::path::Path::new(&root).exists() {
+            report.kept += 1;
+        } else if std::fs::remove_dir_all(&dir).is_ok() {
+            report.removed += 1;
+        }
+    }
+    report
 }
 
 fn short_hash(bytes: &[u8]) -> String {
@@ -566,5 +637,68 @@ mod tests {
         let p = canonical_path_for(std::path::Path::new("/projects/foo")).unwrap();
         assert!(p.starts_with("/tmp/al-lsp-test-xdg/al-lsp/"));
         assert!(p.ends_with("test-results.json"));
+    }
+
+    #[test]
+    fn prune_removes_only_marked_directories_of_missing_projects() {
+        let data = TempDir::new().unwrap();
+        let projects = TempDir::new().unwrap();
+        let live = projects.path().join("live");
+        std::fs::create_dir_all(&live).unwrap();
+        let gone = projects.path().join("gone");
+
+        let mark = |root: &std::path::Path| {
+            let dir = project_data_dir_under(data.path(), root);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join(PROJECT_ROOT_MARKER),
+                root.to_string_lossy().as_bytes(),
+            )
+            .unwrap();
+            dir
+        };
+        let live_dir = mark(&live);
+        let gone_dir = mark(&gone);
+        let al_lsp = data.path().join("al-lsp");
+        // Written before markers existed: the project is unknown.
+        let legacy = al_lsp.join("0123456789abcdef");
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("test-results.json"), "").unwrap();
+        // A marker that does not hash to its directory name is not trusted.
+        let mismatched = al_lsp.join("fedcba9876543210");
+        std::fs::create_dir_all(&mismatched).unwrap();
+        std::fs::write(
+            mismatched.join(PROJECT_ROOT_MARKER),
+            gone.to_string_lossy().as_bytes(),
+        )
+        .unwrap();
+        let logs = al_lsp.join("logs");
+        std::fs::create_dir_all(&logs).unwrap();
+
+        let report = prune_project_data_dirs_under(&al_lsp);
+
+        assert_eq!(
+            report,
+            PruneReport {
+                removed: 1,
+                kept: 1,
+                unknown: 2
+            }
+        );
+        assert!(!gone_dir.exists());
+        assert!(live_dir.exists() && legacy.exists() && mismatched.exists() && logs.exists());
+    }
+
+    #[tokio::test]
+    async fn opening_a_project_store_writes_the_project_root_marker() {
+        let data = TempDir::new().unwrap();
+        let root = std::path::Path::new("/projects/example");
+        let dir = project_data_dir_under(data.path(), root);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_project_root_marker(&dir, root).await;
+        assert_eq!(
+            std::fs::read_to_string(dir.join(PROJECT_ROOT_MARKER)).unwrap(),
+            "/projects/example"
+        );
     }
 }

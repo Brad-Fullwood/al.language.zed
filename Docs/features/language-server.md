@@ -186,6 +186,16 @@ one `window/showMessage` warning after `initialize` that names its build, its pa
 extension build, and says to run `make install`. Same build, or no flag, is silent. Unknown flags
 are ignored by `al-lsp`, so an older binary still starts.
 
+## Log and project state
+
+Every `al-lsp` process (editor server, daemons, MCP) appends to
+`$XDG_DATA_HOME/al-lsp/logs/al-lsp.log` (`~/.local/share/al-lsp/logs` by default). Each line
+carries `pid=<id>` after the timestamp, so the lines of one process can be picked out. State that
+belongs to one project, such as `test-results.json`, lives in `$XDG_DATA_HOME/al-lsp/<hash of the
+project root>/` with a `project-root` file naming the project. At start `al-lsp` removes those
+directories whose project no longer exists. Directories written before the `project-root` file
+existed are kept, because nothing records which project they belong to.
+
 ## How to use
 
 In Zed, these features work automatically once `al-lsp` is resolved. The terminal exposes the listed

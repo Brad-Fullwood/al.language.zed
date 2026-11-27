@@ -311,6 +311,21 @@ async fn run() {
         tracing::error!("{info}");
     }));
 
+    // State directories of deleted projects. A few thousand directory reads,
+    // off the startup path.
+    std::thread::spawn(|| {
+        if let Some(report) = al_workspace::prune_project_data_dirs() {
+            if report.removed > 0 || report.unknown > 0 {
+                tracing::info!(
+                    removed = report.removed,
+                    kept = report.kept,
+                    unknown = report.unknown,
+                    "pruned project data directories"
+                );
+            }
+        }
+    });
+
     #[cfg(unix)]
     let ppid_str = std::os::unix::process::parent_id().to_string();
     #[cfg(not(unix))]
