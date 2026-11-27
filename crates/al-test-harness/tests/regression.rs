@@ -57,6 +57,10 @@ async fn code_actions_have_titles() {
     client.open_file("src/lint_test.al", code).await;
 
     let actions = client.code_actions("src/lint_test.al", 3, 5).await;
+    assert!(
+        !actions.is_empty(),
+        "expected code actions at the empty procedure, got none"
+    );
     for action in &actions {
         assert!(
             action.get("title").is_some(),

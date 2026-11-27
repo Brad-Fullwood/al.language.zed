@@ -111,11 +111,15 @@ journey_alc_build() {
 }
 
 # journey_native_codes LOG: "severity code" pairs from pack-native --json output (first log line is the command).
-journey_native_codes() { tail -n +2 "$1" | jq -r '.diagnostics[]? | "\(.severity) \(.code)"' 2>/dev/null | sort; }
+# jq errors stay visible. A log that is not JSON gives no rows, so journey_native_json must be checked too.
+journey_native_codes() { tail -n +2 "$1" | jq -r '.diagnostics[]? | "\(.severity) \(.code)"' | sort; }
 # journey_alc_codes ERRORLOG: "severity code" pairs from alc's /errorlog file.
-journey_alc_codes() { jq -r '.issues[]? | "\(.properties.severity | ascii_downcase) \(.ruleId)"' "$1" 2>/dev/null | sort; }
+journey_alc_codes() { jq -r '.issues[]? | "\(.properties.severity | ascii_downcase) \(.ruleId)"' "$1" | sort; }
 # journey_errors FILE: count of error rows in a codes file.
 journey_errors() { grep -c '^error ' "$1" || true; }
+# journey_native_json LOG, journey_alc_json FILE: exit 0 only when the file parses as JSON. A missing file fails.
+journey_native_json() { tail -n +2 "$1" | jq -e . >/dev/null 2>&1; }
+journey_alc_json() { jq -e . "$1" >/dev/null 2>&1; }
 
 stage_05() {
   local s=05
@@ -139,7 +143,13 @@ stage_05() {
 
   journey_native_codes "$(step_log $s native)" > "$OUT/$s/native.codes"
   journey_alc_codes "$OUT/$s/alc.errorlog.json" > "$OUT/$s/alc.codes"
-  if diff -q "$OUT/$s/native.codes" "$OUT/$s/alc.codes" > /dev/null; then record "$s" diag-codes-good PASS "same diagnostics ($(wc -l < "$OUT/$s/alc.codes") rows)"; else record "$s" diag-codes-good FAIL "native [$(tr '\n' ',' < "$OUT/$s/native.codes")] alc [$(tr '\n' ',' < "$OUT/$s/alc.codes")]"; fi
+  if ! journey_native_json "$(step_log $s native)"; then
+    record "$s" diag-codes-good FAIL "native output is not JSON, see $s/native.log"
+  elif diff -q "$OUT/$s/native.codes" "$OUT/$s/alc.codes" > /dev/null; then
+    record "$s" diag-codes-good PASS "same diagnostics ($(wc -l < "$OUT/$s/alc.codes") rows)"
+  else
+    record "$s" diag-codes-good FAIL "native [$(tr '\n' ',' < "$OUT/$s/native.codes")] alc [$(tr '\n' ',' < "$OUT/$s/alc.codes")]"
+  fi
 
   # --- app content: the object entries both packages carry ---
   if [[ -s "$nat" && -s "$ref" ]]; then
@@ -151,30 +161,55 @@ stage_05() {
   fi
 
   # --- deliberate errors, one semantic and one syntax, each built by both compilers ---
-  local good="$OUT/$s/JourneyMgt.good.al" case_name
+  local good="$OUT/$s/JourneyMgt.good.al" case_name want
   cp "$PROJ/src/JourneyMgt.Codeunit.al" "$good"
   for case_name in semantic syntax; do
+    # the error code each compiler must report for this deliberate error
+    if [[ "$case_name" == semantic ]]; then want=AL0132; else want=AL0111; fi
     cp "$good" "$PROJ/src/JourneyMgt.Codeunit.al"
     if [[ "$case_name" == semantic ]]; then
       sed -i 's/JourneyItem.Quantity := NewQuantity;/JourneyItem.NoSuchField := NewQuantity;/' "$PROJ/src/JourneyMgt.Codeunit.al"
     else
       sed -i 's/JourneyItem.Init();/JourneyItem.Init()/' "$PROJ/src/JourneyMgt.Codeunit.al"
     fi
-    local nr=0 ar=0
+    local nr=0 ar=0 nlog alog ncodes acodes
+    nlog=$(step_log $s "native-$case_name"); alog="$OUT/$s/alc-$case_name.errorlog.json"
+    ncodes="$OUT/$s/native-$case_name.codes"; acodes="$OUT/$s/alc-$case_name.codes"
     rm -f "$OUT/$s/native-$case_name.app" "$OUT/$s/alc-$case_name.app"
     run_step "$s" "native-$case_name" 300 "$ALX" pack-native --project "$PROJ" --out "$OUT/$s/native-$case_name.app" --json || nr=$?
     journey_alc_build "$OUT/$s/alc-$case_name.app" "alc-$case_name" || ar=$?
-    local nsucc; nsucc=$(tail -n +2 "$(step_log $s "native-$case_name")" | jq -r '.success' 2>/dev/null)
-    if [[ "$nr" != 0 || "$nsucc" == false ]]; then record "$s" "native-rejects-$case_name" PASS "pack-native exit $nr, success=$nsucc"; else record "$s" "native-rejects-$case_name" FAIL "pack-native exit $nr, success=$nsucc: the $case_name error was accepted and an .app written"; fi
-    if [[ "$ar" != 0 ]]; then record "$s" "alc-rejects-$case_name" PASS "alc exit $ar"; else record "$s" "alc-rejects-$case_name" FAIL "alc accepted the $case_name error"; fi
-    if [[ "$nr" == 0 && "$nsucc" != false && -s "$OUT/$s/native-$case_name.app" ]]; then record "$s" "native-bad-app-$case_name" FAIL "native wrote an .app for broken source"; fi
-    if [[ -s "$OUT/$s/alc-$case_name.app" ]]; then record "$s" "alc-bad-app-$case_name" NIGGLE "alc wrote an .app despite the error"; fi
-    journey_native_codes "$(step_log $s "native-$case_name")" > "$OUT/$s/native-$case_name.codes"
-    journey_alc_codes "$OUT/$s/alc-$case_name.errorlog.json" > "$OUT/$s/alc-$case_name.codes"
+    journey_native_codes "$nlog" > "$ncodes"
+    journey_alc_codes "$alog" > "$acodes"
+    # a reject passes only when the compiler's own diagnostics name the expected code
+    if [[ ! -f "$nlog" ]] || ! journey_native_json "$nlog"; then
+      record "$s" "native-rejects-$case_name" FAIL "pack-native output is not JSON, see $nlog"
+    elif grep -qx "error $want" "$ncodes"; then
+      record "$s" "native-rejects-$case_name" PASS "pack-native exit $nr reports $want"
+    else
+      record "$s" "native-rejects-$case_name" FAIL "pack-native exit $nr, no error $want in its JSON: [$(tr '\n' ',' < "$ncodes")]"
+    fi
+    if [[ ! -f "$alog" ]] || ! journey_alc_json "$alog"; then
+      record "$s" "alc-rejects-$case_name" FAIL "no parseable errorlog at $alog"
+    elif grep -qx "error $want" "$acodes"; then
+      record "$s" "alc-rejects-$case_name" PASS "alc exit $ar reports $want"
+    else
+      record "$s" "alc-rejects-$case_name" FAIL "alc exit $ar, no error $want in $alog: [$(tr '\n' ',' < "$acodes")]"
+    fi
+    # broken source must not produce an .app, whatever the exit code
+    if [[ -s "$OUT/$s/native-$case_name.app" ]]; then record "$s" "native-bad-app-$case_name" FAIL "native wrote an .app for broken source"; else record "$s" "native-bad-app-$case_name" PASS "no .app written"; fi
+    if [[ -s "$OUT/$s/alc-$case_name.app" ]]; then record "$s" "alc-bad-app-$case_name" FAIL "alc wrote an .app for broken source"; else record "$s" "alc-bad-app-$case_name" PASS "no .app written"; fi
     local ncount acount
-    ncount=$(journey_errors "$OUT/$s/native-$case_name.codes"); acount=$(journey_errors "$OUT/$s/alc-$case_name.codes")
-    if [[ "$ncount" == "$acount" ]]; then record "$s" "error-count-$case_name" PASS "both report $acount error(s)"; else record "$s" "error-count-$case_name" FAIL "native $ncount error(s), alc $acount"; fi
-    if diff -q "$OUT/$s/native-$case_name.codes" "$OUT/$s/alc-$case_name.codes" > /dev/null; then record "$s" "diag-codes-$case_name" PASS "same codes: $(tr '\n' ',' < "$OUT/$s/alc-$case_name.codes")"; else record "$s" "diag-codes-$case_name" FAIL "native [$(tr '\n' ',' < "$OUT/$s/native-$case_name.codes")] alc [$(tr '\n' ',' < "$OUT/$s/alc-$case_name.codes")]"; fi
+    ncount=$(journey_errors "$ncodes"); acount=$(journey_errors "$acodes")
+    if [[ "$ncount" -gt 0 && "$ncount" == "$acount" ]] && grep -qx "error $want" "$ncodes" && grep -qx "error $want" "$acodes"; then
+      record "$s" "error-count-$case_name" PASS "both report $acount error(s), including $want"
+    else
+      record "$s" "error-count-$case_name" FAIL "native $ncount error(s), alc $acount, expected $want in both"
+    fi
+    if diff -q "$ncodes" "$acodes" > /dev/null && grep -qx "error $want" "$acodes"; then
+      record "$s" "diag-codes-$case_name" PASS "same codes: $(tr '\n' ',' < "$acodes")"
+    else
+      record "$s" "diag-codes-$case_name" FAIL "native [$(tr '\n' ',' < "$ncodes")] alc [$(tr '\n' ',' < "$acodes")], expected $want"
+    fi
   done
 
   # restore the good source
