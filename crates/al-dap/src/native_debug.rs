@@ -9,6 +9,7 @@ use crate::dap::bc_debug::position::{
     client_line_to_debugger, debugger_column_to_client, debugger_line_to_client,
 };
 use crate::dap::bc_debug::{BcDebugConfig, BcDebugSession};
+use crate::dap::native_dap::breakpoints::ids_to_keep;
 use crate::dap::types::*;
 use crate::dap::Result;
 use tracing::{info, warn};
@@ -97,14 +98,16 @@ impl NativeDebugSession {
         object_id: i32,
         line_shift: i64,
     ) -> Result<Vec<BreakpointInfo>> {
-        if let Some(old_ids) = self.breakpoints.remove(file) {
-            for bp_id in &old_ids {
-                if let Err(e) = self.session.remove_breakpoint(*bp_id).await {
-                    warn!(bp_id, error = %e, "Failed to remove old breakpoint");
-                }
+        let old_ids = self.breakpoints.remove(file).unwrap_or_default();
+        let mut failed = Vec::new();
+        for bp_id in &old_ids {
+            if let Err(e) = self.session.remove_breakpoint(*bp_id).await {
+                warn!(bp_id, error = %e, "Failed to remove old breakpoint");
+                failed.push(*bp_id);
             }
-            self.armed.retain(|_, id| !old_ids.contains(id));
         }
+        self.armed
+            .retain(|_, id| !old_ids.contains(id) || failed.contains(id));
 
         let mut results = Vec::new();
         let mut new_ids = Vec::new();
@@ -186,8 +189,9 @@ impl NativeDebugSession {
             }
         }
 
-        if !new_ids.is_empty() {
-            self.breakpoints.insert(file.to_string(), new_ids);
+        let kept = ids_to_keep(&old_ids, &failed, &new_ids);
+        if !kept.is_empty() {
+            self.breakpoints.insert(file.to_string(), kept);
         }
 
         Ok(results)
@@ -1223,6 +1227,32 @@ mod native_session_tests {
         assert!(infos[0].verified);
         assert_eq!(infos[1].id, 0, "failed add → id 0");
         assert!(!infos[1].verified, "failed add → unverified");
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_keeps_id_when_remove_fails() {
+        let (mut nds, fake) = session("c1");
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(100));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(101));
+        nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50100, 0)
+            .await
+            .unwrap();
+
+        fake.reply_err("RemoveBreakpoint", "refused");
+        fake.reply_ok("RemoveBreakpoint", json!(null));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(200));
+        nds.set_breakpoints("src/C.al", &[(9, None)], 5, 50100, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            nds.breakpoints.get("src/C.al"),
+            Some(&vec![200, 100]),
+            "the refused removal keeps 100 next to the new 200"
+        );
+        let mut armed: Vec<i64> = nds.armed.values().copied().collect();
+        armed.sort_unstable();
+        assert_eq!(armed, vec![100, 200], "armed keeps 100, drops removed 101");
     }
 
     #[tokio::test]

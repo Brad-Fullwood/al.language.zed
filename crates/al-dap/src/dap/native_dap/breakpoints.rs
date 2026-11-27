@@ -115,14 +115,16 @@ where
         // tracking only one half and orphaning the rest.
         let mut bps = self.breakpoints.lock().await;
         let old_ids: Vec<i64> = bps.remove(source_path).unwrap_or_default();
-        for id in old_ids {
+        let mut failed = Vec::new();
+        for &id in &old_ids {
             if let Err(e) = session.remove_breakpoint(id).await {
                 tracing::warn!(
                     breakpoint_id = id,
                     error = %e,
                     "DAP setBreakpoints: removing prior breakpoint failed; \
-                     local state will be overwritten regardless"
+                     keeping its id tracked for this file"
                 );
+                failed.push(id);
             }
         }
 
@@ -190,7 +192,10 @@ where
                 }
             }
         }
-        bps.insert(source_path.to_string(), new_ids);
+        bps.insert(
+            source_path.to_string(),
+            ids_to_keep(&old_ids, &failed, &new_ids),
+        );
         drop(bps);
         result_bps
     }
@@ -236,6 +241,18 @@ where
         }
         Ok(())
     }
+}
+
+/// IDs to track for a file after `setBreakpoints`. An ID whose removal BC
+/// refused stays tracked, so the next request tries to remove it again.
+pub(crate) fn ids_to_keep(old: &[i64], failed: &[i64], new: &[i64]) -> Vec<i64> {
+    let mut kept = new.to_vec();
+    for id in failed {
+        if old.contains(id) && !kept.contains(id) {
+            kept.push(*id);
+        }
+    }
+    kept
 }
 
 /// Pull a usable breakpoint id out of BC's `AddBreakpoint` response.
@@ -295,6 +312,17 @@ mod tests {
 
     use super::super::test_support::*;
     use super::super::{bc_object_type, VariableHandleStore};
+
+    #[test]
+    fn ids_to_keep_keeps_failed_removals() {
+        assert_eq!(ids_to_keep(&[1, 2], &[2], &[7]), vec![7, 2]);
+        assert_eq!(ids_to_keep(&[1], &[], &[5]), vec![5]);
+        assert_eq!(
+            ids_to_keep(&[1], &[9], &[5]),
+            vec![5],
+            "not in old: dropped"
+        );
+    }
 
     #[test]
     fn extract_breakpoint_id_reads_breakpoint_definition() {
