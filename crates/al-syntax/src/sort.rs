@@ -153,7 +153,7 @@ fn sort_body<'a>(body_lines: &[&'a str]) -> Vec<&'a str> {
     for member in members {
         let first = member
             .iter()
-            .find(|l| !l.trim().is_empty())
+            .find(|l| !l.trim().is_empty() && !is_doc_comment(l))
             .copied()
             .unwrap_or("");
         let trimmed = first.trim().to_lowercase();
@@ -182,11 +182,14 @@ fn sort_body<'a>(body_lines: &[&'a str]) -> Vec<&'a str> {
     triggers.sort_by_key(|a| a.0.to_lowercase());
     procedures.sort_by_key(|a| a.0.to_lowercase());
 
-    let ordered = var_blocks
+    // The preamble (object properties and metadata sections such as `fields`
+    // and `keys`) comes first. alc 18.1 rejects a property after a procedure
+    // (AL0104) and a metadata section after one (AL0926).
+    let ordered = other
         .into_iter()
+        .chain(var_blocks)
         .chain(triggers.into_iter().map(|(_, member)| member))
-        .chain(procedures.into_iter().map(|(_, member)| member))
-        .chain(other);
+        .chain(procedures.into_iter().map(|(_, member)| member));
     let mut sorted: Vec<&str> = Vec::with_capacity(body_lines.len());
     for (member, separator) in ordered.zip(separators) {
         sorted.extend(member);
@@ -290,7 +293,9 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
         let is_local_var = is_plain_var_start(&trimmed) && current_has_body_member && !seen_begin;
 
         let at_member_level = depth == 0 && !was_in_comment;
-        let is_attr_start = at_member_level && trimmed.starts_with('[');
+        // `strip_comments` empties a `///` line, so it is read from `line`.
+        // A doc comment binds to the member below it, as an attribute does.
+        let is_attr_start = at_member_level && (trimmed.starts_with('[') || is_doc_comment(line));
         let is_keyword_start = at_member_level && is_member_keyword(&trimmed) && !is_local_var;
 
         // A pending attribute binds to the next keyword line, and stacked
@@ -337,6 +342,11 @@ fn split_into_members<'a>(lines: &[&'a str]) -> Vec<Vec<&'a str>> {
     }
 
     members
+}
+
+/// True for a `///` documentation comment line.
+fn is_doc_comment(line: &str) -> bool {
+    line.trim_start().starts_with("///")
 }
 
 /// True for a plain `var` section header (never `protected var`).
@@ -690,9 +700,10 @@ mod multi_object_tests {
         let yankee = sorted.find("procedure Yankee").expect("Yankee missing");
         assert!(alpha < zebra && zebra < table_end, "{sorted}");
         assert!(table_end < bravo && bravo < yankee, "{sorted}");
-        // `fields` sorts into the trailing group, still inside the table.
+        // The preamble stays ahead of the procedures. alc 18.1 rejects
+        // `fields` after a procedure with AL0926.
         let fields = sorted.find("fields").expect("fields missing");
-        assert!(zebra < fields && fields < table_end, "{sorted}");
+        assert!(fields < alpha, "{sorted}");
         assert_reparses_with(&sorted, 2);
     }
 }
@@ -700,6 +711,28 @@ mod multi_object_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `strip_comments` empties a `///` line, so the doc comment used to join
+    /// the member above it and stayed behind when its procedure moved.
+    #[test]
+    fn doc_comment_moves_with_member() {
+        let input = "codeunit 50100 C\n{\n    procedure Zebra() begin end;\n\n    /// <summary>Alpha doc.</summary>\n    procedure Alpha() begin end;\n}\n";
+        let expected = "codeunit 50100 C\n{\n    /// <summary>Alpha doc.</summary>\n    procedure Alpha() begin end;\n\n    procedure Zebra() begin end;\n}\n";
+        assert_eq!(sort_members(input).expect("should sort"), expected);
+    }
+
+    /// Object properties come before the members. alc 18.1 rejects a
+    /// property written after a procedure (AL0104).
+    #[test]
+    fn properties_stay_ahead_of_members() {
+        let input = "codeunit 50100 C\n{\n    Access = Public;\n\n    procedure Zebra() begin end;\n\n    var\n        X: Integer;\n\n    trigger OnRun() begin end;\n}\n";
+        let sorted = sort_members(input).expect("should sort");
+        let access = sorted.find("Access").expect("Access missing");
+        let var = sorted.find("    var").expect("var missing");
+        let trigger = sorted.find("trigger OnRun").expect("trigger missing");
+        let zebra = sorted.find("procedure Zebra").expect("Zebra missing");
+        assert!(access < var && var < trigger && trigger < zebra, "{sorted}");
+    }
 
     #[test]
     fn sort_members_procedures_sorted_alphabetically() {
@@ -1353,17 +1386,10 @@ table 50100 T
     end;
 }
 ";
+        // `fields` stays first: alc 18.1 rejects it after a trigger (AL0926).
         let expected = "\
 table 50100 T
 {
-    trigger OnInsert()
-    begin
-    end;
-
-    trigger OnModify()
-    begin
-    end;
-
     fields
     {
         field(1; \"No.\"; Code[20])
@@ -1373,6 +1399,14 @@ table 50100 T
             end;
         }
     }
+
+    trigger OnInsert()
+    begin
+    end;
+
+    trigger OnModify()
+    begin
+    end;
 }
 ";
         assert_eq!(sort_members(input).as_deref(), Some(expected));
