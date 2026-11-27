@@ -337,13 +337,14 @@ pub(super) fn collect_object_var_from_regular_decl(
     source: &[u8],
     result: &mut HashMap<String, String>,
 ) {
-    let Some(name_node) = node.child_by_field_name("name") else {
-        return;
-    };
     let Some(type_node) = node.child_by_field_name("type") else {
         return;
     };
-    extract_object_subtype(name_node, type_node, source, result);
+    // `A, B: Codeunit X` has one `name` field per identifier.
+    let mut cursor = node.walk();
+    for name_node in node.children_by_field_name("name", &mut cursor) {
+        extract_object_subtype(name_node, type_node, source, result);
+    }
 }
 
 pub(super) fn extract_object_subtype(

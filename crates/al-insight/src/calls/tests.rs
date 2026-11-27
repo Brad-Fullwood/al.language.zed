@@ -623,6 +623,25 @@ end;
 }
 
 #[test]
+fn multi_name_object_declaration_records_each_name() {
+    let source = r#"codeunit 50100 "My CU"
+{
+procedure DoWork()
+var
+    A, B: Codeunit "Sales-Post";
+begin
+    B.Run();
+end;
+}
+"#;
+    let result = al_syntax::AlParser::parse_quick(source);
+    let types = extract_procedure_object_var_types(&result.tree, source, "DoWork");
+
+    assert_eq!(types.get("a").map(|s| s.as_str()), Some("Sales-Post"));
+    assert_eq!(types.get("b").map(|s| s.as_str()), Some("Sales-Post"));
+}
+
+#[test]
 fn workspace_object_global_record_is_resolved() {
     let source = r#"codeunit 50100 C
 {
