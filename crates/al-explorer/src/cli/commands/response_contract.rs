@@ -820,6 +820,11 @@ fn validate_snapshot(params: Option<&Value>, result: &Value) -> Result<(), Strin
             // The daemon sends null until the server has answered Started once
             // (SnapshotState::seconds_since_started), and the text printer reads
             // a missing value as 0. Journey finding journey-05.
+            if result.get("secondsSinceStarted").is_none() {
+                return Err(
+                    "snapshot.status is missing required field 'secondsSinceStarted'".to_string(),
+                );
+            }
             optional_kind(result, "secondsSinceStarted", Kind::Unsigned, true)?;
             string_array_field(result, "warnings")
         }
@@ -1829,6 +1834,13 @@ mod tests {
                 "status",
                 serde_json::json!({"debuggingContext": "c", "status": "Started",
                 "secondsSinceStarted": "3", "warnings": []})
+            )
+            .is_err()
+        );
+        assert!(
+            ok(
+                "status",
+                serde_json::json!({"debuggingContext": "c", "status": "Started", "warnings": []})
             )
             .is_err()
         );
