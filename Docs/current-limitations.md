@@ -129,8 +129,11 @@ live in [ROADMAP.md](../ROADMAP.md).
 - So the extension ignores `binary.path`, `binary.arguments` and the debug
   adapter path outright, whoever wrote them. al-lsp is chosen by the extension:
   the managed `dev/al-lsp` copy that `make install` writes, then the session
-  cache, then the release tagged with the extension's version. Its arguments come from `al.useOfficialLsp`, which is an inert
-  toggle between two spellings the extension itself holds.
+  cache, then the release tagged with the extension's version. The arguments
+  come from `al.useOfficialLsp`: `false` runs `al-lsp --stdio`, and `true` runs
+  `al-lsp --official-lsp`, which needs ALTool v17 or later. Without the
+  toolchain, `--official-lsp` prints an error and exits with status 1. A
+  repository cannot choose other arguments.
   `settings::resolve_server_launch` is the decision, and
   `settings_test::settings_cannot_choose_the_language_server_program_or_its_arguments`
   is the test.
@@ -143,19 +146,23 @@ live in [ROADMAP.md](../ROADMAP.md).
   on `PATH` is not consulted. A `binary.path` in user settings no longer chooses
   it, which is the cost of the rule.
 - `dotnetPath` is different, because al-lsp is already running when it matters,
-  and al-lsp can read the repository's files. The extension filters by location
-  (`settings::is_worktree_resident_program`: a relative path, or an absolute
-  path under the worktree root, is not used), and al-lsp drops an
-  `AL_DOTNET_PATH` that this project's settings supplied unless the project is
-  trusted, falling back to `dotnet` from `PATH`. See
+  and al-lsp can read the repository's files. Only the language server route
+  filters by location: `language_server_command` (src/lib.rs:538-539) drops a
+  relative path, or an absolute path under the worktree root
+  (`settings::is_worktree_resident_program`). The debug adapter (src/dap.rs:88)
+  and the AL Tools context server (`context_server_command`, src/lib.rs:666)
+  pass the value on without that filter. al-lsp runs its own check in its
+  language server, DAP and MCP modes. It drops an `AL_DOTNET_PATH` that this
+  project's settings supplied unless the project is trusted, and the process
+  then falls back to `dotnet` from `PATH`. See
   [project trust](features/project-trust.md).
-- The `dotnetPath` refusal compares the path and the worktree root as component
-  lists, so `.`, `..` and repeated separators cannot spell the same program in a
-  way the comparison misses, and a Windows path is matched without regard to
-  case. What it cannot see is a symlink: the extension is a WASM module with no
-  filesystem API, so a path that reaches inside the worktree through a symlinked
-  ancestor is accepted there. al-lsp's own check resolves symlinks, which covers
-  `AL_DOTNET_PATH`.
+- The language server's `dotnetPath` filter compares the path and the worktree
+  root as component lists, so `.`, `..` and repeated separators cannot spell the
+  same program in a way the comparison misses, and a Windows path is matched
+  without regard to case. What it cannot see is a symlink: the extension is a
+  WASM module with no filesystem API, so a path that reaches inside the worktree
+  through a symlinked ancestor is accepted there. al-lsp's own check resolves
+  symlinks, which covers `AL_DOTNET_PATH`.
 - The consequence for a legitimate setup: a `dotnet` you keep inside a project
   directory needs `al-explorer trust` on that project, or a path outside it.
 
@@ -204,9 +211,9 @@ live in [ROADMAP.md](../ROADMAP.md).
   CI built and what the release carries. It does not catch anyone who can
   publish to the release: a stolen `GITHUB_TOKEN`, a compromised workflow or
   account takeover rewrites the archive and `binary-checksums.txt` together.
-  The release tag carries no signature either, so `latest_github_release` trusts
-  whatever the repository's latest non-prerelease says. The extension verifies
-  no signature.
+  The extension asks GitHub for the release tagged `v<extension version>`
+  (`github_release_by_tag_name`, src/lib.rs:424), not the latest one. It
+  verifies no signature.
 - Authenticity is available outside the extension. `release.yml` attests every
   asset in `checksums.txt` with `actions/attest-build-provenance`, which signs a
   build-provenance statement through Sigstore against the workflow's own

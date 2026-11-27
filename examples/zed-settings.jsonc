@@ -1,8 +1,8 @@
-// AL for Zed — example configuration.
+// AL for Zed: example configuration.
 //
 // Copy the blocks you want into your Zed settings.json ("zed: open settings"
 // from the command palette) or a project-local .zed/settings.json. Comments
-// (JSONC) are for guidance only — Zed's settings.json accepts them, but strip
+// (JSONC) are for guidance only. Zed's settings.json accepts them, but strip
 // them if you paste into strict JSON.
 {
   "lsp": {
@@ -10,15 +10,15 @@
     // AL Language Server (al-lsp).
     //
     // Every setting the server understands is listed below with its DEFAULT
-    // value — delete the ones you don't need to change. On Zed Dev/Nightly
-    // (0.8 extension API) these keys also autocomplete + validate as you type;
-    // on Stable Zed they are applied correctly but without in-editor
-    // autocomplete. See Docs/reference/settings.md for the full reference.
+    // value. Delete the ones you don't need to change. In v0.5.0 no key
+    // autocompletes or validates as you type: the extension builds against
+    // Zed extension API 0.7.0. The settings still apply. See
+    // Docs/reference/settings.md for the full reference.
     // ─────────────────────────────────────────────────────────────────────
     "al-lsp": {
-      // Point Zed at a specific build; otherwise al-lsp is auto-downloaded or
-      // found on PATH.
-      // "binary": { "path": "/path/to/al-lsp" },
+      // The extension ignores "binary". For a local build, run `make install`,
+      // which writes dev/al-lsp in the extension's work directory. The extension
+      // uses that copy first.
 
       "settings": {
         // ── Semantic analysis ──
@@ -57,7 +57,7 @@
         // ── Compiler ──
         "al.compilationOptions": [],
         "al.incrementalBuild": false,
-        "al.useOfficialCompiler": false,
+        "al.useOfficialCompiler": null,
 
         // ── Resource limits ──
         "al.maxDocumentSizeBytes": null, // null = no cap
@@ -80,9 +80,10 @@
     // Autocomplete + validation for AL project files (app.json, rulesets, …).
     //
     // Zed's bundled JSON language server validates files against schemas you
-    // associate by fileMatch. This works on ALL Zed channels TODAY. The URLs
-    // are pinned to this extension's v0.3.0 release tag for reproducible
-    // validation; bump the tag when you upgrade the extension.
+    // associate by fileMatch. This works on ALL Zed channels. The URLs are
+    // pinned to the v0.5.0 release tag for reproducible validation. The tag
+    // must equal the extension version in extension.toml, so bump it when you
+    // upgrade the extension.
     // ─────────────────────────────────────────────────────────────────────
     "json-language-server": {
       "settings": {
@@ -90,23 +91,23 @@
           "schemas": [
             {
               "fileMatch": ["app.json"],
-              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/app.json"
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.5.0/schemas/app.json"
             },
             {
               "fileMatch": ["*.ruleset.json"],
-              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/ruleset.json"
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.5.0/schemas/ruleset.json"
             },
             {
               "fileMatch": [".alarch.json"],
-              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/alarch.json"
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.5.0/schemas/alarch.json"
             },
             {
               "fileMatch": ["AppSourceCop.json"],
-              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/appsourcecop.json"
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.5.0/schemas/appsourcecop.json"
             },
             {
               "fileMatch": ["migration.json", "*.migration.json"],
-              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.3.0/schemas/migration.json"
+              "url": "https://raw.githubusercontent.com/Brad-Fullwood/al.language.zed/v0.5.0/schemas/migration.json"
             }
           ]
         }
