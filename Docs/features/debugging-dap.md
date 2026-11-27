@@ -94,8 +94,8 @@ either feature until it can provide the full behavior itself.
 5. Optionally **open the browser** at the debug-context URL when `launchBrowser` is set. Like Microsoft's
    connection context (`HubBasedService.cs:77-93`), the URL carries `connectioncontext`, `debuggingcontext`,
    `sk` (the hub connection id) and `ApplicationGatewayAffinity` (the negotiate cookie, escaped once more by
-   `Uri.EscapeDataString`). Without the affinity value BC does not bind the browser session to the hub
-   connection. The URL differs from Microsoft's in three further details, see Limitations.
+   `Uri.EscapeDataString`). In one run on the CDX Sandbox without the affinity value, BC did not bind the
+   browser session to the hub connection. The URL differs from Microsoft's in three further details, see Limitations.
 6. When the hub reports `HubConnected` or `OnAttachedToConnection`, send the DAP `initialized` event
    (`HubBasedDebuggerService.cs:117-120,148`, `DebuggerService.cs:119-122`). On a cloud launch BC sends
    `HubConnected` once the browser session opens. The client then sends its breakpoints and
