@@ -215,7 +215,7 @@ live in [ROADMAP.md](../ROADMAP.md).
   publish to the release: a stolen `GITHUB_TOKEN`, a compromised workflow or
   account takeover rewrites the archive and `binary-checksums.txt` together.
   The extension asks GitHub for the release tagged `v<extension version>`
-  (`github_release_by_tag_name`, src/lib.rs:424), not the latest one. It
+  (`github_release_by_tag_name` in `src/lib.rs`), not the latest one. It
   verifies no signature.
 - Authenticity is available outside the extension. `release.yml` attests every
   asset in `checksums.txt` with `actions/attest-build-provenance`, which signs a

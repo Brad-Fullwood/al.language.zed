@@ -176,8 +176,8 @@ downloaded. Once a digest is pinned, the script downloads the release's
 `binary-checksums.txt` and checks it against the pin, downloads the release
 archive for the current platform, checks every file in it against that listing,
 and only on a match extracts it into `$CLAUDE_PLUGIN_DATA/bin`. It fetches over
-https only, never makes anything executable before its digest matches, and never
-touches the network once both binaries are found. See `plugin/TESTING.md` for
+https only, makes nothing executable before its digest matches, and makes no
+network request once both binaries are found. See `plugin/TESTING.md` for
 what it does on a refusal and how it was tested.
 
 To try it without installing:
@@ -530,7 +530,7 @@ description, and [examples/zed-settings.jsonc](examples/zed-settings.jsonc) is a
 architecture rules (`AL-NL*`/`AL-NC*`) and the name and member binding errors `AL0118` and `AL0132`, which need no .NET bridge. Type checking and undeclared procedure calls still need `alc` or the bridge. For example, set `"AL-NL005": false` to disable the
 SetLoadFields rule. Microsoft's CodeAnalysis bridge is optional and adds to the native diagnostics.
 
-In v0.5.0 no `lsp.al-lsp.settings` key autocompletes or validates as you type. The extension builds against Zed extension API 0.7.0 (`Cargo.toml`), so its settings-schema methods are compiled out. They sit behind the `zed_api_0_8` cfg (`src/lib.rs`, lines 591 and 600), which `build.rs` sets only when `Cargo.lock` resolves the API to 0.8.0 or later. The settings still apply. Copy keys from the template above.
+In v0.5.0 no `lsp.al-lsp.settings` key autocompletes or validates as you type. The extension builds against Zed extension API 0.7.0 (`Cargo.toml`), so its settings-schema methods are compiled out. They sit behind the `zed_api_0_8` cfg in `src/lib.rs`, which `build.rs` sets only when `Cargo.lock` resolves the API to 0.8.0 or later. The settings still apply. Copy keys from the template above.
 
 ### Settings that need project trust
 

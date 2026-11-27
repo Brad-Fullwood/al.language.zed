@@ -45,7 +45,7 @@ work directory, so the extension's own downloaded copy is not reachable from a t
 resolve only once `al-explorer` is on `PATH`. Run `make install`, which copies `al-explorer` to
 `~/.local/bin`, or extract the release archive into a directory on `PATH`. A symlink into an
 `al-lsp-*` version directory breaks on upgrade: the extension deletes other version directories when
-it installs a release (`prune_release_dirs`, `src/lib.rs:257`).
+it installs a release (`prune_release_dirs` in `src/lib.rs`).
 
 Until that is done the task entries appear in the picker and fail with "command not found". The
 same operations are also available without `PATH` through LSP commands (`al.downloadSymbols`,
