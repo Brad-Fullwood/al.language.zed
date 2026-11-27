@@ -621,11 +621,10 @@ pub fn cmd_rename(
     match request_checked(&mut client, "rename", Some(params)) {
         Ok(result) => {
             let exit_code = rename_exit_code(&result);
-            if json {
-                print_json(&result);
-            }
             if exit_code == ExitCode::FAILURE {
-                if !json {
+                if json {
+                    print_json(&result);
+                } else {
                     eprintln!(
                         "Cannot rename symbol at {}:{line}:{col}",
                         terminal_text(file)
@@ -634,7 +633,11 @@ pub fn cmd_rename(
                 return exit_code;
             }
             if json {
-                return exit_code;
+                let (value, code) = rename_outcome(&result, json, dry_run, apply_workspace_edit);
+                if code == ExitCode::SUCCESS {
+                    print_json(&value);
+                }
+                return code;
             }
             if let Some(changes) = result.get("changes").and_then(|v| v.as_object()) {
                 let mut total_edits = 0;
@@ -673,6 +676,44 @@ fn rename_exit_code(result: &serde_json::Value) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+/// The value `rename --json` prints, and its exit code.
+///
+/// Without `dry_run` the edits are written first, as the human output does.
+/// A write error goes through `report_error`, which prints the error object
+/// itself. The value returned with that failure is `Null`, so the caller
+/// prints nothing when the code is a failure.
+fn rename_outcome(
+    result: &serde_json::Value,
+    json: bool,
+    dry_run: bool,
+    apply: impl FnOnce(&serde_json::Map<String, serde_json::Value>) -> Result<usize, String>,
+) -> (serde_json::Value, ExitCode) {
+    let empty = serde_json::Map::new();
+    let changes = result
+        .get("changes")
+        .and_then(|v| v.as_object())
+        .unwrap_or(&empty);
+    let files_changed = if dry_run {
+        None
+    } else {
+        match apply(changes) {
+            Ok(files_changed) => Some(files_changed),
+            Err(e) => return (serde_json::Value::Null, report_error(&e, json)),
+        }
+    };
+    let mut value = result.clone();
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "applied".to_owned(),
+            serde_json::Value::Bool(files_changed.is_some()),
+        );
+        if let Some(count) = files_changed {
+            object.insert("filesChanged".to_owned(), serde_json::json!(count));
+        }
+    }
+    (value, ExitCode::SUCCESS)
 }
 
 /// Apply a WorkspaceEdit `changes` map to disk.
@@ -952,6 +993,45 @@ mod exit_status_tests {
             rename_exit_code(&serde_json::json!({"changes": {}})),
             ExitCode::SUCCESS
         );
+    }
+
+    #[test]
+    fn json_rename_applies_the_edit_and_reports_the_files_changed() {
+        let result = serde_json::json!({"changes": {"file:///a.al": [{}], "file:///b.al": [{}]}});
+        let calls = std::cell::Cell::new(0);
+
+        let (value, code) = rename_outcome(&result, true, false, |changes| {
+            calls.set(calls.get() + 1);
+            Ok(changes.len())
+        });
+
+        assert_eq!(calls.get(), 1);
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(value["applied"], serde_json::json!(true));
+        assert_eq!(value["filesChanged"], serde_json::json!(2));
+    }
+
+    #[test]
+    fn json_rename_with_dry_run_writes_nothing() {
+        let result = serde_json::json!({"changes": {"file:///a.al": [{}]}});
+
+        let (value, code) = rename_outcome(&result, true, true, |_| {
+            unreachable!("a dry run must not write")
+        });
+
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(value["applied"], serde_json::json!(false));
+        assert!(value.get("filesChanged").is_none());
+    }
+
+    #[test]
+    fn json_rename_write_error_exits_1() {
+        let result = serde_json::json!({"changes": {"file:///a.al": [{}]}});
+
+        let (value, code) = rename_outcome(&result, true, false, |_| Err("disk full".to_owned()));
+
+        assert_eq!(code, ExitCode::FAILURE);
+        assert!(value.is_null());
     }
 }
 

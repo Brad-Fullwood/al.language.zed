@@ -1105,3 +1105,38 @@ async fn connect_sends_the_hub_query_on_both_requests_and_forwards_the_cookie() 
     );
     assert_eq!(ws_cookie, "ApplicationGatewayAffinity=abc123");
 }
+
+#[tokio::test]
+async fn connect_stops_at_the_deadline_when_the_server_never_answers() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    // Accept connections and keep them open without writing a byte.
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((socket, _)) = listener.accept().await {
+            held.push(socket);
+        }
+    });
+    let cfg = BcDebugConfig {
+        environment_type: "OnPrem".to_string(),
+        server: Some("http://127.0.0.1".to_string()),
+        server_instance: Some("BC".to_string()),
+        port,
+        tenant: "default".to_string(),
+        ..BcDebugConfig::default()
+    };
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        BcDebugSession::connect_with_deadline(
+            &cfg,
+            "token",
+            false,
+            std::time::Duration::from_millis(300),
+        ),
+    )
+    .await
+    .expect("connect returned before the outer 5 s timeout");
+    let error = outcome.err().expect("a stalled server is an error");
+    let text = error.to_string();
+    assert!(text.contains("during metadata"), "{text}");
+}

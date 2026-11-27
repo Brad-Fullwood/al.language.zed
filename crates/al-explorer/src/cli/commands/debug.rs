@@ -10,7 +10,7 @@ use super::super::{DebugCommands, ProfileCommands, SnapshotCommands};
 
 use super::{
     absolutize_path, connect, file_to_uri, print_json, report_error, request_checked,
-    terminal_lines, terminal_text, text_field,
+    set_command_timeout, terminal_lines, terminal_text, text_field,
 };
 
 pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
@@ -20,7 +20,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
-            client.set_request_timeout(std::time::Duration::from_secs(120));
+            set_command_timeout(&mut client, std::time::Duration::from_secs(120));
             let mut params = serde_json::json!({ "cmd": "start" });
             if let Some(config) = config {
                 params["config"] = serde_json::Value::String(config.clone());
@@ -30,9 +30,7 @@ pub fn cmd_debug(subcmd: &DebugCommands, json: bool) -> ExitCode {
                     if json {
                         print_json(&result);
                     } else {
-                        let session = text_field(&result, "session", "?");
-                        let status = text_field(&result, "status", "?");
-                        println!("Debug session started: {session} (status: {status})");
+                        print!("{}", debug_start_text(&result));
                     }
                     ExitCode::SUCCESS
                 }
@@ -288,6 +286,35 @@ fn debug_stop_actually_stopped(status: &str) -> bool {
     status == "stopped"
 }
 
+/// What `debug start` prints. The session is bound by opening `browserUrl`,
+/// so the URL is printed when the daemon returns one.
+fn debug_start_text(result: &Value) -> String {
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "Debug session started: {} (status: {})",
+        text_field(result, "session", "?"),
+        text_field(result, "status", "?")
+    );
+    if let Some(url) = result.get("browserUrl").and_then(Value::as_str) {
+        let _ = writeln!(
+            out,
+            "Open this URL to bind the session: {}",
+            terminal_text(url)
+        );
+    }
+    out
+}
+
+/// Exit status for `snapshot status` and `profile status`: a failed capture exits 1.
+fn status_exit_code(result: &Value) -> ExitCode {
+    if result.get("status").and_then(Value::as_str) == Some("Failed") {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn warning_lines(result: &Value) -> String {
     let mut out = String::new();
     for warning in result
@@ -508,9 +535,13 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
     };
     match request_checked(&mut client, "snapshot", Some(params)) {
         Ok(result) => {
+            let exit = match subcmd {
+                SnapshotCommands::Status { .. } => status_exit_code(&result),
+                _ => ExitCode::SUCCESS,
+            };
             if json {
                 print_json(&result);
-                return ExitCode::SUCCESS;
+                return exit;
             }
             match subcmd {
                 SnapshotCommands::Start { .. } => print!("{}", snapshot_start_text(&result)),
@@ -533,7 +564,7 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
                     println!("{}", terminal_lines(&text));
                 }
             }
-            ExitCode::SUCCESS
+            exit
         }
         Err(e) => report_error(&e, json),
     }
@@ -644,29 +675,43 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
             }
         }
 
-        ProfileCommands::Status { context } => {
+        ProfileCommands::Status {
+            context,
+            allow_production,
+        } => {
             let mut client = match connect(None) {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
             let params = snapshot_params(
                 "status",
-                vec![("context", context.as_ref().map(|c| serde_json::json!(c)))],
+                vec![
+                    ("context", context.as_ref().map(|c| serde_json::json!(c))),
+                    (
+                        "allowProduction",
+                        allow_production.then(|| serde_json::json!(true)),
+                    ),
+                ],
             );
             match request_checked(&mut client, "profiling", Some(params)) {
                 Ok(result) => {
+                    let exit = status_exit_code(&result);
                     if json {
                         print_json(&result);
                     } else {
                         print!("{}", snapshot_status_text(&result));
                     }
-                    ExitCode::SUCCESS
+                    exit
                 }
                 Err(e) => report_error(&e, json),
             }
         }
 
-        ProfileCommands::Stop { context, out } => {
+        ProfileCommands::Stop {
+            context,
+            out,
+            allow_production,
+        } => {
             let mut client = match connect(None) {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
@@ -683,6 +728,10 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                 vec![
                     ("context", context.as_ref().map(|c| serde_json::json!(c))),
                     ("outputDir", out_dir),
+                    (
+                        "allowProduction",
+                        allow_production.then(|| serde_json::json!(true)),
+                    ),
                 ],
             );
             match request_checked(&mut client, "profiling", Some(params)) {
@@ -758,6 +807,43 @@ mod debug_stop_exit_code_tests {
     #[test]
     fn unknown_status_is_not_success() {
         assert!(!debug_stop_actually_stopped("?"));
+    }
+}
+
+#[cfg(test)]
+mod debug_start_and_status_tests {
+    use std::process::ExitCode;
+
+    use serde_json::json;
+
+    use super::{debug_start_text, status_exit_code};
+
+    #[test]
+    fn debug_start_text_prints_the_browser_url() {
+        let result = json!({
+            "session": "abc",
+            "status": "Started",
+            "browserUrl": "http://localhost:1234/bind",
+        });
+        let text = debug_start_text(&result);
+        assert!(text.contains("Debug session started: abc (status: Started)"));
+        assert!(text.contains("Open this URL to bind the session: http://localhost:1234/bind"));
+    }
+
+    #[test]
+    fn debug_start_text_omits_the_url_without_browser_url() {
+        let result = json!({ "session": "abc", "status": "Started" });
+        assert!(!debug_start_text(&result).contains("Open this URL"));
+    }
+
+    #[test]
+    fn failed_status_exits_one() {
+        assert!(status_exit_code(&json!({ "status": "Failed" })) == ExitCode::FAILURE);
+    }
+
+    #[test]
+    fn started_status_exits_zero() {
+        assert!(status_exit_code(&json!({ "status": "Started" })) == ExitCode::SUCCESS);
     }
 }
 

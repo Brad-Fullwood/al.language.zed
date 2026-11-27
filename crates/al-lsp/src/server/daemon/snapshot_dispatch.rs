@@ -15,6 +15,7 @@
 //! access token is never stored: every command gets one again.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use al_bc::snapshot::archive::{render_stops, RenderOptions, SnapshotArchive};
 use al_bc::snapshot::state::{SessionRecord, SessionStore, SnappointRecord};
@@ -157,16 +158,20 @@ fn project_root(workspace: &Workspace) -> Result<PathBuf, Failure> {
         .ok_or_else(|| invalid("No active project"))
 }
 
-/// The debug configuration `name` (the first one when absent) of the project,
-/// with the name it resolved to.
-fn load_config(root: &Path, name: Option<&str>) -> Result<(BcDebugConfig, String), Failure> {
-    let file = al_bc::launch::find_launch_config(root)
+fn launch_file(root: &Path) -> Result<al_bc::launch::DebugConfigFile, Failure> {
+    al_bc::launch::find_launch_config(root)
         .map_err(|error| invalid(error.to_string()))?
         .ok_or_else(|| {
             invalid(
                 "No debug configuration found in project (.zed/debug.json or .vscode/launch.json)",
             )
-        })?;
+        })
+}
+
+/// The debug configuration `name` (the first one when absent) of the project,
+/// with the name it resolved to.
+fn load_config(root: &Path, name: Option<&str>) -> Result<(BcDebugConfig, String), Failure> {
+    let file = launch_file(root)?;
     let picked = pick_named_config(&file.configs, name).map_err(invalid)?;
     let config = debug_config_from_server_config(picked);
     config.validate_native().map_err(invalid)?;
@@ -174,8 +179,13 @@ fn load_config(root: &Path, name: Option<&str>) -> Result<(BcDebugConfig, String
 }
 
 fn http_client(config: &BcDebugConfig) -> Result<reqwest::Client, Failure> {
+    if config.accept_invalid_certs {
+        al_bc::http_auth::warn_insecure_tls("snapshot debugger");
+    }
     reqwest::Client::builder()
         .danger_accept_invalid_certs(config.accept_invalid_certs)
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|error| internal(format!("Cannot create the HTTP client: {error}")))
 }
@@ -250,8 +260,8 @@ async fn start(workspace: &Workspace, params: &Value) -> Result<Value, Failure> 
         None | Some(Value::Null) => -1,
         Some(value) => value
             .as_i64()
-            .filter(|n| *n >= 0)
-            .ok_or_else(|| invalid("'sessionId' must be a non negative integer"))?,
+            .filter(|n| *n >= -1)
+            .ok_or_else(|| invalid("'sessionId' must be -1 or a non negative integer"))?,
     };
     // Snappoints are optional: SnapPoint verbosity also records a method
     // context that holds an exception.
@@ -386,8 +396,35 @@ impl SessionKind {
     }
 }
 
-/// The record named by `context`, or the latest one of this kind.
-fn pick_record(params: &Value, kind: SessionKind) -> Result<SessionRecord, Failure> {
+/// Whether two project roots name the same directory. Paths that cannot be
+/// canonicalised are compared as they are.
+fn same_project(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
+}
+
+/// Whether a configuration points at the tenant, environment and server that a
+/// record was started against.
+fn same_target(config: &BcDebugConfig, record: &SessionRecord) -> bool {
+    config.tenant.eq_ignore_ascii_case(&record.tenant)
+        && config.environment_name == record.environment_name
+        && config
+            .environment_type
+            .eq_ignore_ascii_case(&record.environment_type)
+        && config.server == record.server
+        && config.server_instance == record.server_instance
+}
+
+/// The record named by `context`, or else the newest unfinished one of this
+/// kind that was started in the active project `root`. With no project, no
+/// record matches.
+fn pick_record(
+    params: &Value,
+    kind: SessionKind,
+    root: Option<&Path>,
+) -> Result<SessionRecord, Failure> {
     let store = session_store()?;
     let noun = kind.noun();
     match opt_str(params, "context")? {
@@ -408,20 +445,52 @@ fn pick_record(params: &Value, kind: SessionKind) -> Result<SessionRecord, Failu
                 )))
             }
         }
-        None => match kind {
-            SessionKind::Snapshot => store.latest(),
-            SessionKind::Profile => store.latest_profile(),
+        None => store
+            .list()
+            .map_err(|error| internal(format!("cannot read the snapshot session store: {error}")))?
+            .into_iter()
+            .find(|record| {
+                kind.matches(record)
+                    && record.finished_at.is_none()
+                    && root.is_some_and(|root| same_project(root, &record.project_root))
+            })
+            .ok_or_else(|| {
+                invalid(format!(
+                    "no remembered {noun} session: run `{} start` first",
+                    match kind {
+                        SessionKind::Snapshot => "snapshot",
+                        SessionKind::Profile => "profile",
+                    }
+                ))
+            }),
+    }
+}
+
+/// The configuration of a record that has no configuration name (a Zed
+/// capture). It is the one whose target matches the record.
+fn nameless_config(root: &Path, record: &SessionRecord) -> Result<BcDebugConfig, Failure> {
+    let file = launch_file(root)?;
+    let matching: Vec<_> = file
+        .configs
+        .iter()
+        .filter(|server| same_target(&debug_config_from_server_config(server), record))
+        .collect();
+    match matching.as_slice() {
+        [] => Err(invalid(
+            "no debug configuration matches the tenant, environment and server of this session, so it is not used for this session",
+        )),
+        [only] => {
+            let config = debug_config_from_server_config(only);
+            config.validate_native().map_err(invalid)?;
+            Ok(config)
         }
-        .map_err(|error| internal(format!("cannot read the snapshot session store: {error}")))?
-        .ok_or_else(|| {
-            invalid(format!(
-                "no remembered {noun} session: run `{} start` first",
-                match kind {
-                    SessionKind::Snapshot => "snapshot",
-                    SessionKind::Profile => "profile",
-                }
-            ))
-        }),
+        many => {
+            let names: Vec<&str> = many.iter().map(|server| server.name.as_str()).collect();
+            Err(invalid(format!(
+                "several debug configurations match the tenant, environment and server of this session ({}), so none is used",
+                names.join(", ")
+            )))
+        }
     }
 }
 
@@ -432,24 +501,17 @@ fn config_for_record(
     record: &SessionRecord,
 ) -> Result<(PathBuf, BcDebugConfig), Failure> {
     let root = project_root(workspace)?;
-    let same_project = |a: &Path, b: &Path| match (a.canonicalize(), b.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
-    };
     if !same_project(&root, &record.project_root) {
         return Err(invalid(format!(
             "this session was started in project {}, run the command from there",
             record.project_root.display()
         )));
     }
-    let (config, _) = load_config(&root, record.configuration_name.as_deref())?;
-    let differs = !config.tenant.eq_ignore_ascii_case(&record.tenant)
-        || config.environment_name != record.environment_name
-        || !config
-            .environment_type
-            .eq_ignore_ascii_case(&record.environment_type)
-        || config.server != record.server
-        || config.server_instance != record.server_instance;
+    let config = match record.configuration_name.as_deref() {
+        Some(name) => load_config(&root, Some(name))?.0,
+        None => nameless_config(&root, record)?,
+    };
+    let differs = !same_target(&config, record) || config.snapshot_port != record.snapshot_port;
     if differs {
         return Err(invalid(
             "the debug configuration's tenant or environment changed since the session started, so it is not used for this session",
@@ -464,7 +526,8 @@ async fn status_session(
     kind: SessionKind,
 ) -> Result<(SessionRecord, snapshot_capture::StatusOutcome), Failure> {
     let allow_production = opt_bool(params, "allowProduction")?;
-    let mut record = pick_record(params, kind)?;
+    let root = project_root(workspace).ok();
+    let mut record = pick_record(params, kind, root.as_deref())?;
     let (_, config) = config_for_record(workspace, &record)?;
     guard_production(&config, allow_production).map_err(snapshot_failure)?;
     let store = session_store()?;
@@ -516,7 +579,8 @@ async fn finish_session(
 ) -> Result<(SessionRecord, snapshot_capture::FinishOutcome), Failure> {
     let allow_production = opt_bool(params, "allowProduction")?;
     let dir = output_dir(workspace, params)?;
-    let mut record = pick_record(params, kind)?;
+    let root = project_root(workspace).ok();
+    let mut record = pick_record(params, kind, root.as_deref())?;
     let (_, config) = config_for_record(workspace, &record)?;
     guard_production(&config, allow_production).map_err(snapshot_failure)?;
     let store = session_store()?;
@@ -549,6 +613,7 @@ async fn finish(workspace: &Workspace, params: &Value) -> Result<Value, Failure>
             "cpuProfilePath": null,
             "empty": true,
             "message": "The server returned no snapshot: nothing hit a snappoint, or no matching session ran.",
+            "warnings": warnings,
         }),
         FinishResult::Saved {
             zip,
@@ -667,8 +732,8 @@ pub(in crate::server::daemon) async fn profile_start(
         None | Some(Value::Null) => -1,
         Some(value) => value
             .as_i64()
-            .filter(|n| *n >= 0)
-            .ok_or_else(|| invalid("'sessionId' must be a non negative integer"))?,
+            .filter(|n| *n >= -1)
+            .ok_or_else(|| invalid("'sessionId' must be -1 or a non negative integer"))?,
     };
     let user = opt_str(params, "userId")?;
 

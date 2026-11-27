@@ -23,7 +23,7 @@ use super::version::{
     get_watch_node_takes_option, ATTACH_MIN_MAJOR,
 };
 use super::wire::{
-    default_invoke_timeout, percent_encode_url, redact_connection_token,
+    default_invoke_timeout, negotiate_body_excerpt, percent_encode_url,
     resolve_negotiate_connection, validate_signalr_handshake_response, SignalRMessage,
 };
 
@@ -171,6 +171,18 @@ impl BcDebugSession {
         access_token: &str,
         attaching: bool,
     ) -> Result<Self> {
+        Self::connect_with_deadline(config, access_token, attaching, CONNECT_DEADLINE).await
+    }
+
+    /// [`Self::connect`] with the time allowed for the whole setup: metadata,
+    /// negotiate, WebSocket upgrade and the handshake reply.
+    pub(super) async fn connect_with_deadline(
+        config: &BcDebugConfig,
+        access_token: &str,
+        attaching: bool,
+        deadline: std::time::Duration,
+    ) -> Result<Self> {
+        let deadline_at = tokio::time::Instant::now() + deadline;
         if config.accept_invalid_certs {
             // Match the warn-on-construction parity from BcClient::new at
             // bc_client.rs:99. Without this the DAP path silently
@@ -192,13 +204,20 @@ impl BcDebugSession {
         let negotiate_url = format!("{hub_url}/negotiate?{query}&negotiateVersion=1");
         let http = reqwest::Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
+            .connect_timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| DapError::ConnectionFailed(format!("HTTP client error: {e}")))?;
 
         // Microsoft reads the server info before it opens the hub and fails the
         // start when the request fails (DebugAdapterStartRequestHandler.cs:169-176,
         // ServerInfoApiClient.cs:27-29).
-        let metadata = super::rest::get_metadata(&http, config, access_token).await?;
+        let metadata = within(
+            deadline_at,
+            deadline,
+            "metadata",
+            super::rest::get_metadata(&http, config, access_token),
+        )
+        .await??;
         let debugger_major = debugger_major_from_metadata(&metadata);
         if debugger_major.is_none() {
             warn!("dev/metadata has no parsable debuggerVersion, using the newest hub call shapes");
@@ -206,13 +225,14 @@ impl BcDebugSession {
 
         // The query holds the bearer token, so only the path is logged.
         info!("SignalR negotiate: {hub_url}/negotiate");
-        let negotiate_resp = http
+        let negotiate_send = http
             .post(&negotiate_url)
             .header(AUTHORIZATION, format!("Bearer {access_token}"))
             .header("Content-Length", "0")
             .body("")
-            .send()
-            .await
+            .send();
+        let negotiate_resp = within(deadline_at, deadline, "negotiate", negotiate_send)
+            .await?
             .map_err(|e| {
                 // reqwest errors print the URL, which carries the bearer token.
                 DapError::ConnectionFailed(format!("SignalR negotiate failed: {}", e.without_url()))
@@ -249,28 +269,40 @@ impl BcDebugSession {
             affinity_cookie = affinity_cookie.is_some(),
             "SignalR negotiate cookies"
         );
-        let resp_text = negotiate_resp.text().await.map_err(|e| {
-            DapError::ConnectionFailed(format!("Failed to read negotiate response: {e}"))
-        })?;
-        let redacted = redact_connection_token(&resp_text);
+        let is_success = status.is_success();
+        let read_body = async {
+            if is_success {
+                let bytes = al_bc::bc_client::read_body_capped(
+                    negotiate_resp,
+                    al_bc::bc_client::MAX_BC_JSON_RESPONSE_BYTES,
+                )
+                .await
+                .map_err(|e| {
+                    DapError::ConnectionFailed(format!("Failed to read negotiate response: {e}"))
+                })?;
+                Ok::<_, DapError>(String::from_utf8_lossy(&bytes).into_owned())
+            } else {
+                Ok(al_bc::bc_client::read_error_body_capped(negotiate_resp).await)
+            }
+        };
+        let resp_text: String = within(deadline_at, deadline, "negotiate", read_body).await??;
         debug!(
             "Negotiate response (HTTP {}): {}",
             status,
-            &redacted[..redacted.len().min(500)]
+            negotiate_body_excerpt(&resp_text, 500)
         );
 
-        if !status.is_success() {
+        if !is_success {
             return Err(DapError::ConnectionFailed(format!(
                 "SignalR negotiate failed (HTTP {status}): {}",
-                redact_connection_token(&resp_text)
+                negotiate_body_excerpt(&resp_text, 200)
             )));
         }
 
         let negotiate: serde_json::Value = serde_json::from_str(&resp_text).map_err(|e| {
-            let redacted = redact_connection_token(&resp_text);
             DapError::ConnectionFailed(format!(
                 "Bad negotiate JSON: {e}: {}",
-                &redacted[..redacted.len().min(200)]
+                negotiate_body_excerpt(&resp_text, 200)
             ))
         })?;
 
@@ -315,28 +347,36 @@ impl BcDebugSession {
             .map_err(|e| DapError::ConnectionFailed(format!("WS request build error: {e}")))?;
 
         let connector = websocket_connector(config.accept_invalid_certs)?;
-        let (ws_stream, _) =
-            tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector)
-                .await
-                .map_err(|e| {
-                    DapError::ConnectionFailed(format!("WebSocket connect failed: {e}"))
-                })?;
+        let (ws_stream, _) = within(
+            deadline_at,
+            deadline,
+            "websocket upgrade",
+            tokio_tungstenite::connect_async_tls_with_config(request, None, false, connector),
+        )
+        .await?
+        .map_err(|e| DapError::ConnectionFailed(format!("WebSocket connect failed: {e}")))?;
 
         let (mut ws_sink, mut ws_source) = ws_stream.split();
 
         let handshake = "{\"protocol\":\"json\",\"version\":1}\x1e";
-        ws_sink
-            .send(tokio_tungstenite::tungstenite::Message::Text(
+        within(
+            deadline_at,
+            deadline,
+            "handshake",
+            ws_sink.send(tokio_tungstenite::tungstenite::Message::Text(
                 handshake.into(),
-            ))
-            .await
-            .map_err(|e| DapError::ConnectionFailed(format!("SignalR handshake failed: {e}")))?;
+            )),
+        )
+        .await?
+        .map_err(|e| DapError::ConnectionFailed(format!("SignalR handshake failed: {e}")))?;
 
         // Read handshake response. A SignalR server signals a
         // protocol/version mismatch here via `{"error":...}`; validate it so a
         // rejected handshake fails loudly instead of limping on against an
         // adapter that will misbehave on every later invoke.
-        let initial_frames = if let Some(msg) = ws_source.next().await {
+        let first_reply =
+            within(deadline_at, deadline, "handshake reply", ws_source.next()).await?;
+        let initial_frames = if let Some(msg) = first_reply {
             let msg = msg.map_err(|e| DapError::ConnectionFailed(format!("WS read error: {e}")))?;
             debug!("SignalR handshake response: {:?}", msg);
             if let tokio_tungstenite::tungstenite::Message::Text(text) = &msg {
@@ -995,3 +1035,23 @@ pub(crate) mod fake;
 
 #[cfg(test)]
 mod tests;
+
+/// Time allowed for [`BcDebugSession::connect`] to reach the handshake reply.
+const CONNECT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Await `future` until `deadline_at`. A late answer is an error that names the
+/// setup step, so a stalled server does not hold the launch request forever.
+async fn within<T>(
+    deadline_at: tokio::time::Instant,
+    deadline: std::time::Duration,
+    phase: &str,
+    future: impl std::future::Future<Output = T>,
+) -> Result<T> {
+    tokio::time::timeout_at(deadline_at, future)
+        .await
+        .map_err(|_| {
+            DapError::ConnectionFailed(format!(
+                "Business Central did not answer within {deadline:?} during {phase}"
+            ))
+        })
+}

@@ -495,54 +495,74 @@ pub fn resolve_output_dir(project_root: &Path, requested: Option<&Path>) -> Resu
         }
     }
     let mut existing = normalised.as_path();
-    let mut tail = PathBuf::new();
-    let canonical = loop {
+    let mut missing = Vec::new();
+    let mut resolved = loop {
         match existing.canonicalize() {
             Ok(path) => break path,
             Err(_) => {
-                let name = existing.file_name().ok_or_else(escapes)?;
-                let mut next = PathBuf::from(name);
-                next.push(&tail);
-                tail = next;
+                // A dangling symlink cannot be canonicalised. Refuse it rather
+                // than treat its name as a directory still to be created.
+                if std::fs::symlink_metadata(existing).is_ok_and(|m| m.file_type().is_symlink()) {
+                    return Err(escapes());
+                }
+                missing.push(existing.file_name().ok_or_else(escapes)?);
                 existing = existing.parent().ok_or_else(escapes)?;
             }
         }
     };
-    let resolved = canonical.join(tail);
+    for name in missing.iter().rev() {
+        resolved.push(name);
+    }
     if !resolved.starts_with(&root) {
         return Err(escapes());
     }
     Ok(resolved)
 }
 
-/// Create `dir` when it is missing and, only then, write a `.gitignore`
-/// holding `*` into it, because snapshot zips hold customer data. An existing
-/// directory is left as it is. The created directory is checked against the
-/// project root again, which catches a link planted between the check and the
-/// creation.
+/// Check `dir`, the output directory `resolve_output_dir` returned. A missing
+/// directory is created and given a `.gitignore` holding `*`, because snapshot
+/// zips hold customer data. An existing entry must be a real directory, not a
+/// symbolic link or a file. Either way it must resolve to itself under the
+/// project root, which catches a link planted after the first check.
 async fn prepare_output_dir(dir: &Path, project_root: &Path) -> Result<()> {
-    if tokio::fs::symlink_metadata(dir).await.is_ok() {
-        return Ok(());
+    match tokio::fs::symlink_metadata(dir).await {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(invalid(format!(
+                    "snapshot output directory '{}' is not a real directory",
+                    dir.display()
+                )));
+            }
+            ensure_resolves_to(dir, project_root)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::create_dir_all(dir)
+                .await
+                .map_err(|error| internal(format!("cannot create {}: {error}", dir.display())))?;
+            ensure_resolves_to(dir, project_root)?;
+            al_bc::output_file::write_no_follow(&dir.join(".gitignore"), b"*\n".to_vec())
+                .await
+                .map_err(|error| {
+                    internal(format!(
+                        "cannot write the .gitignore in {}: {error}",
+                        dir.display()
+                    ))
+                })
+        }
+        Err(error) => Err(internal(format!("cannot read {}: {error}", dir.display()))),
     }
-    tokio::fs::create_dir_all(dir)
-        .await
-        .map_err(|error| internal(format!("cannot create {}: {error}", dir.display())))?;
-    let created = resolve_output_dir(project_root, Some(dir))?;
-    if created != dir {
+}
+
+/// Refuse `dir` unless `resolve_output_dir` returns it unchanged.
+fn ensure_resolves_to(dir: &Path, project_root: &Path) -> Result<()> {
+    let resolved = resolve_output_dir(project_root, Some(dir))?;
+    if resolved != dir {
         return Err(invalid(format!(
             "snapshot output directory '{}' resolves to '{}', which is not where it was checked",
             dir.display(),
-            created.display()
+            resolved.display()
         )));
     }
-    al_bc::output_file::write_no_follow(&dir.join(".gitignore"), b"*\n".to_vec())
-        .await
-        .map_err(|error| {
-            internal(format!(
-                "cannot write the .gitignore in {}: {error}",
-                dir.display()
-            ))
-        })?;
     Ok(())
 }
 
@@ -562,10 +582,63 @@ pub struct FinishOutcome {
     pub save_error: Option<String>,
 }
 
+/// Check the output directory, then save the zip into it.
+async fn save_zip(
+    dir: &Path,
+    record: &SessionRecord,
+    zip: Vec<u8>,
+    sampling: bool,
+) -> Result<al_bc::snapshot::SavedSnapshot> {
+    prepare_output_dir(dir, &record.project_root).await?;
+    al_bc::snapshot::save_finished_snapshot(dir, &record.debugging_context, zip, sampling)
+        .await
+        .map_err(|error| internal(format!("cannot save the snapshot: {error}")))
+}
+
+/// Keep a zip that could not be saved at the store's recovery path, and point
+/// the session at it. The returned error keeps the original text.
+async fn keep_zip(
+    store: &SessionStore,
+    record: &mut SessionRecord,
+    zip: Vec<u8>,
+    error: CaptureError,
+) -> CaptureError {
+    let note = match store.recovery_path(&record.debugging_context) {
+        Err(recovery_error) => format!("and keeping the zip failed: {recovery_error}"),
+        Ok(path) => {
+            let shown = path.display().to_string();
+            match al_bc::output_file::write_no_follow(&path, zip).await {
+                Err(write_error) => format!("and keeping it at {shown} failed: {write_error}"),
+                Ok(()) => {
+                    record.zip_path = Some(path);
+                    match store.save(record) {
+                        Ok(_) => format!("the snapshot zip was kept at {shown}"),
+                        Err(save_error) => format!(
+                            "the snapshot zip was kept at {shown}, and the session could not be updated: {save_error}"
+                        ),
+                    }
+                }
+            }
+        }
+    };
+    with_note(error, &note)
+}
+
+/// Append `note` to the text of `error`. `Invalid` stays `Invalid`, because
+/// `al-lsp` maps the two kinds to different responses.
+fn with_note(error: CaptureError, note: &str) -> CaptureError {
+    match error {
+        CaptureError::Invalid(text) => invalid(format!("{text}, {note}")),
+        other => internal(format!("{other}, {note}")),
+    }
+}
+
 /// Finish the session, save the zip into `output_dir` (default
 /// `<project>/.snapshots`) and update the record. The directory is checked
 /// before the server is asked to finish, so a refused directory does not cost
-/// the snapshot. It is created only when there is a zip to save.
+/// the snapshot. It is created only when there is a zip to save. A zip that
+/// cannot be saved is kept at the store's recovery path, and the error names
+/// that path.
 pub async fn finish(
     http: &reqwest::Client,
     token: &str,
@@ -600,23 +673,24 @@ pub async fn finish(
         });
     };
     let bytes = zip.len();
-    prepare_output_dir(&dir, &record.project_root).await?;
-    let saved = al_bc::snapshot::save_finished_snapshot(
-        &dir,
-        &record.debugging_context,
-        zip,
-        // The cloud server sends no ETag on finish (recorded from CDX
-        // 2026-10-27), so Microsoft's ETag test alone would never extract the
-        // profile. The record knows the attach asked for a sampling profile.
-        finished.sampling || record.profile.as_deref() == Some("Sampling"),
-    )
-    .await
-    .map_err(|error| internal(format!("cannot save the snapshot: {error}")))?;
+    // The cloud server sends no ETag on finish (recorded from CDX
+    // 2026-10-27), so Microsoft's ETag test alone would never extract the
+    // profile. The record knows the attach asked for a sampling profile.
+    let sampling = finished.sampling || record.profile.as_deref() == Some("Sampling");
+    // A copy, so the zip can be kept if the save fails.
+    let saved = match save_zip(&dir, record, zip.clone(), sampling).await {
+        Ok(saved) => saved,
+        Err(error) => return Err(keep_zip(store, record, zip, error).await),
+    };
     record.zip_path = Some(saved.zip.clone());
-    let save_error = store
+    let record_error = store
         .save(record)
         .err()
         .map(|error| format!("The session could not be updated: {error}"));
+    let save_error = match (saved.profile_error, record_error) {
+        (Some(profile), Some(record_error)) => Some(format!("{profile}. {record_error}")),
+        (profile, record_error) => profile.or(record_error),
+    };
     Ok(FinishOutcome {
         result: FinishResult::Saved {
             zip: saved.zip,
@@ -630,6 +704,31 @@ pub async fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::any;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// A mock BC server that answers every request with `body`.
+    async fn serve(body: Vec<u8>) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    /// An OnPrem configuration pointing at `mock`, with a dummy tenant.
+    fn config_for(mock: &MockServer) -> BcDebugConfig {
+        let url = url::Url::parse(&mock.uri()).unwrap();
+        BcDebugConfig {
+            environment_type: "OnPrem".to_string(),
+            server: Some(format!("{}://{}", url.scheme(), url.host_str().unwrap())),
+            server_instance: Some("BC".to_string()),
+            snapshot_port: url.port(),
+            tenant: "00000000-0000-0000-0000-000000000000".to_string(),
+            ..BcDebugConfig::default()
+        }
+    }
 
     fn point(kind: i32, id: i32, line0: u16, condition: Option<&str>) -> SnappointRecord {
         SnappointRecord {
@@ -738,5 +837,85 @@ mod tests {
         std::fs::create_dir(&existing).unwrap();
         prepare_output_dir(&existing, &root).await.unwrap();
         assert!(!existing.join(".gitignore").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_symlink_output_dir_is_refused() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        std::os::unix::fs::symlink(outside.path().join("missing"), root.join(".snapshots"))
+            .unwrap();
+        let error = resolve_output_dir(&root, None).unwrap_err();
+        assert!(matches!(error, CaptureError::Invalid(_)), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn existing_symlink_output_dir_is_refused_by_prepare() {
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        std::fs::create_dir(root.join("real")).unwrap();
+        let link = root.join(".snapshots");
+        std::os::unix::fs::symlink(root.join("real"), &link).unwrap();
+        let error = prepare_output_dir(&link, &root).await.unwrap_err();
+        assert!(matches!(error, CaptureError::Invalid(_)), "{error}");
+    }
+
+    #[tokio::test]
+    async fn failed_save_keeps_the_zip_in_the_store() {
+        let served = b"zip bytes from the server".to_vec();
+        let server = serve(served.clone()).await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        // A regular file at the output directory makes the zip save fail.
+        std::fs::write(root.join("out.txt"), b"not a directory").unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        let ctx = "c4fbb573-e325-443c-9887-8d0574e833ee";
+        let mut record = SessionRecord {
+            debugging_context: ctx.to_string(),
+            affinity_cookie: None,
+            attach_kind: "UserSession".to_string(),
+            created_at: 0,
+            project_root: root.clone(),
+            configuration_name: None,
+            tenant: "00000000-0000-0000-0000-000000000000".to_string(),
+            environment_type: "OnPrem".to_string(),
+            environment_name: None,
+            server: None,
+            server_instance: None,
+            snapshot_port: None,
+            client_type: "WebClient".to_string(),
+            user_id: None,
+            session_id: -1,
+            verbosity: "SnapPoint".to_string(),
+            snappoints: Vec::new(),
+            last_status: None,
+            last_status_at: None,
+            started_at: None,
+            zip_path: None,
+            finished_at: None,
+            profile: None,
+        };
+        store.save(&record).unwrap();
+        let error = finish(
+            &reqwest::Client::new(),
+            "token",
+            &store,
+            &config_for(&server),
+            false,
+            &mut record,
+            Some(Path::new("out.txt")),
+        )
+        .await
+        .err()
+        .expect("finish fails when the zip cannot be saved");
+        let recovery = store.recovery_path(ctx).unwrap();
+        let text = error.to_string();
+        assert!(text.contains(&recovery.display().to_string()), "{text}");
+        assert_eq!(std::fs::read(&recovery).unwrap(), served);
+        assert_eq!(store.load(ctx).unwrap().unwrap().zip_path, Some(recovery));
     }
 }

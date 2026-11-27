@@ -174,6 +174,24 @@ pub fn set_request_timeout_override(millis: u64) {
     }
 }
 
+/// The deadline a command gets: `--timeout-ms` when the user gave one,
+/// otherwise the command's own default.
+fn effective_timeout(
+    override_: Option<std::time::Duration>,
+    default: std::time::Duration,
+) -> std::time::Duration {
+    override_.unwrap_or(default)
+}
+
+/// Set the request deadline of a command with its own default, such as a
+/// build or a test run. `--timeout-ms` still wins over that default.
+pub fn set_command_timeout(client: &mut DaemonClient, default: std::time::Duration) {
+    client.set_request_timeout(effective_timeout(
+        REQUEST_TIMEOUT_OVERRIDE.get().copied(),
+        default,
+    ));
+}
+
 pub fn connect(project_dir: Option<&str>) -> Result<DaemonClient, String> {
     let root = project_root(project_dir)?;
     DaemonClient::connect(&root)
@@ -585,7 +603,7 @@ static CALLER_TENANT: std::sync::OnceLock<al_bc::tenant_guard::Declaration> =
 /// Daemon methods that open a connection to Business Central. The daemon
 /// refuses a cloud connection from any of them unless `cliTenant` matches the
 /// launch configuration.
-const CONNECTING_METHODS: [&str; 11] = [
+const CONNECTING_METHODS: [&str; 12] = [
     "downloadSymbols",
     "environmentVersion",
     "publish",
@@ -597,15 +615,23 @@ const CONNECTING_METHODS: [&str; 11] = [
     "tests.run_auto",
     "tests.snapshot_capture",
     "tests.snapshot_replay",
+    "authenticate",
 ];
 
 /// Add `BC_ACCESS_TOKEN` (or `BC_TOKEN`) and `BC_USERNAME`/`BC_PASSWORD` from
 /// this process's environment to the request. Nothing is added when none is set.
+/// Invalid token variables stop the request, so the daemon does not spend its
+/// own credentials in their place.
 fn with_caller_credentials(
     method: &str,
     params: Option<serde_json::Value>,
-) -> Option<serde_json::Value> {
-    attach_credentials(method, params, al_bc::http_auth::Credentials::from_env())
+) -> Result<Option<serde_json::Value>, String> {
+    if !al_protocol::methods::CREDENTIAL_METHODS.contains(&method) {
+        return Ok(params);
+    }
+    let credentials =
+        al_bc::http_auth::Credentials::from_env().map_err(|error| error.to_string())?;
+    Ok(attach_credentials(method, params, credentials))
 }
 
 fn attach_credentials(
@@ -625,6 +651,11 @@ fn attach_credentials(
 
 pub fn set_caller_tenant(tenant: Option<String>, purpose: Option<String>) {
     let _ = CALLER_TENANT.set(al_bc::tenant_guard::Declaration { tenant, purpose });
+}
+
+/// The global `--tenant` and `--purpose` as typed, if the command line set them.
+pub(crate) fn caller_declaration() -> Option<&'static al_bc::tenant_guard::Declaration> {
+    CALLER_TENANT.get()
 }
 
 /// Add `cliTenant` and `cliPurpose` to a request that connects, and print the
@@ -790,7 +821,7 @@ pub fn request_checked(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let mut sent =
-        with_caller_credentials(method, with_caller_tenant(method, with_projection(params)));
+        with_caller_credentials(method, with_caller_tenant(method, with_projection(params)))?;
     // At most two passes: the second carries the text for a file the daemon
     // may not open, and `params_with_text` returns None once it is attached.
     loop {
@@ -1235,6 +1266,63 @@ mod path_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod connection_and_timeout_tests {
+    use std::time::Duration;
+
+    use clap::Parser;
+
+    use super::{CONNECTING_METHODS, effective_timeout};
+    use crate::cli::{Cli, Commands, ProfileCommands};
+
+    #[test]
+    fn effective_timeout_prefers_the_override() {
+        let default = Duration::from_secs(600);
+        assert_eq!(
+            effective_timeout(Some(Duration::from_secs(1)), default),
+            Duration::from_secs(1)
+        );
+        assert_eq!(effective_timeout(None, default), default);
+    }
+
+    #[test]
+    fn connecting_methods_are_the_credential_methods_plus_authenticate() {
+        let mut connecting = CONNECTING_METHODS.to_vec();
+        connecting.sort_unstable();
+        let mut expected = al_protocol::methods::CREDENTIAL_METHODS.to_vec();
+        expected.push("authenticate");
+        expected.sort_unstable();
+        assert_eq!(connecting, expected);
+    }
+
+    #[test]
+    fn profile_status_and_stop_accept_allow_production() {
+        let status =
+            Cli::try_parse_from(["al-explorer", "profile", "status", "--allow-production"])
+                .expect("profile status accepts --allow-production");
+        assert!(matches!(
+            status.command,
+            Commands::Profile {
+                subcmd: ProfileCommands::Status {
+                    allow_production: true,
+                    ..
+                }
+            }
+        ));
+        let stop = Cli::try_parse_from(["al-explorer", "profile", "stop", "--allow-production"])
+            .expect("profile stop accepts --allow-production");
+        assert!(matches!(
+            stop.command,
+            Commands::Profile {
+                subcmd: ProfileCommands::Stop {
+                    allow_production: true,
+                    ..
+                }
+            }
+        ));
     }
 }
 

@@ -229,6 +229,9 @@ where
 
             let http = reqwest::Client::builder()
                 .danger_accept_invalid_certs(config.accept_invalid_certs)
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(600))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| DapError::PublishFailed(e.to_string()))?;
 
@@ -418,7 +421,12 @@ where
         // Clone Arc, drop guard, then stop (don't hold mutex across await).
         let session_arc = self.session.lock().await.clone();
         if let Some(s) = session_arc {
-            let _ = s.stop_debugging().await;
+            // The adapter exits after `disconnect`, so a retry is not possible.
+            // The user is told instead.
+            if let Err(error) = s.stop_debugging().await {
+                self.emit_output(out, "stderr", stop_failure_text(&error))
+                    .await?;
+            }
         }
         *self.session.lock().await = None;
         self.variable_handles.lock().await.reset();
@@ -450,6 +458,11 @@ pub(super) async fn run_configuration_done(
     *configured.lock().await = true;
     info!("DAP configurationDone accepted");
     Ok(())
+}
+
+/// The `output` text for a `StopDebugging` call that Business Central did not confirm.
+pub(super) fn stop_failure_text(error: &DapError) -> String {
+    format!("Business Central did not confirm StopDebugging: {error}\n")
 }
 
 #[cfg(test)]

@@ -114,11 +114,13 @@ Sign-in client: the default client id is the AL extension's `41839ce3-4041-4bac-
 (CloudHttpClientFactory.cs:228). Override it the way the AL extension does, with the workspace setting
 `al.entraIdAuthentication` in `.vscode/settings.json` (keys `endpoint`, `clientId`, `redirectionUri`,
 `scope`). Microsoft reads that setting, not a launch.json property. An `entraIdAuthentication` block inside a
-launch configuration is also read and wins per field for that configuration's tenant. `endpoint` must be an
-https host. `redirectionUri` is read and not sent, because the interactive flow uses `http://localhost` and
-the device code flow has no redirect. `BC_CLIENT_ID` overrides the client id from both. A tenant policy that
-blocks the AL client needs one of these overrides. Before an interactive sign-in, a refresh token for the same
-client id and a GUID tenant is taken from the AL extension's
+launch configuration is also read and wins per field for that configuration's tenant. Only these Microsoft
+authority hosts are accepted for `endpoint`, over https with no port, user info, path, query or fragment:
+`login.microsoftonline.com`, `login.microsoftonline.us` and `login.partner.microsoftonline.cn`. A redirect to
+another origin is refused. `redirectionUri` is read and not sent, because the interactive flow uses
+`http://localhost` and the device code flow has no redirect. `BC_CLIENT_ID` overrides the client id from both.
+A tenant policy that blocks the AL client needs one of these overrides. Before an interactive sign-in, a
+refresh token for the same client id and a GUID tenant is taken from the AL extension's
 `~/.local/share/Microsoft/BusinessCentral/DevTools/TokenCacheUnprotected.dat` (read only, never written).
 The protected `TokenCache.dat` is not read.
 

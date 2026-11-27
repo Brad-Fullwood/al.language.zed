@@ -96,6 +96,7 @@ dependencies = [
  "url",
  "urlencoding",
  "wiremock",
+ "zeroize",
  "zip 9.0.5",
 ]
 

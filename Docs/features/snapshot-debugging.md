@@ -48,7 +48,7 @@ them.
 | `snapshotVerbosity` | `SnapPoint` (default) records variables at the snappoints and where an exception is held. `Full` also records every call. |
 | `snapshotOutputPath` | Folder for the saved zip inside the project. Default `.snapshots`. A relative path is relative to the project root. |
 | `snapshotPort` | On-premises only. The port of the snapshot debugger services, default 7083. |
-| `allowProduction` | Allow a Production environment. Without it a Production target is refused before any sign-in. |
+| `allowProduction` | Allow a Production environment. Without it a Production target is refused before any sign-in. The check reads the configuration's `environmentType` and `environmentName` and does not ask the server for the environment's type. |
 
 Snappoints are optional. With none, the default `SnapPoint` verbosity still records a method context
 that holds an exception.
@@ -72,7 +72,7 @@ Output events:
   set against (see below).
 
 Disconnect to finish. The adapter downloads the snapshot, saves the zip under `snapshotOutputPath`
-and prints `Snapshot saved to <path>`. If the finish fails, the session record stays on this machine and `al-explorer snapshot finish` retries it. When the adapter creates the output folder it also writes
+and prints `Snapshot saved to <path>`. If the finish fails, the session record stays on this machine and `al-explorer snapshot finish` retries it. If saving the zip to the output folder fails, `finish` keeps it at `<store dir>/<context>.zip`, where the store dir is `<local data dir>/al-lsp/snapshot-sessions` and the context name is lower case. The error message names that path. When the adapter creates the output folder it also writes
 a `.gitignore` with `*` into it. An existing folder is left alone. `al-explorer snapshot finish` does the same from a
 terminal.
 
@@ -110,7 +110,7 @@ adapter uses: the packages folder (`.alpackages` by default, or `al.packageCache
 these gets a frame without source and one `output` line. When the workspace file differs from the
 zip's source of the same object, one `output` warning says line numbers can be off. A file that
 cannot be made read-only is reported in one `output` line. Differences from Microsoft's adapter: the
-`stopped` reason is the DAP value `step`, `initialized` is sent by `initialize`, no extra `stopped`
+`stopped` reason is the DAP value `step`, the `initialized` event follows the `launch` response, no extra `stopped`
 follows `terminated`, and `output` text carries no timestamps.
 
 ## Live test results
@@ -151,14 +151,14 @@ All commands run through the daemon and use a launch configuration from `.zed/de
 
 ```sh
 # start: snappoints on page 42 for the next web client session of one user
-al-explorer snapshot start --config "Sandbox" --break-on-next WebClient \
+al-explorer --tenant <GUID> snapshot start --config "Sandbox" --break-on-next WebClient \
   --user user@contoso.com --snap page:42:2530 --snap page:42:2531
 
 # status: the latest session, or --context <guid>
-al-explorer snapshot status
+al-explorer --tenant <GUID> snapshot status
 
 # finish: download and save the zip, default folder .snapshots
-al-explorer snapshot finish --out .snapshots
+al-explorer --tenant <GUID> snapshot finish --out .snapshots
 
 # list: sessions started from this machine
 al-explorer snapshot list
@@ -166,6 +166,8 @@ al-explorer snapshot list
 # show: stops of a zip with stack and variables
 al-explorer snapshot show .snapshots/3033906a-fe68-4bee-85e3-bbb2ebc91e1b.zip --stop 1 --fields "No.,Description"
 ```
+
+A customer tenant also needs `--purpose <TEXT>`. A refusal by the tenant guard exits with code 3.
 
 `start` requires `--break-on-next` and takes `--config` (default: the first configuration), `--snap` (repeatable, optional),
 `--user`, `--session-id`, `--verbosity snappoint|full` (default `snappoint`) and `--allow-production`.
@@ -178,7 +180,7 @@ latest session without arguments.
 The `al_snapshot` tool takes `action` (`start`, `status`, `finish`, `list`, `show`) and the same
 parameters under camelCase names: `config`, `snaps`, `breakOnNext`, `userId`, `sessionId`,
 `verbosity`, `allowProduction`, `accessToken`, `context`, `outputDir`, `path`, `vars`, `fields`, `stop`
-and `json`. `breakOnNext` is required for `start`. See [mcp-tools](../reference/mcp-tools.md).
+and `json`. `breakOnNext` is required for `start`. A cloud `al_snapshot` call needs the declaration fields `cliTenant` (the tenant GUID) and `cliPurpose` (customer tenants only). See [mcp-tools](../reference/mcp-tools.md).
 
 ## Limits
 
@@ -194,9 +196,9 @@ and `json`. `breakOnNext` is required for `start`. See [mcp-tools](../reference/
   `"resourceExposurePolicy": { "allowDebugging": true }`. Microsoft's default is false, and without
   it the extension's code is not recorded.
 - Only the first web client session after arming is recorded, see Capture in Zed.
-- Production is refused unless `allowProduction` is set, before any sign-in.
+- Production is refused unless `allowProduction` is set, before any sign-in. The check reads the configuration's `environmentType` and `environmentName` and does not ask the server for the environment's type.
 - A snapshot zip holds customer data. Keep it out of git. The adapter writes a `.gitignore` into a
-  folder it creates. Replay extracts the zip's sources to the system temp folder, not the project.
+  folder it creates. Replay writes the zip's sources to `<cache>/al-lsp/snapshot-sources` (the user cache folder), mode 0700, and falls back to the system temp folder only when there is no user cache folder.
 - Capture is authorised like any other attach, so a refused target fails in the debug console. A
   replay launch reads a local zip, sends no credential and skips that check, as Microsoft's adapter
   does. The package folders it reads for sources pass the same project trust check as the compile

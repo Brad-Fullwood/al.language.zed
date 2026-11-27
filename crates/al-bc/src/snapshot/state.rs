@@ -147,6 +147,11 @@ impl SessionStore {
             .join(format!("{}.json", context.to_ascii_lowercase())))
     }
 
+    /// Where `finish` keeps a zip it could not save: `<store dir>/<context>.zip`.
+    pub fn recovery_path(&self, context: &str) -> std::io::Result<PathBuf> {
+        Ok(self.path_for(context)?.with_extension("zip"))
+    }
+
     /// Write the record, replacing an earlier one for the same context.
     ///
     /// The bytes go to a new temporary file (created exclusively, so an entry

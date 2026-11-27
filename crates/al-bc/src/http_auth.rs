@@ -41,9 +41,13 @@ fn resolve_access_token_values(
 /// existing publish/test callers. Supplying different values is rejected so
 /// symbol download, publish, tests, snapshots, and DAP cannot authenticate as
 /// different principals depending on which implementation happens to run.
+///
+/// When the current daemon request carried credentials, only the request's
+/// values count: a request that sent only a username and password does not
+/// pick up a token from the daemon's environment.
 pub fn access_token_from_env() -> Result<Option<String>, AccessTokenEnvError> {
-    if let Some(token) = request_credentials(|c| c.access_token.clone()) {
-        return Ok(Some(token));
+    if request_carries_credentials() {
+        return Ok(request_credentials(|c| c.access_token.clone()));
     }
     let read = |name: &'static str| -> Result<Option<String>, AccessTokenEnvError> {
         match std::env::var(name) {
@@ -60,17 +64,21 @@ pub fn access_token_from_env() -> Result<Option<String>, AccessTokenEnvError> {
 /// Read `BC_USERNAME` / `BC_PASSWORD`, the HTTP Basic credentials every BC
 /// client accepts for `AuthMethod::UserPassword` and `AuthMethod::Windows`.
 ///
-/// `None` when either is missing. No client in this workspace implements an
+/// `None` when either is missing or blank. Inside a daemon request that
+/// carried credentials, only the request's pair counts. No client in this workspace implements an
 /// NTLM or Negotiate handshake, so Basic is the only credential a
 /// Windows-auth-configured server can be given from here.
 #[must_use]
 pub fn basic_auth_from_env() -> Option<(String, String)> {
-    if let Some(basic) = request_credentials(|c| c.basic.clone()) {
-        return Some(basic);
+    if request_carries_credentials() {
+        return request_credentials(|c| c.basic.clone());
     }
-    let username = std::env::var("BC_USERNAME").ok()?;
-    let password = std::env::var("BC_PASSWORD").ok()?;
-    Some((username, password))
+    let read = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+    };
+    Some((read("BC_USERNAME")?, read("BC_PASSWORD")?))
 }
 
 /// Credentials a client sends with one daemon request (journey-07).
@@ -82,7 +90,10 @@ pub fn basic_auth_from_env() -> Option<(String, String)> {
 /// [`access_token_from_env`] and [`basic_auth_from_env`] prefer them to the
 /// environment. Standard route checked: `std::env::set_var` in the daemon, which
 /// races between threads and leaves the secret in the process.
-#[derive(Clone, Default, PartialEq, Eq)]
+///
+/// The secrets are overwritten when the value is dropped. Copies made with
+/// `clone` or put into a JSON request are separate values.
+#[derive(Clone, Default, PartialEq, Eq, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct Credentials {
     pub access_token: Option<String>,
     pub basic: Option<(String, String)>,
@@ -108,16 +119,16 @@ tokio::task_local! {
 }
 
 impl Credentials {
-    /// What this process holds in its environment, `None` when nothing is set
-    /// or the token variables are invalid (the receiving side then reports
-    /// its own environment's problem).
-    #[must_use]
-    pub fn from_env() -> Option<Self> {
+    /// What this process holds in its environment, `None` when nothing is set.
+    /// Invalid token variables, such as `BC_ACCESS_TOKEN` and `BC_TOKEN` with
+    /// different values, are an error, so the caller does not fall back to
+    /// whatever credentials the receiving daemon holds.
+    pub fn from_env() -> Result<Option<Self>, AccessTokenEnvError> {
         let credentials = Credentials {
-            access_token: access_token_from_env().ok().flatten(),
+            access_token: access_token_from_env()?,
             basic: basic_auth_from_env(),
         };
-        (!credentials.is_empty()).then_some(credentials)
+        Ok((!credentials.is_empty()).then_some(credentials))
     }
 
     #[must_use]
@@ -185,6 +196,16 @@ pub async fn scope<F: std::future::Future>(credentials: Credentials, future: F) 
 pub fn daemon_request_lacks_credentials() -> bool {
     REQUEST_CREDENTIALS
         .try_with(Credentials::is_empty)
+        .unwrap_or(false)
+}
+
+/// True inside a daemon request that carried no access token, including one
+/// that carried only a username and password. Nobody can answer an OAuth
+/// sign-in prompt for such a request.
+#[must_use]
+pub fn daemon_request_lacks_access_token() -> bool {
+    REQUEST_CREDENTIALS
+        .try_with(|credentials| credentials.access_token.is_none())
         .unwrap_or(false)
 }
 
@@ -329,6 +350,107 @@ mod tests {
             assert!(daemon_missing_credentials_hint().contains("al-explorer daemon-shutdown"));
         })
         .await;
+    }
+
+    /// Sets the credential variables for one test and removes them after.
+    fn with_env(vars: &[(&str, &str)], check: impl FnOnce()) {
+        const NAMES: [&str; 4] = ["BC_ACCESS_TOKEN", "BC_TOKEN", "BC_USERNAME", "BC_PASSWORD"];
+        // SAFETY: every test that writes these variables is in the
+        // `bc_creds_env` serial group.
+        unsafe {
+            for name in NAMES {
+                std::env::remove_var(name);
+            }
+            for (name, value) in vars {
+                std::env::set_var(name, value);
+            }
+        }
+        check();
+        unsafe {
+            for name in NAMES {
+                std::env::remove_var(name);
+            }
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(bc_creds_env)]
+    fn request_credentials_do_not_mix_with_the_environment() {
+        let env = [
+            ("BC_ACCESS_TOKEN", "env-token"),
+            ("BC_USERNAME", "env-user"),
+            ("BC_PASSWORD", "env-password"),
+        ];
+        let basic_only = Credentials {
+            access_token: None,
+            basic: Some(("alice".into(), "pw".into())),
+        };
+        let token_only = Credentials {
+            access_token: Some("request-token".into()),
+            basic: None,
+        };
+        with_env(&env, || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let token = runtime.block_on(scope(basic_only, async { access_token_from_env() }));
+            assert_eq!(token, Ok(None));
+            let basic = runtime.block_on(scope(token_only, async { basic_auth_from_env() }));
+            assert_eq!(basic, None);
+            // Outside a request the environment is read as before.
+            assert_eq!(access_token_from_env(), Ok(Some("env-token".into())));
+        });
+    }
+
+    #[test]
+    #[serial_test::serial(bc_creds_env)]
+    fn from_env_reports_a_token_conflict() {
+        with_env(&[("BC_ACCESS_TOKEN", "one"), ("BC_TOKEN", "two")], || {
+            assert_eq!(Credentials::from_env(), Err(AccessTokenEnvError::Conflict));
+        });
+    }
+
+    #[test]
+    #[serial_test::serial(bc_creds_env)]
+    fn a_blank_environment_password_leaves_the_pair_absent() {
+        with_env(&[("BC_USERNAME", "alice"), ("BC_PASSWORD", "  ")], || {
+            assert_eq!(basic_auth_from_env(), None);
+        });
+        with_env(&[("BC_USERNAME", " "), ("BC_PASSWORD", "pw")], || {
+            assert_eq!(basic_auth_from_env(), None);
+        });
+    }
+
+    #[tokio::test]
+    async fn a_basic_only_request_lacks_an_access_token() {
+        assert!(!daemon_request_lacks_access_token());
+        let basic_only = Credentials {
+            access_token: None,
+            basic: Some(("alice".into(), "pw".into())),
+        };
+        assert!(scope(basic_only, async { daemon_request_lacks_access_token() }).await);
+        assert!(
+            scope(Credentials::default(), async {
+                daemon_request_lacks_access_token()
+            })
+            .await
+        );
+        let token = Credentials {
+            access_token: Some("tok".into()),
+            basic: None,
+        };
+        assert!(!scope(token, async { daemon_request_lacks_access_token() }).await);
+    }
+
+    #[test]
+    fn zeroize_clears_both_secrets() {
+        use zeroize::Zeroize;
+        let mut credentials = Credentials {
+            access_token: Some("tok".into()),
+            basic: Some(("alice".into(), "pw".into())),
+        };
+        credentials.zeroize();
+        assert!(credentials.is_empty());
     }
 
     #[test]
