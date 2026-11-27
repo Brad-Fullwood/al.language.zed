@@ -24,6 +24,8 @@ pub(super) struct TableMeta {
     pub(super) field_defaults: HashMap<FieldNo, Value>,
     pub(super) field_lengths: HashMap<FieldNo, usize>,
     pub(super) pk_fields: Vec<FieldNo>,
+    /// Field number → (field name, raw text) of each field's `InitValue`.
+    pub(super) init_values: HashMap<FieldNo, (String, String)>,
 }
 
 /// Locate and parse a workspace table object's metadata by name.
@@ -90,6 +92,7 @@ fn parse_table_meta(
     let mut flowfields: HashMap<FieldNo, CalcFormula> = HashMap::new();
     let mut field_defaults: HashMap<FieldNo, Value> = HashMap::new();
     let mut field_lengths: HashMap<FieldNo, usize> = HashMap::new();
+    let mut init_values: HashMap<FieldNo, (String, String)> = HashMap::new();
 
     let fields_body = section_body(body, "fields", source)
         .ok_or_else(|| "fields section is missing".to_string())?;
@@ -106,6 +109,9 @@ fn parse_table_meta(
         let normalized_name = name.to_ascii_lowercase();
         if field_by_name.insert(normalized_name, no).is_some() {
             return Err(format!("duplicate field name '{name}'"));
+        }
+        if let Some(text) = field_property_text(fdef, source, "InitValue") {
+            init_values.insert(no, (name.clone(), text));
         }
         if let Some(type_text) = type_text {
             // Strip any length suffix (`Text[20]`, `Code[10]`) to the base name.
@@ -168,6 +174,7 @@ fn parse_table_meta(
         field_defaults,
         field_lengths,
         pk_fields,
+        init_values,
     })
 }
 
@@ -392,6 +399,12 @@ fn parse_field_calcformula(
 /// The `OptionMembers` property of a field, verbatim (`Low,High` or
 /// `" ",Low,High`). `None` when the field does not declare one.
 fn parse_option_members(section: Node<'_>, source: &[u8]) -> Option<String> {
+    field_property_text(section, source, "OptionMembers")
+}
+
+/// The verbatim value of the named property in a field's body, `None` when the
+/// field does not declare it.
+fn field_property_text(section: Node<'_>, source: &[u8], property: &str) -> Option<String> {
     let body = section.child_by_field_name("body")?;
     let mut cursor = body.walk();
     let found = body
@@ -401,7 +414,7 @@ fn parse_option_members(section: Node<'_>, source: &[u8]) -> Option<String> {
             child
                 .child_by_field_name("name")
                 .and_then(|n| n.utf8_text(source).ok())
-                .is_some_and(|n| n.trim().eq_ignore_ascii_case("OptionMembers"))
+                .is_some_and(|n| n.trim().eq_ignore_ascii_case(property))
         });
     found.and_then(|prop| property_value_text(prop, source))
 }

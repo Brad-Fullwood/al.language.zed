@@ -7,7 +7,7 @@
 //! This module does **not** wire into the interpreter's `Value::Record(handle)`
 //! semantics — the handle mapping is the interpreter's responsibility.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use thiserror::Error;
 
 use crate::interpreter::value::{Decimal, Value};
@@ -203,11 +203,24 @@ pub struct RecordView {
     /// Filtered, sorted keys ready for iteration (built by FindFirst/FindSet).
     iter_set: Vec<PrimaryKey>,
     iter_pos: Option<usize>,
+    /// FlowFields calculated on this view by `CalcFields`. A FlowField outside
+    /// this set reads as its type default (zero), as in BC before a calculation.
+    calculated: BTreeSet<FieldNo>,
 }
 
 impl RecordView {
-    /// Copy another view's row buffer and `xRec` snapshot into this view,
-    /// leaving filters, sort key and cursor untouched.
+    /// Record that `CalcFields` has calculated `field` on this view.
+    pub fn mark_calculated(&mut self, field: FieldNo) {
+        self.calculated.insert(field);
+    }
+
+    /// Whether `CalcFields` has calculated `field` since the buffer was last loaded.
+    pub fn is_calculated(&self, field: FieldNo) -> bool {
+        self.calculated.contains(&field)
+    }
+
+    /// Copy another view's row buffer, `xRec` snapshot and calculated FlowFields
+    /// into this view, leaving filters, sort key and cursor untouched.
     ///
     /// This is the by-value record parameter rule: BC hands the callee a
     /// *copy* of the caller's buffer (so unsaved field assignments made before
@@ -216,6 +229,7 @@ impl RecordView {
     pub fn copy_buffers_from(&mut self, other: &RecordView) {
         self.current = other.current.clone();
         self.x_rec = other.x_rec.clone();
+        self.calculated = other.calculated.clone();
     }
 
     /// Drop the iteration set and position, as `DeleteAll` does.
@@ -310,6 +324,9 @@ pub struct MockRecord {
     /// field that was never assigned, notably the primary key of a row
     /// inserted straight after `Init`.
     field_defaults: HashMap<FieldNo, Value>,
+    /// Field number → the field's evaluated `InitValue`. `init_in` writes
+    /// these over the type defaults, except on primary-key fields.
+    field_init_values: HashMap<FieldNo, Value>,
     /// Built-in view backing the plain (view-less) API.
     view: RecordView,
 }
@@ -328,6 +345,7 @@ impl MockRecord {
             primary_key_fields: primary_key_fields.clone(),
             rows: BTreeMap::new(),
             field_defaults: HashMap::new(),
+            field_init_values: HashMap::new(),
             view: RecordView {
                 sort_key,
                 ..RecordView::default()
@@ -350,6 +368,12 @@ impl MockRecord {
     /// table definition.
     pub fn with_field_defaults(mut self, field_defaults: HashMap<FieldNo, Value>) -> Self {
         self.field_defaults = field_defaults;
+        self
+    }
+
+    /// Attach the evaluated `InitValue` of each field that declares one.
+    pub fn with_field_init_values(mut self, field_init_values: HashMap<FieldNo, Value>) -> Self {
+        self.field_init_values = field_init_values;
         self
     }
 
@@ -421,7 +445,13 @@ impl MockRecord {
             .collect();
         view.current.clear();
         view.x_rec.clear();
+        view.calculated.clear();
         view.iter_pos = None;
+        for (f, v) in &self.field_init_values {
+            if !self.primary_key_fields.contains(f) {
+                view.current.insert(*f, v.clone());
+            }
+        }
         for (f, v) in preserved {
             view.current.insert(f, v);
         }
@@ -452,6 +482,7 @@ impl MockRecord {
             if let Some(row) = self.rows.get(&normalize_key(&key)) {
                 view.current = row.clone();
                 view.x_rec = row.clone();
+                view.calculated.clear();
             }
         }
     }
@@ -461,6 +492,7 @@ impl MockRecord {
         let row = self.rows.get(&key).ok_or(RecordError::NotFound)?;
         view.current = row.clone();
         view.x_rec = row.clone();
+        view.calculated.clear();
         Ok(())
     }
 
@@ -468,7 +500,19 @@ impl MockRecord {
         self.with_default_view(|table, view| table.get_in(view, key))
     }
 
-    /// `INSERT` — insert the current buffer as a new row.
+    /// The full key for a `Get` given `values` for the leading key fields.
+    /// Each trailing key field left out takes its declared default, as BC
+    /// fills it, so the lookup still needs an exact match. Returns the first
+    /// left-out field that has no declared default as the error.
+    pub fn key_with_defaults(&self, mut values: Vec<Value>) -> Result<PrimaryKey, FieldNo> {
+        for &field in self.primary_key_fields.get(values.len()..).unwrap_or(&[]) {
+            let default = self.field_defaults.get(&field).ok_or(field)?;
+            values.push(default.clone());
+        }
+        Ok(values)
+    }
+
+    /// `INSERT`, insert the current buffer as a new row.
     ///
     /// The local store cannot execute table triggers. A caller that explicitly
     /// requests trigger execution must be routed to live Business Central.
@@ -762,6 +806,7 @@ impl MockRecord {
         let row = self.rows.get(&key).ok_or(RecordError::NotFound)?;
         view.current = row.clone();
         view.x_rec = row.clone();
+        view.calculated.clear();
         view.iter_pos = Some(pos);
         Ok(())
     }
@@ -1013,12 +1058,16 @@ impl MockRecord {
         target: Option<FieldNo>,
         agg: FlowAgg,
     ) -> Result<Value, RecordError> {
+        let defaults = &self.field_defaults;
         let matching: Vec<&Row> = self
             .rows
             .values()
             .filter(|row| {
                 conditions.iter().all(|(field, filt)| {
-                    flow_filter_matches(filt, row.get(field).unwrap_or(&Value::Empty))
+                    flow_filter_matches(
+                        filt,
+                        cell_or_default(row, defaults, *field).unwrap_or(&Value::Empty),
+                    )
                 })
             })
             .collect();
@@ -1027,7 +1076,7 @@ impl MockRecord {
         let target_cells = || {
             matching
                 .iter()
-                .filter_map(|row| target.and_then(|t| row.get(&t)))
+                .filter_map(|row| target.and_then(|t| cell_or_default(row, defaults, t)))
         };
 
         match agg {
@@ -1086,6 +1135,16 @@ impl MockRecord {
             FlowAgg::Lookup => Ok(target_cells().next().cloned().unwrap_or(Value::Empty)),
         }
     }
+}
+
+/// A row's cell for `field`, or the field's declared zero when the row never
+/// assigned it. `Init` keeps only the key, so most rows lack most cells.
+fn cell_or_default<'a>(
+    row: &'a Row,
+    defaults: &'a HashMap<FieldNo, Value>,
+    field: FieldNo,
+) -> Option<&'a Value> {
+    row.get(&field).or_else(|| defaults.get(&field))
 }
 
 /// Numeric view of a value for FlowField aggregation (`Integer`/`Decimal`).
@@ -1989,6 +2048,58 @@ mod tests {
         assert_eq!(
             rec.calc_flow(&conds, Some(3), FlowAgg::Average),
             Ok(Value::Decimal(dec!(20.0)))
+        );
+    }
+
+    /// Field 1 is the key, field 2 is Closed (Boolean, default false) and
+    /// field 3 is Amount (Integer, default 0).
+    fn sparse_line_table() -> MockRecord {
+        let defaults = HashMap::from([(2, Value::Boolean(false)), (3, Value::Integer(0))]);
+        MockRecord::new(50101, "Line", vec![1]).with_field_defaults(defaults)
+    }
+
+    /// Insert a row with only `cells` assigned, as `Init` leaves a row.
+    fn insert_sparse(rec: &mut MockRecord, key: i64, cells: &[(FieldNo, Value)]) {
+        rec.init();
+        rec.field_set(1, Value::Integer(key));
+        for (field, value) in cells {
+            rec.field_set(*field, value.clone());
+        }
+        rec.insert(false).expect("insert should succeed");
+    }
+
+    #[test]
+    fn flowfield_const_false_matches_unassigned_boolean() {
+        let mut rec = sparse_line_table();
+        insert_sparse(&mut rec, 1, &[(2, Value::Boolean(false))]);
+        insert_sparse(&mut rec, 2, &[]);
+        insert_sparse(&mut rec, 3, &[(2, Value::Boolean(true))]);
+        let conds = [(2, FlowFilter::Eq(Value::Boolean(false)))];
+        assert_eq!(
+            rec.calc_flow(&conds, None, FlowAgg::Count),
+            Ok(Value::Integer(2))
+        );
+    }
+
+    #[test]
+    fn average_counts_unassigned_rows_as_zero() {
+        let mut rec = sparse_line_table();
+        insert_sparse(&mut rec, 1, &[(3, Value::Integer(10))]);
+        insert_sparse(&mut rec, 2, &[]);
+        assert_eq!(
+            rec.calc_flow(&[], Some(3), FlowAgg::Average),
+            Ok(Value::Decimal(dec!(5)))
+        );
+    }
+
+    #[test]
+    fn lookup_returns_first_row_zero() {
+        let mut rec = sparse_line_table();
+        insert_sparse(&mut rec, 1, &[]);
+        insert_sparse(&mut rec, 2, &[(3, Value::Integer(7))]);
+        assert_eq!(
+            rec.calc_flow(&[], Some(3), FlowAgg::Lookup),
+            Ok(Value::Integer(0))
         );
     }
 

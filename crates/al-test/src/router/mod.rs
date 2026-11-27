@@ -489,6 +489,7 @@ fn classify_reachable(
     // declaration is classified and its callees followed.
     let mut tables: Vec<String> = Vec::new();
     let mut classified_tables: HashSet<String> = HashSet::new();
+    let mut walked_objects: HashSet<String> = HashSet::new();
     loop {
         while let Some(table) = tables.pop() {
             if !classified_tables.insert(table.to_ascii_lowercase()) {
@@ -554,6 +555,15 @@ fn classify_reachable(
                         file: Some(location.file.to_string_lossy().into_owned()),
                         line: None,
                     },
+                );
+            }
+            if walked_objects.insert(key.0.clone()) {
+                classify_object_globals(
+                    workspace,
+                    location,
+                    (&mut decision, &mut reasons),
+                    node != root,
+                    &mut tables,
                 );
             }
             classify_procedure_ast(
@@ -804,6 +814,65 @@ fn has_object_global_declarations(root: tree_sitter::Node<'_>) -> bool {
         stack.extend(node.named_children(&mut cursor));
     }
     false
+}
+
+/// Classify the record variables in an object's own `var` section. Those
+/// globals are visible to every procedure of the object, including tests that
+/// never name them, so the caller walks each reached object once.
+fn classify_object_globals(
+    workspace: &Workspace,
+    location: &ProcedureLocation,
+    (decision, reasons): (&mut RoutingDecision, &mut Vec<RoutingReason>),
+    reachable: bool,
+    tables: &mut Vec<String>,
+) {
+    let Some((text, tree)) = workspace.file_index.get_cached_parse(&location.file) else {
+        return;
+    };
+    let bytes = text.as_bytes();
+    let mut stack = vec![object_scope(
+        workspace,
+        &location.file,
+        &tree,
+        &location.object,
+    )];
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind(),
+            "procedure_declaration" | "trigger_declaration" | "event_declaration"
+        ) {
+            continue;
+        }
+        if node.kind() == "object_var_section" {
+            let mut declarations = node.walk();
+            for declaration in node.named_children(&mut declarations) {
+                if declaration.kind() != "object_variable_declaration" {
+                    continue;
+                }
+                let mut variables = declaration.walk();
+                for variable in declaration.named_children(&mut variables) {
+                    if variable.kind() != "regular_variable_declaration" {
+                        continue;
+                    }
+                    let Some(type_node) = variable.child_by_field_name("type") else {
+                        continue;
+                    };
+                    classify_type_reference(
+                        workspace,
+                        type_node,
+                        bytes,
+                        &location.file,
+                        (&mut *decision, &mut *reasons),
+                        reachable,
+                        tables,
+                    );
+                }
+            }
+            continue;
+        }
+        let mut cursor = node.walk();
+        stack.extend(node.named_children(&mut cursor));
+    }
 }
 
 mod ast;
