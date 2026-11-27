@@ -41,6 +41,7 @@ fn check(expected_file: &str, options: XliffOptions) {
         std::fs::read_to_string(fixture_dir().join(expected_file)).expect("expected");
     let expected = ids_with_targets(
         parse_xliff(expected_text.trim_start_matches('\u{feff}'))
+            .expect("valid xliff")
             .into_values()
             .map(|unit| (unit.id, unit.object_target)),
     );
