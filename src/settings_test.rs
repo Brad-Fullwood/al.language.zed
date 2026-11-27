@@ -1,4 +1,4 @@
-use crate::settings::apply_al_settings_to_config;
+use crate::settings::{apply_al_settings_to_config, build_initialization_options};
 use serde_json::json;
 
 #[test]
@@ -451,5 +451,23 @@ fn dap_child_receives_only_normalized_compile_and_package_settings() {
             "compilationOptions": ["/nowarn:AL0432"],
             "incrementalBuild": true,
         })
+    );
+}
+
+/// The `al` object of `initialization_options` must reach al-lsp in the same
+/// shape as the settings block, so dotted keys are normalised.
+#[test]
+fn dotted_keys_in_initialization_options_are_normalised() {
+    let init = json!({"al": {"al.enableCodeAnalysis": false}});
+    let out = build_initialization_options("/ws", None, Some(&init));
+    assert_eq!(out["al"]["enableCodeAnalysis"], json!(false));
+    assert!(out["al"].get("al.enableCodeAnalysis").is_none());
+
+    // Plain keys and nested objects pass through unchanged.
+    let plain = json!({"al": {"enableCodeAnalysis": false, "x": {"y": 1}}});
+    let out = build_initialization_options("/ws", None, Some(&plain));
+    assert_eq!(
+        out["al"],
+        json!({"enableCodeAnalysis": false, "x": {"y": 1}})
     );
 }

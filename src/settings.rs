@@ -59,6 +59,38 @@ pub fn apply_al_settings_to_config(
     result
 }
 
+/// Builds the initialization options for al-lsp from Zed's LSP `settings` and
+/// `initialization_options`. Dotted keys in the `al` object of `init` go through
+/// `apply_al_settings_to_config` before the merge, so
+/// `{"al": {"al.enableCodeAnalysis": false}}` reaches the server as
+/// `{"al": {"enableCodeAnalysis": false}}`. The proxy provides defaults from
+/// package.json, so this carries only the user's overrides.
+pub fn build_initialization_options(
+    workspace_path: &str,
+    settings: Option<&serde_json::Value>,
+    init: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut user_config = json!({});
+    if let Some(user_settings) = settings {
+        user_config = apply_al_settings_to_config(&user_config, user_settings);
+    }
+
+    let mut init_options = json!({
+        "workspacePath": workspace_path,
+        "al": user_config
+    });
+
+    if let Some(user_init) = init {
+        let mut normalised_init = user_init.clone();
+        if let Some(al) = user_init.get("al").filter(|al| al.is_object()) {
+            normalised_init["al"] = apply_al_settings_to_config(&json!({}), al);
+        }
+        init_options = crate::merge_json(&init_options, &normalised_init);
+    }
+
+    init_options
+}
+
 fn set_nested_value(target: &mut serde_json::Value, path: &[&str], value: &serde_json::Value) {
     set_nested_value_inner(target, path, value, 0);
 }
@@ -130,10 +162,11 @@ pub struct ServerLaunch {
 /// al-lsp runs at all, so al-lsp cannot be the one to refuse it either. The
 /// rule is therefore the extension's own and it is flat: `binary.path` and
 /// `binary.arguments` are ignored, whoever wrote them. al-lsp is chosen by
-/// this extension (session cache, then `al-lsp` on PATH, then the cached or
-/// downloaded release), and its arguments come from `al.useOfficialLsp`.
+/// this extension (managed `dev/` copy, then session cache, then the GitHub
+/// release), and its arguments come from `al.useOfficialLsp`.
 ///
-/// To run a specific build, put it on PATH. Zed itself blocks project settings
+/// To run a specific build, install it to the `dev/` copy with `make install`.
+/// Zed itself blocks project settings
 /// in an untrusted worktree from v0.218.2-pre (advisory GHSA-29cp-2hmh-hcxj);
 /// this rule is what an older Zed does not give us, and it holds on every Zed.
 ///

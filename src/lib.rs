@@ -43,7 +43,7 @@ const RELEASE_DIR_PREFIX: &str = "al-lsp-";
 
 struct AlExtension {
     cached_binary_path: Option<String>,
-    cached_dotnet_path: Option<String>,
+    cached_dotnet_path: Option<(u64, String)>,
 }
 
 /// Maximum nesting depth for `merge_json`. Above this, the override
@@ -580,7 +580,7 @@ impl zed::Extension for AlExtension {
         let worktree_root = worktree.root_path();
         let dotnet_path = settings::resolve_dotnet_path(settings.settings.as_ref())
             .filter(|path| !settings::is_worktree_resident_program(path, &worktree_root));
-        self.cached_dotnet_path = dotnet_path.clone();
+        self.cached_dotnet_path = dotnet_path.clone().map(|path| (worktree.id(), path));
 
         let binary_path =
             self.find_or_download_binary(Some(language_server_id), launch.program.as_deref())?;
@@ -599,27 +599,12 @@ impl zed::Extension for AlExtension {
         language_server_id: &zed::LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<Option<serde_json::Value>> {
-        let workspace_path = worktree.root_path();
-
-        // User overrides only — proxy provides defaults from package.json
-        let mut user_config = json!({});
-
         let lsp_settings = LspSettings::for_worktree(language_server_id.as_ref(), worktree)?;
-        if let Some(user_settings) = &lsp_settings.settings {
-            user_config = settings::apply_al_settings_to_config(&user_config, user_settings);
-        }
-        let user_init_options: Option<&Value> = lsp_settings.initialization_options.as_ref();
-
-        let mut init_options = json!({
-            "workspacePath": workspace_path,
-            "al": user_config
-        });
-
-        if let Some(user_init_opts) = user_init_options {
-            init_options = merge_json(&init_options, user_init_opts);
-        }
-
-        Ok(Some(init_options))
+        Ok(Some(settings::build_initialization_options(
+            &worktree.root_path(),
+            lsp_settings.settings.as_ref(),
+            lsp_settings.initialization_options.as_ref(),
+        )))
     }
 
     // `language_server_workspace_configuration_schema` and
@@ -689,17 +674,20 @@ impl zed::Extension for AlExtension {
         let args =
             dev_binary::with_extension_build(vec!["mcp".to_string()], dev_binary::EXTENSION_BUILD);
 
-        // `cached_dotnet_path` is only populated once an LSP session has
-        // started (`language_server_command`). A `Project` cannot resolve
-        // worktree-scoped `lsp."al-lsp".settings`, but it CAN read this
-        // context server's own settings directly — so fall back to that when
-        // Zed starts the MCP server before any LSP session exists, rather
-        // than silently dropping the user's `al.dotnetPath`.
-        let dotnet_path = self.cached_dotnet_path.clone().or_else(|| {
+        // A `Project` cannot read the worktree-scoped `lsp."al-lsp".settings`, so
+        // this context server's own `al.dotnetPath` comes first. The path cached
+        // by `language_server_command` counts only when its worktree is in this
+        // project.
+        let own_dotnet_path =
             ContextServerSettings::for_project(context_server_id.as_ref(), project)
                 .ok()
                 .and_then(|settings| settings.settings)
-                .and_then(|settings| settings::resolve_dotnet_path(Some(&settings)))
+                .and_then(|settings| settings::resolve_dotnet_path(Some(&settings)));
+        let dotnet_path = own_dotnet_path.or_else(|| {
+            self.cached_dotnet_path
+                .as_ref()
+                .filter(|(id, _)| project.worktree_ids().contains(id))
+                .map(|(_, path)| path.clone())
         });
 
         Ok(zed::Command {
