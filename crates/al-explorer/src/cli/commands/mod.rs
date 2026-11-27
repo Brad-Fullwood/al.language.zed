@@ -599,21 +599,6 @@ const CONNECTING_METHODS: [&str; 11] = [
     "tests.snapshot_replay",
 ];
 
-/// Methods that spend the caller's Business Central credentials. The project
-/// daemon keeps the environment it started with, so these requests carry the
-/// credentials this process holds (journey-07).
-const CREDENTIAL_METHODS: [&str; 9] = [
-    "publish",
-    "debug",
-    "snapshot",
-    "profiling",
-    "tests.run",
-    "tests.run_batch",
-    "tests.run_auto",
-    "tests.snapshot_capture",
-    "tests.snapshot_replay",
-];
-
 /// Add `BC_ACCESS_TOKEN` (or `BC_TOKEN`) and `BC_USERNAME`/`BC_PASSWORD` from
 /// this process's environment to the request. Nothing is added when none is set.
 fn with_caller_credentials(
@@ -628,7 +613,9 @@ fn attach_credentials(
     mut params: Option<serde_json::Value>,
     credentials: Option<al_bc::http_auth::Credentials>,
 ) -> Option<serde_json::Value> {
-    let Some(credentials) = credentials.filter(|_| CREDENTIAL_METHODS.contains(&method)) else {
+    let Some(credentials) =
+        credentials.filter(|_| al_protocol::methods::CREDENTIAL_METHODS.contains(&method))
+    else {
         return params;
     };
     let target = params.get_or_insert_with(|| serde_json::json!({}));
@@ -950,6 +937,8 @@ mod credential_params_tests {
             "snapshot",
             "profiling",
             "tests.run_auto",
+            "downloadSymbols",
+            "environmentVersion",
         ] {
             let sent = attach_credentials(method, Some(serde_json::json!({"a": 1})), token());
             assert_eq!(

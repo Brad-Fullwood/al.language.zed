@@ -1084,6 +1084,14 @@ mod dispatch_tests {
             ]),
             "a method that spends a Business Central credential was added or removed"
         );
+        assert_eq!(
+            declared,
+            al_protocol::methods::CREDENTIAL_METHODS
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>(),
+            "al-explorer attaches credentials to the methods in al_protocol::methods::CREDENTIAL_METHODS"
+        );
 
         // The trust documentation is where a user reads which methods those
         // are, so it names each one.

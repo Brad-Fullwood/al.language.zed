@@ -34,18 +34,40 @@ pub const TEXT_CAPABLE_METHODS: &[&str] = &[
     "signatureHelp",
 ];
 
+/// The daemon methods that spend the caller's Business Central credentials.
+///
+/// The project daemon keeps the environment it started with, so `al-explorer`
+/// attaches the credentials its own process holds to these requests. The
+/// daemon's dispatch table marks the same methods `authorized`, and its tests
+/// compare the two lists.
+pub const CREDENTIAL_METHODS: &[&str] = &[
+    "debug",
+    "downloadSymbols",
+    "environmentVersion",
+    "profiling",
+    "publish",
+    "snapshot",
+    "tests.run",
+    "tests.run_auto",
+    "tests.run_batch",
+    "tests.snapshot_capture",
+    "tests.snapshot_replay",
+];
+
 #[cfg(test)]
 mod tests {
-    use super::TEXT_CAPABLE_METHODS;
+    use super::{CREDENTIAL_METHODS, TEXT_CAPABLE_METHODS};
 
     #[test]
-    fn the_list_is_sorted_and_has_no_duplicate() {
-        let mut sorted = TEXT_CAPABLE_METHODS.to_vec();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(
-            sorted, TEXT_CAPABLE_METHODS,
-            "keep the list sorted so a diff shows what changed"
-        );
+    fn the_lists_are_sorted_and_have_no_duplicate() {
+        for list in [TEXT_CAPABLE_METHODS, CREDENTIAL_METHODS] {
+            let mut sorted = list.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(
+                sorted, list,
+                "keep the list sorted so a diff shows what changed"
+            );
+        }
     }
 }
