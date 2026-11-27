@@ -1,5 +1,7 @@
 # AI tooling: making Claude Code fast and accurate on Business Central
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Workstream goal: an agent working on a BC extension should get answers from the
 symbol index, call and event graphs and impact analysis in one tool call,
 instead of decompiling `.app` files and grepping.

@@ -1,5 +1,7 @@
 # R14 review: merges since the round 13 review
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git diff 73ed8751..f4eb117a` (92 files without the submodule and `Cargo.lock`, about
 16,400 added lines, most of them the two file splits and the source moves under them) and the 22
 merges in `git log --merges 73ed8751..f4eb117a`. That covers the round 12 leftovers (fc04be15

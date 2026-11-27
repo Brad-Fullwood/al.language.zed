@@ -1,5 +1,7 @@
 # Grammar query drift check over the round 3 and round 4 node shapes
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: the shipped queries in `tree-sitter-al/queries/` against every entry in
 `tree-sitter-al/test/corpus/`, with the corpus round 3 shapes (List and Dictionary types, glued
 signs, keyword names, signed case labels) and the round 4 shapes (a quoted or keyword `for`

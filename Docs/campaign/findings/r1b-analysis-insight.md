@@ -1,5 +1,7 @@
 # R1b review: al-analysis and al-insight, modules not covered by r1
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial read-only review of every module marked NOT COVERED in
 `r1-analysis-insight.md`, plus the files that checklist does not list at all.
 

@@ -1,5 +1,7 @@
 # R8 review: merges since the round 7 review
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git diff 0027bf80..901586e2 -- crates` (57 files). That covers the five interpreter and
 test router commits from the cloud session (4859b011, 87ff59eb, 5d8a2e23, f81de5d6, 901586e2),
 the persisted dependency source index (merge 0d11fc88 and babdf9ed, ace99a0f, d4c59642,

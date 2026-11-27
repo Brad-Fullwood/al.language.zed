@@ -1,5 +1,7 @@
 # Campaign state
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Updated: 2026-09-29 00:20 BST. Branch: `campaign/2026-09-21`. Ends: 2026-09-28.
 
 ## Phase

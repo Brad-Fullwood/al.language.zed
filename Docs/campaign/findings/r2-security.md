@@ -1,5 +1,7 @@
 # r2 adversarial security review
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Round 2. Scope: the nine fix branches merged into `campaign/2026-09-21`, plus a threat model of
 the agent-facing MCP surface. Read-only review, every finding checked against code with
 file:line.

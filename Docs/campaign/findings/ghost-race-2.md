@@ -1,5 +1,7 @@
 # Ghost diagnostics after didClose, second round
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Branch: `campaign/fix-ghost-race-2`, merged with `campaign/2026-09-21` at a8bb710e.
 
 Tests: `no_ghost_diagnostics_after_close_during_debounce`

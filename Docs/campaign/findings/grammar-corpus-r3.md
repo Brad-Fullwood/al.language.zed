@@ -1,5 +1,7 @@
 # Grammar corpus round 3: List, Dictionary and the constructs added since round 2
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: the `tree-sitter-al` repository on branch `campaign/gr-corpus-r3`, starting at a108400
 (the GR2-4 merge), against the AL that the local test interpreter and the test router read now.
 The inputs were `crates/al-runtime/src/interpreter/` and `crates/al-test/src/router/ast.rs` in

@@ -1,5 +1,7 @@
 # Test depth pass, campaign/test-depth
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Property tests, fuzzed inputs and coverage measurement across the workspace. Goal: bugs no
 hand-written test would reach, plus durable tests left behind.
 

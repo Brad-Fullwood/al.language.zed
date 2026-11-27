@@ -1,5 +1,7 @@
 # R1b review: Runtime & DAP, second pass (al-runtime, al-test, al-test-harness, al-dap)
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial read-only review, 2026-09-21. Continues `r1-runtime-dap.md`: this pass covers every
 item that file left unticked, plus the files its checklist does not name.
 

@@ -1,5 +1,7 @@
 # Mutation testing pass, campaign/test-mutants
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 `cargo mutants` over the shortlist in `test-depth.md`. Each missed mutant is a line that
 the crate's own tests execute but do not check. The verdict per mutant is `test added
 <sha>`, `equivalent <why>`, or `deferred <why>`.

@@ -1,5 +1,7 @@
 # Round 3 security review: project trust, gate coverage, daemon lifecycle, MCP surface
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Reviewer brief: break project trust and the daemon lifecycle as an attacker who controls a
 repository the user clones and opens, or a process on the same machine as the user.
 

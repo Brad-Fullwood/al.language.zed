@@ -1,5 +1,7 @@
 # Editor experience findings, 2026-10-04
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Brad used the extension in Zed on a real per-tenant project (Astonish, 64 files, BC 28 symbols,
 MobileNAV dependencies) side by side with Cursor running Microsoft's AL extension 18. This file
 tracks every issue he raised and every one found while fixing them. Branch:

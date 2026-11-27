@@ -1,5 +1,7 @@
 # al-syntax and al-symbols health pass
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Branch: `campaign/slop-syntax-symbols`, from `campaign/2026-09-21`.
 Scope: `crates/al-syntax` and `crates/al-symbols`, plus the call sites in other crates that a
 renamed or retyped public item forced.

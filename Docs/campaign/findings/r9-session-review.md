@@ -1,5 +1,7 @@
 # R9 review: merges since the round 8 review
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git diff 2b7bce37..a0e85e0b -- crates plugin` (72 files). That covers the round 8 fix
 batches (merges a1afe8e6, bd76f89f, 12b1778a), the codeunit instances work (9a9ce662 and the hand
 merge 6b4be394), the mutation test merges (7e4c02f3, 58781aa7) and the plugin leftovers

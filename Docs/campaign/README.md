@@ -1,5 +1,7 @@
 # Improvement campaign, 2026-09-21 to 2026-09-28
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Seven days of continuous review and improvement of this repository, the owned grammar
 (`tree-sitter-al`), and the blog at `~/Projects/Personal/technically-business-central`.
 Work runs in Claude Code sessions that are expected to die at usage limits. Every session

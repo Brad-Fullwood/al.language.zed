@@ -1,5 +1,7 @@
 # R1b review: al-analysis scaffold.rs and generators.rs
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Produced by a sub-reviewer on 2026-09-21. All paths are under `crates/al-analysis/src/`.
 Checked and found sound: path traversal in `materialize_custom_template` (`guard_relative`
 covers source and substituted destination, symlinks rejected), no reachable panics.

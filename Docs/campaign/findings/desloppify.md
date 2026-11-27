@@ -1,5 +1,7 @@
 # desloppify triage
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Tool: desloppify (https://github.com/peteromallet/desloppify), `--lang rust`, state in `.desloppify/`.
 Branch: `campaign/fix-r1-extension-ci`. Review, triage and planning only. No source file was edited
 in this pass: seven fix branches hold `crates/`, `src/`, `tree-sitter-al/` and `scripts/` in other

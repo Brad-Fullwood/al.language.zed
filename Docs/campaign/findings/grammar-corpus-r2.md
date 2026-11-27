@@ -1,5 +1,7 @@
 # Grammar corpus round 2: the constructs the local interpreter runs
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: the `tree-sitter-al` submodule on its `campaign/2026-09-21` branch, starting at f211aef,
 against the AL that the local test interpreter runs. The inputs were the AL sources embedded in
 `crates/al-runtime/src` and `crates/al-test/src` (250 objects, extracted from the test strings),

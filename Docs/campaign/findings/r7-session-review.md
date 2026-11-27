@@ -1,5 +1,7 @@
 # R7 review: merges since the round 6 review
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git diff 94700cf7..HEAD -- crates` (67 files). That covers the async lock scopes
 batch (`async-locking.md`), the fourteen round 4 security fixes (`r4-security.md`), blog
 findings 1 to 3 (89f5859d, a757fb13, 97d7d98d), the two hand merges (41a5dbfb, a8bb710e) and
