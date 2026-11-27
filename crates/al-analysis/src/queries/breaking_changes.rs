@@ -575,8 +575,8 @@ fn diff_keys(old: &SymbolEntry, new: &SymbolEntry, changes: &mut Vec<BreakingCha
                 description: format!(
                     "Key '{}' in '{}' changed fields from ({}) to ({})",
                     old_key.name,
-                    key_fields(old_key),
                     old.name,
+                    key_fields(old_key),
                     key_fields(new_key)
                 ),
                 is_breaking: true,
@@ -1391,6 +1391,21 @@ mod tests {
         assert!(change.is_breaking);
         assert!(change.description.contains("Entry No."));
         assert!(change.description.contains("Document No., Line No."));
+    }
+
+    #[test]
+    fn breaking_change_message_names_old_then_new() {
+        let baseline = make_table("Customer", vec![key("PK", &["No."])]);
+        let current = make_table("Customer", vec![key("PK", &["No.", "Name"])]);
+        let changes = analyze_breaking_changes(&[baseline], &[current]);
+        let change = changes
+            .iter()
+            .find(|change| change.kind == BreakingChangeKind::KeyFieldsChanged)
+            .expect("key change");
+        assert_eq!(
+            change.description,
+            "Key 'PK' in 'Customer' changed fields from (No.) to (No., Name)"
+        );
     }
 
     #[test]
