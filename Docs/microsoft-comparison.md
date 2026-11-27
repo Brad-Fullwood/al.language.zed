@@ -33,7 +33,7 @@ feature pages for implementation details and limitations.
 | Compile-time validation | 🟡 syntax, project, declaration, declared-binding and integrity checks block the build. Body checks without a binder (ALN2202, ALN2203, ALN2208, ALN2209, ALN2402, ALN2404) only warn. Optional `alc` compatibility gate | 🔷 `alc` (authoritative complete semantics) |
 | `.app` reading / inspection | ✅ native NAVX/ZIP, cached, composed objects | internal |
 | Symbol download | ✅ NuGet or BC server (one per run, chosen with `--source`), concurrent, deduped, no restart. Per-tenant apps need `--source server` | ✅ download-symbols |
-| OAuth (Entra) | ✅ PKCE + device code (`authenticate login --device-code` prints the code to stderr). Uses the AL extension client id, honours launch.json `entraIdAuthentication`, and exchanges the AL extension's cached refresh token. Access and refresh token fields are zeroized on drop. The access token string handed to callers and HTTP headers is a plain `String` | ✅ |
+| OAuth (Entra) | ✅ PKCE + device code (`authenticate login --device-code` prints the code to stderr). Uses the AL extension client id, honours the `al.entraIdAuthentication` workspace setting (and a launch.json `entraIdAuthentication` block), uses the device code with no display on Linux, and exchanges the AL extension's cached refresh token. Access and refresh token fields are zeroized on drop. The access token string handed to callers and HTTP headers is a plain `String` | ✅ |
 | Force Microsoft compiler | ✅ `al.useOfficialCompiler` | n/a |
 
 ## Analysis (largely unique to this project)

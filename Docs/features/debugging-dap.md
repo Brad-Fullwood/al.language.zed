@@ -91,9 +91,15 @@ either feature until it can provide the full behavior itself.
 4. **Connect** SignalR to `/dev/DebuggerHub`. Launch makes no `Attach` call: Microsoft's launch handler passes
    `attachOptions = null` (`DebugAdapterLaunchRequestHandlerBase.cs:89`) and the `debuggingcontext` and `sk`
    values of the browser URL bind the session (`HubBasedDebuggerService.cs:245-248`).
-5. Optionally **open the browser** at the debug-context URL when `launchBrowser` is set. The URL differs from Microsoft's in four details, see Limitations.
-6. When the hub reports `OnAttachedToConnection`, send the DAP `initialized` event
-   (`DebuggerService.cs:119-122`). The client then sends its breakpoints and `configurationDone`.
+5. Optionally **open the browser** at the debug-context URL when `launchBrowser` is set. Like Microsoft's
+   connection context (`HubBasedService.cs:77-93`), the URL carries `connectioncontext`, `debuggingcontext`,
+   `sk` (the hub connection id) and `ApplicationGatewayAffinity` (the negotiate cookie, escaped once more by
+   `Uri.EscapeDataString`). In one run on the CDX Sandbox without the affinity value, BC did not bind the
+   browser session to the hub connection. The URL differs from Microsoft's in three further details, see Limitations.
+6. When the hub reports `HubConnected` or `OnAttachedToConnection`, send the DAP `initialized` event
+   (`HubBasedDebuggerService.cs:117-120,148`, `DebuggerService.cs:119-122`). On a cloud launch BC sends
+   `HubConnected` once the browser session opens. The client then sends its breakpoints and
+   `configurationDone`. BC answers `AddBreakpoint` with null before that point.
    `breakOnError` and `breakOnRecordWrite` travel in `DebugAdapterConfigurationDone`, not in an attach.
 
 **Attach** skips compile/publish and connects to an existing session. It calls the hub's `Attach` with
@@ -124,7 +130,7 @@ with frames built from the decompiled types. Hub methods invoked are a subset of
 Not invoked: `AddBreakpointByName` and `AddBreakpointByNameAndNamespace` (Microsoft uses them for interface
 objects only), `GetSource` and `GetSourceContent`, `GetNstSessionInfo`. There is no client call named
 `GetStackTrace`, `TerminateSession` or `IsAlive`. Server
-callbacks handled: `Break` (→ `stopped`), `IsAlive` (answered with the `AcknowledgeIsAlive` hub call), `OnAttachedToConnection`,
+callbacks handled: `Break` (→ `stopped`), `IsAlive` (answered with the `AcknowledgeIsAlive` hub call), `HubConnected`, `OnAttachedToConnection`,
 `OnDetachedFromConnection` (→ `terminated`), `OnFatalDebuggerException` (→ `output`).
 `Break`'s stop reason is derived rather than hard-coded: a non-empty message argument means BC broke on a runtime
 error (`stopped.reason = "exception"`, with the message surfaced in `stopped.text`). Otherwise the
@@ -170,7 +176,7 @@ shapes with a warning. Live check on CDX pending in the lead's contract run.
   unbounded channel for `Break` events so a paused breakpoint is never dropped under back-pressure.
   Completion replies to `invoke` have their own 32-entry channel.
 - **`configurationDone` order:** BC rejects `DebugAdapterConfigurationDone` before the hub reports
-  `OnAttachedToConnection`. The adapter therefore sends `initialized` only after that callback, as
+  `HubConnected` or `OnAttachedToConnection`. The adapter therefore sends `initialized` only after that callback, as
   Microsoft's does (`DebuggerService.cs:119-122`), and calls `configurationDone` once. It has no retry
   and no second call without arguments. A rejection is an error response to the client's request. The
   MCP path (`NativeDebugSession`) sends the call once after the callback and reports a rejection as an
@@ -185,10 +191,12 @@ shapes with a warning. Live check on CDX pending in the lead's contract run.
   snapshots. A sampling profile (`--kind sampling`, the default, interval 50, 100 or 150 ms) needs
   snapshot API version 3.0 and `stop` saves `<context>.alcpuprofile` from the zip. An instrumentation
   profile (`--kind instrumentation`) returns a snapshot zip that is saved but not converted to an
-  `.alcpuprofile`. `analyze` reads the file (Chrome DevTools format) and takes the time of a node from
-  `sampleExecutionTimes` (inclusive, self is inclusive minus children), with hit counts as a fallback
-  when timing data is absent. The time unit is assumed to be microseconds until a real capture
-  confirms it. See also
+  `.alcpuprofile`. `analyze` reads the file (Chrome DevTools format) as the AL extension does. A Sampling
+  profile (`kind` 1) gives node `samples[t]` the self time `timeDeltas[t]`, and a total of self plus its
+  children. Other profiles take the time of a node from `sampleExecutionTimes` (inclusive, self is
+  inclusive minus children), with hit counts as a fallback when timing data is absent. Times are
+  microseconds, confirmed by a Sampling capture on the CDX Sandbox (9010 bytes, 17 nodes, 4 samples).
+  See also
   [analysis-and-insight](./analysis-and-insight.md) for mapping hotspots to source.
 - **Snapshots (`snapshot/`):** the snapshot debugger zip reader, the session store that remembers a
   started session between commands, and `save_finished_snapshot`. The REST calls (attach, status,
@@ -243,8 +251,15 @@ For BC online and AAD targets, `accessToken` is optional. When it is absent, `al
 same keyring-backed OAuth cache and refresh flow as `al-explorer authenticate login`. Clients do not
 need to retrieve, print, or relay a bearer token. An explicit token remains available for headless
 automation. `start` is launch-style and makes no `Attach` call. The adapter sends
-`DebugAdapterConfigurationDone` once after BC reports `OnAttachedToConnection`. A rejection is
+`DebugAdapterConfigurationDone` once after BC reports `HubConnected` or `OnAttachedToConnection`. A rejection is
 fatal for the session: `al_debug` reports it as an error on every later command.
+
+A `breakpoint` command before the browser session opened from `browserUrl` has connected returns
+`verified: false` with the message "queued: BC accepts breakpoints only after a web client session
+binds to this debug session". The breakpoint is sent when BC reports the bind, before
+`DebugAdapterConfigurationDone`, and `state` then reports hits on it. BC runs the bound session's code
+without waiting for `DebugAdapterConfigurationDone`, so the daemon checks for the bind every 100 ms
+after `start` instead of waiting for the next command.
 
 This is a structured MCP control plane, not a second wire-level DAP endpoint. Zed's `launch`
 request owns the compile-and-publish convenience flow. `al_debug start` attaches to the configured
@@ -324,10 +339,11 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   `sandboxName`, `disableHttpRequestTimeout`, `vsCodeAuthenticationProvider`. Publish never sends
   `ForceUpgrade` or `UseSystemSession`. `authentication` accepts only `MicrosoftEntraID` and `AAD`.
   See audit finding `dap-33-launch-fields-silently-ignored`.
-- The `launchBrowser` URL differs from Microsoft's in four details. On-prem URLs lack `tenant=`. An
+- The `launchBrowser` URL differs from Microsoft's in three details. On-prem URLs lack `tenant=`. An
   object key is always sent, defaulting to Page 22, where Microsoft sends one only when
-  `startupObjectId` is set. What Microsoft puts under `connectioncontext` is not checked. `applicationFamily`
-  and a non-default `PublishEnvironment` suffix are not supported. No live run compared the URLs. See audit
+  `startupObjectId` is set. `applicationFamily` and a non-default `PublishEnvironment` suffix are not
+  supported. A launch on the CDX Sandbox (BC 29, 2026-11-27) bound the browser session through this URL,
+  verified a breakpoint and stopped on it. See audit
   finding `dap-34-browser-url-differs-from-microsoft`.
 - `--dap-legacy` (`al.useOfficialDap`) cannot start the Microsoft host on Linux with the AL 18.1
   extension. The adapter runs a file named `Microsoft.Dynamics.Nav.EditorServices.Host` directly, and

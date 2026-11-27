@@ -38,7 +38,12 @@ stage_09() {
     journey_try "$s" debug-breakpoint 60 debug breakpoint "$bpfile" 19 --tenant "$CDX_TENANT" || true
     # Stage 8 leaves its app installed until journey_cleanup runs before stage 10. A run of
     # stage 9 alone has no app on the server, so an unverified breakpoint is expected there.
-    if grep -q 'unverified' "$(step_log $s debug-breakpoint)"; then
+    # BC accepts breakpoints only after a web client session binds, and this stage opens
+    # none, so the CLI queues the breakpoint. The bind and the hit are proven by hand
+    # (Docs/features/debugging-dap.md, MCP and CLI section).
+    if grep -q 'queued: BC accepts breakpoints' "$(step_log $s debug-breakpoint)"; then
+      record "$s" breakpoint-verified SKIP "breakpoint queued until a web client session binds, this stage opens none"
+    elif grep -q 'unverified' "$(step_log $s debug-breakpoint)"; then
       if [[ -z "${JOURNEY_CLEANUP_APPID:-}" ]]; then
         record "$s" breakpoint-verified SKIP "stage 8 did not run in this invocation, the app is not installed: $(journey_msg "$s" debug-breakpoint)"
       else

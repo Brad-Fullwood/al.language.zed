@@ -153,14 +153,8 @@ pub(super) fn parse_query_string(query: &str) -> std::collections::HashMap<Strin
 
 /// Open `url` in the user's browser. See [`al_types::browser`] for why Windows
 /// does not go through `cmd /c start`.
-pub(super) fn open_browser(url: &str) -> bool {
-    match al_types::open_in_browser(url) {
-        Ok(()) => true,
-        Err(error) => {
-            tracing::warn!("open_browser: {error}");
-            false
-        }
-    }
+pub(super) fn open_browser(url: &str) -> Result<(), al_types::OpenUrlError> {
+    al_types::open_in_browser(url).inspect_err(|error| tracing::warn!("open_browser: {error}"))
 }
 
 #[cfg(test)]

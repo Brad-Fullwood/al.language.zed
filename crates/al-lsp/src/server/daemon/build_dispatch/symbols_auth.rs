@@ -178,7 +178,11 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
                 Ok(guard) => guard
                     .as_ref()
                     .map(|p| {
-                        al_symbols::oauth::AuthSettings::for_tenant(&p.server_configs, &tenant)
+                        al_symbols::oauth::AuthSettings::for_tenant(
+                            Some(&p.root),
+                            &p.server_configs,
+                            &tenant,
+                        )
                     })
                     .unwrap_or_else(|| Ok(Default::default())),
                 Err(_) => Ok(Default::default()),
@@ -328,10 +332,16 @@ async fn download_dependency_wave(
             Ok(c) => c,
             Err(e) => return vec![server_failure(e.to_string())],
         };
-        let client = match al_symbols::oauth::AuthSettings::from_launch_value(&cfg.debug_args) {
-            Ok(settings) => client.with_auth_settings(settings),
-            Err(e) => return vec![server_failure(e.to_string())],
-        };
+        let root = workspace
+            .project
+            .try_read()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|p| p.root.clone()));
+        let client =
+            match al_symbols::oauth::AuthSettings::for_launch(root.as_deref(), &cfg.debug_args) {
+                Ok(settings) => client.with_auth_settings(settings),
+                Err(e) => return vec![server_failure(e.to_string())],
+            };
         // A dependency with no dev-packages URL is a failure, not a skip:
         // dropping it printed "0 failed" for a cloud launch.json with no
         // `tenant` (publish-symbols-02).

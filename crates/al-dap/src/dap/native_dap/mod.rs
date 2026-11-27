@@ -32,7 +32,7 @@ pub mod variables;
 #[cfg(test)]
 mod test_support;
 
-pub use browser::build_debug_browser_url;
+pub use browser::{build_debug_browser_url, build_debug_browser_url_with_affinity};
 pub use capture::{CaptureSnappoint, SnappointResolver};
 pub use replay::PackageSourceResolver;
 

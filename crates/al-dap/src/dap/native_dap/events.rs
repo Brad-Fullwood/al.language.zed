@@ -175,4 +175,29 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         assert!(rx.try_recv().is_err(), "sent once");
     }
+
+    /// Recorded on the CDX Sandbox (2026-11-27, BC 29.0): after a launch, the
+    /// web client opened with the debug URL makes BC send `HubConnected` with
+    /// no arguments, not `OnAttachedToConnection`. Microsoft handles it in
+    /// HubBasedDebuggerService.cs:117-120, which sends `initialized`.
+    #[tokio::test]
+    async fn initialized_follows_hub_connected_as_recorded_on_a_cloud_launch() {
+        let mut state = test_state();
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
+        state.dap_event_tx = tx;
+        let (session, fake) = crate::dap::bc_debug::fake::FakeBc::start("conn-1");
+        *state.session.lock().await = Some(Arc::new(session));
+
+        state.spawn_event_forwarder();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert!(rx.try_recv().is_err(), "no event before the hub connects");
+
+        fake.push_callback("HubConnected", serde_json::Value::Null);
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+            .await
+            .expect("initialized arrives")
+            .expect("channel open");
+        let event: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(event["event"], "initialized");
+    }
 }

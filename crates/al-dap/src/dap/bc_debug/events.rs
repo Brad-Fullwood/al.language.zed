@@ -198,7 +198,7 @@ pub(super) fn signalr_to_bc_event(msg: &SignalRMessage, expecting_step: bool) ->
             let message = fatal_exception_message(&msg.arguments);
             Some(BcEvent::FatalError { message })
         }
-        "IsAlive" | "OnAttachedToConnection" => None, // handled internally
+        "IsAlive" | "OnAttachedToConnection" | "HubConnected" => None, // handled internally
         other => Some(BcEvent::Other {
             target: other.to_string(),
         }),
@@ -457,7 +457,7 @@ mod tests {
     fn signalr_to_bc_event_internal_targets_are_dropped() {
         // IsAlive / OnAttachedToConnection are handled internally and must not
         // be forwarded to the DAP layer.
-        for target in ["IsAlive", "OnAttachedToConnection"] {
+        for target in ["IsAlive", "OnAttachedToConnection", "HubConnected"] {
             let msg = invocation(Some(target), None);
             assert!(
                 signalr_to_bc_event(&msg, false).is_none(),

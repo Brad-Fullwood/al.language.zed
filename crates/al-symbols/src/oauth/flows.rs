@@ -227,7 +227,9 @@ pub(super) async fn interactive_sign_in(
         Ok(tok) => return Ok(tok),
         Err(e) => {
             debug!(error = %e, "Browser auth flow failed, trying device code");
-            on_message("Browser sign-in failed, falling back to device code...");
+            on_message(&format!(
+                "Browser sign-in failed ({e}), falling back to device code..."
+            ));
         }
     }
 
@@ -261,10 +263,10 @@ pub(super) async fn browser_auth_flow(
     );
 
     on_message("Opening browser for BC sign-in...");
-    if !open_browser(&auth_url) {
+    if let Err(error) = open_browser(&auth_url) {
         return Err(OAuthError::Protocol {
             error: "no_browser".into(),
-            description: "Could not open browser".into(),
+            description: error.to_string(),
         });
     }
 
@@ -365,14 +367,15 @@ pub(super) async fn device_code_flow(
         .json()
         .await?;
 
-    if open_window {
+    // The prompt claims an opened window only when the opener started.
+    let opened = open_window && {
         let uri = dc
             .verification_uri_complete
             .as_deref()
             .unwrap_or(&dc.verification_uri);
-        open_browser(uri);
-    }
-    on_message(&device_code_prompt(&dc, open_window));
+        open_browser(uri).is_ok()
+    };
+    on_message(&device_code_prompt(&dc, opened));
 
     // `expires_in` / `interval` are server-controlled. Clamp both before they
     // reach `SystemTime::add` / `tokio::time::sleep`: `SystemTime + Duration`

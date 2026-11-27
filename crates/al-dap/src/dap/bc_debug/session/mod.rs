@@ -125,8 +125,14 @@ pub struct BcDebugSession {
     /// exactly one serialized `invoke()` at a time.
     completion_rx: Mutex<mpsc::Receiver<SignalRMessage>>,
     next_id: AtomicI64,
-    /// SignalR connection ID — used in browser URL for debug context
+    /// SignalR connection ID, used in the browser URL for the debug context.
     pub connection_id: String,
+    /// `ApplicationGatewayAffinity` cookie value from negotiate, as sent.
+    /// Microsoft copies it into the connection context and from there into
+    /// the web client URL (HubBasedService.cs:84-91, ClientStartup.cs:104-110),
+    /// so the browser session lands on the server node that holds this hub
+    /// connection.
+    pub affinity_cookie: Option<String>,
     /// True after BC confirms that a concrete client session has attached.
     /// `Attach` itself only registers the debugger; configurationDone must be
     /// deferred until this callback for break-on-next web-client sessions.
@@ -227,6 +233,22 @@ impl BcDebugSession {
             .filter(|pair| pair.contains('='))
             .collect::<Vec<_>>()
             .join("; ");
+        let affinity_cookie = negotiate_resp
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .find_map(|value| {
+                let value = value
+                    .strip_prefix("ApplicationGatewayAffinity=")?
+                    .split(';')
+                    .next()?;
+                (!value.is_empty()).then(|| value.to_string())
+            });
+        info!(
+            affinity_cookie = affinity_cookie.is_some(),
+            "SignalR negotiate cookies"
+        );
         let resp_text = negotiate_resp.text().await.map_err(|e| {
             DapError::ConnectionFailed(format!("Failed to read negotiate response: {e}"))
         })?;
@@ -420,6 +442,7 @@ impl BcDebugSession {
             completion_rx: Mutex::new(completion_rx),
             next_id: AtomicI64::new(1),
             connection_id,
+            affinity_cookie,
             is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
             expecting_step: Mutex::new(false),
@@ -512,6 +535,12 @@ impl BcDebugSession {
     /// BC sends these hub client callbacks:
     /// - `Break(ApplicationObjectIdWrapper, StackFrame[], string)` — execution stopped
     /// - `IsAlive` — ping, must respond with AcknowledgeIsAlive
+    /// - `HubConnected`: a client session is bound to this connection. On a
+    ///   cloud launch this is the callback BC sends when the web client opens
+    ///   the debug URL. Microsoft registers it in the base class
+    ///   (HubBasedService.cs:120) and treats it like `OnAttachedToConnection`
+    ///   (HubBasedDebuggerService.cs:117-120 and :148-151, both call
+    ///   `Connected()`, which sends `initialized`).
     /// - `OnAttachedToConnection` — connected to debug session
     /// - `OnDetachedFromConnection(bool terminateSession)` — disconnected
     /// - `OnFatalDebuggerException(string message)` — fatal error
@@ -543,8 +572,8 @@ impl BcDebugSession {
                     // retry. Using .await here would deadlock when invoke() holds event_rx.
                     let _ = self.ws_tx.try_send(ack.to_string());
                 }
-                "OnAttachedToConnection" => {
-                    info!("Attached to debug connection");
+                "OnAttachedToConnection" | "HubConnected" => {
+                    info!("Attached to debug connection ({target})");
                     *self.is_attached.lock().await = true;
                 }
                 "OnDetachedFromConnection" => {
@@ -941,6 +970,7 @@ impl BcDebugSession {
             completion_rx: Mutex::new(completion_rx),
             next_id: AtomicI64::new(1),
             connection_id,
+            affinity_cookie: None,
             is_attached: Mutex::new(false),
             is_stopped: Mutex::new(false),
             expecting_step: Mutex::new(false),

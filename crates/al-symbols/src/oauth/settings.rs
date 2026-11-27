@@ -1,10 +1,18 @@
 //! Sign-in parameters: the Entra endpoint, scope, client id and redirect URI.
 //!
-//! The defaults and the launch.json override rule follow Microsoft's AL client
+//! The defaults follow Microsoft's AL client
 //! (`CloudHttpClientFactory.GetAuthenticationParameters`, decompiled at
 //! Deployment/Microsoft.Dynamics.Nav.Deployment.Http/CloudHttpClientFactory.cs:224-229).
-//! Each `entraIdAuthentication` field in a launch configuration replaces the
-//! matching default.
+//!
+//! Microsoft's override is the workspace setting `al.entraIdAuthentication`
+//! (AL extension 18.1 package.json, keys `endpoint`, `clientId`,
+//! `redirectionUri`, `scope`). dist/extension.js reads it with
+//! `getConfiguration("al").get("entraIdAuthentication")` and copies it into
+//! every launch and attach request as `EntraIdAuthenticationDetails`. It is
+//! not a launch.json property. Here it is read from `.vscode/settings.json`.
+//! An `entraIdAuthentication` block inside a launch configuration is also
+//! accepted and wins per field, so one project can sign in to two tenants with
+//! two clients. Each field that is set replaces the matching default.
 
 use super::validation::is_well_formed_guid;
 use super::OAuthError;
@@ -22,7 +30,7 @@ pub struct AuthSettings {
     pub endpoint: String,
     pub scope: String,
     pub client_id: String,
-    /// Read from launch.json for parity. Microsoft's interactive sign-in uses
+    /// Read from the settings for parity. Microsoft's interactive sign-in uses
     /// `http://localhost` (AccessTokenManager.cs:78) and its device code flow
     /// sends no redirect, so no flow here sends this value.
     pub redirect_uri: String,
@@ -44,14 +52,59 @@ impl AuthSettings {
     /// Absent or blank fields keep the default. Keys match with either case of
     /// the first letter, as the AL extension's JSON binding does.
     pub fn from_launch_value(launch: &serde_json::Value) -> Result<Self, OAuthError> {
-        let mut settings = Self::default();
-        let Some(block) = launch
+        Self::default().with_launch_value(launch)
+    }
+
+    /// The defaults with the project's `al.entraIdAuthentication` workspace
+    /// setting from `.vscode/settings.json` applied. A missing or unreadable
+    /// settings file gives the defaults. A value that is present but not an
+    /// object, or a bad field inside it, is an error.
+    pub fn from_workspace_settings(project_root: &std::path::Path) -> Result<Self, OAuthError> {
+        let path = project_root.join(".vscode").join("settings.json");
+        let Ok(source) = std::fs::read_to_string(&path) else {
+            return Ok(Self::default());
+        };
+        let Ok(value) =
+            serde_json::from_str::<serde_json::Value>(&al_types::strip_json_comments(&source))
+        else {
+            return Ok(Self::default());
+        };
+        match value.get("al.entraIdAuthentication") {
+            None | Some(serde_json::Value::Null) => Ok(Self::default()),
+            Some(block) if block.is_object() => Self::default().with_block(block),
+            Some(_) => Err(OAuthError::Other(format!(
+                "al.entraIdAuthentication in {} must be an object",
+                path.display()
+            ))),
+        }
+    }
+
+    /// The workspace settings of `project_root` (when given) with the launch
+    /// configuration's own `entraIdAuthentication` block applied on top.
+    pub fn for_launch(
+        project_root: Option<&std::path::Path>,
+        launch: &serde_json::Value,
+    ) -> Result<Self, OAuthError> {
+        project_root
+            .map_or_else(|| Ok(Self::default()), Self::from_workspace_settings)?
+            .with_launch_value(launch)
+    }
+
+    /// Apply a launch configuration's `entraIdAuthentication` block.
+    fn with_launch_value(self, launch: &serde_json::Value) -> Result<Self, OAuthError> {
+        match launch
             .get("entraIdAuthentication")
             .or_else(|| launch.get("EntraIdAuthentication"))
             .filter(|v| v.is_object())
-        else {
-            return Ok(settings);
-        };
+        {
+            Some(block) => self.with_block(block),
+            None => Ok(self),
+        }
+    }
+
+    /// Apply one `{endpoint, clientId, redirectionUri, scope}` object.
+    fn with_block(self, block: &serde_json::Value) -> Result<Self, OAuthError> {
+        let mut settings = self;
         let field = |camel: &str, pascal: &str| -> Option<String> {
             block
                 .get(camel)
@@ -85,18 +138,26 @@ impl AuthSettings {
             }
             settings.client_id = client_id;
         }
-        if let Some(redirect) = field("redirectUri", "RedirectUri") {
+        // package.json names it `redirectionUri`, the server type
+        // EntraIdAuthenticationDetails names it `RedirectUri`.
+        if let Some(redirect) = field("redirectionUri", "RedirectionUri")
+            .or_else(|| field("redirectUri", "RedirectUri"))
+        {
             settings.redirect_uri = redirect;
         }
         Ok(settings)
     }
 
-    /// The settings for `tenant`: the first launch configuration for that
-    /// tenant that carries an `entraIdAuthentication` block, else the defaults.
+    /// The settings for `tenant`: the workspace settings of `project_root`
+    /// (when given), with the block of the first launch configuration for that
+    /// tenant that carries an `entraIdAuthentication` block on top.
     pub fn for_tenant(
+        project_root: Option<&std::path::Path>,
         configs: &[al_bc::launch::BcServerConfig],
         tenant: &str,
     ) -> Result<Self, OAuthError> {
+        let base =
+            project_root.map_or_else(|| Ok(Self::default()), Self::from_workspace_settings)?;
         configs
             .iter()
             .filter(|c| {
@@ -109,8 +170,8 @@ impl AuthSettings {
                     || c.debug_args.get("EntraIdAuthentication").is_some()
             })
             .map_or_else(
-                || Ok(Self::default()),
-                |c| Self::from_launch_value(&c.debug_args),
+                || Ok(base.clone()),
+                |c| base.clone().with_launch_value(&c.debug_args),
             )
     }
 
@@ -122,8 +183,8 @@ impl AuthSettings {
         tenant: &str,
     ) -> Result<Self, OAuthError> {
         match al_bc::launch::find_launch_config(project_root) {
-            Ok(Some(file)) => Self::for_tenant(&file.configs, tenant),
-            _ => Ok(Self::default()),
+            Ok(Some(file)) => Self::for_tenant(Some(project_root), &file.configs, tenant),
+            _ => Self::from_workspace_settings(project_root),
         }
     }
 
@@ -228,5 +289,63 @@ mod tests {
             AuthSettings::for_project_root(dir.path(), "5c823c3b-d5c9-4853-b74c-d59b81265f78")
                 .unwrap();
         assert_eq!(other, AuthSettings::default());
+    }
+
+    /// The AL extension reads `al.entraIdAuthentication` from the workspace
+    /// settings (package.json of ms-dynamics-smb.al 18.1, keys endpoint,
+    /// clientId, redirectionUri, scope). A launch block wins per field.
+    #[test]
+    fn workspace_setting_applies_and_a_launch_block_wins_per_field() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".vscode")).unwrap();
+        std::fs::write(
+            dir.path().join(".vscode/settings.json"),
+            r#"{
+                // VS Code settings files carry comments.
+                "al.entraIdAuthentication": {
+                    "clientId": "22222222-3333-4444-5555-666666666666",
+                    "scope": "api://example.invalid/.default",
+                    "redirectionUri": "https://example.invalid/redirect"
+                }
+            }"#,
+        )
+        .unwrap();
+        let tenant = "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d";
+        let got = AuthSettings::for_project_root(dir.path(), tenant).unwrap();
+        assert_eq!(got.client_id, "22222222-3333-4444-5555-666666666666");
+        assert_eq!(got.scope, "api://example.invalid/.default");
+        assert_eq!(got.redirect_uri, "https://example.invalid/redirect");
+        assert_eq!(got.endpoint, DEFAULT_ENDPOINT);
+
+        std::fs::write(
+            dir.path().join(".vscode/launch.json"),
+            r#"{"version":"0.2.0","configurations":[{"name":"cdx","type":"al","request":"launch",
+            "environmentType":"Sandbox","tenant":"1b7a9471-d313-4aa4-99e8-7a6c762c8e7d",
+            "entraIdAuthentication":{"clientId":"11111111-2222-3333-4444-555555555555"}}]}"#,
+        )
+        .unwrap();
+        let got = AuthSettings::for_project_root(dir.path(), tenant).unwrap();
+        assert_eq!(got.client_id, "11111111-2222-3333-4444-555555555555");
+        assert_eq!(got.redirect_uri, "https://example.invalid/redirect");
+
+        let launch = json!({"tenant": tenant});
+        let got = AuthSettings::for_launch(Some(dir.path()), &launch).unwrap();
+        assert_eq!(got.client_id, "22222222-3333-4444-5555-666666666666");
+    }
+
+    #[test]
+    fn workspace_setting_that_is_not_an_object_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".vscode")).unwrap();
+        std::fs::write(
+            dir.path().join(".vscode/settings.json"),
+            r#"{"al.entraIdAuthentication": "not an object"}"#,
+        )
+        .unwrap();
+        assert!(AuthSettings::from_workspace_settings(dir.path()).is_err());
+        assert_eq!(
+            AuthSettings::from_workspace_settings(&dir.path().join("missing")).unwrap(),
+            AuthSettings::default()
+        );
     }
 }
