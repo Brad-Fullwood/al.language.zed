@@ -58,7 +58,11 @@ pub fn sanitize_error_body(body: &str) -> String {
         body.to_string()
     };
     for needle in [
-        "Authorization: Bearer ",
+        // A bare `Bearer ` also covers `Authorization: Bearer `. The debug
+        // negotiate URL carries the token as `Authentication=Bearer%20<token>`,
+        // and a gateway page that echoes the URL repeats it.
+        "Bearer ",
+        "Bearer%20",
         "Authorization:Bearer ",
         // The UserPassword/Windows path sends `Authorization: Basic
         // <base64(user:pass)>`, so a verbose IIS/BC 401 or 500 page that echoes
@@ -673,6 +677,16 @@ mod tests {
         ] {
             assert!(!is_guid(bad), "{bad:?} must be refused");
         }
+    }
+
+    #[test]
+    fn sanitize_error_body_redacts_bare_and_url_encoded_bearer() {
+        let out = sanitize_error_body(
+            "<p>Bearer abc.def.ghi</p> url ?Authentication=Bearer%20tok.en.x&tenant=t",
+        );
+        assert!(!out.contains("abc.def.ghi"), "{out}");
+        assert!(!out.contains("tok.en.x"), "{out}");
+        assert!(out.contains("tenant=t"), "{out}");
     }
 
     #[test]
