@@ -128,6 +128,9 @@ pub async fn acquire_token_with_settings(
     let mut auth = settings.clone();
     auth.client_id = configured_client_id(&settings.client_id)?;
     let cache_path = token_cache_path(tenant);
+    // In CachedOnly mode a cached sign-in whose refresh fails is reported with
+    // the refresh error, so the caller sees why the sign-in stopped working.
+    let mut refresh_error = None;
 
     if let Some(cached) = load_cached_token(&cache_path, tenant) {
         let now = now_unix();
@@ -149,6 +152,7 @@ pub async fn acquire_token_with_settings(
                 }
                 Err(e) => {
                     debug!(error = %e, "Refresh failed, doing interactive sign-in");
+                    refresh_error = Some(e);
                 }
             }
         }
@@ -166,8 +170,15 @@ pub async fn acquire_token_with_settings(
                 );
                 return Ok(tok.access_token.clone());
             }
-            Err(e) => debug!(error = %e, "AL cache refresh token not accepted"),
+            Err(e) => {
+                debug!(error = %e, "AL cache refresh token not accepted");
+                refresh_error.get_or_insert(e);
+            }
         }
+    }
+
+    if let (SignInMode::CachedOnly, Some(e)) = (mode, refresh_error) {
+        return Err(e);
     }
 
     let tok = interactive_sign_in(client, tenant, &auth, mode, &on_message).await?;
@@ -207,10 +218,7 @@ pub(super) async fn interactive_sign_in(
     on_message: &impl Fn(&str),
 ) -> Result<TokenResponse, OAuthError> {
     if mode == SignInMode::CachedOnly {
-        return Err(OAuthError::Other(
-            "no cached Business Central sign-in and interactive sign-in is not allowed here"
-                .to_string(),
-        ));
+        return Err(OAuthError::SignInRequired);
     }
     if mode == SignInMode::DeviceCode {
         return device_code_flow(client, tenant, auth, false, on_message).await;

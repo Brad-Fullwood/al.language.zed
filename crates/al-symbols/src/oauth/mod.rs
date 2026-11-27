@@ -59,6 +59,9 @@ pub enum OAuthError {
     /// Caller-supplied input failed validation before any network I/O.
     #[error("{0}")]
     Other(String),
+    /// [`SignInMode::CachedOnly`] found no cached sign-in to use.
+    #[error("no cached Business Central sign-in and interactive sign-in is not allowed here")]
+    SignInRequired,
 }
 
 /// Successful token response from the token endpoint.

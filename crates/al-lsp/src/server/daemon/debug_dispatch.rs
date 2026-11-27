@@ -395,24 +395,29 @@ pub(super) async fn acquire_bc_token(
                 },
             )
             .await
-            .map_err(|error| {
-                if sign_in == al_symbols::oauth::SignInMode::CachedOnly {
-                    (
-                        error_codes::INVALID_PARAMS,
-                        al_bc::bc_client::BcClientError::MissingCredentials.to_string(),
-                    )
-                } else {
-                    (
-                        error_codes::INTERNAL_ERROR,
-                        format!("Business Central authentication failed: {error}"),
-                    )
-                }
-            })
+            .map_err(token_failure)
         }
         Err(error) => Err((
             error_codes::INVALID_PARAMS,
             format!("Invalid bearer-token environment: {error}"),
         )),
+    }
+}
+
+/// The answer for a failed token request. Only "no cached sign-in" becomes
+/// MissingCredentials, which tells the caller to pass credentials. A failed
+/// refresh or a configuration error keeps its own text.
+fn token_failure(error: al_symbols::oauth::OAuthError) -> (i32, String) {
+    use al_protocol::jsonrpc::error_codes;
+    match error {
+        al_symbols::oauth::OAuthError::SignInRequired => (
+            error_codes::INVALID_PARAMS,
+            al_bc::bc_client::BcClientError::MissingCredentials.to_string(),
+        ),
+        error => (
+            error_codes::INTERNAL_ERROR,
+            format!("Business Central authentication failed: {error}"),
+        ),
     }
 }
 
@@ -1032,6 +1037,34 @@ pub(super) async fn dispatch_debug(
             }),
             ..Default::default()
         },
+    }
+}
+
+#[cfg(test)]
+mod token_failure_tests {
+    use super::token_failure;
+
+    #[test]
+    fn only_a_missing_cached_sign_in_reads_as_missing_credentials() {
+        use al_protocol::jsonrpc::error_codes;
+        use al_symbols::oauth::OAuthError;
+
+        assert_eq!(
+            token_failure(OAuthError::SignInRequired),
+            (
+                error_codes::INVALID_PARAMS,
+                al_bc::bc_client::BcClientError::MissingCredentials.to_string()
+            )
+        );
+
+        let (code, message) = token_failure(OAuthError::Other(
+            "BC_CLIENT_ID must be a well-formed GUID".to_string(),
+        ));
+        assert_eq!(code, error_codes::INTERNAL_ERROR);
+        assert_eq!(
+            message,
+            "Business Central authentication failed: BC_CLIENT_ID must be a well-formed GUID"
+        );
     }
 }
 
