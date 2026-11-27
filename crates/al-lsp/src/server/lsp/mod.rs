@@ -320,6 +320,10 @@ pub struct AlServer {
     /// The pending debounced call graph pass per document.
     pub(crate) transaction_tasks:
         Arc<Mutex<std::collections::HashMap<Url, tokio::task::JoinHandle<()>>>>,
+    /// The AL settings from `initializationOptions`. A configuration change
+    /// starts from the defaults and these, so a key the editor removes goes
+    /// back to its start value.
+    pub(crate) initial_al_settings: tokio::sync::RwLock<serde_json::Value>,
 }
 
 impl AlServer {
@@ -374,6 +378,7 @@ impl AlServer {
             semantic_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
             transaction_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
             transaction_tasks: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            initial_al_settings: tokio::sync::RwLock::new(serde_json::Value::Null),
         }
     }
 
@@ -758,6 +763,17 @@ impl AlServer {
 ///
 /// Zed sends settings nested under an "al" key; other clients may send flat objects.
 /// Used by both `initialize` and `did_change_configuration` to normalise the input.
+/// The configuration a `didChangeConfiguration` starts from: the defaults,
+/// then the `initializationOptions` settings. The caller merges the new
+/// settings on top with `merge_reporting`.
+fn staged_configuration(initial: &serde_json::Value) -> al_project::config::AlConfig {
+    let mut config = al_project::config::AlConfig::default();
+    if initial.is_object() {
+        let _ = config.merge_reporting(initial);
+    }
+    config
+}
+
 fn extract_al_settings(value: serde_json::Value) -> serde_json::Value {
     value.get("al").cloned().unwrap_or(value)
 }
@@ -925,11 +941,17 @@ impl AlServer {
         // not wait on the hashing. Applying only removes values, so applying
         // this reading to a configuration installed in the meantime is sound.
         let gate = SessionGate::read_off_runtime(root_uri).await;
-        let advisory = {
+        let (advisory, package_paths_changed) = {
             let mut config = self.workspace.config.write().await;
+            let before = (
+                config.package_cache_path.clone(),
+                config.app_local_folder_paths.clone(),
+            );
             let advisory = gate.apply(&mut config);
             gate.record();
-            advisory
+            let package_paths_changed =
+                before.0 != config.package_cache_path || before.1 != config.app_local_folder_paths;
+            (advisory, package_paths_changed)
         };
         self.semantic_diagnostic_cache.lock().await.clear();
         self.transaction_diagnostic_cache.lock().await.clear();
@@ -937,6 +959,29 @@ impl AlServer {
             self.client
                 .show_message(MessageType::WARNING, advisory)
                 .await;
+        }
+        if package_paths_changed {
+            self.reload_symbol_packages().await;
+        }
+    }
+
+    /// Stage the project's symbol packages again from the current
+    /// configuration, after a trust change took back a package folder. The
+    /// project keeps `packages_dir` and `packages` until this runs, and the
+    /// build and semantic analysis read them.
+    async fn reload_symbol_packages(&self) {
+        match workspace::refresh_current_symbol_generation(&self.workspace).await {
+            Ok((loaded, symbols, failures)) => {
+                tracing::info!(
+                    loaded,
+                    symbols,
+                    "symbol packages staged again after a trust change"
+                );
+                workspace::show_package_load_failures(&self.client, &failures).await;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "symbol packages were not staged again after a trust change");
+            }
         }
     }
 
@@ -1033,6 +1078,7 @@ impl LanguageServer for AlLsp {
 
         if let Some(init_opts) = params.initialization_options {
             let al_settings = extract_al_settings(init_opts);
+            *self.initial_al_settings.write().await = al_settings.clone();
             let root_uri = self.root_uri.read().await.clone();
             let (cap, advisory) = {
                 let mut config = self.workspace.config.write().await;
@@ -1350,6 +1396,10 @@ impl LanguageServer for AlLsp {
             let mut guard = self.diag_tasks.lock().await;
             guard.drain().map(|(_, task)| task).collect()
         };
+        let pending_transactions: Vec<tokio::task::JoinHandle<()>> = {
+            let mut guard = self.transaction_tasks.lock().await;
+            guard.drain().map(|(_, task)| task).collect()
+        };
         let workspace_diagnostics = self.workspace_diag_task.lock().await.take();
         let project_semantic = self
             .project_semantic_task
@@ -1359,6 +1409,7 @@ impl LanguageServer for AlLsp {
             .map(|(task, _)| task);
         for task in pending_diagnostics
             .into_iter()
+            .chain(pending_transactions)
             .chain(workspace_diagnostics)
             .chain(project_semantic)
         {
@@ -1682,6 +1733,11 @@ impl LanguageServer for AlLsp {
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
         let uri = params.text_document.uri;
         tracing::debug!(uri = %uri, "did_save");
+        // The save publishes below, so a pending debounced pass for the same
+        // file would analyse it a second time.
+        if let Some(pending) = self.diag_tasks.lock().await.remove(&uri) {
+            pending.abort();
+        }
 
         // Always publish diagnostics on save — both Continuous and OnSave modes benefit
         // from a save-time refresh. In OnSave mode this is the *only* time diagnostics run
@@ -1723,9 +1779,14 @@ impl LanguageServer for AlLsp {
         }
 
         let al_settings = extract_al_settings(params.settings);
-        let mut staged_config = self.workspace.config.read().await.clone();
-        let old_cache_path = staged_config.package_cache_path.clone();
-        let old_local_paths = staged_config.app_local_folder_paths.clone();
+        let (old_cache_path, old_local_paths) = {
+            let current = self.workspace.config.read().await;
+            (
+                current.package_cache_path.clone(),
+                current.app_local_folder_paths.clone(),
+            )
+        };
+        let mut staged_config = staged_configuration(&*self.initial_al_settings.read().await);
         let report = staged_config.merge_reporting(&al_settings);
         let root_uri = self.root_uri.read().await.clone();
         // Every install below checks that the trust inputs have not moved
@@ -1929,6 +1990,7 @@ impl LanguageServer for AlLsp {
             self.workspace
                 .documents
                 .set_max_doc_bytes(staged_config.max_document_size_bytes);
+            al_symbols::index_pool::set_index_threads(staged_config.index_threads);
             tracing::info!(
                 attempted,
                 loaded = loaded.len(),
@@ -2473,7 +2535,11 @@ impl LanguageServer for AlLsp {
         // the project state it needs (`commands::compile` takes root, package
         // cache, packages and config up front) or takes its own guard while
         // publishing a replacement generation.
-        drop(self.await_ready().await?);
+        // `al.reindex` and `al.getStatus` also run when initialization failed:
+        // a reindex is the way out of the Failed state without a restart.
+        if !matches!(params.command.as_str(), "al.reindex" | "al.getStatus") {
+            drop(self.await_ready().await?);
+        }
         // A command can build, run tests or download from feeds, so it uses
         // the trust decision as it stands now.
         self.refresh_trust().await;
@@ -2752,5 +2818,7 @@ fn paths_equivalent(left: &std::path::Path, right: &std::path::Path) -> bool {
     }
 }
 
+#[cfg(test)]
+mod review_a2_tests;
 #[cfg(test)]
 mod tests;

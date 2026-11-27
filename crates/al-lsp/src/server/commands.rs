@@ -190,12 +190,15 @@ pub(super) async fn reindex(server: &AlServer) {
         let uri_cloned = uri.clone();
         let diagnostic_state = server.diagnostic_publication_state();
         let session = diagnostic_state.session.clone();
+        // A successful reindex sets the state to Ready, which also ends a
+        // Failed state from the first initialization.
+        let init_state = server.workspace_init_state.clone();
         let handle = tokio::spawn(async move {
             match workspace::initialize_workspace(
                 ws,
                 client.clone(),
                 Some(uri_cloned),
-                None,
+                Some(init_state),
                 Some(diagnostic_state),
             )
             .await
