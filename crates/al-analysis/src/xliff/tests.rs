@@ -567,6 +567,42 @@ var
     .is_empty());
 }
 
+/// A property split over lines is one statement, so `Locked` on the next
+/// line still locks the caption.
+#[test]
+fn locked_caption_on_the_next_line_is_not_extracted() {
+    let units = extract(
+        r#"table 50100 "T"
+{
+    fields
+    {
+        field(1; Code; Code[20])
+        {
+            Caption = 'Internal Code',
+                Locked = true;
+        }
+    }
+}"#,
+    );
+    assert!(units.is_empty(), "{units:#?}");
+}
+
+/// A label Comment on the next line becomes the developer note.
+#[test]
+fn label_comment_on_the_next_line_becomes_the_developer_note() {
+    let units = extract(
+        r#"codeunit 50100 "C"
+{
+    var
+        MyLbl: Label 'Order %1',
+            Comment = '%1 = Order No.';
+}"#,
+    );
+    assert_eq!(units.len(), 1, "{units:#?}");
+    assert_eq!(units[0].source, "Order %1");
+    assert_eq!(units[0].developer_note.as_deref(), Some("%1 = Order No."));
+}
+
 #[test]
 fn label_ids_are_stable_across_extraction_order() {
     let al = r#"codeunit 50100 "My Codeunit"

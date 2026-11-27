@@ -328,6 +328,8 @@ fn scan_file(
         stack: Vec::new(),
         pending: None,
         method: None,
+        carry_raw: String::new(),
+        carry_code: String::new(),
         units,
     };
     let mut in_block_comment = false;
@@ -342,6 +344,7 @@ fn scan_file(
             scanner.segment(
                 &line[segment_start..position],
                 &code[segment_start..position],
+                true,
             );
             if ch == '{' {
                 scanner.open_block();
@@ -350,7 +353,7 @@ fn scan_file(
             }
             segment_start = position + ch.len_utf8();
         }
-        scanner.segment(&line[segment_start..], &code[segment_start..]);
+        scanner.segment(&line[segment_start..], &code[segment_start..], false);
     }
 }
 
@@ -392,6 +395,11 @@ struct Scanner<'a> {
     pending: Option<MemberBlock>,
     /// The procedure or trigger whose `var` section is being read.
     method: Option<String>,
+    /// The text after the last `;` of the earlier line when it ends in `,`, so
+    /// a statement split over lines (`Caption = 'x',` then `Locked = true;`) is
+    /// judged as one.
+    carry_raw: String,
+    carry_code: String,
     units: &'a mut Vec<TranslationUnit>,
 }
 
@@ -500,7 +508,22 @@ impl Scanner<'_> {
     /// (`field(1; "No."; Code[20]) { Caption = 'No.'; }`) resolve against the field
     /// it declares: the brace between the two has already been applied to the stack
     /// by the time the caption is read.
-    fn segment(&mut self, raw: &str, code: &str) {
+    ///
+    /// `at_brace` is true when the run ends at a `{` or `}`. The statement text
+    /// after the last `;` is then complete. At the end of a line, text that ends
+    /// in `,` is kept and read with the next run.
+    fn segment(&mut self, raw: &str, code: &str, at_brace: bool) {
+        let carried = !self.carry_raw.is_empty();
+        let raw_all = if carried {
+            format!("{}\n{raw}", std::mem::take(&mut self.carry_raw))
+        } else {
+            raw.to_string()
+        };
+        let code_all = if carried {
+            format!("{}\n{code}", std::mem::take(&mut self.carry_code))
+        } else {
+            code.to_string()
+        };
         if self.stack.is_empty() {
             if let Some(header) = parse_object_header_line(code.trim()) {
                 self.object = Some(self.index.object_context(header));
@@ -518,7 +541,24 @@ impl Scanner<'_> {
             self.method = Some(name);
         }
 
-        for (statement, stripped) in statements(raw, code) {
+        // Both strings have the same byte length, so one index splits both.
+        let complete = match code_all.rfind(';') {
+            Some(at) => at + 1,
+            None => 0,
+        };
+        // Only a run that ends in `,` continues on the next line. Other text
+        // without a `;` (a method header, `var`, `begin`) stays on its own.
+        let continues = code_all[complete..].trim_end().ends_with(',');
+        if !at_brace && continues {
+            self.carry_raw = raw_all[complete..].to_string();
+            self.carry_code = code_all[complete..].to_string();
+        }
+        let end = if at_brace || !continues {
+            raw_all.len()
+        } else {
+            complete
+        };
+        for (statement, stripped) in statements(&raw_all[..end], &code_all[..end]) {
             self.note_declared_properties(statement);
             if property_is_locked(stripped) {
                 continue;
