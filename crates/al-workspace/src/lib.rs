@@ -556,6 +556,12 @@ pub struct Workspace {
     /// on every document open. The entry is reusable only while both its
     /// generation and its document match.
     pub code_lens_reference_counts: std::sync::RwLock<Option<CodeLensReferenceCounts>>,
+    /// Results of the workspace-wide native diagnostic passes, read and
+    /// written by `al-analysis` (its `queries::diagnostics` module), which
+    /// keys them to the generation. Type erased because `al-analysis` depends
+    /// on this crate.
+    pub native_diagnostics_cache:
+        std::sync::Mutex<Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
 /// The stamps of the project files a long running process keeps in memory,
@@ -628,6 +634,7 @@ impl Workspace {
             test_results: std::sync::RwLock::new(None),
             last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
             code_lens_reference_counts: std::sync::RwLock::new(None),
+            native_diagnostics_cache: std::sync::Mutex::new(None),
         }
     }
 
