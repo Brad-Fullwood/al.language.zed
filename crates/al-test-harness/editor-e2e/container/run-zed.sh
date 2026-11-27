@@ -57,9 +57,9 @@ if [ -n "${AL_SOURCE_INDEX:-}" ]; then
   # private_to_this_user), and mounting onto ~/.local/share/al-lsp/source-index makes podman create
   # ~/.local/share root-owned. So the read-only mount at $AL_SOURCE_INDEX is copied into a private dir.
   store="${XDG_DATA_HOME:-$HOME/.local/share}/al-lsp/source-index"
-  mkdir -p -m 700 "$store"
+  mkdir -p "$store" && chmod 700 "$store"
   cp -f "$AL_SOURCE_INDEX"/*.summary "$store"/ && chmod 600 "$store"/*.summary
-  echo "  source index store: $(ls "$store" | wc -l) entries copied"
+  echo "  source index store: $(find "$store" -maxdepth 1 -name '*.summary' | wc -l) entries copied"
 fi
 if [ "${AL_SETTINGS_SENTINEL:-}" = 1 ]; then
   # Same path al-lsp checks: <user data dir>/al-lsp/.settings-prompt-shown
@@ -75,6 +75,7 @@ DEV="$HOME/.local/share/zed/extensions/work/al/dev"
 rm -rf "$HOME/.local/share/zed/extensions/work/al"; mkdir -p "$DEV"
 cp -p "$REPO/target/debug/al-lsp" "$DEV/al-lsp"
 [ -x "$REPO/target/debug/al-explorer" ] && cp -p "$REPO/target/debug/al-explorer" "$DEV/al-explorer"
+# shellcheck disable=SC2012 # newest by mtime needs ls -t, cargo build directory names hold no spaces
 bridge=$(ls -dt "$REPO"/target/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1)
 [ -n "$bridge" ] && cp -rp "$bridge" "$DEV/bridge"
 "$DEV/al-lsp" --version > "$DEV/BUILD" 2>/dev/null || true

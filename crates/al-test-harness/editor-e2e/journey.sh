@@ -72,6 +72,7 @@ done
 # The semantic bridge: al-lsp loads $(dirname al-lsp)/bridge/AlBridge.dll. Same copy as `make install`
 # (Makefile install-files): the newest al-semantic build output. journey-lsp, journey-rpc and al-explorer
 # all start this al-lsp, so stages 04 and 10 run with the bridge when a `semantic` build produced one.
+# shellcheck disable=SC2012 # newest by mtime needs ls -t, cargo build directory names hold no spaces
 BRIDGE_SRC=$(ls -dt "$TARGET_DIR"/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1 || true)
 if [[ -n "$BRIDGE_SRC" && -f "$BRIDGE_SRC/AlBridge.dll" ]]; then
   rm -rf "$(dirname "$ALLSP")/bridge" && cp -rp "$BRIDGE_SRC" "$(dirname "$ALLSP")/bridge"
@@ -94,7 +95,7 @@ rm -rf "$PROJ" "$OUT/results.tsv" "$OUT/SUMMARY.md"
 : > "$OUT/results.tsv"
 for d in "$OUT"/[0-9][0-9]; do [[ -d "$d" ]] && rm -rf "$d"; done
 
-# shellcheck source=journey/lib.sh
+# shellcheck source=journey/lib.sh disable=SC1091 # CI runs shellcheck without -x
 source "$HERE/journey/lib.sh"
 for f in "$HERE"/journey/stage*.sh; do
   # shellcheck disable=SC1090

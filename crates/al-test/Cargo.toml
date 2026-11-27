@@ -25,7 +25,6 @@ quick-xml = { workspace = true }
 reqwest = { workspace = true }
 tree-sitter = { workspace = true }
 url = { workspace = true }
-urlencoding = { workspace = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
