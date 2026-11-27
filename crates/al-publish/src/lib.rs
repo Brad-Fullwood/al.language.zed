@@ -302,7 +302,7 @@ fn resolve_server_config(
 ) -> Result<BcServerConfig, PublishError> {
     let debug_config = find_launch_config(project_root)?.ok_or(PublishError::NoLaunchConfig)?;
 
-    let chosen = match config_name {
+    let mut chosen = match config_name {
         Some(name) => debug_config
             .configs
             .into_iter()
@@ -322,13 +322,17 @@ fn resolve_server_config(
     // environment (`BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`), so
     // it is the target the repository chose that needs authorising, not a
     // cached token: nothing in publish reads the OAuth cache.
-    al_project::trust::authorize_cached_credential(
+    let authorization = al_project::trust::authorize_cached_credential(
         project_root,
         &al_project::trust::BcTarget::from_launch(&chosen),
         al_project::trust::CredentialKind::Environment,
         al_project::trust::TargetSource::Repository,
     )
     .map_err(PublishError::Unauthorized)?;
+    // A cloud target is never authorised for invalid certificates, so the
+    // launch file's flag only survives for an on-premises server.
+    chosen.accept_invalid_certs =
+        chosen.accept_invalid_certs && authorization.may_accept_invalid_certs;
     Ok(chosen)
 }
 
@@ -626,6 +630,27 @@ mod tests {
         let cfg = resolve_server_config(dir.path(), None).unwrap();
         assert_eq!(cfg.name, "Alpha");
         assert_eq!(cfg.display_name(), "BC Cloud (MySandbox)");
+    }
+
+    #[test]
+    fn cloud_config_never_keeps_accept_invalid_certs() {
+        let dir = tempfile::tempdir().unwrap();
+        write_zed_debug(
+            dir.path(),
+            r#"[
+                {"label":"Alpha","adapter":"al","environmentType":"Sandbox",
+                 "environmentName":"MySandbox","tenant":"1b7a9471-d313-4aa4-99e8-7a6c762c8e7d",
+                 "acceptInvalidCerts":true}
+            ]"#,
+        );
+
+        // The launch file asks for it, so the flag is on before the check.
+        let launch = find_launch_config(dir.path()).unwrap().unwrap();
+        assert!(launch.configs[0].accept_invalid_certs);
+
+        al_bc::tenant_guard::install_test_registry();
+        let cfg = resolve_server_config(dir.path(), None).unwrap();
+        assert!(!cfg.accept_invalid_certs);
     }
 
     #[test]
