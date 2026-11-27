@@ -328,7 +328,8 @@ impl AlConfig {
 
     /// Default path for persisted settings: `~/.config/al-lsp/settings.json`.
     ///
-    /// Returns `None` if the home directory cannot be determined.
+    /// On Windows, when neither `XDG_CONFIG_HOME` nor `HOME` is set, the path is
+    /// under `%APPDATA%`. Returns `None` if no base directory can be determined.
     pub fn default_settings_path() -> Option<PathBuf> {
         // Honour XDG_CONFIG_HOME if set, otherwise fall back to ~/.config.
         let config_dir = std::env::var("XDG_CONFIG_HOME")
@@ -338,6 +339,15 @@ impl AlConfig {
                 std::env::var("HOME")
                     .ok()
                     .map(|h| PathBuf::from(h).join(".config"))
+            })
+            .or_else(|| {
+                if cfg!(target_os = "windows") {
+                    std::env::var_os("APPDATA")
+                        .filter(|v| !v.is_empty())
+                        .map(PathBuf::from)
+                } else {
+                    None
+                }
             })?;
         Some(config_dir.join("al-lsp").join("settings.json"))
     }
@@ -1678,6 +1688,34 @@ mod tests {
         let p = path.unwrap();
         assert!(p.to_str().unwrap().contains("al-lsp"));
         assert!(p.to_str().unwrap().ends_with("settings.json"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn default_settings_path_uses_appdata_on_windows() {
+        // Other tests read these variables, so put them back afterwards.
+        let saved =
+            ["XDG_CONFIG_HOME", "HOME", "APPDATA"].map(|name| (name, std::env::var_os(name)));
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("HOME");
+        std::env::set_var("APPDATA", r"C:\Users\test\AppData\Roaming");
+
+        let path = AlConfig::default_settings_path();
+
+        for (name, value) in saved {
+            match value {
+                Some(v) => std::env::set_var(name, v),
+                None => std::env::remove_var(name),
+            }
+        }
+        assert_eq!(
+            path,
+            Some(
+                PathBuf::from(r"C:\Users\test\AppData\Roaming")
+                    .join("al-lsp")
+                    .join("settings.json")
+            )
+        );
     }
 
     #[test]

@@ -784,6 +784,12 @@ pub fn cmd_new(options: NewOptions<'_>, json: bool) -> ExitCode {
                     "{}",
                     new_project_text(&result.project_dir, &result.files_created)
                 );
+                if !result.fields_to_fill.is_empty() {
+                    println!("Before AppSourceCop passes, fill:");
+                    for line in &result.fields_to_fill {
+                        println!("  {}", terminal_text(line));
+                    }
+                }
                 if let Some(note) = environment_note {
                     println!("{}", terminal_text(&note));
                 }

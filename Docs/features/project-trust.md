@@ -178,7 +178,8 @@ same way, with a message naming the file. A `dotnet` written outside the project
 path check.
 
 The record lives in `~/.config/al-lsp/trusted-projects.json` (or `$XDG_CONFIG_HOME/al-lsp/`),
-outside every repository, mode 0600, written through a temp file and a rename. Each entry
+outside every repository, mode 0600, written through a temp file and a rename. On Windows, with
+neither `XDG_CONFIG_HOME` nor `HOME` set, the record is under `%APPDATA%\al-lsp\`. Each entry
 holds the canonical project root and a SHA-256 of the privileged values. Change one of those
 values in the repository and the digest stops matching, so the settings are ignored again
 until you run `trust` a second time. `al-explorer trust --show` reports that as `stale`.
