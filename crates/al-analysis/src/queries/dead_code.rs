@@ -84,16 +84,12 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
     let mut parsed_files: Vec<crate::workspace_sources::WorkspaceSource> = sources;
     parsed_files.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let mut all_call_names: std::collections::HashSet<String> =
-        std::collections::HashSet::with_capacity(parsed_files.len() * 32);
+    let mut call_uses = CallUses::default();
     // Build member-access names once for constant-time field lookups.
     let mut all_member_access_names: std::collections::HashSet<String> =
         std::collections::HashSet::with_capacity(parsed_files.len() * 16);
     for source in &parsed_files {
-        all_call_names.extend(al_syntax::collect_call_site_names(
-            &source.tree,
-            &source.text,
-        ));
+        call_uses.collect(source);
         all_member_access_names.extend(al_syntax::collect_member_access_names(
             &source.tree,
             &source.text,
@@ -147,7 +143,7 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
                         file_text,
                         node,
                         &obj_info.name,
-                        &all_call_names,
+                        &call_uses,
                         &implemented,
                         &mut local,
                     );
@@ -189,12 +185,261 @@ pub fn dead_code(workspace: &Workspace) -> Result<Vec<UnusedSymbol>, super::Work
     Ok(results)
 }
 
+/// Who calls what, collected once over the workspace.
+///
+/// A call is filed by its receiver. An unqualified call, or one through
+/// `this`, `CurrPage`, `CurrReport` or `CurrXMLport`, belongs to the object
+/// that contains it. A call through a variable whose declared type is known
+/// belongs to that object name. Any other receiver (`Rec`, a chained call, an
+/// unknown name) could be any object, so it keeps every procedure of that name
+/// alive. A procedure's call to itself is not a use, unless the object has
+/// another procedure of the same name (an overload).
+#[derive(Default)]
+struct CallUses {
+    /// (object key, procedure) for calls inside the object itself.
+    own: std::collections::HashSet<(String, String)>,
+    /// (object name, procedure) for calls through a variable of that type.
+    named: std::collections::HashSet<(String, String)>,
+    /// Procedure names called through a receiver that does not resolve.
+    any: std::collections::HashSet<String>,
+    /// (object key, procedure) for unresolved calls made inside the object.
+    any_own: std::collections::HashSet<(String, String)>,
+}
+
+/// Identifies one object declaration in the workspace.
+fn object_key(path: &std::path::Path, object: tree_sitter::Node<'_>) -> String {
+    format!("{}#{}", path.display(), object.start_byte())
+}
+
+/// Receivers that name the object the call is written in.
+const SELF_RECEIVERS: [&str; 4] = ["this", "currpage", "currreport", "currxmlport"];
+
+/// How a call names its target object.
+enum Receiver {
+    /// No receiver, or a self receiver.
+    Own,
+    /// A simple name such as `Cust` in `Cust.Touch()`.
+    Name(String),
+    /// A chained or computed receiver.
+    Unknown,
+}
+
+impl CallUses {
+    fn collect(&mut self, source: &crate::workspace_sources::WorkspaceSource) {
+        let text = source.text.as_str();
+        let bytes = text.as_bytes();
+        let root = source.tree.root_node();
+        let objects: Vec<tree_sitter::Node<'_>> =
+            source.object_nodes().map(|(_, node)| node).collect();
+        let mut var_cache: std::collections::HashMap<
+            usize,
+            std::collections::HashMap<String, String>,
+        > = std::collections::HashMap::new();
+        let mut overloads: std::collections::HashMap<usize, std::collections::HashSet<String>> =
+            std::collections::HashMap::new();
+
+        for (name, range) in al_syntax::collect_call_sites(&source.tree, text) {
+            let Some(object) = objects
+                .iter()
+                .copied()
+                .find(|o| o.start_byte() <= range.start_byte && range.end_byte <= o.end_byte())
+            else {
+                continue;
+            };
+            let Some(node) = root.descendant_for_byte_range(range.start_byte, range.end_byte)
+            else {
+                continue;
+            };
+            let key = object_key(&source.path, object);
+            let declaration = enclosing_declaration(node);
+            match call_receiver(node, bytes) {
+                Receiver::Own => {
+                    let recursive = declaration.is_some_and(|decl| {
+                        declaration_name(decl, bytes).is_some_and(|n| n == name)
+                            && !overloads
+                                .entry(object.start_byte())
+                                .or_insert_with(|| overloaded_names(object, bytes))
+                                .contains(&name)
+                    });
+                    if !recursive {
+                        self.own.insert((key, name));
+                    }
+                }
+                Receiver::Name(receiver) => {
+                    let scope = declaration.unwrap_or(object);
+                    let vars = var_cache
+                        .entry(scope.start_byte())
+                        .or_insert_with(|| variable_types(object, declaration, text));
+                    match vars.get(&receiver) {
+                        Some(target) => {
+                            self.named.insert((target.clone(), name));
+                        }
+                        None => {
+                            self.any.insert(name.clone());
+                            self.any_own.insert((key, name));
+                        }
+                    }
+                }
+                Receiver::Unknown => {
+                    self.any.insert(name.clone());
+                    self.any_own.insert((key, name));
+                }
+            }
+        }
+    }
+
+    /// Whether `procedure` of the object `key` (named by `targets`) is called.
+    /// A `local` procedure counts only calls made inside its own object.
+    fn is_used(&self, key: &str, targets: &[String], procedure: &str, is_local: bool) -> bool {
+        let own = (key.to_string(), procedure.to_string());
+        if self.own.contains(&own) || self.any_own.contains(&own) {
+            return true;
+        }
+        if is_local {
+            return false;
+        }
+        self.any.contains(procedure)
+            || targets
+                .iter()
+                .any(|t| self.named.contains(&(t.clone(), procedure.to_string())))
+    }
+}
+
+/// The procedure or trigger declaration that contains `node`.
+fn enclosing_declaration(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if matches!(
+            n.kind(),
+            "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
+        ) {
+            return Some(n);
+        }
+        current = n.parent();
+    }
+    None
+}
+
+fn declaration_name(declaration: tree_sitter::Node<'_>, source: &[u8]) -> Option<String> {
+    let name = declaration
+        .child_by_field_name("name")?
+        .utf8_text(source)
+        .ok()?;
+    Some(al_syntax::clean_identifier(name).to_ascii_lowercase())
+}
+
+/// Lowercase names declared by more than one procedure of `object`.
+fn overloaded_names(
+    object: tree_sitter::Node<'_>,
+    source: &[u8],
+) -> std::collections::HashSet<String> {
+    let mut procs = Vec::new();
+    collect_procedures(object, source, &mut procs);
+    let mut seen = std::collections::HashSet::new();
+    procs
+        .into_iter()
+        .map(|p| p.0.to_ascii_lowercase())
+        .filter(|name| !seen.insert(name.clone()))
+        .collect()
+}
+
+/// The receiver of the call whose name is `node`.
+fn call_receiver(node: tree_sitter::Node<'_>, source: &[u8]) -> Receiver {
+    let name = match node.parent() {
+        Some(parent) if parent.kind() == "name" => parent,
+        _ => node,
+    };
+    let Some(parent) = name.parent() else {
+        return Receiver::Unknown;
+    };
+    let receiver = match parent.kind() {
+        "member_call_suffix" => match parent.prev_named_sibling() {
+            Some(prev) if prev.kind() == "primary_expression" => prev,
+            _ => return Receiver::Unknown,
+        },
+        "scope_call_suffix" => return Receiver::Unknown,
+        // A section head such as `field(X; Mgt.Foo())` keeps flat tokens:
+        // the receiver is the token before the `.`.
+        "parenthesized_block" => match node.prev_sibling() {
+            Some(dot) if dot.utf8_text(source).is_ok_and(|t| t == ".") => {
+                match dot.prev_sibling() {
+                    Some(prev) => prev,
+                    None => return Receiver::Unknown,
+                }
+            }
+            _ => return Receiver::Own,
+        },
+        _ => return Receiver::Own,
+    };
+    let Ok(text) = receiver.utf8_text(source) else {
+        return Receiver::Unknown;
+    };
+    let text = text.trim();
+    let is_simple = text.starts_with('"') && text.ends_with('"') && text.len() > 1
+        || text.chars().all(|c| c.is_alphanumeric() || c == '_');
+    if !is_simple || text.is_empty() {
+        return Receiver::Unknown;
+    }
+    let lower = al_syntax::clean_identifier(text).to_ascii_lowercase();
+    if SELF_RECEIVERS.contains(&lower.as_str()) {
+        Receiver::Own
+    } else {
+        Receiver::Name(lower)
+    }
+}
+
+/// Variable name to lowercase object name for the record and object typed
+/// variables visible in `declaration`: its own, then the object's globals.
+fn variable_types(
+    object: tree_sitter::Node<'_>,
+    declaration: Option<tree_sitter::Node<'_>>,
+    text: &str,
+) -> std::collections::HashMap<String, String> {
+    let (records, objects) = al_insight::calls::object_global_var_types(object, text);
+    let mut vars: std::collections::HashMap<String, String> = records;
+    vars.extend(objects);
+    if let Some(declaration) = declaration {
+        vars.extend(al_insight::calls::procedure_var_types_in_node(
+            declaration,
+            text,
+        ));
+        vars.extend(al_insight::calls::procedure_object_var_types_in_node(
+            declaration,
+            text,
+        ));
+    }
+    vars.into_iter()
+        .map(|(name, target)| {
+            (
+                name.to_lowercase(),
+                al_syntax::clean_identifier(&target).to_ascii_lowercase(),
+            )
+        })
+        .collect()
+}
+
+/// The lowercase name after `extends` in an extension object's header.
+fn extends_target(object: tree_sitter::Node<'_>, text: &str) -> Option<String> {
+    let mut cursor = object.walk();
+    let clause = object.children(&mut cursor).find(|c| {
+        c.kind() == "implements_clause"
+            && c.child(0)
+                .and_then(|k| k.utf8_text(text.as_bytes()).ok())
+                .is_some_and(|k| k.eq_ignore_ascii_case("extends"))
+    })?;
+    let name = clause
+        .child_by_field_name("name")
+        .or_else(|| clause.named_child(1))?;
+    let name = name.utf8_text(text.as_bytes()).ok()?;
+    Some(al_syntax::clean_identifier(name).to_ascii_lowercase())
+}
+
 fn find_unused_procedures(
     file_path: &str,
     file_text: &str,
     object: tree_sitter::Node<'_>,
     object_name: &str,
-    all_call_names: &std::collections::HashSet<String>,
+    call_uses: &CallUses,
     implemented: &std::collections::HashSet<String>,
     results: &mut Vec<UnusedSymbol>,
 ) {
@@ -202,7 +447,9 @@ fn find_unused_procedures(
     let mut procs = Vec::new();
 
     collect_procedures(object, source, &mut procs);
-    let object_call_names = al_syntax::collect_call_site_names_in(object, file_text);
+    let key = object_key(std::path::Path::new(file_path), object);
+    let mut targets = vec![object_name.to_ascii_lowercase()];
+    targets.extend(extends_target(object, file_text));
 
     for (proc_name, is_event, line, is_local) in &procs {
         // Skip event publishers — they're entry points
@@ -217,11 +464,7 @@ fn find_unused_procedures(
         }
         // A `local` procedure is callable only inside its own object, so a
         // same-named call elsewhere does not keep it alive.
-        let referenced = if *is_local {
-            object_call_names.contains(&lname)
-        } else {
-            all_call_names.contains(&lname)
-        };
+        let referenced = call_uses.is_used(&key, &targets, &lname, *is_local);
 
         if !referenced {
             // Locality decides confidence. A `local` procedure with
@@ -264,10 +507,11 @@ fn implemented_methods(
 ) -> std::collections::HashSet<String> {
     let mut methods = std::collections::HashSet::new();
     let mut cursor = object.walk();
-    for clause in object
-        .children(&mut cursor)
-        .filter(|c| c.kind() == "implements_clause")
-    {
+    let children: Vec<tree_sitter::Node<'_>> = object.children(&mut cursor).collect();
+    for (index, clause) in children.iter().enumerate() {
+        if clause.kind() != "implements_clause" {
+            continue;
+        }
         // The grammar reuses this node for `extends`: only `implements` counts.
         let is_implements = clause
             .child(0)
@@ -277,13 +521,26 @@ fn implemented_methods(
             continue;
         }
         let mut names = Vec::new();
-        al_syntax::walk_tree(clause, &mut |n| {
+        al_syntax::walk_tree(*clause, &mut |n| {
             if n.kind() == "name" {
                 if let Ok(t) = n.utf8_text(text.as_bytes()) {
                     names.push(al_syntax::clean_identifier(t).to_ascii_lowercase());
                 }
             }
         });
+        // The clause holds the first interface only. `, IBar` follows it as
+        // sibling `comma` and name tokens up to the object body.
+        for sibling in &children[index + 1..] {
+            match sibling.kind() {
+                "comma" | "," => {}
+                "identifier" | "quoted_identifier" | "name" => {
+                    if let Ok(t) = sibling.utf8_text(text.as_bytes()) {
+                        names.push(al_syntax::clean_identifier(t).to_ascii_lowercase());
+                    }
+                }
+                _ => break,
+            }
+        }
         for name in names {
             if let Some(found) = interface_methods.get(&name) {
                 methods.extend(found.iter().cloned());
@@ -315,9 +572,10 @@ fn collect_procedures(
 
                     let is_event = is_framework_invoked_procedure(node, source);
 
-                    // `local`/`internal` procedures are unreachable from
-                    // other extensions — locality drives the confidence of
-                    // a zero-reference finding.
+                    // A `local` procedure is callable only inside its own
+                    // object, which drives the confidence of a zero-reference
+                    // finding. `internal` is callable from the whole app and
+                    // from apps named in `internalsVisibleTo`.
                     let is_local = node_has_local_modifier(node, source);
 
                     procs.push((name, is_event, line, is_local));
@@ -337,7 +595,7 @@ fn node_has_local_modifier(node: tree_sitter::Node, source: &[u8]) -> bool {
     for child in node.children(&mut cursor) {
         if let Ok(text) = child.utf8_text(source) {
             let lower = text.to_ascii_lowercase();
-            if lower == "local" || lower == "internal" {
+            if lower == "local" {
                 return true;
             }
             if lower == "procedure" {
@@ -693,12 +951,16 @@ fn find_orphaned_subscribers(
         // Use get_by_name (exact, case-insensitive) rather than search (fuzzy substring)
         // to avoid false negatives where an unrelated symbol name contains the target
         // as a substring.
+        // `ObjectType::Codeunit` names the publisher kind, so a page with the
+        // same name is not the publisher.
+        let kind = target_kind
+            .as_deref()
+            .and_then(|kind| kind.parse::<al_symbols::ObjectKind>().ok());
         let target_lower = target_object.to_lowercase();
-        let exists_in_symbols = workspace.symbols.find_by_name(&target_lower).is_some();
-        let exists_in_workspace = workspace
-            .file_index
-            .find_by_object_name(&target_lower)
-            .is_some();
+        let symbol = symbol_publisher(workspace, kind, &target_lower);
+        let workspace_object = workspace_publisher(workspace, kind, &target_lower);
+        let exists_in_symbols = symbol.is_some();
+        let exists_in_workspace = workspace_object.is_some();
 
         if !exists_in_symbols && !exists_in_workspace {
             results.push(UnusedSymbol {
@@ -721,7 +983,7 @@ fn find_orphaned_subscribers(
         if target_event.is_empty() {
             continue;
         }
-        let Some(published) = publisher_event_names(workspace, &target_lower) else {
+        let Some(published) = publisher_event_names(workspace, symbol, workspace_object) else {
             // Cannot enumerate the publisher's events with confidence (e.g. a
             // table/page whose platform events are not declared in source):
             // stay silent rather than emit a false positive.
@@ -753,9 +1015,10 @@ fn find_orphaned_subscribers(
 /// verdict there would be a false positive.
 fn publisher_event_names(
     workspace: &Workspace,
-    object_lower: &str,
+    symbol: Option<std::sync::Arc<al_symbols::SymbolEntry>>,
+    workspace_object: Option<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)>,
 ) -> Option<std::collections::HashSet<String>> {
-    if let Some(entry) = workspace.symbols.find_by_name(object_lower) {
+    if let Some(entry) = symbol {
         if entry.kind != al_symbols::ObjectKind::Codeunit {
             return None;
         }
@@ -777,24 +1040,57 @@ fn publisher_event_names(
         );
     }
 
-    let path = workspace.file_index.find_by_object_name(object_lower)?;
-    let (text, tree) = workspace.file_index.get_cached_parse(&path)?;
-    let info = al_syntax::find_object_declaration(&tree, &text)?;
+    let (path, info) = workspace_object?;
     if !info.kind.eq_ignore_ascii_case("codeunit") {
         return None;
     }
-    Some(collect_declared_event_names(&tree, &text))
+    let (text, tree) = workspace.file_index.get_cached_parse(&path)?;
+    let object = tree
+        .root_node()
+        .descendant_for_byte_range(info.range.start_byte, info.range.end_byte)?;
+    Some(collect_declared_event_names(object, &text))
+}
+
+/// The dependency symbol entry of `kind` (any kind when `None`) named
+/// `object_lower`.
+fn symbol_publisher(
+    workspace: &Workspace,
+    kind: Option<al_symbols::ObjectKind>,
+    object_lower: &str,
+) -> Option<std::sync::Arc<al_symbols::SymbolEntry>> {
+    let mut entries = workspace.symbols.get_by_name(object_lower).into_iter();
+    match kind {
+        Some(kind) => entries.find(|entry| entry.kind == kind),
+        None => entries.next(),
+    }
+}
+
+/// The workspace file and object of `kind` (any kind when `None`) named
+/// `object_lower`.
+fn workspace_publisher(
+    workspace: &Workspace,
+    kind: Option<al_symbols::ObjectKind>,
+    object_lower: &str,
+) -> Option<(std::path::PathBuf, al_source::file_index::CachedObjectInfo)> {
+    workspace.file_index.object_infos.iter().find_map(|infos| {
+        infos.value().iter().find_map(|info| {
+            let kind_matches = kind
+                .is_none_or(|kind| info.kind.parse::<al_symbols::ObjectKind>().ok() == Some(kind));
+            (kind_matches && info.name.eq_ignore_ascii_case(object_lower))
+                .then(|| (infos.key().clone(), info.clone()))
+        })
+    })
 }
 
 /// Names of procedures carrying an `[IntegrationEvent]` / `[BusinessEvent]`
 /// attribute, lower-cased.
 fn collect_declared_event_names(
-    tree: &tree_sitter::Tree,
+    object: tree_sitter::Node<'_>,
     text: &str,
 ) -> std::collections::HashSet<String> {
     let source = text.as_bytes();
     let mut names = std::collections::HashSet::new();
-    let mut stack = vec![tree.root_node()];
+    let mut stack = vec![object];
     while let Some(node) = stack.pop() {
         if matches!(
             node.kind(),
@@ -1081,6 +1377,92 @@ codeunit 50101 "Ship Helper"
 
     fn flagged(unused: &[UnusedSymbol], name: &str) -> bool {
         unused.iter().any(|u| u.name == name)
+    }
+
+    fn finding<'a>(
+        unused: &'a [UnusedSymbol],
+        object: &str,
+        name: &str,
+    ) -> Option<&'a UnusedSymbol> {
+        unused
+            .iter()
+            .find(|u| u.object == object && u.name == name && u.kind == UnusedKind::Procedure)
+    }
+
+    const TWO_INTERFACES: &str = "interface IFoo\n{\n    procedure A();\n}\n\ninterface IBar\n{\n    procedure B();\n}\n\ncodeunit 50100 Impl implements IFoo, IBar\n{\n    procedure A()\n    begin\n    end;\n\n    procedure B()\n    begin\n    end;\n\n    internal procedure C()\n    begin\n    end;\n}\n";
+
+    #[test]
+    fn second_implemented_interface_counts() {
+        let ws = workspace_with_files(vec![("/src/Impl.al", TWO_INTERFACES)]);
+        let unused = dead_code(&ws).unwrap();
+        assert!(finding(&unused, "Impl", "A").is_none(), "{unused:?}");
+        assert!(finding(&unused, "Impl", "B").is_none(), "{unused:?}");
+    }
+
+    #[test]
+    fn internal_procedure_is_not_local() {
+        let ws = workspace_with_files(vec![("/src/Impl.al", TWO_INTERFACES)]);
+        let unused = dead_code(&ws).unwrap();
+        let c = finding(&unused, "Impl", "C").expect("C is unused");
+        assert_eq!(c.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn recursive_call_does_not_mark_used() {
+        let ws = workspace_with_files(vec![(
+            "/src/A.al",
+            "codeunit 50101 A\n{\n    local procedure Helper(n: Integer)\n    begin\n        if n > 0 then\n            Helper(n - 1);\n    end;\n}\n",
+        )]);
+        let unused = dead_code(&ws).unwrap();
+        assert!(finding(&unused, "A", "Helper").is_some(), "{unused:?}");
+    }
+
+    #[test]
+    fn member_call_on_other_object_does_not_mark_used() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/A.al",
+                "codeunit 50101 A\n{\n    procedure Helper(n: Integer)\n    begin\n    end;\n}\n",
+            ),
+            (
+                "/src/B.al",
+                "codeunit 50102 B\n{\n    procedure Run()\n    var\n        X: Codeunit \"Some Other\";\n    begin\n        X.Helper(1);\n    end;\n}\n",
+            ),
+            (
+                "/src/C.al",
+                "codeunit 50103 C\n{\n    procedure Run()\n    var\n        Y: Codeunit A;\n    begin\n        Y.Helper(1);\n    end;\n}\n",
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        // `Y: Codeunit A` keeps A.Helper alive. Remove C.al and only the call
+        // through `Some Other` is left.
+        assert!(finding(&unused, "A", "Helper").is_none(), "{unused:?}");
+        ws.file_index.remove_file(std::path::Path::new("/src/C.al"));
+        let unused = dead_code(&ws).unwrap();
+        assert!(finding(&unused, "A", "Helper").is_some(), "{unused:?}");
+    }
+
+    /// Only a page named `Sales-Post` declares the event. The subscriber
+    /// names `ObjectType::Codeunit`, so its publisher does not exist.
+    #[test]
+    fn subscriber_target_kind_is_checked() {
+        let ws = workspace_with_files(vec![
+            (
+                "/src/P.al",
+                "page 50100 \"Sales-Post\"\n{\n    [IntegrationEvent(false, false)]\n    procedure OnAfterPost()\n    begin\n    end;\n}\n",
+            ),
+            (
+                "/src/S.al",
+                "codeunit 50101 S\n{\n    [EventSubscriber(ObjectType::Codeunit, Codeunit::\"Sales-Post\", 'OnAfterPost', '', false, false)]\n    local procedure Handle()\n    begin\n    end;\n}\n",
+            ),
+        ]);
+        let unused = dead_code(&ws).unwrap();
+        assert!(
+            unused.iter().any(|u| u.name == "Handle"
+                && u.kind == UnusedKind::Subscriber
+                && u.reason == UnusedReason::PublisherRemoved),
+            "{unused:?}"
+        );
     }
 
     #[test]
