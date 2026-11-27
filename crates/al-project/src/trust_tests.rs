@@ -1089,12 +1089,21 @@ fn a_repository_dotnet_host_is_dropped_until_the_project_is_trusted() {
             "settings":{"dotnetPath":"./tools/dotnet"}}}}"#,
     )
     .unwrap();
-    std::env::set_var(crate::toolchain::DOTNET_PATH_ENV, "./tools/dotnet");
+    let _dotnet = EnvVar::set(
+        crate::toolchain::DOTNET_PATH_ENV,
+        Path::new("./tools/dotnet"),
+    );
 
-    let advisory = enforce_dotnet_path(dir.path()).unwrap();
+    let host = enforce_dotnet_path(dir.path());
+    let advisory = host.advisory.clone().unwrap();
 
     assert!(advisory.contains("not trusted"), "{advisory}");
-    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+    assert_eq!(host.program, "dotnet");
+    assert_eq!(
+        std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).as_deref(),
+        Some(std::ffi::OsStr::new("./tools/dotnet")),
+        "the environment is left as it was"
+    );
 
     // Both executable paths are privileged, so trusting the project has to
     // be a decision the user makes about them by name.
@@ -1115,7 +1124,7 @@ fn a_dotnet_host_outside_the_project_is_left_alone() {
     let project = project_with_settings("{}");
     std::env::set_var(crate::toolchain::DOTNET_PATH_ENV, "/usr/bin/dotnet");
 
-    assert!(enforce_dotnet_path(project.path()).is_none());
+    assert!(enforce_dotnet_path(project.path()).advisory.is_none());
     assert_eq!(
         std::env::var(crate::toolchain::DOTNET_PATH_ENV).as_deref(),
         Ok("/usr/bin/dotnet")
@@ -2013,7 +2022,7 @@ fn a_replaced_runtime_beside_a_project_dotnet_is_dropped_before_the_next_spawn()
     let dotnet = root.join("tools/dotnet/dotnet");
     let _dotnet = EnvVar::set(crate::toolchain::DOTNET_PATH_ENV, &dotnet);
     grant(root).unwrap();
-    assert_eq!(enforce_dotnet_path_before_spawn(root), None);
+    assert_eq!(enforce_dotnet_path_before_spawn(root).advisory, None);
     assert_eq!(
         std::env::var_os(crate::toolchain::DOTNET_PATH_ENV),
         Some(dotnet.clone().into_os_string())
@@ -2025,14 +2034,14 @@ fn a_replaced_runtime_beside_a_project_dotnet_is_dropped_before_the_next_spawn()
         b"replaced by git pull",
     );
 
-    let advisory = enforce_dotnet_path_before_spawn(root)
+    let host = enforce_dotnet_path_before_spawn(root);
+    let advisory = host
+        .advisory
+        .clone()
         .expect("a runtime the record no longer matches is dropped");
     assert!(advisory.contains("changed since"), "{advisory}");
-    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
-    assert_eq!(
-        crate::toolchain::dotnet_command(Path::new("alc.dll")).get_program(),
-        "dotnet"
-    );
+    assert_eq!(host.program, "dotnet");
+    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_some());
 }
 
 /// A settings file that stops parsing makes the decision fail, and the check
@@ -2053,7 +2062,7 @@ fn a_project_dotnet_is_dropped_before_a_spawn_when_a_settings_file_stops_parsing
     let dotnet = root.join("tools/dotnet/dotnet");
     let _dotnet = EnvVar::set(crate::toolchain::DOTNET_PATH_ENV, &dotnet);
     grant(root).unwrap();
-    assert_eq!(enforce_dotnet_path_before_spawn(root), None);
+    assert_eq!(enforce_dotnet_path_before_spawn(root).advisory, None);
 
     // The later commit: .zed/settings.json keeps the dotnetPath that Zed
     // exports, .vscode/settings.json stops parsing, the runtime changes.
@@ -2071,16 +2080,16 @@ fn a_project_dotnet_is_dropped_before_a_spawn_when_a_settings_file_stops_parsing
     );
 
     assert!(decide(root).is_err(), "the decision cannot be read");
-    let advisory = enforce_dotnet_path_before_spawn(root)
+    let host = enforce_dotnet_path_before_spawn(root);
+    let advisory = host
+        .advisory
+        .clone()
         .expect("a project dotnet that cannot be decided is dropped");
     assert!(advisory.contains(".vscode/settings.json"), "{advisory}");
     assert!(advisory.contains("could not be read"), "{advisory}");
     assert!(!advisory.contains("sha256"), "{advisory}");
-    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
-    assert_eq!(
-        crate::toolchain::dotnet_command(Path::new("alc.dll")).get_program(),
-        "dotnet"
-    );
+    assert_eq!(host.program, "dotnet");
+    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_some());
 }
 
 /// The same for a project that was never trusted.
@@ -2101,10 +2110,14 @@ fn an_untrusted_project_dotnet_is_dropped_when_its_settings_do_not_parse() {
         &root.join("tools/dotnet/dotnet"),
     );
 
-    let advisory = enforce_dotnet_path_before_spawn(root)
+    let host = enforce_dotnet_path_before_spawn(root);
+    let advisory = host
+        .advisory
+        .clone()
         .expect("a project dotnet that cannot be decided is dropped");
     assert!(advisory.contains(".vscode/settings.json"), "{advisory}");
-    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+    assert_eq!(host.program, "dotnet");
+    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_some());
 }
 
 /// A project under a deep directory, such as a macOS temporary folder, made
@@ -2137,7 +2150,10 @@ fn the_dotnet_advisory_names_the_settings_file_and_the_parse_error_under_a_deep_
         "the settings error must be longer than the display cap: {error}"
     );
 
-    let advisory = enforce_dotnet_path_before_spawn(&root)
+    let host = enforce_dotnet_path_before_spawn(&root);
+    let advisory = host
+        .advisory
+        .clone()
         .expect("a project dotnet that cannot be decided is dropped");
     assert!(advisory.contains(".vscode/settings.json"), "{advisory}");
     assert!(advisory.contains("EOF while parsing"), "{advisory}");
@@ -2156,7 +2172,10 @@ fn a_dotnet_outside_the_project_is_not_decided_before_a_spawn() {
     let reads = || REPOSITORY_READS.with(std::cell::Cell::get);
     let before = reads();
 
-    assert_eq!(enforce_dotnet_path_before_spawn(project.path()), None);
+    assert_eq!(
+        enforce_dotnet_path_before_spawn(project.path()).advisory,
+        None
+    );
     assert_eq!(reads(), before);
 }
 
@@ -2894,7 +2913,7 @@ fn a_replaced_runtime_beside_a_linked_dotnet_is_dropped_before_the_next_spawn() 
     let dotnet = root.join("tools/dotnet/dotnet");
     let _dotnet = EnvVar::set(crate::toolchain::DOTNET_PATH_ENV, &dotnet);
     grant(root).unwrap();
-    assert_eq!(enforce_dotnet_path_before_spawn(root), None);
+    assert_eq!(enforce_dotnet_path_before_spawn(root).advisory, None);
 
     write_file(
         outside.path(),
@@ -2902,10 +2921,14 @@ fn a_replaced_runtime_beside_a_linked_dotnet_is_dropped_before_the_next_spawn() 
         b"replaced by the other user",
     );
 
-    let advisory = enforce_dotnet_path_before_spawn(root)
+    let host = enforce_dotnet_path_before_spawn(root);
+    let advisory = host
+        .advisory
+        .clone()
         .expect("a runtime the record no longer matches is dropped");
     assert!(advisory.contains("changed since"), "{advisory}");
-    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_none());
+    assert_eq!(host.program, "dotnet");
+    assert!(std::env::var_os(crate::toolchain::DOTNET_PATH_ENV).is_some());
 }
 
 /// A launch file that does not parse is the only problem in this project, so

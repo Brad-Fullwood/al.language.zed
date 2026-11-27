@@ -234,10 +234,11 @@ pub async fn compile_project_with_analyzers(
 
     // A `dotnet` inside the project runs with the runtime beside it, which a
     // running process does not stamp, so trust is decided again here.
-    if let Some(advisory) = al_project::trust::enforce_dotnet_path_before_spawn(project_root) {
+    let dotnet = al_project::trust::enforce_dotnet_path_before_spawn(project_root);
+    if let Some(advisory) = &dotnet.advisory {
         tracing::warn!("{advisory}");
     }
-    let mut cmd = al_project::toolchain::dotnet_command_async(&toolchain.alc);
+    let mut cmd = al_project::toolchain::dotnet_command_async(&dotnet.program, &toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
     let out_file_name = manifest_app_filename(project_root)?;
     cmd.arg(format!("/out:{}", out_dir.join(&out_file_name).display()));
