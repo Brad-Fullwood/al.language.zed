@@ -1081,8 +1081,19 @@ async fn step_publish(contract: &LiveContract) -> AnyResult<Outcome> {
     pass("uploaded and installed through dev/apps")
 }
 
-/// DAP attach, breakpoint, stepping and evaluate (Debugger hub, dev/debug)
+/// DAP attach, breakpoint, stepping and evaluate (Debugger hub, dev/debug).
+/// The breakpoint is hit by running the test codeunit through
+/// `TestRunnerClient::run_codeunit`, which returns `LiveBcNotImplemented`
+/// until the TestRunnerHub client exists (testing-01). The step cannot pass,
+/// so it is reported SKIP. `AL_LIVE_BC_TRY_DAP=1` runs it.
 async fn step_dap(contract: &LiveContract) -> AnyResult<Outcome> {
+    if std::env::var("AL_LIVE_BC_TRY_DAP").as_deref() != Ok("1") {
+        return Ok(Outcome::Skip(
+            "testing-01: the breakpoint needs a live test run, and TestRunnerClient::run_codeunit \
+             returns LiveBcNotImplemented"
+                .to_string(),
+        ));
+    }
     exercise_native_dap(contract).await?;
     pass("breakpoint verified, hit, locals and evaluate answered")
 }

@@ -13,7 +13,7 @@ real output (or inspect the screenshot), not just an exit code.
 | tree-sitter grammar or generator | Grammar crate/generator tests, fixture build, and `tree-sitter-al/tests/run_repo_tests.sh` |
 | `languages/al/*.scm`, `extension.toml`, language-server wiring, in-editor behavior | GUI e2e: `crates/al-test-harness/editor-e2e/drive.sh`, then **open the screenshot** |
 | Native `.app` emit / `alc` / live semantic bridge | env-gated harness tests with `AL_TOOL_PATH=…` (see below) |
-| Publish/install and native DAP | strict live service profile: `make live-bc-contracts` (see below). The live test run step is reported as SKIP until the TestRunnerHub client exists, see `testing-01-live-bc-dev-tests-endpoint-invented.md` |
+| Publish/install and native DAP | strict live service profile: `make live-bc-contracts` (see below). The DAP attach and live test run steps are reported as SKIP until the TestRunnerHub client exists, see `testing-01-live-bc-dev-tests-endpoint-invented.md` |
 | Generated artifacts (`languages/al`, grammar, themes) | `make repro-artifacts` (and `scripts/check-release-hygiene.sh`) |
 | Anything you intend to release | `make release-dryrun` |
 
@@ -261,7 +261,10 @@ to capture and sample.
    compile finds the base app.
 2. **DAP attach**: native DAP over its real `Content-Length` transport through
    initialize, launch compile/publish/attach, verified breakpoint, threads,
-   stack, scopes, locals, evaluate, step, continue, and disconnect.
+   stack, scopes, locals, evaluate, step, continue, and disconnect. The
+   breakpoint is hit by running the test codeunit, which needs the same
+   TestRunnerHub client as step 3, so the step reports SKIP with the testing-01
+   reason. `AL_LIVE_BC_TRY_DAP=1` runs it.
 3. **live test run**: SKIP with the testing-01 reason, because running the
    test needs a client for BC's SignalR TestRunnerHub, which is not built yet
    (`testing-01-live-bc-dev-tests-endpoint-invented.md`).
@@ -290,7 +293,7 @@ user names.
 
 | Date | Commit | BC version | publish | DAP attach | test run | snapshot debugging | profiling | symbol download |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2026-10-27 | 353fc565 plus the harness restructure | 29.0.54011.56136 (Sandbox) | PASS | FAIL: timed out waiting for a DAP message (AddBreakpoint answers null, dap-14) | SKIP: no TestRunnerHub client (testing-01) | FAIL: the server answers 404 to status and finish for a context that attach accepted with a snappoint, so finish returns no zip | FAIL: 181 API requests over 60 s, the server returned an empty profile (`{"kind":1}`, no nodes or samples) | PASS |
+| 2026-10-27 | 353fc565 plus the harness restructure | 29.0.54011.56136 (Sandbox) | PASS | FAIL: timed out waiting for a DAP message (AddBreakpoint answers null, dap-14). Past that point the step could not pass either: it runs the test through `TestRunnerClient::run_codeunit`, which returns `LiveBcNotImplemented` (testing-01) | SKIP: no TestRunnerHub client (testing-01) | FAIL: the server answers 404 to status and finish for a context that attach accepted with a snappoint, so finish returns no zip | FAIL: 181 API requests over 60 s, the server returned an empty profile (`{"kind":1}`, no nodes or samples) | PASS |
 
 Notes on the failing cells of that run:
 
