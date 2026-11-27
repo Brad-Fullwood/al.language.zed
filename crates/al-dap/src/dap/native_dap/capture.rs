@@ -133,8 +133,13 @@ fn store_for(seams: &CaptureSeams) -> std::result::Result<SessionStore, String> 
 }
 
 fn http_client(config: &BcDebugConfig) -> std::result::Result<reqwest::Client, String> {
+    if config.accept_invalid_certs {
+        al_bc::http_auth::warn_insecure_tls("snapshot debugger");
+    }
     reqwest::Client::builder()
         .danger_accept_invalid_certs(config.accept_invalid_certs)
+        .connect_timeout(Duration::from_secs(30))
+        .timeout(Duration::from_secs(300))
         .build()
         .map_err(|e| e.to_string())
 }
@@ -265,8 +270,8 @@ where
                 None | Some(serde_json::Value::Null) => -1,
                 Some(v) => v
                     .as_i64()
-                    .filter(|id| *id >= 0)
-                    .ok_or("sessionId must be a non-negative integer")?,
+                    .filter(|id| *id >= -1)
+                    .ok_or("sessionId must be -1 or a non negative integer")?,
             };
             let output_dir = str_arg(arguments, "snapshotOutputPath").map(PathBuf::from);
             capture::resolve_output_dir(Path::new(&self.project_root), output_dir.as_deref())

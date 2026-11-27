@@ -566,6 +566,34 @@ async fn an_output_path_outside_the_project_is_refused_at_attach() {
 }
 
 #[tokio::test]
+async fn session_id_minus_one_is_accepted() {
+    let rig = rig().await;
+    let reads = rig.token_reads.clone();
+    let (state, _events) = build_state(
+        rig.project.path(),
+        &rig.store,
+        &reads,
+        super::test_support::allow_every_target(),
+        Duration::from_secs(60),
+    );
+    mock_op(
+        &rig,
+        "attach",
+        ResponseTemplate::new(200).set_body_string("UserSession"),
+    )
+    .await;
+    let (_, frames) = send(&state, "initialize", json!({})).await;
+    assert!(frames.iter().all(|f| f["event"] != "initialized"));
+    let (_, frames) = send(
+        &state,
+        "attach",
+        attach_args(&rig, json!({ "sessionId": -1 })),
+    )
+    .await;
+    assert_eq!(response(&frames)["success"], true, "{frames:?}");
+}
+
+#[tokio::test]
 async fn launch_with_the_capture_mode_and_unknown_modes_are_refused() {
     let rig = rig().await;
     let reads = rig.token_reads.clone();
