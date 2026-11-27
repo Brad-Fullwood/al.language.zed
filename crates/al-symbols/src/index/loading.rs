@@ -96,6 +96,9 @@ pub(super) fn load_package_via_cache(
         return Ok((path.to_path_buf(), pkg, true));
     }
 
+    // The fingerprint saved with the symbols is taken before the read, so a
+    // file replaced during the parse does not match it later.
+    let before = std::fs::metadata(path);
     match app_reader::read_app_file(path) {
         Ok(pkg) => {
             prewarm_source_index(path);
@@ -105,7 +108,11 @@ pub(super) fn load_package_via_cache(
                 path = %path.display(),
                 "Loaded package (cache miss)"
             );
-            if let Err(error) = cache.save(path, &pkg) {
+            let saved = match &before {
+                Ok(meta) => cache.save_with_fingerprint(path, meta, &pkg),
+                Err(error) => Err(std::io::Error::new(error.kind(), error.to_string())),
+            };
+            if let Err(error) = saved {
                 warn!(path = %path.display(), %error, "Failed to save to cache");
             }
             Ok((path.to_path_buf(), pkg, false))
