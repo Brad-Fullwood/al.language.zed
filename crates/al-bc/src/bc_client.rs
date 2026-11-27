@@ -501,11 +501,11 @@ impl BcClient {
     }
 }
 
-/// Fallback base URL used when `config.server` fails the [`is_safe_http_server`]
-/// allowlist. `.invalid` is the reserved TLD from RFC 2606 — guaranteed never
-/// to resolve — so a rejected `file://`/`gopher://`/etc. server config turns
-/// into an obvious connection failure instead of ever reaching the URL a
-/// hostile or misconfigured launch config supplied.
+/// Fallback base URL used when `config.server` fails the
+/// [`is_safe_http_server`](crate::launch::is_safe_http_server) allowlist.
+/// `.invalid` is the reserved TLD from RFC 2606 and does not resolve, so a
+/// rejected `file://` or `gopher://` server config fails to connect and the
+/// request does not reach the URL the launch config supplied.
 pub const REJECTED_SERVER_BASE_URL: &str = "http://bc-client-rejected-unsafe-server.invalid";
 
 /// Build the base URL for the BC Dev API from a server config.
