@@ -113,7 +113,10 @@ Daemon and client:
 Sign-in client: the default client id is the AL extension's `41839ce3-4041-4bac-8c17-0941f25d7aaf`
 (CloudHttpClientFactory.cs:228). A launch configuration's `entraIdAuthentication` block overrides
 `endpoint` (https host only), `scope`, `clientId` and `redirectUri`. `redirectUri` is read and not sent,
-because the interactive flow uses `http://localhost` and the device code flow has no redirect. `BC_CLIENT_ID`
+because the interactive flow uses `http://localhost` and the device code flow has no redirect. Only these
+Microsoft authority hosts are accepted for `endpoint`, over https with no port, user info, path, query or
+fragment: `login.microsoftonline.com`, `login.microsoftonline.us` and `login.partner.microsoftonline.cn`. A
+redirect to another origin is refused. `BC_CLIENT_ID`
 overrides both. A tenant policy that blocks the AL client needs `BC_CLIENT_ID` or a launch override. Before an
 interactive sign-in, a refresh token for the same client id and a GUID tenant is taken from the AL extension's
 `~/.local/share/Microsoft/BusinessCentral/DevTools/TokenCacheUnprotected.dat` (read only, never written).

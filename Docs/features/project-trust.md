@@ -393,15 +393,7 @@ the target is authorised and the refusal says "Business Central credentials" rat
 naming a cached token. The Run Test code lens in the language server runs the same check
 before it starts a live test.
 
-`profiling` takes `serverUrl`, `username` and `password` from the request. `snapshot` takes its
-server, tenant and sign-in from a launch configuration of the project (`config`, or the first one) and an
-optional `accessToken`, and has no inline server. The rest of this paragraph applies to `profiling`.
-The credential is the caller's, but the server is a string an agent can choose through
-`al_call`, so an inline `serverUrl` must match a launch configuration of a trusted project,
-compared on scheme, host and the port the client connects to (the URL's own, or 443 or 80 by
-scheme). Their `acceptInvalidCerts` is refused unless that launch configuration sets it for
-the same server. A request with no `serverUrl` gets the daemon's loopback default, which no
-caller chose, and `acceptInvalidCerts` is dropped for it.
+`profiling` uses a launch configuration, OAuth and the snapshot debugger API, and cloud profiling passes the tenant guard. `snapshot` takes its server, tenant and sign-in from a launch configuration of the project (`config`, or the first one) and an optional `accessToken`, and has no inline server.
 
 ### Where the caller brings its own credential
 
@@ -448,8 +440,7 @@ configuration is the declaration. The first connection per session logs the tena
 and kind. A customer tenant is refused unless the configuration carries `tenantPurpose`. A
 tenant that is not in the registry is refused in the editor too.
 
-Profiling takes an on-premises `serverUrl` with Basic authentication and has no cloud path, so
-the guard does not apply to it.
+Profiling uses a launch configuration, OAuth and the snapshot debugger API, and cloud profiling passes the tenant guard.
 
 ## Limits
 

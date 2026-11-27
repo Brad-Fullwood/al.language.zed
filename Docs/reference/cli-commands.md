@@ -93,7 +93,7 @@ and writes paths only inside the project it has loaded. See
 | `folding <file>` | | Folding ranges |
 | `tokens <file>` | | Semantic tokens |
 | `parse <file>` | | Parse-tree stats (nodes, errors, time) |
-| `rename <file> <line> <col> <new>` | `--dry-run` | Rename across the workspace |
+| `rename <file> <line> <col> <new>` | `--dry-run` | Rename across the workspace. `rename --json` applies the edits unless `--dry-run` is given |
 | `hints <file>` | `--start-line N --end-line N` | Inlay hints |
 
 ## Build & toolchain
@@ -105,7 +105,7 @@ and writes paths only inside the project it has loaded. See
 | `publish` | `--config <name> [--incremental]` | Compile and publish the `.app` to the BC dev endpoint named in `.vscode/launch.json` or `.zed/debug.json`. `--incremental` uses the RAD API |
 | `pack-native` | `--project <dir> --out <path> [--validate [--analyzers <list>]]` | Verified pure-Rust `.app` build. Rejects syntax/manifest/project/binding/artifact errors and writes nothing on failure. Global `--json` returns exact native ranges. `--validate` adds `alc` after native checks, with the project's `al.codeAnalyzers` or the `--analyzers` list (a custom analyzer file the repository supplies, found in its own folders or named by a path into it, is refused unless the project is trusted and its trust record lists that file) |
 | `download-symbols` | `--project <dir> --source server\|nuget` | Download dependency symbols |
-| `authenticate [login\|status\|clear]` | `--tenant <tenant>` | BC / Entra authentication and cached-session management |
+| `authenticate [login\|status\|clear]` | `--tenant <tenant>` | BC / Entra authentication and cached-session management. `authenticate status --tenant <GUID>` reports only that tenant. `authenticate login` needs `--tenant <GUID>` and passes the tenant guard (`--purpose` for a customer tenant, exit code 3 on refusal) |
 
 ## Format, refactor, codegen
 
@@ -154,8 +154,8 @@ and writes paths only inside the project it has loaded. See
 | Command | Subcommands / flags | Purpose |
 | --- | --- | --- |
 | `debug` | `start [--config]`, `breakpoint <file> <line> [--condition]`, `state`, `eval <expr>`, `continue`, `step [over\|into\|out]`, `history [--var]`, `stop` | Drive a debug session |
-| `snapshot` | `start [--config <name>] --break-on-next <WebClient\|WebServiceClient\|Background\|ClientService> [--snap <spec>]... [--user] [--session-id] [--verbosity snappoint\|full] [--allow-production]`, `status [--context]`, `finish [--context] [--out]`, `list`, `show <zip> [--vars] [--fields] [--stop]` | Business Central snapshot debugging, see [snapshot-debugging](../features/snapshot-debugging.md) |
-| `profile` | `start [--config <launch configuration>] [--kind sampling\|instrumentation] [--interval 50\|100\|150] [--break-on-next] [--user]` (server and token come from the launch configuration, `--tenant` is the global flag), `status [--context]`, `stop [--context] [--out]`, `analyze <path> [--top N]` | CPU profiling through the snapshot debugger. `stop` saves `<context>.alcpuprofile` for sampling |
+| `snapshot` | `start [--config <name>] --break-on-next <WebClient\|WebServiceClient\|Background\|ClientService> [--snap <spec>]... [--user] [--session-id] [--verbosity snappoint\|full] [--allow-production]`, `status [--context]`, `finish [--context] [--out]`, `list`, `show <zip> [--vars] [--fields] [--stop]` | Business Central snapshot debugging. `snapshot status` exits with code 1 when the session state is `Failed`. See [snapshot-debugging](../features/snapshot-debugging.md) |
+| `profile` | `start [--config <launch configuration>] [--kind sampling\|instrumentation] [--interval 50\|100\|150] [--break-on-next] [--user]` (server and token come from the launch configuration, `--tenant` is the global flag), `status [--context] [--allow-production]`, `stop [--context] [--out] [--allow-production]`, `analyze <path> [--top N]` | CPU profiling through the snapshot debugger. `profile status` exits with code 1 when the session state is `Failed`. `stop` saves `<context>.alcpuprofile` for sampling |
 
 ## Tests
 

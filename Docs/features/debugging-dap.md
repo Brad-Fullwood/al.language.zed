@@ -234,6 +234,8 @@ one continuous debugging session rather than isolated commands.
 | `history` | `var?` | Return the bounded breakpoint-hit history, optionally filtered by variable name. |
 | `stop` | | Stop and terminate the BC debug session and clear it from the MCP workspace. |
 
+Every follow-up `debug` command on a cloud session (`breakpoint`, `state`, `eval`, `continue`, `step`, `history`, `stop`) needs `--tenant` as `start` does. MCP callers pass `cliTenant` and `cliPurpose`. A refusal names the session's tenant.
+
 A typical client loop is `start` → `breakpoint` → poll `state` until paused → inspect `stack`
 and `variables`/`globals` → `eval` and/or `step` → `continue` → `stop`. All results use MCP's normal
 structured tool response and daemon errors are returned with `isError: true`, so clients do not need
@@ -258,7 +260,7 @@ runtime must be available and authenticated. Connection details can come from `.
 | Aspect | This project | Microsoft AL debugger |
 | --- | --- | --- |
 | Transport | native Rust DAP over stdio | external C# `EditorServices.Host` |
-| Compile for launch | pure-Rust emitter | `alc` + C# bridge |
+| Compile for launch | `alc` when the toolchain is found, else the native compiler | `alc` + C# bridge |
 | BC connection | direct SignalR + REST | EditorServices proxy |
 | Conditional breakpoints | ✅ | ✅ |
 | Pause-while-running | ❌ (BC limitation) | ❌ (BC limitation) |
@@ -316,8 +318,7 @@ environment inputs. Missing external inputs exit as `UNAVAILABLE`, never passed.
   `AddBreakpointByName`. See audit finding `dap-30-dependency-source-breakpoints`.
 - `evaluate` sends the expression to BC unchanged. Microsoft rewrites array element access (`arr[2]`
   becomes `arr."[2]"`) and passes `AllowLargeStrings` for the debug console. Neither is done here, so
-  array element watches and strings over the normal limit may fail. A failed evaluation is also sent
-  to BC twice (3-argument call, then 2-argument retry). See audit finding
+  array element watches and strings over the normal limit may fail. The adapter calls `GetWatchNode` once, and passes the `WatchOption` argument from debugger major version 4. See audit finding
   `dap-31-evaluate-array-index-and-large-strings`.
 - Microsoft launch keys that are not in the native schema are dropped without a warning:
   `forceUpgrade`, `useSystemSessionForDeployment`, `applicationFamily`, `usePublicURLFromServer`,
