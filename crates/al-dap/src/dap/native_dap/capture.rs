@@ -86,6 +86,9 @@ pub(super) struct Capture {
     verbosity: String,
     session_id: i64,
     user_id: Option<String>,
+    /// The scenario label from `attach`. `configurationDone` carries no
+    /// arguments, so the name waits here until the capture starts.
+    configuration_name: Option<String>,
     /// Per source path, in request order. A later `setBreakpoints` for the
     /// same path replaces the set.
     sources: BTreeMap<String, Vec<Entry>>,
@@ -140,6 +143,7 @@ fn http_client(config: &BcDebugConfig) -> std::result::Result<reqwest::Client, S
         .danger_accept_invalid_certs(config.accept_invalid_certs)
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(300))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|e| e.to_string())
 }
@@ -337,6 +341,9 @@ where
             verbosity: verbosity.to_string(),
             session_id,
             user_id,
+            configuration_name: str_arg(arguments, "label")
+                .or_else(|| str_arg(arguments, "name"))
+                .map(str::to_string),
             sources: BTreeMap::new(),
             armed: false,
             record: None,
@@ -507,6 +514,7 @@ where
             state.user_id.clone(),
             state.allow_production,
         );
+        let configuration_name = state.configuration_name.clone();
         drop(guard);
 
         let token = match (self.acquire_token)(config.tenant.clone()).await {
@@ -536,7 +544,7 @@ where
             &store,
             StartRequest {
                 config: &config,
-                configuration_name: None,
+                configuration_name,
                 project_root: Path::new(&self.project_root),
                 client_type: &request.0,
                 verbosity: &request.1,
@@ -707,16 +715,23 @@ where
         if let Some(record) = state.record.take() {
             let mut record = record.lock().await;
             match self.finish_capture(&state, &mut record).await {
-                Ok(text) => self.emit_output(out, "console", format!("{text}\r\n")).await?,
+                Ok(text) => {
+                    self.emit_output(out, "console", format!("{text}\r\n"))
+                        .await?
+                }
                 Err(error) => {
-                    self.emit_output(
-                        out,
-                        "stderr",
+                    // Once the server has finished, a second finish returns nothing,
+                    // so the retry advice would send the user to a dead end.
+                    let text = if record.finished_at.is_some() {
+                        format!(
+                            "Snapshot finish failed: {error}. The server has already finished this capture, so finishing it again returns nothing.\r\n"
+                        )
+                    } else {
                         format!(
                             "Snapshot finish failed: {error}. The session record stays in the store, so `al-explorer snapshot finish` can retry.\r\n"
-                        ),
-                    )
-                    .await?
+                        )
+                    };
+                    self.emit_output(out, "stderr", text).await?
                 }
             }
         } else {
