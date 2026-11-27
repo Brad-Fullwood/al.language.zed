@@ -370,15 +370,30 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let name = entry.file_name();
+        if name == ".git" {
+            continue;
+        }
         let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let to = dst.join(&name);
+        if entry_is_dir(&entry)? {
             copy_dir(&from, &to)?;
         } else {
             std::fs::copy(&from, &to)?;
         }
     }
     Ok(())
+}
+
+/// Whether `entry` is a directory, following a symbolic link to one. The
+/// entry's own file type does not follow links, so a linked folder would
+/// otherwise be copied as a single file.
+fn entry_is_dir(entry: &std::fs::DirEntry) -> std::io::Result<bool> {
+    let file_type = entry.file_type()?;
+    if file_type.is_symlink() {
+        return Ok(std::fs::metadata(entry.path())?.is_dir());
+    }
+    Ok(file_type.is_dir())
 }
 
 /// Create a private, per-invocation temp dir for `--validate`'s alc copy.
@@ -492,13 +507,16 @@ fn validate_with_alc(
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
-            // Skip prior build outputs to keep the copy lean.
-            if name == "output" || name.to_string_lossy().starts_with(".al-build-tmp") {
+            // Skip prior build outputs and git metadata to keep the copy lean.
+            if name == "output"
+                || name == ".git"
+                || name.to_string_lossy().starts_with(".al-build-tmp")
+            {
                 continue;
             }
             let from = entry.path();
             let to = tmp_path.join(&name);
-            if entry.file_type()?.is_dir() {
+            if entry_is_dir(&entry)? {
                 copy_dir(&from, &to)?;
             } else {
                 std::fs::copy(&from, &to)?;
@@ -934,6 +952,24 @@ mod validation_trust_tests {
             error.contains(&format!("--show {}", project.path().display())),
             "{error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_follows_directory_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("a.app"), b"app").unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join(".git")).unwrap();
+        std::os::unix::fs::symlink(&real, src.join("pkgs")).unwrap();
+        let dst = tmp.path().join("dst");
+
+        copy_dir(&src, &dst).unwrap();
+
+        assert!(dst.join("pkgs").join("a.app").is_file());
+        assert!(!dst.join(".git").exists());
     }
 }
 

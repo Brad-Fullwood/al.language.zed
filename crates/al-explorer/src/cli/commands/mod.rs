@@ -646,6 +646,11 @@ pub fn set_caller_tenant(tenant: Option<String>, purpose: Option<String>) {
     let _ = CALLER_TENANT.set(al_bc::tenant_guard::Declaration { tenant, purpose });
 }
 
+/// The global `--tenant` and `--purpose` as typed, if the command line set them.
+pub(crate) fn caller_declaration() -> Option<&'static al_bc::tenant_guard::Declaration> {
+    CALLER_TENANT.get()
+}
+
 /// Add `cliTenant` and `cliPurpose` to a request that connects, and print the
 /// tenant banner once before the first such request.
 fn with_caller_tenant(

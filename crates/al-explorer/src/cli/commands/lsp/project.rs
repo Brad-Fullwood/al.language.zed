@@ -367,7 +367,7 @@ pub fn cmd_authenticate(
     };
 
     if cmd == "login" {
-        return login_in_process(&mut client, tenant, json, device_code);
+        return login_in_process(tenant, json, device_code);
     }
 
     let mut params = serde_json::json!({ "cmd": cmd });
@@ -377,7 +377,7 @@ pub fn cmd_authenticate(
 
     match request_checked(&mut client, "authenticate", Some(params)) {
         Ok(result) => {
-            let usable = cmd != "status" || any_tenant_authenticated(&result);
+            let usable = cmd != "status" || tenant_authenticated(&result, tenant);
             if json {
                 print_json(&result);
             } else {
@@ -411,40 +411,42 @@ pub fn cmd_authenticate(
 /// one request with one response, so a device code it printed would reach the
 /// user only after the flow ended. Here the prompt goes to stderr as it arrives.
 /// The token cache is shared on disk (or the keyring), so the daemon finds the
-/// token afterwards. The daemon is asked only for the project's tenants.
-fn login_in_process(
-    client: &mut DaemonClient,
-    tenant: Option<&str>,
-    json: bool,
-    device_code: bool,
-) -> ExitCode {
-    let tenant = match tenant {
-        Some(t) => t.to_string(),
-        None => {
-            let status = request_checked(
-                client,
-                "authenticate",
-                Some(serde_json::json!({ "cmd": "status" })),
+/// token afterwards. The tenant is the typed `--tenant` or the global one, and
+/// the tenant guard checks it against the launch configuration first.
+fn login_in_process(tenant: Option<&str>, json: bool, device_code: bool) -> ExitCode {
+    let declared = caller_declaration();
+    let declared_tenant = declared.and_then(|d| d.tenant.as_deref());
+    let purpose = declared.and_then(|d| d.purpose.as_deref());
+    let typed = match (tenant, declared_tenant) {
+        (Some(arg), Some(global)) if !arg.trim().eq_ignore_ascii_case(global.trim()) => {
+            let msg = format!(
+                "{} --tenant {arg} differs from the global --tenant {global}. Pass one tenant.",
+                al_bc::tenant_guard::REFUSAL_PREFIX
             );
-            let first = status.ok().and_then(|v| {
-                v.get("tenants")?
-                    .as_array()?
-                    .first()?
-                    .get("tenant")?
-                    .as_str()
-                    .map(str::to_string)
-            });
-            match first {
-                Some(t) => t,
-                None => {
-                    return report_error(
-                        "No tenant found. Specify --tenant or configure a launch config with a tenant.",
-                        json,
-                    );
-                }
-            }
+            return report_error(&msg, json);
         }
+        (arg, global) => arg.or(global),
     };
+    let root = match project_root(None) {
+        Ok(root) => root,
+        Err(e) => return report_error(&e, json),
+    };
+    let configs = match al_bc::launch::find_launch_config(&root) {
+        Ok(Some(file)) => file.configs,
+        Ok(None) => Vec::new(),
+        Err(e) => return report_error(&e.to_string(), json),
+    };
+    let registry = match al_bc::tenant_guard::load_registry(&al_bc::tenant_guard::registry_path()) {
+        Ok(registry) => registry,
+        Err(refusal) => return report_error(&refusal.0, json),
+    };
+    let tenant = match login_tenant(typed, purpose, &configs, &registry) {
+        Ok(tenant) => tenant,
+        Err(refusal) => return report_error(&refusal.0, json),
+    };
+    if let Some(line) = al_bc::tenant_guard::banner_for(&tenant, purpose) {
+        eprintln!("{}", terminal_text(&line));
+    }
     let mode = if device_code {
         al_symbols::oauth::SignInMode::DeviceCode
     } else {
@@ -480,6 +482,37 @@ fn login_in_process(
         }
         Err(e) => report_error(&format!("Authentication failed: {e}"), json),
     }
+}
+
+/// The tenant `authenticate login` signs in to, checked by the tenant guard
+/// against the launch configuration. Refuses a missing tenant too.
+fn login_tenant(
+    tenant: Option<&str>,
+    purpose: Option<&str>,
+    configs: &[al_bc::launch::BcServerConfig],
+    registry: &al_bc::tenant_guard::Registry,
+) -> Result<String, al_bc::tenant_guard::TenantRefused> {
+    let Some(typed) = tenant.map(str::trim).filter(|t| !t.is_empty()) else {
+        return Err(al_bc::tenant_guard::TenantRefused(format!(
+            "{} {}",
+            al_bc::tenant_guard::REFUSAL_PREFIX,
+            al_bc::tenant_guard::missing_tenant_message("authenticate login")
+        )));
+    };
+    // With no matching configuration, the first one's tenant is passed on so
+    // the guard reports the mismatch.
+    let config_tenant = configs
+        .iter()
+        .find(|config| {
+            config
+                .tenant
+                .as_deref()
+                .is_some_and(|t| t.eq_ignore_ascii_case(typed))
+        })
+        .or_else(|| configs.first())
+        .and_then(|config| config.tenant.as_deref());
+    al_bc::tenant_guard::require(Some(typed), purpose, config_tenant, registry)
+        .map(|info| info.guid)
 }
 
 /// The lines `authenticate status` prints, one per tenant.
@@ -525,6 +558,18 @@ fn authentication_text(result: &serde_json::Value) -> String {
     out
 }
 
+/// A status entry counts as signed in when its token is present and unexpired.
+fn tenant_entry_authenticated(tenant: &serde_json::Value) -> bool {
+    tenant
+        .get("authenticated")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+        && !tenant
+            .get("expired")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(true)
+}
+
 /// Whether at least one tenant has a token that is present and unexpired.
 ///
 /// `authenticate status` printed `not authenticated` for every tenant and
@@ -534,16 +579,25 @@ pub(crate) fn any_tenant_authenticated(result: &serde_json::Value) -> bool {
     result
         .get("tenants")
         .and_then(|value| value.as_array())
+        .is_some_and(|tenants| tenants.iter().any(tenant_entry_authenticated))
+}
+
+/// `authenticate status --tenant X` is usable only when that tenant is signed
+/// in. Without `--tenant` any tenant is enough.
+pub(crate) fn tenant_authenticated(result: &serde_json::Value, tenant: Option<&str>) -> bool {
+    let Some(typed) = tenant else {
+        return any_tenant_authenticated(result);
+    };
+    result
+        .get("tenants")
+        .and_then(|value| value.as_array())
         .is_some_and(|tenants| {
-            tenants.iter().any(|tenant| {
-                tenant
-                    .get("authenticated")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false)
-                    && !tenant
-                        .get("expired")
-                        .and_then(|value| value.as_bool())
-                        .unwrap_or(true)
+            tenants.iter().any(|entry| {
+                entry
+                    .get("tenant")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(typed))
+                    && tenant_entry_authenticated(entry)
             })
         })
 }
@@ -552,6 +606,16 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
     let zed_dir = project_root.join(".zed");
     let debug_path = zed_dir.join("debug.json");
     let debug_path_display = debug_path.display().to_string();
+    // `exists` and `write` follow links, so a link is refused before either runs.
+    for link in [&zed_dir, &debug_path] {
+        if std::fs::symlink_metadata(link).is_ok_and(|m| m.file_type().is_symlink()) {
+            let msg = format!(
+                "Refusing to write {}: it is a symbolic link",
+                link.display()
+            );
+            return report_error(&msg, json);
+        }
+    }
     if debug_path.exists() {
         if json {
             print_json(&serde_json::json!({"status": "exists", "path": debug_path_display}));
@@ -646,7 +710,14 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match std::fs::write(&debug_path, &content) {
+    // `create_new` fails on any existing entry, a link included, so nothing
+    // outside the project is written.
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&debug_path)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, content.as_bytes()));
+    match written {
         Ok(_) => {
             if json {
                 print_json(&serde_json::json!({
@@ -775,10 +846,14 @@ pub fn cmd_new(options: NewOptions<'_>, json: bool) -> ExitCode {
                 .as_deref()
                 .map(|_| retarget_to_tenant(&result.project_dir));
             if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&result).unwrap_or_default()
-                );
+                let mut value = match serde_json::to_value(&result) {
+                    Ok(value) => value,
+                    Err(error) => return report_error(&error.to_string(), json),
+                };
+                if let (Some(note), Some(object)) = (&environment_note, value.as_object_mut()) {
+                    object.insert("environmentNote".to_string(), serde_json::json!(note));
+                }
+                print_json(&value);
             } else {
                 print!(
                     "{}",
@@ -1074,6 +1149,97 @@ mod tests {
                 Some("MicrosoftEntraID")
             );
         }
+    }
+
+    #[test]
+    fn tenant_authenticated_needs_the_typed_tenant() {
+        let status = serde_json::json!({
+            "tenants": [
+                {"tenant": "A", "authenticated": true, "expired": false},
+                {"tenant": "B", "authenticated": false, "expired": false},
+            ]
+        });
+        assert!(!tenant_authenticated(&status, Some("B")));
+        assert!(tenant_authenticated(&status, Some("a")));
+        assert!(!tenant_authenticated(&status, Some("C")));
+        assert!(tenant_authenticated(&status, None));
+    }
+
+    #[test]
+    fn login_tenant_needs_the_configured_tenant() {
+        const CDX: &str = "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d";
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join("tenants.json");
+        std::fs::write(
+            &path,
+            r#"{"tenants":{"1b7a9471-d313-4aa4-99e8-7a6c762c8e7d":{"name":"CDX","kind":"demo"}}}"#,
+        )
+        .expect("registry file");
+        let registry = al_bc::tenant_guard::load_registry(&path).expect("registry");
+        let config = al_bc::launch::BcServerConfig {
+            name: "CDX".to_string(),
+            environment_type: al_bc::launch::EnvironmentType::Sandbox,
+            server: None,
+            server_instance: None,
+            port: None,
+            environment_name: Some("CDX".to_string()),
+            tenant: Some(CDX.to_string()),
+            authentication: al_bc::launch::AuthMethod::AAD,
+            accept_invalid_certs: false,
+            debug_args: serde_json::Value::Null,
+        };
+        let configs = [config];
+        let missing = login_tenant(None, None, &configs, &registry).unwrap_err();
+        // The prefix makes report_error exit 3.
+        assert!(
+            missing.0.starts_with(al_bc::tenant_guard::REFUSAL_PREFIX),
+            "{missing}"
+        );
+        assert!(
+            login_tenant(
+                Some("00000000-0000-0000-0000-000000000001"),
+                None,
+                &configs,
+                &registry
+            )
+            .is_err()
+        );
+        let guid =
+            login_tenant(Some(CDX), None, &configs, &registry).expect("the configured tenant");
+        assert_eq!(guid, CDX);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_debug_refuses_symlinked_zed_dir() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let outside = root.path().join("outside");
+        let project = root.path().join("project");
+        std::fs::create_dir_all(&outside).expect("outside directory");
+        std::fs::create_dir_all(&project).expect("project directory");
+        std::os::unix::fs::symlink(&outside, project.join(".zed")).expect("symlink");
+        assert_eq!(cmd_init_debug(&project, false), ExitCode::FAILURE);
+        assert_eq!(
+            std::fs::read_dir(&outside)
+                .expect("outside directory")
+                .count(),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn init_debug_refuses_symlinked_debug_json() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let project = root.path().join("project");
+        let outside = root.path().join("outside");
+        let target = outside.join("x.json");
+        std::fs::create_dir_all(project.join(".zed")).expect(".zed directory");
+        std::fs::create_dir_all(&outside).expect("outside directory");
+        std::os::unix::fs::symlink(&target, project.join(".zed").join("debug.json"))
+            .expect("symlink");
+        assert_eq!(cmd_init_debug(&project, false), ExitCode::FAILURE);
+        assert!(!target.exists());
     }
 }
 
