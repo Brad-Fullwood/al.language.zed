@@ -106,7 +106,19 @@ struct ProcedureEffects {
 /// loaded from standard and third-party `.app` packages. When a package embeds
 /// AL source, its complete procedure bodies participate in call/effect
 /// resolution. Symbol-only packages retain declaration/event fallback behavior.
+///
+/// The findings are kept per workspace generation. The per-file refresh after
+/// a typing pause and the project republish that follows ask for the same
+/// generation, and so does each file opened at start-up.
 pub fn transaction_lints(
+    workspace: &Workspace,
+) -> Result<Vec<WorkspaceLintDiagnostic>, al_workspace::CallGraphBuildError> {
+    workspace
+        .cached_project_pass("transaction_lints", || compute_transaction_lints(workspace))
+        .map(|findings| findings.as_ref().clone())
+}
+
+fn compute_transaction_lints(
     workspace: &Workspace,
 ) -> Result<Vec<WorkspaceLintDiagnostic>, al_workspace::CallGraphBuildError> {
     // Ensure the cached graph is workspace-enriched (package nodes alone are
@@ -657,6 +669,73 @@ codeunit 70001 "Dependency Writer"
         assert_eq!(loaded.len(), 1);
         workspace.invalidate_insight_graph();
         directory
+    }
+
+    fn open_and_index(ws: &Workspace, uri: &url::Url, text: &str) {
+        ws.documents
+            .replace_or_open(uri.clone(), text.to_string())
+            .unwrap();
+        al_workspace::on_document_change(ws, uri, text);
+    }
+
+    /// The cached findings must equal a fresh computation, on a repeat ask
+    /// and after edits in another file that add and then remove a finding.
+    #[test]
+    fn cached_findings_match_a_fresh_computation_across_edits() {
+        let ws = Workspace::new();
+        let caller = url::Url::parse("file:///proj/Caller.al").unwrap();
+        let helper = url::Url::parse("file:///proj/Helper.al").unwrap();
+        let caller_with_write = r#"codeunit 50100 "Caller"
+{
+    procedure Start()
+    var
+        Customer: Record Customer;
+        Helper: Codeunit "Helper";
+    begin
+        Customer.Modify();
+        Helper.Run();
+    end;
+}"#;
+        let helper_without_commit = r#"codeunit 50101 "Helper"
+{
+    procedure Run()
+    begin
+    end;
+}"#;
+        let helper_with_commit = r#"codeunit 50101 "Helper"
+{
+    procedure Run()
+    begin
+        Commit();
+    end;
+}"#;
+        let check = |expect_commit_finding: bool| {
+            let cached = format!("{:?}", transaction_lints(&ws).unwrap());
+            assert_eq!(cached, format!("{:?}", transaction_lints(&ws).unwrap()));
+            assert_eq!(
+                cached,
+                format!("{:?}", compute_transaction_lints(&ws).unwrap())
+            );
+            assert_eq!(
+                cached.contains(COMMIT_AFTER_DATABASE_CHANGE),
+                expect_commit_finding,
+                "{cached}"
+            );
+        };
+
+        open_and_index(&ws, &caller, caller_with_write);
+        open_and_index(&ws, &helper, helper_without_commit);
+        check(false);
+
+        open_and_index(&ws, &helper, helper_with_commit);
+        check(true);
+
+        open_and_index(
+            &ws,
+            &caller,
+            &caller_with_write.replace("        Customer.Modify();\n", ""),
+        );
+        check(false);
     }
 
     #[test]
