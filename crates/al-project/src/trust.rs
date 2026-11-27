@@ -2047,6 +2047,38 @@ pub struct CredentialAuthorization {
 /// needs no project trust.
 pub const ALLOW_INSECURE_HTTP_ENV: &str = "AL_ALLOW_INSECURE_BC_HTTP";
 
+const NO_ON_PREM_SERVER: &str =
+    "Refusing to send Business Central credentials: the configuration names no usable on-premises server.";
+
+/// Refuses to send a credential to an on-premises server over cleartext
+/// `http` unless the host is loopback or `AL_ALLOW_INSECURE_BC_HTTP=1` is set.
+/// Cloud targets return Ok here, because the tenant guard checks them.
+pub fn check_transport(target: &BcTarget, kind: CredentialKind) -> Result<(), String> {
+    if !target.on_prem {
+        return Ok(());
+    }
+
+    let Some((scheme, host, port)) = target.endpoint() else {
+        return Err(NO_ON_PREM_SERVER.to_string());
+    };
+
+    // The endpoint is text a repository's launch file chose and these messages
+    // reach an agent, so it goes in as one escaped line.
+    let endpoint = one_line(&format!("{scheme}://{host}:{port}"));
+
+    if scheme != "https"
+        && !is_loopback(&host)
+        && std::env::var(ALLOW_INSECURE_HTTP_ENV).as_deref() != Ok("1")
+    {
+        return Err(format!(
+            "Refusing to send {} to {endpoint} in cleartext. Use an https:// server, or set \
+             {ALLOW_INSECURE_HTTP_ENV}=1 if this network is one you trust.",
+            kind.describe()
+        ));
+    }
+    Ok(())
+}
+
 /// The one decision that lets a cached Business Central credential reach a
 /// server.
 ///
@@ -2090,28 +2122,11 @@ pub fn authorize_cached_credential(
         });
     }
 
+    check_transport(target, kind)?;
     let Some((scheme, host, port)) = target.endpoint() else {
-        return Err(
-            "Refusing to send Business Central credentials: the configuration names no \
-                    usable on-premises server."
-                .to_string(),
-        );
+        return Err(NO_ON_PREM_SERVER.to_string());
     };
-
-    // The endpoint is text a repository's launch file chose and these messages
-    // reach an agent, so it goes in as one escaped line.
     let endpoint = one_line(&format!("{scheme}://{host}:{port}"));
-
-    if scheme != "https"
-        && !is_loopback(&host)
-        && std::env::var(ALLOW_INSECURE_HTTP_ENV).as_deref() != Ok("1")
-    {
-        return Err(format!(
-            "Refusing to send {} to {endpoint} in cleartext. Use an https:// server, or set \
-             {ALLOW_INSECURE_HTTP_ENV}=1 if this network is one you trust.",
-            kind.describe()
-        ));
-    }
 
     if source == TargetSource::User {
         return Ok(CredentialAuthorization {
@@ -2618,3 +2633,22 @@ fn write_store(path: &Path, store: &TrustStore) -> Result<(), TrustStoreError> {
 #[cfg(test)]
 #[path = "trust_tests.rs"]
 mod trust_tests;
+
+#[cfg(test)]
+mod check_transport_tests {
+    use super::*;
+
+    #[test]
+    fn check_transport_refuses_cleartext_remote() {
+        let target = BcTarget::from_debug("OnPrem", Some("http://bc.example.com"), 7049);
+        let error = check_transport(&target, CredentialKind::Bearer)
+            .expect_err("a bearer token must not cross the network in cleartext");
+        assert!(error.contains("cleartext"), "{error}");
+    }
+
+    #[test]
+    fn check_transport_allows_loopback_http() {
+        let target = BcTarget::from_debug("OnPrem", Some("http://localhost"), 7049);
+        check_transport(&target, CredentialKind::Bearer).expect("loopback http is allowed");
+    }
+}
