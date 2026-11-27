@@ -132,7 +132,7 @@ Current MCP tools:
 - `al_testclassify` - classify every discovered AL test by where it runs (local interpreter or live BC), with the reasons behind each decision.
 - `al_testcoverage` - report conservative qualified/transitive static coverage across the workspace. Ambiguous overload targets are returned in `unresolvedCalls` and are not credited. No live BC required.
 - `al_testsnapshot` - capture breakpoint-sampled variables while one exact test method runs on live BC.
-- `al_testsnapshotreplay` - re-run the exact test recorded by a baseline snapshot on live BC and return field-level divergences.
+- `al_testsnapshotreplay` - meant to re-run the test recorded by a baseline snapshot on live BC and return field-level divergences. It needs the TestRunnerHub client and returns a "not implemented" error.
 - `al_depgraph` - build a GUID-keyed graph from the current `app.json` and loaded `.app` manifests, including implicit/transitive dependencies, missing packages, and real minimum-version conflicts, as JSON or Graphviz `dot`.
 - `al_freeids` - pick the next free object ID, table field number or enum value ordinal inside the `app.json` idRanges, counting every object in the workspace and every dependency package object in the same range. A table extension's fields are checked against the base table and the other extensions of it.
 
@@ -243,9 +243,9 @@ The record runtime reads workspace table definitions and provides isolated in-me
 characters, before backend routing, including when the initial request targets a whole codeunit.
 
 `test-snapshot capture` is meant to run one exact test method on live Business Central and write breakpoint
-samples to a snapshot file. It needs the TestRunnerHub client that is not built yet and returns a "not implemented" error. `replay` resolves and re-runs that recorded method, recreates its
-breakpoints, and compares the live samples with the baseline. `validate` checks an existing file
-and `diff` compares two files. Each runs only when asked for.
+samples to a snapshot file. `capture` and `replay` both need the TestRunnerHub client, which is
+not built yet, and return a "not implemented" error. `validate` and `diff` work offline: `validate`
+checks an existing file and `diff` compares two files.
 
 ## Specialized AL Workflows
 
@@ -420,7 +420,7 @@ So symbol search, completions, object lookup, event discovery, and impact analys
 - The package cache path is selected explicitly.
 - Analyzer lists can be passed through command surfaces.
 - The Rust-managed `dotnet alc` fallback uses deterministic temp output and final handoff when possible.
-- Native `.app` emission is the default build path, and publishing to live Business Central remains the final compatibility check.
+- Builds use `alc` when the toolchain is found. Native `.app` emission is the fallback, or the build path when `al.useOfficialCompiler` is `false`. Publishing to live Business Central remains the final compatibility check.
 - Launch/debug workflows compile on launch, locate the correct `.app`, publish/deploy where needed, and connect Zed to the BC debug backend through the native adapter.
 
 Zed users get launch and attach workflows from the extension itself, without a copy of the VS Code extension.

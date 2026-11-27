@@ -18,9 +18,10 @@ live in [ROADMAP.md](../ROADMAP.md).
 - A dependency `.app` package that embeds no AL source exposes declarations but
   not executable bodies, so call-graph analysis does not infer side effects it
   cannot observe there. Embedded source is indexed and joins the call graph.
-- External rulesets, probing paths, analyzer statistics, incremental mode, and
-  extra compiler options apply to the official `alc` backend. They do not change
-  the native emitter or in-process semantic bridge.
+- External rulesets, probing paths and extra compiler options apply to the
+  official `alc` backend. They do not change the native emitter or in-process
+  semantic bridge. Analyzer statistics and incremental mode are read from
+  `.vscode/settings.json` and not passed to `alc`, which has no such switch.
 
 ## Language services and symbols
 
@@ -52,10 +53,8 @@ live in [ROADMAP.md](../ROADMAP.md).
   entry/natural-exit paths, and condition-level MC/DC for compound
   IF/WHILE/REPEAT decisions. MC/DC vectors come from the original evaluation,
   so coverage does not repeat calls or alter runtime semantics.
-- `test-snapshot capture` is meant to record explicit breakpoint samples from a live BC test. Starting that test needs the missing TestRunnerHub client, so capture returns a "not implemented" error. `replay`
-  re-runs that exact indexed test method against an explicitly identified current BC runtime,
-  recreates its breakpoint conditions, and compares samples by stable source location. Capture and
-  replay require a reachable configured BC environment. `validate` and `diff` remain BC-free.
+- `test-snapshot capture` is meant to record explicit breakpoint samples from a live BC test. Starting that test needs the missing TestRunnerHub client, so capture returns a "not implemented" error. `replay` needs the same client and returns the same
+  error. `validate` and `diff` work offline.
 
 ## Debugging and Business Central
 
@@ -76,8 +75,8 @@ live in [ROADMAP.md](../ROADMAP.md).
   spaces are dropped or wrong. The `TargetObject` app id of extensions and manifest `Features` were
   fixed after that measurement (emitter-02).
   Builds use `alc` by default when the toolchain is found, so this applies to the native fallback and `al.useOfficialCompiler: false`. The native
-  verifier's text checks for procedure calls, return values, overloads, `Continue` and record fields
-  only warn. Findings `emitter-01-native-verifier-rejects-valid-dms-project` and
+  verifier's text checks for procedure calls, return values, overloads, `Exit`, `Break`, `Continue`
+  and record fields only warn (ALN2202 to ALN2210). Findings `emitter-01-native-verifier-rejects-valid-dms-project` and
   `emitter-02-native-app-differs-from-alc-on-dms`.
 - Native `.app` output has current `alc` 17 differential coverage for the small
   through XL generated Base Application benchmark projects plus an env-gated fixture for
