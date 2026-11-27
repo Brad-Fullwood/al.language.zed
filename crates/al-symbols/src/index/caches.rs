@@ -189,6 +189,29 @@ impl SymbolIndex {
             .map(|record| record.value().path.clone())
     }
 
+    /// Resolve the `.app` path of the package `entry` was indexed from.
+    ///
+    /// [`Self::app_path`] looks a package up by display name and picks one of
+    /// several same-named packages, so an entry of one version or publisher of
+    /// `Base Application` would open the other's source. This finds the
+    /// indexed record holding `entry` and reads the path stored under its
+    /// package identity. An entry the index does not hold falls back to the
+    /// name lookup.
+    pub fn app_path_for_entry(&self, entry: &SymbolEntry) -> Option<std::path::PathBuf> {
+        let package_key = self
+            .all
+            .iter()
+            .find(|indexed| std::ptr::eq(indexed.value().arc.as_ref(), entry))
+            .map(|indexed| indexed.value().package_key.clone());
+        match package_key {
+            Some(key) => self
+                .app_paths
+                .get(&key)
+                .map(|record| record.value().path.clone()),
+            None => self.app_path(&entry.package),
+        }
+    }
+
     /// Return every file-backed package path currently published in the index.
     ///
     /// Package paths remain authoritative even when `SymbolReference.json`
@@ -236,6 +259,41 @@ mod tests {
         assert_eq!(search[0].name, "Alpha");
 
         assert!(!index.sorted_names.is_poisoned());
+    }
+
+    #[test]
+    fn app_path_for_entry_uses_package_key() {
+        let index = SymbolIndex::new();
+        let package = |app_id: &str, id: i32| crate::model::SymbolPackage {
+            app_id: app_id.to_string(),
+            name: "Base Application".to_string(),
+            publisher: "Microsoft".to_string(),
+            version: "1.0.0.0".to_string(),
+            objects: vec![SymbolEntry {
+                package: "Base Application".to_string(),
+                ..make_entry(ObjectKind::Table, id, "Thing")
+            }],
+            object_count: 1,
+        };
+        let first = std::path::PathBuf::from("/packages/first.app");
+        let second = std::path::PathBuf::from("/packages/second.app");
+        index.index_loaded_package(
+            package("11111111-1111-1111-1111-111111111111", 1),
+            Some(&first),
+            false,
+        );
+        index.index_loaded_package(
+            package("22222222-2222-2222-2222-222222222222", 2),
+            Some(&second),
+            false,
+        );
+
+        let entries = index.get_by_name("Thing");
+        assert_eq!(entries.len(), 2);
+        for entry in entries {
+            let expected = if entry.id == 1 { &first } else { &second };
+            assert_eq!(index.app_path_for_entry(&entry).as_ref(), Some(expected));
+        }
     }
 
     #[test]
