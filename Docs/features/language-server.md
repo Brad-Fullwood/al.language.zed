@@ -176,8 +176,9 @@ The Zed extension resolves `al-lsp` in this order:
    on Linux). `make install` builds `al-lsp` and `al-explorer` with the `editor` cargo profile
    (release optimisation without LTO, in `target/editor`), copies them and the bridge there and
    writes `dev/BUILD`, the `al-lsp --version` line of the copy, after checking that the copy
-   reports it. The debug build is not installed: on a 146 file project it took 1.7 to 6 times
-   longer to its first project diagnostics and up to 2.8 times the CPU.
+   reports it. The debug build is not installed: on a 146 file project its native pass took 11
+   to 40 s against 1.2 to 2 s, so the edited file got no diagnostics until typing stopped, and
+   it used up to 2.8 times the CPU of a release build.
 2. The GitHub release tagged `v<extension version>`, for an extension installed from Zed's
    extension list. It is never "latest". Directories of other versions are deleted. A missing
    release or a failed download gives one error naming the version and both routes.
