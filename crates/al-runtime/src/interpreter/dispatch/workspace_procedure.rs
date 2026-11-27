@@ -166,6 +166,13 @@ pub(super) fn dispatch_workspace_procedure(
                 stack.pop();
                 result
             }
+            // The running instance's globals move to the top for the call and
+            // return to their place below it afterwards. The instance stays in
+            // `active_instances` and is not stored again.
+            Globals::Moved(id) => match globals_index(stack, id) {
+                Some(index) => run_on_instance_globals(index, declaration, site, args, stack, ctx),
+                None => run_declaration(declaration, site, args, stack, ctx),
+            },
             // The instance's globals sit under the call and are kept for its
             // next call.
             Globals::Instance(id, mut frame) => {
@@ -340,6 +347,14 @@ pub(super) fn run_declaration(
         // `BigInteger` parameter keeps i64 semantics even when passed a small
         // Integer literal and vice versa, matching BC's fixed parameter types.
         let val = coerce_int_width(val, &param.type_name);
+        let val = if param.is_var {
+            val
+        } else {
+            match coerce_code_value(&param.type_name, val) {
+                Ok(val) => val,
+                Err(message) => return eval_error(message),
+            }
+        };
         frame.bind(&param.name, val);
         if let Some(length) = declared_text_length(&param.type_name) {
             frame.bind_declared_text_length(&param.name, length);
@@ -448,13 +463,29 @@ pub(super) fn run_declaration(
     // A body that ends without `exit` does not return its last statement's
     // value: BC gives the caller the return type's default, so a Boolean
     // function whose last statement is `Rec.Insert()` returns false.
+    let return_type = return_decl.as_ref().map_or("", |r| r.type_name.as_str());
     match result {
         Eval::Exit(Value::Empty) => Eval::Normal(fallthrough_value),
-        Eval::Exit(v) => Eval::Normal(v),
+        Eval::Exit(v) => match coerce_code_value(return_type, v) {
+            Ok(v) => Eval::Normal(v),
+            Err(message) => eval_error(message),
+        },
         Eval::Normal(_) => Eval::Normal(fallthrough_value),
         Eval::Break => eval_error("break statement not inside a loop"),
         Eval::Continue => eval_error("continue statement not inside a loop"),
         other => other,
+    }
+}
+
+/// Converts a by-value `Code` argument or return value the way a local `:=`
+/// does (`Value::coerce_into_slot`): trimmed, upper-cased, length checked.
+/// Other declared types pass through unchanged.
+fn coerce_code_value(type_text: &str, val: Value) -> Result<Value, String> {
+    match default_for_declared_type(type_text) {
+        Some(slot @ Value::Code(_)) => {
+            Value::coerce_into_slot(&slot, val, declared_text_length(type_text))
+        }
+        _ => Ok(val),
     }
 }
 
@@ -470,6 +501,9 @@ enum Globals {
     /// The stored globals of instance `id` (a codeunit variable's, or a
     /// `SingleInstance` codeunit's).
     Instance(u64, Box<CallFrame>),
+    /// Instance `id` is running, but another instance's globals sit above
+    /// its own on the stack. Its frame moves to the top for this call.
+    Moved(u64),
 }
 
 /// Where a call of `object` finds its globals: on the instance `instance`
@@ -502,7 +536,15 @@ fn globals_for_call(
         instance
     };
     match instance {
-        Some(id) if ctx.active_instances.contains(&id) => Globals::OnStack,
+        // A running instance whose globals are not the innermost ones of this
+        // object must move them to the top, or the call reads another instance.
+        Some(id) if ctx.active_instances.contains(&id) => {
+            if stack.object_instance(object_name) == Some(id) {
+                Globals::OnStack
+            } else {
+                Globals::Moved(id)
+            }
+        }
         Some(id) => {
             let frame = ctx.codeunit_instances.remove(&id).unwrap_or_else(|| {
                 let mut frame = CallFrame::new(object_name, "<globals>");
@@ -514,6 +556,39 @@ fn globals_for_call(
         None if !subscriber && stack.has_object_globals(object_name) => Globals::OnStack,
         None => Globals::Fresh,
     }
+}
+
+/// The index of the globals frame of instance `id`, searched from the top.
+fn globals_index(stack: &mut ScopeStack, id: u64) -> Option<usize> {
+    (0..stack.depth()).rev().find(|&index| {
+        stack
+            .frame_mut(index)
+            .is_some_and(|frame| frame.is_object_globals() && frame.instance == Some(id))
+    })
+}
+
+/// Runs a call with the globals frame at `index` moved to the top of the
+/// stack. The frame goes back to `index` when the call returns. This mirrors
+/// `run_on_active_globals` in `table_code.rs`, without the record index map.
+fn run_on_instance_globals(
+    index: usize,
+    declaration: Declaration<'_>,
+    site: DeclarationSite<'_>,
+    args: Vec<Value>,
+    stack: &mut ScopeStack,
+    ctx: &mut DispatchCtx,
+) -> Eval {
+    let Some(slot) = stack.frame_mut(index) else {
+        return run_declaration(declaration, site, args, stack, ctx);
+    };
+    let holder = CallFrame::new(slot.object.clone(), "<globals moved to the top>");
+    let frame = std::mem::replace(slot, holder);
+    stack.push(frame);
+    let result = run_declaration(declaration, site, args, stack, ctx);
+    if let (Some(frame), Some(slot)) = (stack.pop(), stack.frame_mut(index)) {
+        *slot = frame;
+    }
+    result
 }
 
 /// `SingleInstance = true;` on the object.
@@ -890,5 +965,124 @@ mod tests {
             .expect("spawn deep recursion test thread")
             .join()
             .expect("deep recursion test thread panicked");
+    }
+
+    #[test]
+    fn same_codeunit_instances_keep_their_globals() {
+        // A and B are two instances of one codeunit. A's call runs B, and B
+        // calls back into A while A is still running. A must read its own X
+        // (1), not the X of B, whose globals sit above A's on the stack (2).
+        let counter = r#"codeunit 50990 "Peer Counter"
+{
+    var
+        X: Integer;
+        Peer: Codeunit "Peer Counter";
+
+    procedure SetX(V: Integer)
+    begin
+        X := V;
+    end;
+
+    procedure ReadX(): Integer
+    begin
+        exit(X);
+    end;
+
+    procedure SetPeer(P: Codeunit "Peer Counter")
+    begin
+        Peer := P;
+    end;
+
+    procedure ReadPeerX(): Integer
+    begin
+        exit(Peer.ReadX());
+    end;
+
+    procedure CallPeerThenReadX(Other: Codeunit "Peer Counter"): Integer
+    begin
+        exit(Other.ReadPeerX());
+    end;
+}
+"#;
+        let driver = r#"codeunit 50991 "Peer Driver"
+{
+    procedure Run(): Integer
+    var
+        A: Codeunit "Peer Counter";
+        B: Codeunit "Peer Counter";
+    begin
+        A.SetX(1);
+        B.SetX(2);
+        B.SetPeer(A);
+        exit(A.CallPeerThenReadX(B));
+    end;
+}
+"#;
+        let ws = Arc::new(Workspace::new());
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/test/PeerCounter.al"),
+            counter.to_string(),
+        );
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/test/PeerDriver.al"),
+            driver.to_string(),
+        );
+        let mut ctx = DispatchCtx::new_pure(ws);
+        let result = dispatch_call(Some("Peer Driver"), "Run", vec![], &mut ctx);
+        assert_eq!(
+            ok(result),
+            Value::Integer(1),
+            "the callback into instance A must read A's X, not B's"
+        );
+    }
+
+    #[test]
+    fn code_parameter_is_upper_cased() {
+        // A by-value Code[20] parameter and return value take the same
+        // conversion as a local `:=`: trimmed and upper-cased.
+        let ws = Arc::new(Workspace::new());
+        ws.file_index.add_file(
+            std::path::PathBuf::from("/test/CodeUpper.al"),
+            r#"codeunit 50992 "Code Upper"
+{
+    procedure Up(C: Code[20]): Code[20]
+    begin
+        exit(C);
+    end;
+
+    procedure CallUp(): Code[20]
+    begin
+        exit(Up('abc'));
+    end;
+
+    procedure Literal(): Code[20]
+    begin
+        exit('abc');
+    end;
+}
+"#
+            .to_string(),
+        );
+        let mut ctx = DispatchCtx::new_pure(ws);
+        assert_eq!(
+            ok(dispatch_call(
+                Some("Code Upper"),
+                "CallUp",
+                vec![],
+                &mut ctx
+            )),
+            Value::Code("ABC".to_string()),
+            "Up('abc') must pass 'ABC' into the Code[20] parameter"
+        );
+        assert_eq!(
+            ok(dispatch_call(
+                Some("Code Upper"),
+                "Literal",
+                vec![],
+                &mut ctx
+            )),
+            Value::Code("ABC".to_string()),
+            "exit('abc') in a Code[20] procedure must return 'ABC'"
+        );
     }
 }

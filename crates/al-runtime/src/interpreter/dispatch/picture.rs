@@ -151,6 +151,9 @@ fn standard_picture(value: &Value, number: i64) -> Result<&'static str, String> 
 /// Render `value` with numbered standard format `number` (other than the 0
 /// and 9 the caller handles for every type).
 pub(crate) fn render_standard(value: &Value, number: i64) -> Result<String, String> {
+    if matches!(value, Value::Date(0)) {
+        return Ok(String::new());
+    }
     render_picture(value, standard_picture(value, number)?)
 }
 
@@ -168,6 +171,10 @@ fn pad_left(text: String, width: Option<usize>, filler: char) -> String {
 
 /// Render `value` with picture string `picture`.
 pub(crate) fn render_picture(value: &Value, picture: &str) -> Result<String, String> {
+    // The undefined date 0D is empty text for every picture.
+    if matches!(value, Value::Date(0)) {
+        return Ok(String::new());
+    }
     let parts = parts(picture)?;
     // The filler applies to every padded component, wherever it is declared
     // (`<Integer,4><Filler Character,0>` is the usual spelling).
@@ -375,6 +382,17 @@ mod tests {
             "-1,234.57"
         );
         assert_eq!(render(Value::Decimal(dec!(1234.5)), "<Integer>"), "1234");
+    }
+
+    #[test]
+    fn format_undefined_date_is_empty() {
+        // Format(0D, 0, '<Year4>') is empty text, and so is any other format of 0D.
+        assert_eq!(render_picture(&Value::Date(0), "<Year4>").unwrap(), "");
+        assert_eq!(
+            render_picture(&Value::Date(0), "<Day>. <Month Text,3> <Year>").unwrap(),
+            ""
+        );
+        assert_eq!(render_standard(&Value::Date(0), 1).unwrap(), "");
     }
 
     #[test]

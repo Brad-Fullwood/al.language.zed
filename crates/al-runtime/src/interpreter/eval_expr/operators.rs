@@ -219,7 +219,7 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
             Some(
                 match whole_offset(offset).and_then(|offset| {
                     time.checked_add(offset)
-                        .filter(|value| (0..value::MS_PER_DAY).contains(value))
+                        .map(|value| value.rem_euclid(value::MS_PER_DAY))
                         .ok_or_else(|| error_info("Time arithmetic overflow"))
                 }) {
                     Ok(value) => Eval::Normal(Value::Time(value)),
@@ -249,7 +249,7 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
             Some(
                 match whole_offset(offset).and_then(|offset| {
                     time.checked_sub(offset)
-                        .filter(|value| (0..value::MS_PER_DAY).contains(value))
+                        .map(|value| value.rem_euclid(value::MS_PER_DAY))
                         .ok_or_else(|| error_info("Time arithmetic overflow"))
                 }) {
                     Ok(value) => Eval::Normal(Value::Time(value)),

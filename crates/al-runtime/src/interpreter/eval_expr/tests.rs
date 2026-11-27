@@ -201,13 +201,32 @@ fn date_and_time_arithmetic_preserves_temporal_types() {
             .message
             .contains("0D")
     );
-    assert!(error_of(apply_binary(
-        "+",
-        Value::Time(value::MS_PER_DAY - 1),
-        Value::Integer(1)
-    ))
-    .message
-    .contains("overflow"));
+    assert_eq!(
+        ok(apply_binary(
+            "+",
+            Value::Time(value::MS_PER_DAY - 1),
+            Value::Integer(2)
+        )),
+        Value::Time(1),
+        "Time arithmetic wraps past midnight"
+    );
+}
+
+#[test]
+fn time_addition_wraps_past_midnight() {
+    // 23:59:59 plus 2 seconds is 00:00:01, and the reverse wraps back.
+    assert_eq!(
+        ok(apply_binary(
+            "+",
+            Value::Time(86_399_000),
+            Value::Integer(2_000)
+        )),
+        Value::Time(1_000)
+    );
+    assert_eq!(
+        ok(apply_binary("-", Value::Time(1_000), Value::Integer(2_000))),
+        Value::Time(86_399_000)
+    );
 }
 
 #[test]
