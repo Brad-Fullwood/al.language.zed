@@ -548,11 +548,11 @@ fn breakpoint_line(bp: &Value) -> String {
         return format!("Breakpoint at line {line}: verified");
     }
     match bp.get("message").and_then(Value::as_str) {
-        Some(_) => format!(
+        Some(message) if !message.trim().is_empty() => format!(
             "Breakpoint at line {line}: unverified ({})",
             text_field(bp, "message", "")
         ),
-        None => format!("Breakpoint at line {line}: unverified"),
+        _ => format!("Breakpoint at line {line}: unverified"),
     }
 }
 
@@ -782,6 +782,10 @@ mod terminal_text_tests {
         assert_eq!(
             breakpoint_line(&serde_json::json!({"line": 3, "verified": true})),
             "Breakpoint at line 3: verified"
+        );
+        assert_eq!(
+            breakpoint_line(&serde_json::json!({"line": 4, "verified": false, "message": ""})),
+            "Breakpoint at line 4: unverified"
         );
     }
 
