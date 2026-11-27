@@ -1242,13 +1242,6 @@ pub fn wait_for_endpoint_closed(endpoint: &Path, timeout: Duration) -> bool {
     }
 }
 
-/// Locate the `al-lsp` this client should start.
-///
-/// The binary beside this executable wins: a release archive and a `target/`
-/// directory both hold the pair, and taking the sibling keeps the client and
-/// the daemon on one build. Falling back to PATH is what let a client start a
-/// daemon weeks older than itself, silently, so a PATH binary is reported at
-/// warn level and refused when its version differs from this build's.
 /// Refuse to start a daemon for a directory outside any AL project.
 ///
 /// A daemon for such a directory indexes whatever it finds there and keeps
@@ -1272,6 +1265,13 @@ pub fn require_project_dir(project_root: &Path) -> Result<(), String> {
     ))
 }
 
+/// Locate the `al-lsp` this client should start.
+///
+/// The binary beside this executable wins: a release archive and a `target/`
+/// directory both hold the pair, and taking the sibling keeps the client and
+/// the daemon on one build. Falling back to PATH is what let a client start a
+/// daemon weeks older than itself, silently, so a PATH binary is reported at
+/// warn level and refused when its version differs from this build's.
 pub fn find_al_lsp_binary() -> Result<PathBuf, String> {
     let binary_name = format!("al-lsp{}", std::env::consts::EXE_SUFFIX);
     if let Ok(exe) = std::env::current_exe() {
