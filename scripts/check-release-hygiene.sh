@@ -223,7 +223,8 @@ check_versions() {
 # older tag loads a schema that no longer matches this release, so every tag in
 # those URLs must equal the extension version.
 check_example_schema_tag() {
-    local expected="v$(package_version extension.toml)"
+    local expected
+    expected="v$(package_version extension.toml)"
     local file="examples/zed-settings.jsonc"
     local re='raw\.githubusercontent\.com/Brad-Fullwood/al\.language\.zed/([^/"]+)/schemas/'
     [ -f "${file}" ] || fail "missing ${file}"
