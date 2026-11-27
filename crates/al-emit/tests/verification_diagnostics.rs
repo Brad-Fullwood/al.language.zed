@@ -1121,3 +1121,24 @@ fn dependency_below_required_version_is_rejected() {
         "the highest loaded 10.0.0.0 must satisfy a required 10.0.0.0, got {highest:?}"
     );
 }
+
+/// A namespace qualified type names the object by its full name. The verifier
+/// checks the object name, so a known codeunit gives no ALN2003.
+#[test]
+fn namespace_qualified_codeunit_variable_is_known() {
+    let codes = codes_for(&[(
+        "Finder.Codeunit.al",
+        r#"namespace Purchases.Tools;
+
+codeunit 50100 Finder
+{
+    procedure Run()
+    var
+        Own: Codeunit Purchases.Tools.Finder;
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN2003");
+}

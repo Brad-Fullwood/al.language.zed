@@ -1968,6 +1968,7 @@ fn verify_type(
     };
     let base = &trimmed[..space];
     let subtype = trimmed[space..].unquote_identifier();
+    let subtype = crate::symbol_reference::subtype_object_name(&subtype).to_string();
     if subtype.is_empty() {
         return;
     }

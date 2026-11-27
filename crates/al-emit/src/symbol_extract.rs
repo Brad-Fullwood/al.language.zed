@@ -911,6 +911,15 @@ fn extract_type_reference(node: Node, src: &[u8]) -> String {
             base = text(child, src).to_string();
         } else if matches!(k, "name_or_keyword" | "name" | "quoted_identifier") {
             subtype = unquote(text(child, src));
+        } else if k == "qualified_name" {
+            // `Codeunit Sales.Tools.Finder` is kept as `Codeunit "Sales"."Tools"."Finder"`,
+            // because an object name can itself contain a dot (`"No. Series"`).
+            let mut names = child.walk();
+            subtype = child
+                .named_children(&mut names)
+                .map(|name| unquote(text(name, src)))
+                .collect::<Vec<_>>()
+                .join("\".\"");
         }
     }
     compose_type(&base, &suffix, &subtype)

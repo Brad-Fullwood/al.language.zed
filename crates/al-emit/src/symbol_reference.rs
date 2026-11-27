@@ -65,6 +65,38 @@ fn lookup<'r>(resolver: &'r Resolver, kind: ObjectKind, name: &str) -> Option<&'
     resolver.get(&(kind, name.to_lowercase()))
 }
 
+/// The resolver key of an object in a namespace: `sales.tools.finder`.
+pub(crate) fn qualified_key(namespace: &str, name: &str) -> Option<String> {
+    let namespace = namespace.trim();
+    (!namespace.is_empty()).then(|| format!("{namespace}.{name}").to_lowercase())
+}
+
+/// The object name of a subtype. The extractor writes a namespace qualified
+/// subtype as `Sales"."Tools"."Finder` (see `extract_type_reference`), and alc
+/// names only the object (`Finder`) in `Subtype.Name`.
+pub(crate) fn subtype_object_name(subtype: &str) -> &str {
+    subtype.rsplit("\".\"").next().unwrap_or(subtype)
+}
+
+/// Look a subtype up. A qualified subtype resolves by its full name, so a
+/// project object does not shadow a dependency object of the same name in
+/// another namespace. An unqualified one resolves by name, where project
+/// objects shadow dependency objects, as alc resolves the file's own
+/// namespace first.
+fn lookup_subtype<'r>(
+    resolver: &'r Resolver,
+    kind: ObjectKind,
+    subtype: &str,
+) -> Option<&'r ObjectRef> {
+    if subtype.contains("\".\"") {
+        let qualified = subtype.split("\".\"").collect::<Vec<_>>().join(".");
+        if let Some(found) = lookup(resolver, kind, &qualified) {
+            return Some(found);
+        }
+    }
+    lookup(resolver, kind, subtype_object_name(subtype))
+}
+
 /// Symbols loaded from *referenced* apps (`.alpackages`), used to resolve
 /// cross-app object ids and the field types of fields added to base
 /// pages/reports. All keys are lowercased.
@@ -167,13 +199,14 @@ fn namespace_tree(objects: &[EmitObject]) -> NamespaceNode<'_> {
 fn merged_resolver(objects: &[EmitObject], external: &Resolver) -> Resolver {
     let mut resolver = external.clone();
     for o in objects {
-        resolver.insert(
-            (o.entry.kind, o.entry.name.to_lowercase()),
-            ObjectRef {
-                id: o.entry.id,
-                module_id: None,
-            },
-        );
+        let local = ObjectRef {
+            id: o.entry.id,
+            module_id: None,
+        };
+        if let Some(key) = qualified_key(&o.entry.namespace, &o.entry.name) {
+            resolver.insert((o.entry.kind, key), local.clone());
+        }
+        resolver.insert((o.entry.kind, o.entry.name.to_lowercase()), local);
     }
     resolver
 }
@@ -993,10 +1026,13 @@ fn subtype_hash_for(type_str: &str, resolver: &Resolver) -> i32 {
         | "testrequestpage" => subtype
             .as_deref()
             .zip(type_keyword_kind(&base_type_name(type_str)))
-            .and_then(|(s, kind)| lookup(resolver, kind, s).map(|r| r.id))
+            .and_then(|(s, kind)| lookup_subtype(resolver, kind, s).map(|r| r.id))
             .unwrap_or(0),
         // Interface: FNV of the name (NOT upper-cased, unlike method names).
-        "interface" => subtype.as_deref().map(fnv1_hash).unwrap_or(0),
+        "interface" => subtype
+            .as_deref()
+            .map(|s| fnv1_hash(subtype_object_name(s)))
+            .unwrap_or(0),
         _ => 1,
     }
 }
@@ -1653,12 +1689,12 @@ fn type_def_json(type_str: &str, resolver: &Resolver) -> Value {
     let (base, subtype) = split_type(type_str);
     if let Some(sub) = subtype {
         let mut st = Map::new();
-        let r = type_keyword_kind(&base).and_then(|kind| lookup(resolver, kind, &sub));
+        let r = type_keyword_kind(&base).and_then(|kind| lookup_subtype(resolver, kind, &sub));
         // External subtypes record the defining module id (before Name).
         if let Some(module_id) = r.and_then(|r| r.module_id.as_deref()) {
             st.insert("ModuleId".into(), json!(module_id));
         }
-        st.insert("Name".into(), json!(sub));
+        st.insert("Name".into(), json!(subtype_object_name(&sub)));
         // alc emits Subtype.Id for objects with a real id (Enum/Record/…) but
         // not for interfaces (no declared numeric id).
         if let Some(id) = r.map(|r| r.id).filter(|&id| id != 0) {

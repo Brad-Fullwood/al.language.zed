@@ -9,7 +9,8 @@ use super::manifest::AppManifest;
 use super::package::{random_package_guid, EmitError};
 use super::symbol_extract::{extract_objects_from_tree, EmitObject};
 use super::symbol_reference::{
-    build_symbol_reference_with_internals, version_key, ExternalSymbols, ObjectRef, SymbolRefMeta,
+    build_symbol_reference_with_internals, qualified_key, version_key, ExternalSymbols, ObjectRef,
+    SymbolRefMeta,
 };
 use super::verification::{
     verify_artifact, verify_manifest, verify_project_objects, VerificationDiagnostic,
@@ -247,12 +248,18 @@ fn parse_external_symbols(package_paths: &[PathBuf]) -> Result<ExternalSymbols, 
                     | ObjectKind::PageCustomization
             );
             if declares_name {
+                let reference = ObjectRef {
+                    id: obj.id,
+                    module_id: Some(pkg.app_id.clone()),
+                };
+                if let Some(key) = qualified_key(&obj.namespace, &obj.name) {
+                    ext.resolver
+                        .entry((obj.kind, key))
+                        .or_insert_with(|| reference.clone());
+                }
                 ext.resolver
                     .entry((obj.kind, obj.name.to_lowercase()))
-                    .or_insert_with(|| ObjectRef {
-                        id: obj.id,
-                        module_id: Some(pkg.app_id.clone()),
-                    });
+                    .or_insert(reference);
             }
             if obj.kind == ObjectKind::Table {
                 table_id_to_name

@@ -611,3 +611,40 @@ fn internals_visible_to_matches_alc() {
         alc["InternalsVisibleToModules"]
     );
 }
+
+/// alc accepts a project codeunit with the same name as a dependency codeunit
+/// in another namespace. A reference by full name resolves to the object in
+/// that namespace, and an unqualified name resolves to the file's own
+/// namespace first (checks-A5.md, codex-06 cross app).
+#[test]
+fn qualified_reference_resolves_the_dependency_object_of_the_same_name() {
+    let mut external = ExternalSymbols::default();
+    let library = ObjectRef {
+        id: 50150,
+        module_id: Some("0c1a0001-0000-4000-8000-000000000018".to_string()),
+    };
+    external.resolver.insert(
+        (ObjectKind::Codeunit, "finder".to_string()),
+        library.clone(),
+    );
+    external.resolver.insert(
+        (ObjectKind::Codeunit, "sales.tools.finder".to_string()),
+        library,
+    );
+    let src = "namespace Purchases.Tools;\nusing Sales.Tools;\ncodeunit 50100 Finder { \
+               procedure Both(Own: Codeunit Purchases.Tools.Finder; \
+               Other: Codeunit Sales.Tools.Finder; Plain: Codeunit Finder) begin end; }";
+    let objects = extract_objects(src, "src/F.Codeunit.al");
+    let doc = build_symbol_reference(&objects, &min_app_meta(), &external);
+    let codeunit = &doc["Namespaces"][0]["Namespaces"][0]["Codeunits"][0];
+    let parameters = &codeunit["Methods"][0]["Parameters"];
+    let subtype = |index: usize| parameters[index]["TypeDefinition"]["Subtype"].clone();
+    assert_eq!(subtype(0)["Id"], 50100, "{parameters:#}");
+    assert!(subtype(0).get("ModuleId").is_none(), "{parameters:#}");
+    assert_eq!(subtype(1)["Id"], 50150, "{parameters:#}");
+    assert_eq!(
+        subtype(1)["ModuleId"],
+        "0c1a0001-0000-4000-8000-000000000018"
+    );
+    assert_eq!(subtype(2)["Id"], 50100, "{parameters:#}");
+}
