@@ -2,33 +2,36 @@
 # Auto-rebuild the AL binaries whenever source changes, so you always have the
 # latest to test -- no manual rebuild/reinstall.
 #
-# Why this works: `make install` symlinks ~/.local/bin/{al-explorer,al} to
-# target/debug/ and symlinks the Zed dev-extension to this repo, so rebuilding
-# those updates what your shell and Zed load in place. al-lsp is the exception:
-# it is COPIED (not symlinked) after each semantic rebuild below, because a
-# symlink into target/debug/al-lsp would be overwritten by the feature-less
-# NATIVE_BUILD step (and any other `cargo build`) with the stub host. Keep this
-# running.
+# al-lsp is rebuilt with the `editor` cargo profile, the one `make install`
+# uses, and COPIED into ~/.local/bin after each rebuild. A copy is immune to
+# later feature-less `cargo build` runs, which write the stub host. The debug
+# al-lsp is too slow for the editor: its diagnostics arrive after the next
+# keystroke and are thrown away. Keep this running.
 #
 # Usage:  make watch     (or)   bash scripts/dev-watch.sh
-#   --release   build native binaries in release mode (slower build, faster binaries)
+#   --release   build native binaries and al-lsp in release mode
+#   --debug     copy the debug al-lsp into ~/.local/bin (fast rebuild, slow editor)
 #   --bridges   also rebuild the .NET semantic bridge on change (slower)
 set -euo pipefail
 cd "$(dirname "$0")/.." || exit
 
 PROFILE_FLAG=""
+LSP_PROFILE="editor"
 WATCH_BRIDGES=0
 for arg in "$@"; do
   case "$arg" in
     --release) PROFILE_FLAG="--release" ;;
+    --debug) LSP_PROFILE="dev" ;;
     --bridges) WATCH_BRIDGES=1 ;;
   esac
 done
 
-PROFILE_DIR="debug"
 if [ "$PROFILE_FLAG" = "--release" ]; then
-  PROFILE_DIR="release"
+  LSP_PROFILE="release"
 fi
+# Cargo writes the `dev` profile to target/debug.
+LSP_DIR="$LSP_PROFILE"
+[ "$LSP_PROFILE" = "dev" ] && LSP_DIR="debug"
 INSTALL_DIR="$HOME/.local/bin"
 
 if ! command -v cargo-watch >/dev/null 2>&1; then
@@ -39,13 +42,13 @@ fi
 
 # Build al-lsp with `--features semantic` so the rebuilt binary includes the
 # real .NET CLR host. The whole workspace builds first (fast incremental, but it
-# writes the FEATURE-LESS stub al-lsp to target/$PROFILE_DIR/al-lsp), then
+# writes the FEATURE-LESS stub al-lsp to its target directory), then
 # al-lsp is rebuilt WITH the feature and COPIED into INSTALL_DIR -- otherwise the
 # installed al-lsp ships the stub host and semantic analysis fails with
 # "Bridge not initialized". The copy (not symlink) is what makes the install
 # immune to later feature-less `cargo build` invocations.
 NATIVE_BUILD="build --workspace --exclude zed-al $PROFILE_FLAG"
-SEMANTIC_BUILD="cargo build -p al-lsp --bin al-lsp --features semantic $PROFILE_FLAG && rm -f $INSTALL_DIR/al-lsp && cp -f target/$PROFILE_DIR/al-lsp $INSTALL_DIR/al-lsp"
+SEMANTIC_BUILD="cargo build -p al-lsp --bin al-lsp --features semantic --profile $LSP_PROFILE && rm -f $INSTALL_DIR/al-lsp && cp -f target/$LSP_DIR/al-lsp $INSTALL_DIR/al-lsp"
 WASM_BUILD="cargo build -p zed-al --target wasm32-wasip2 --release"
 # `"${BRIDGE_BUILD_ARGS[@]}"` alone is a fatal "unbound variable" under `set -u`
 # on bash < 4.4 (stock macOS 3.2) when this array is still empty (--bridges
@@ -63,7 +66,7 @@ echo " AL auto-rebuild watcher"
 echo "   native : cargo $NATIVE_BUILD   (al-lsp, al-explorer)"
 echo "   wasm   : $WASM_BUILD"
 [ "$WATCH_BRIDGES" = "1" ] && echo "   bridge : make bridges"
-echo "   al-lsp  : copied to $INSTALL_DIR after each semantic rebuild"
+echo "   al-lsp  : built with profile $LSP_PROFILE, copied to $INSTALL_DIR"
 echo "   In Zed: restart the AL language server (or reopen the .al file)"
 echo "   to load a freshly-built al-lsp."
 echo "   Press Ctrl-C to stop."

@@ -51,6 +51,21 @@ where
     }
 }
 
+/// The file log's timestamp followed by `pid=<id>`. Every al-lsp process on
+/// the machine (editor server, daemons, MCP) appends to the same file, and the
+/// pid is what tells their lines apart.
+struct TimeAndPid;
+
+impl tracing_subscriber::fmt::time::FormatTime for TimeAndPid {
+    fn format_time(
+        &self,
+        writer: &mut tracing_subscriber::fmt::format::Writer<'_>,
+    ) -> std::fmt::Result {
+        tracing_subscriber::fmt::time::SystemTime.format_time(writer)?;
+        write!(writer, " pid={}", std::process::id())
+    }
+}
+
 fn log_dir() -> PathBuf {
     let dir = dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
@@ -251,7 +266,8 @@ async fn run() {
         .with_writer(std::sync::Mutex::new(log_file))
         .with_ansi(false)
         .with_target(true)
-        .with_thread_ids(true);
+        .with_thread_ids(true)
+        .with_timer(TimeAndPid);
 
     // An editor shows stderr as plain text (Zed's "Server Logs"), where color
     // codes print as escape sequences and the level is the only way to tell an
@@ -294,6 +310,21 @@ async fn run() {
     std::panic::set_hook(Box::new(|info| {
         tracing::error!("{info}");
     }));
+
+    // State directories of deleted projects. A few thousand directory reads,
+    // off the startup path.
+    std::thread::spawn(|| {
+        if let Some(report) = al_workspace::prune_project_data_dirs() {
+            if report.removed > 0 || report.unknown > 0 {
+                tracing::info!(
+                    removed = report.removed,
+                    kept = report.kept,
+                    unknown = report.unknown,
+                    "pruned project data directories"
+                );
+            }
+        }
+    });
 
     #[cfg(unix)]
     let ppid_str = std::os::unix::process::parent_id().to_string();
@@ -663,5 +694,19 @@ mod tests {
         );
         assert!(lines[1].starts_with("INFO  "), "{output}");
         assert!(!output.contains('\u{1b}'), "{output}");
+    }
+
+    #[test]
+    fn file_log_time_carries_the_process_id() {
+        let mut line = String::new();
+        tracing_subscriber::fmt::time::FormatTime::format_time(
+            &super::TimeAndPid,
+            &mut tracing_subscriber::fmt::format::Writer::new(&mut line),
+        )
+        .expect("format time");
+        assert!(
+            line.ends_with(&format!(" pid={}", std::process::id())),
+            "{line}"
+        );
     }
 }

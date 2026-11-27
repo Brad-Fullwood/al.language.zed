@@ -21,7 +21,10 @@ pub use semantic_lifecycle::{
 };
 pub use semantic_project::{project_open_documents, semantic_project_context};
 pub use source_cache::{PackageKey, SourceSummaryCache};
-pub use test_results::{project_data_dir, TestResultStore};
+pub use test_results::{
+    project_data_dir, prune_project_data_dirs, prune_project_data_dirs_under, PruneReport,
+    TestResultStore,
+};
 
 use al_project::project::AlProject;
 use al_project::toolchain::AlToolchain;

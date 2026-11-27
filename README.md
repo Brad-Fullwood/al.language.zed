@@ -307,7 +307,8 @@ The Zed extension resolves `al-lsp` in this order:
    `~/.local/share/zed/extensions/work/al`. On macOS it is
    `~/Library/Application Support/Zed/extensions/work/al`. `make install`
    writes to the default path, so set `ZED_WORK_DIR` when `XDG_DATA_HOME` is
-   set. It writes `dev/al-lsp` together with `dev/al-explorer`, `dev/bridge` and `dev/BUILD`, which
+   set. It builds with the optimised `editor` cargo profile (`target/editor`) and
+   writes `dev/al-lsp` together with `dev/al-explorer`, `dev/bridge` and `dev/BUILD`, which
    holds the `al-lsp --version` line of the copy.
 2. The GitHub release tagged with the extension's own version (`v` plus the
    version in `extension.toml`, never the latest release). The extension uses the
@@ -501,7 +502,8 @@ expectation. LSP commands and the **AL Tools** MCP server cover the same operati
 ## Zed Settings
 
 To run a build of your own, run `make install` in the extension repository. It
-copies the build to `dev/` in the extension's work directory. The extension ignores
+builds `al-lsp` and `al-explorer` with the `editor` cargo profile (optimised, no LTO)
+and copies them to `dev/` in the extension's work directory. The extension ignores
 `lsp.al-lsp.binary.path` and `lsp.al-lsp.binary.arguments`.
 
 Common AL settings:
@@ -589,8 +591,8 @@ Common commands:
 
 ```bash
 make build
-make install
-make install-lsp
+make install       # optimised al-lsp and al-explorer for Zed (cargo profile `editor`)
+make install-lsp   # rebuild and copy only al-lsp
 make grammar
 make language
 scripts/check-repo-consistency.sh

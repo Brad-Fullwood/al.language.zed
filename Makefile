@@ -1,7 +1,7 @@
 # Zed AL Extension — Build System
 #
 # Usage:
-#   make install   — build everything, copy al-lsp to the extension's work dir (dev/), verify, print status
+#   make install   — build the optimised al-lsp and al-explorer, the WASM extension and bridges, copy al-lsp to the extension's work dir (dev/), verify, print status
 #   make build     — rebuild everything (all Rust crates + WASM extension + .NET bridges)
 #   make rust      — rebuild all Rust crates (native, excludes zed-al)
 #   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip2)
@@ -21,8 +21,11 @@ SHELL := /bin/bash
 ROOT := $(shell pwd)
 # CARGO_TARGET_DIR moves cargo's output, so the install reads from it too.
 TARGET_DIR := $(if $(CARGO_TARGET_DIR),$(CARGO_TARGET_DIR),$(ROOT)/target)
-LSP_BIN := $(TARGET_DIR)/debug/al-lsp
-EXPLORER_BIN := $(TARGET_DIR)/debug/al-explorer
+# `make install` builds with the `editor` profile (Cargo.toml): optimised,
+# without LTO. `make build` and the tests keep using the debug build.
+INSTALL_PROFILE := editor
+LSP_BIN := $(TARGET_DIR)/$(INSTALL_PROFILE)/al-lsp
+EXPLORER_BIN := $(TARGET_DIR)/$(INSTALL_PROFILE)/al-explorer
 # al-explorer and the `al` alias for the terminal. al-lsp is copied here too
 # for terminal use, but the extension does not look here.
 INSTALL_DIR ?= $(HOME)/.local/bin
@@ -43,7 +46,7 @@ endif
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 WASM_BIN := $(TARGET_DIR)/wasm32-wasip2/release/zed_al.wasm
 
-.PHONY: build install install-lsp install-files install-status dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate plugin-evals clean
+.PHONY: build install install-build install-lsp install-files install-status dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate plugin-evals clean
 
 # Crates that are NOT published to crates.io (publish = false): the root wasm
 # extension plus the binary/harness crates. Everything else under crates/* is a
@@ -56,16 +59,24 @@ build: rust wasm bridges
 	@echo "Build complete. Restart the LSP in Zed to pick up changes."
 
 # ── Install ──────────────────────────────────────────────────────
-# `install` builds everything, copies al-lsp into the extension's managed
-# directory ($(ZED_WORK_DIR)/dev, the one place the extension looks), checks
-# what it copied against `al-lsp --version`, links the dev extension into Zed
-# and prints a status. It is idempotent.
-install: build install-files install-status
+# `install` builds the optimised al-lsp and al-explorer, the WASM extension and
+# the bridges, copies al-lsp into the extension's managed directory
+# ($(ZED_WORK_DIR)/dev, the one place the extension looks), checks what it
+# copied against `al-lsp --version`, links the dev extension into Zed and
+# prints a status. It is idempotent. It does not build the debug workspace:
+# run `make build` for that.
+install: install-build wasm bridges install-files install-status
+
+# The optimised binaries `install` copies.
+install-build:
+	@echo "=== Building al-lsp (semantic) and al-explorer, profile $(INSTALL_PROFILE) ==="
+	cargo build --profile $(INSTALL_PROFILE) -p al-lsp --bin al-lsp --features semantic
+	cargo build --profile $(INSTALL_PROFILE) -p al-explorer --bin al-explorer
 
 # Fast refresh of just the semantic al-lsp: rebuild, copy, verify.
 install-lsp:
 	@echo "=== Rebuild + reinstall semantic al-lsp ==="
-	cargo build -p al-lsp --bin al-lsp --features semantic
+	cargo build --profile $(INSTALL_PROFILE) -p al-lsp --bin al-lsp --features semantic
 	@$(MAKE) --no-print-directory install-files
 	@echo "Restart the AL language server in Zed (or reopen the .al file) to load it."
 
@@ -76,9 +87,9 @@ install-lsp:
 # linked binary with the stub build. The bridge directory goes next to each
 # copy, and al-explorer next to the managed al-lsp, which looks for it there.
 install-files:
-	@test -x "$(LSP_BIN)" || { echo "ERROR: $(LSP_BIN) missing, run 'make rust' first."; exit 1; }
+	@test -x "$(LSP_BIN)" || { echo "ERROR: $(LSP_BIN) missing, run 'make install-build' first."; exit 1; }
 	@mkdir -p "$(INSTALL_DIR)" "$(ZED_WORK_DIR)/dev"
-	@bdir=$$(ls -dt "$(TARGET_DIR)"/debug/build/al-semantic-*/out/bridge 2>/dev/null | head -1); \
+	@bdir=$$(ls -dt "$(TARGET_DIR)"/$(INSTALL_PROFILE)/build/al-semantic-*/out/bridge 2>/dev/null | head -1); \
 	 for dest in "$(INSTALL_DIR)" "$(ZED_WORK_DIR)/dev"; do \
 	   rm -f "$$dest/al-lsp" "$$dest/al-explorer"; \
 	   cp -p "$(LSP_BIN)" "$$dest/al-lsp"; \
