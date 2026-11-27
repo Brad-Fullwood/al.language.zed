@@ -96,7 +96,8 @@ debug = false
 # The build `make install` gives the editor. The debug build ran al-lsp's
 # native analysis 6 to 20 times slower than this one on a 146 file project, so
 # its diagnostics came after the next keystroke and were thrown away. Release
-# optimisation without LTO keeps the build near five minutes.
+# optimisation without LTO keeps the first build of al-lsp and al-explorer
+# near nine minutes at nice 19 with 4 jobs (LTO adds a long link step).
 [profile.editor]
 inherits = "release"
 lto = false
