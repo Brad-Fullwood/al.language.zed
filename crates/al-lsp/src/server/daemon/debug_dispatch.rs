@@ -371,6 +371,7 @@ pub(super) async fn acquire_bc_token(
                     || Ok(Default::default()),
                     |p| {
                         al_symbols::oauth::AuthSettings::for_tenant(
+                            Some(&p.root),
                             &p.server_configs,
                             &config.tenant,
                         )
