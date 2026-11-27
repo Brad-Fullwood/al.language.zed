@@ -755,7 +755,7 @@ fn contains_word_outside_strings(code_lower: &str, word: &str) -> bool {
             b'\'' if !in_quoted_name => in_string = !in_string,
             b'"' if !in_string => in_quoted_name = !in_quoted_name,
             _ if in_string || in_quoted_name => {}
-            _ if code_lower[i..].starts_with(word) => {
+            _ if bytes[i..].starts_with(word.as_bytes()) => {
                 let before_ok = i == 0 || !is_word_byte(bytes[i - 1]);
                 let after = i + word.len();
                 let after_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
@@ -888,6 +888,24 @@ mod tests {
 
     fn fmt(text: &str) -> String {
         format_al(text, &FormatOptions::default())
+    }
+
+    /// `Größe` puts a two byte character on an `if` line. The scan for
+    /// `then` used to slice the line at every byte index and panicked inside
+    /// the `ö`.
+    #[test]
+    fn wrapped_opener_handles_non_ascii_identifier() {
+        let text = "codeunit 50100 T\n{\n    procedure P()\n    var\n        Größe: Integer;\n    begin\n        if Größe > 0 then\n            exit;\n    end;\n}\n";
+        let formatted = fmt(text);
+        assert_eq!(indent_of(&formatted, "if Größe > 0 then"), "        ");
+        assert_eq!(indent_of(&formatted, "exit;"), "            ");
+    }
+
+    #[test]
+    fn wrapped_opener_handles_nbsp() {
+        let text = "codeunit 50100 T\n{\n    procedure P()\n    begin\n        if X >\u{a0}0 then\n            exit;\n    end;\n}\n";
+        let formatted = fmt(text);
+        assert_eq!(indent_of(&formatted, "exit;"), "            ");
     }
 
     /// The leading whitespace of the first line of `formatted` that reads
