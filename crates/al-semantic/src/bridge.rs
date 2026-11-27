@@ -219,6 +219,11 @@ pub enum SemanticError {
     /// large open document can't balloon the bridge's memory footprint.
     #[error("Input document too large ({size} bytes, max {max})")]
     InputTooLarge { size: usize, max: usize },
+
+    /// The analysis target does not end in `.al`. Rejected before the request
+    /// is sent, because the bridge analyzes AL source only.
+    #[error("target is not an AL file in the project: {}", .0.display())]
+    NotAlFile(PathBuf),
 }
 
 /// Maximum size (in bytes) of a caller-supplied unsaved-text buffer accepted by
@@ -241,6 +246,20 @@ fn check_text_size(text: Option<&str>) -> Result<(), SemanticError> {
         }
     }
     Ok(())
+}
+
+/// Reject an analysis target whose extension is not `.al` (any case). The
+/// check reads only the path, so it runs before any request reaches the bridge.
+fn check_al_target(file: &Path) -> Result<(), SemanticError> {
+    let is_al = file
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("al"));
+    if is_al {
+        Ok(())
+    } else {
+        Err(SemanticError::NotAlFile(file.to_path_buf()))
+    }
 }
 
 fn path_as_utf8(path: &Path) -> Result<&str, SemanticError> {
@@ -604,6 +623,7 @@ impl SemanticBridge {
         &self,
         req: AnalyzeRequest,
     ) -> Result<Vec<DiagnosticEntry>, SemanticError> {
+        check_al_target(&req.file)?;
         check_text_size(Some(&req.source))?;
         let params = serde_json::to_value(&req)
             .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
@@ -1348,5 +1368,44 @@ mod tests {
 
         let p = SemanticError::Poisoned;
         assert!(p.to_string().contains("poisoned"), "poisoned display: {p}");
+    }
+
+    #[tokio::test]
+    async fn analyze_rejects_non_al_target() {
+        for name in ["app.json", "Codeunit.txt", "Table.al.bak", "README"] {
+            let err = check_al_target(Path::new(name)).unwrap_err();
+            assert!(matches!(err, SemanticError::NotAlFile(_)), "{name}: {err}");
+            assert!(
+                err.to_string().contains("target is not an AL file"),
+                "{name}: {err}"
+            );
+        }
+        assert!(check_al_target(Path::new("/app/Table.AL")).is_ok());
+
+        // The stub host cannot start, so a request that got past the check
+        // would fail with NotInitialized. Only the stub build can run this.
+        #[cfg(not(feature = "semantic"))]
+        {
+            let bridge = SemanticBridge {
+                host: Arc::new(std::sync::Mutex::new(DotNetHost)),
+                call_gate: global_call_gate(),
+                version: String::new(),
+                generation: 0,
+                last_timeout_secs: std::sync::atomic::AtomicU64::new(0),
+            };
+            let req = AnalyzeRequest {
+                file: PathBuf::from("/app/Codeunit.txt"),
+                source: String::new(),
+                analyzers: Vec::new(),
+                package_cache: PathBuf::new(),
+                project_root: None,
+                open_documents: Vec::new(),
+            };
+            let err = bridge.analyze(req).await.unwrap_err();
+            assert!(
+                matches!(err, SemanticError::NotAlFile(_)),
+                "analyze returned: {err}"
+            );
+        }
     }
 }
