@@ -92,7 +92,9 @@ Event traversal detects cycles and enforces a 10,000-node global bound.
 - **Breaking changes** diffs `(kind, name)` maps of a baseline vs current `SymbolEntry` set, comparing
   public methods, fields, and enum values.
 - **Profiler analysis** parses Chrome profiles, skips synthetic nodes (`(root)`/`(idle)`/GC),
-  reads the inclusive time of each node from `sampleExecutionTimes` (self time is inclusive minus children), The `profiler-hints`
+  and reads node times as the AL extension does. A Sampling profile (`kind` 1) adds `timeDeltas[t]` to the
+  self time of node `samples[t]`. Any other profile reads the inclusive time of each node from
+  `sampleExecutionTimes` (self time is inclusive minus children). The `profiler-hints`
   command maps supplied procedure hotspots to workspace declarations.
 - **Architecture lint** validates `.alarch.json` before running. Naming conventions accept one Rust
   regular expression. Forbidden patterns are case-insensitive literals by default and become Rust
@@ -160,4 +162,4 @@ an MCP allow-list. The TUI surfaces event chains, call-graph/impact, and profile
   project-specific literal or regex-backed rules.
 - Permission over-grant analysis cannot prove dynamic `RecordRef`/`FieldRef` writes, unresolved
   interface dispatch, or writes inside dependency packages without source bodies.
-- Profiler data without `samples` and `sampleExecutionTimes` falls back to the legacy hit-count estimate.
+- Profiler data that is not a Sampling profile and lacks `samples` and `sampleExecutionTimes` falls back to the legacy hit-count estimate.

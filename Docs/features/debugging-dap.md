@@ -191,10 +191,12 @@ shapes with a warning. Live check on CDX pending in the lead's contract run.
   snapshots. A sampling profile (`--kind sampling`, the default, interval 50, 100 or 150 ms) needs
   snapshot API version 3.0 and `stop` saves `<context>.alcpuprofile` from the zip. An instrumentation
   profile (`--kind instrumentation`) returns a snapshot zip that is saved but not converted to an
-  `.alcpuprofile`. `analyze` reads the file (Chrome DevTools format) and takes the time of a node from
-  `sampleExecutionTimes` (inclusive, self is inclusive minus children), with hit counts as a fallback
-  when timing data is absent. The time unit is assumed to be microseconds until a real capture
-  confirms it. See also
+  `.alcpuprofile`. `analyze` reads the file (Chrome DevTools format) as the AL extension does. A Sampling
+  profile (`kind` 1) gives node `samples[t]` the self time `timeDeltas[t]`, and a total of self plus its
+  children. Other profiles take the time of a node from `sampleExecutionTimes` (inclusive, self is
+  inclusive minus children), with hit counts as a fallback when timing data is absent. Times are
+  microseconds, confirmed by a Sampling capture on the CDX Sandbox (9010 bytes, 17 nodes, 4 samples).
+  See also
   [analysis-and-insight](./analysis-and-insight.md) for mapping hotspots to source.
 - **Snapshots (`snapshot/`):** the snapshot debugger zip reader, the session store that remembers a
   started session between commands, and `save_finished_snapshot`. The REST calls (attach, status,

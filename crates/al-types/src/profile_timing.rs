@@ -10,10 +10,17 @@
 //! differences between neighbouring inclusive times (CpuProfileGenerator.cs:
 //! 190-197), so it carries no per node time and is not read here.
 //!
-//! The decompiled code does not show the unit of `ExecutionSpan`. Microseconds
-//! (the Chrome profile convention) are assumed until a real capture confirms it.
-//! The test profiles in this repo are built from the decompiled types, not
-//! captured: replace them with a real CDX capture when one exists.
+//! A Sampling profile (`kind` 1) comes from the server instead, with no
+//! `sampleExecutionTimes`. The AL extension (18.1, `createModelBuilder` and
+//! `SamplingModelBuilder` in dist/extension.js) reads it differently: the self
+//! time of node `samples[t]` gains `timeDeltas[t]`, and a node's total is its
+//! self time plus its children's totals. Any other `kind` uses the
+//! instrumentation reading above. This module does the same.
+//!
+//! Times are microseconds. A Sampling capture on the CDX Sandbox (2026-11-27,
+//! `testdata/cdx-sampling.alcpuprofile`) has `startTime` 63931369939557935,
+//! microseconds since 0001-01-01, and its `timeDeltas` sum to 91.76 s of a
+//! 92.26 s span.
 
 use std::collections::HashMap;
 
@@ -31,12 +38,30 @@ pub struct NodeTime {
 
 /// Times for every node id in `nodes`.
 ///
-/// With `samples` and `sampleExecutionTimes` present, the inclusive time of a
+/// A Sampling profile (`kind` 1) with `samples` and `timeDeltas` gives each
+/// node the deltas of its samples as self time. Otherwise, with `samples` and
+/// `sampleExecutionTimes` present, the inclusive time of a
 /// node is read from `sampleExecutionTimes` and its self time is that minus its
 /// children. Without them (a profile with hit counts only) the self time is
 /// 1 ms per hit and the total is the roll up over the call tree.
 pub fn node_times(profile: &Value, nodes: &[Value]) -> HashMap<u64, NodeTime> {
     let children = children_by_id(nodes);
+    if let Some(self_ms) = sampled_self_by_node(profile, nodes) {
+        let totals = roll_up_totals(&children, nodes, &self_ms);
+        return self_ms
+            .iter()
+            .map(|(id, own)| {
+                let total_ms = totals.get(id).copied().unwrap_or(*own);
+                (
+                    *id,
+                    NodeTime {
+                        self_ms: *own,
+                        total_ms,
+                    },
+                )
+            })
+            .collect();
+    }
     match inclusive_by_node(profile) {
         Some(inclusive_ms) => nodes
             .iter()
@@ -76,6 +101,31 @@ pub fn node_times(profile: &Value, nodes: &[Value]) -> HashMap<u64, NodeTime> {
                 .collect()
         }
     }
+}
+
+/// Self time per node id in ms for a Sampling profile: `timeDeltas[t]` is
+/// added to node `samples[t]`. `None` when `kind` is not 1 or the arrays are
+/// missing. A length mismatch uses the common prefix.
+fn sampled_self_by_node(profile: &Value, nodes: &[Value]) -> Option<HashMap<u64, f64>> {
+    if profile.get("kind").and_then(Value::as_u64) != Some(1) {
+        return None;
+    }
+    let samples = profile.get("samples")?.as_array()?;
+    let deltas = profile.get("timeDeltas")?.as_array()?;
+    let mut by_node: HashMap<u64, f64> = nodes
+        .iter()
+        .filter_map(|node| node.get("id").and_then(Value::as_u64))
+        .map(|id| (id, 0.0))
+        .collect();
+    for (sample, delta) in samples.iter().zip(deltas) {
+        let (Some(id), Some(us)) = (sample.as_u64(), delta.as_f64()) else {
+            continue;
+        };
+        if let Some(own) = by_node.get_mut(&id) {
+            *own += us / 1000.0;
+        }
+    }
+    Some(by_node)
 }
 
 /// Inclusive time per node id in ms, or `None` when the profile lacks
@@ -177,6 +227,39 @@ fn roll_up_totals(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The Sampling capture from the CDX Sandbox. IdleTime (node 10) holds the
+    /// 90.9 s delta, the SQL chain (16 -> 17) the 5.4 ms one, and node 1 rolls
+    /// up the GetSecretFromClient chain, which got a zero delta.
+    #[test]
+    fn sampling_capture_takes_time_from_time_deltas_like_the_al_extension() {
+        let profile: Value =
+            serde_json::from_str(include_str!("testdata/cdx-sampling.alcpuprofile")).unwrap();
+        let nodes = nodes_of(&profile);
+        let times = node_times(&profile, &nodes);
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+        assert!(close(times[&10].self_ms, 90_911.784), "{:?}", times[&10]);
+        assert!(close(times[&15].self_ms, 843.941), "{:?}", times[&15]);
+        assert!(close(times[&17].self_ms, 5.362));
+        assert!(close(times[&16].self_ms, 0.0));
+        assert!(close(times[&16].total_ms, 5.362));
+        assert!(close(times[&9].self_ms, 0.0));
+        // Node 2 calls the GetSecretFromClient chain and the SQL chain.
+        assert!(close(times[&2].total_ms, 5.362));
+        let sum: f64 = times.values().map(|t| t.self_ms).sum();
+        assert!(close(sum, 91_761.087), "{sum}");
+    }
+
+    #[test]
+    fn a_profile_without_kind_1_keeps_the_instrumentation_reading() {
+        let mut profile: Value =
+            serde_json::from_str(include_str!("testdata/cdx-sampling.alcpuprofile")).unwrap();
+        profile["kind"] = serde_json::json!(0);
+        let nodes = nodes_of(&profile);
+        let times = node_times(&profile, &nodes);
+        // No sampleExecutionTimes: the 1 ms per hit fallback.
+        assert!((times[&10].self_ms - 826.0).abs() < 1e-9);
+    }
 
     fn node(id: u64, children: &[u64], hits: u64) -> Value {
         json!({ "id": id, "hitCount": hits, "children": children })

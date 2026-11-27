@@ -1,0 +1,453 @@
+{
+ "nodes": [
+  {
+   "id": 1,
+   "callFrame": {
+    "functionName": "GetCopilotCapabilityInfo",
+    "scriptId": "CodeUnit_2000000006",
+    "url": "al-preview://allang/Codeunit/2000000006/Codeunit_2000000006.dal",
+    "lineNumber": 437,
+    "columnNumber": 7
+   },
+   "hitCount": 1,
+   "children": [
+    2
+   ],
+   "declaringApplication": {
+    "appName": "System",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.0.58354.0",
+    "appId": "8874ed3a064342479ced7a7002f7135d"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "System Action Triggers",
+    "objectId": 2000000006
+   },
+   "frameIdentifier": 1575496836
+  },
+  {
+   "id": 2,
+   "callFrame": {
+    "functionName": "GetCopilotCapabilityInfo",
+    "scriptId": "CodeUnit_7774",
+    "url": "al-preview://allang/Codeunit/7774/Codeunit_7774.dal",
+    "lineNumber": 543,
+    "columnNumber": 8
+   },
+   "hitCount": 1,
+   "children": [
+    3,
+    16
+   ],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Copilot Capability Impl",
+    "objectId": 7774
+   },
+   "frameIdentifier": 451810027
+  },
+  {
+   "id": 3,
+   "callFrame": {
+    "functionName": "IsEnabled",
+    "scriptId": "CodeUnit_7771",
+    "url": "al-preview://allang/Codeunit/7771/Codeunit_7771.dal",
+    "lineNumber": 56,
+    "columnNumber": 11
+   },
+   "hitCount": 1,
+   "children": [
+    4
+   ],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Azure OpenAI",
+    "objectId": 7771
+   },
+   "frameIdentifier": 2025037512
+  },
+  {
+   "id": 4,
+   "callFrame": {
+    "functionName": "IsEnabled",
+    "scriptId": "CodeUnit_7772",
+    "url": "al-preview://allang/Codeunit/7772/Codeunit_7772.dal",
+    "lineNumber": 72,
+    "columnNumber": 8
+   },
+   "hitCount": 1,
+   "children": [
+    5
+   ],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Azure OpenAI Impl",
+    "objectId": 7772
+   },
+   "frameIdentifier": -1893427386
+  },
+  {
+   "id": 5,
+   "callFrame": {
+    "functionName": "IsCapabilityEnabled",
+    "scriptId": "CodeUnit_7774",
+    "url": "al-preview://allang/Codeunit/7774/Codeunit_7774.dal",
+    "lineNumber": 292,
+    "columnNumber": 11
+   },
+   "hitCount": 1,
+   "children": [
+    6
+   ],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Copilot Capability Impl",
+    "objectId": 7774
+   },
+   "frameIdentifier": 1941221448
+  },
+  {
+   "id": 6,
+   "callFrame": {
+    "functionName": "IsTenantAllowedToUseAOAI",
+    "scriptId": "CodeUnit_7774",
+    "url": "al-preview://allang/Codeunit/7774/Codeunit_7774.dal",
+    "lineNumber": 321,
+    "columnNumber": 11
+   },
+   "hitCount": 1,
+   "children": [
+    7
+   ],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Copilot Capability Impl",
+    "objectId": 7774
+   },
+   "frameIdentifier": -364283348
+  },
+  {
+   "id": 7,
+   "callFrame": {
+    "functionName": "GetAzureKeyVaultSecret",
+    "scriptId": "CodeUnit_2200",
+    "url": "al-preview://allang/Codeunit/2200/Codeunit_2200.dal",
+    "lineNumber": 33,
+    "columnNumber": 8
+   },
+   "hitCount": 1,
+   "children": [
+    8
+   ],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Azure Key Vault",
+    "objectId": 2200
+   },
+   "frameIdentifier": 863608949
+  },
+  {
+   "id": 8,
+   "callFrame": {
+    "functionName": "GetAzureKeyVaultSecret",
+    "scriptId": "CodeUnit_2202",
+    "url": "al-preview://allang/Codeunit/2202/Codeunit_2202.dal",
+    "lineNumber": 38,
+    "columnNumber": 8
+   },
+   "hitCount": 1,
+   "children": [
+    9
+   ],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Azure Key Vault Impl.",
+    "objectId": 2202
+   },
+   "frameIdentifier": -1565741022
+  },
+  {
+   "id": 9,
+   "callFrame": {
+    "functionName": "GetSecretFromClient",
+    "scriptId": "CodeUnit_2202",
+    "url": "al-preview://allang/Codeunit/2202/Codeunit_2202.dal",
+    "lineNumber": 91,
+    "columnNumber": 11
+   },
+   "hitCount": 1,
+   "children": [],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Azure Key Vault Impl.",
+    "objectId": 2202
+   },
+   "frameIdentifier": -129784782
+  },
+  {
+   "id": 10,
+   "callFrame": {
+    "functionName": "IdleTime",
+    "scriptId": "TableData_0",
+    "url": "al-preview://allang/Undefined"
+   },
+   "hitCount": 826,
+   "children": [],
+   "applicationDefinition": {
+    "objectName": "",
+    "objectId": -1
+   }
+  },
+  {
+   "id": 11,
+   "callFrame": {
+    "functionName": "GetUserToken",
+    "scriptId": "CodeUnit_2000000006",
+    "url": "al-preview://allang/Codeunit/2000000006/Codeunit_2000000006.dal",
+    "lineNumber": 306,
+    "columnNumber": 7
+   },
+   "hitCount": 1,
+   "children": [
+    12
+   ],
+   "declaringApplication": {
+    "appName": "System",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.0.58354.0",
+    "appId": "8874ed3a064342479ced7a7002f7135d"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "System Action Triggers",
+    "objectId": 2000000006
+   },
+   "frameIdentifier": 1575498659
+  },
+  {
+   "id": 12,
+   "callFrame": {
+    "functionName": "OnGetUserToken",
+    "scriptId": "CodeUnit_6300",
+    "url": "al-preview://allang/Codeunit/6300/Codeunit_6300.dal",
+    "lineNumber": 261,
+    "columnNumber": 8
+   },
+   "hitCount": 1,
+   "children": [
+    13
+   ],
+   "declaringApplication": {
+    "appName": "Base Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "437dbf0e84ff417a965ded2bb9650972"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Azure AD Mgt.",
+    "objectId": 6300
+   },
+   "frameIdentifier": 451782066
+  },
+  {
+   "id": 13,
+   "callFrame": {
+    "functionName": "GetAccessTokenAsSecretText",
+    "scriptId": "CodeUnit_6300",
+    "url": "al-preview://allang/Codeunit/6300/Codeunit_6300.dal",
+    "lineNumber": 63,
+    "columnNumber": 11
+   },
+   "hitCount": 1,
+   "children": [
+    14
+   ],
+   "declaringApplication": {
+    "appName": "Base Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "437dbf0e84ff417a965ded2bb9650972"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Azure AD Mgt.",
+    "objectId": 6300
+   },
+   "frameIdentifier": 2023849971
+  },
+  {
+   "id": 14,
+   "callFrame": {
+    "functionName": "AcquireToken",
+    "scriptId": "CodeUnit_6300",
+    "url": "al-preview://allang/Codeunit/6300/Codeunit_6300.dal",
+    "lineNumber": 283,
+    "columnNumber": 8
+   },
+   "hitCount": 1,
+   "children": [
+    15
+   ],
+   "declaringApplication": {
+    "appName": "Base Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "437dbf0e84ff417a965ded2bb9650972"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Azure AD Mgt.",
+    "objectId": 6300
+   },
+   "frameIdentifier": -1932364288
+  },
+  {
+   "id": 15,
+   "callFrame": {
+    "functionName": "AcquireTokenFromCacheAsSecretText",
+    "scriptId": "CodeUnit_6303",
+    "url": "al-preview://allang/Codeunit/6303/Codeunit_6303.dal",
+    "lineNumber": 89,
+    "columnNumber": 8
+   },
+   "hitCount": 7,
+   "children": [],
+   "declaringApplication": {
+    "appName": "Base Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "437dbf0e84ff417a965ded2bb9650972"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Azure AD Auth Flow",
+    "objectId": 6303
+   },
+   "frameIdentifier": 656544498
+  },
+  {
+   "id": 16,
+   "callFrame": {
+    "functionName": "SQL",
+    "scriptId": "CodeUnit_7774",
+    "url": "al-preview://allang/Codeunit/7774/Codeunit_7774.dal",
+    "lineNumber": 543,
+    "columnNumber": 8
+   },
+   "hitCount": 1,
+   "children": [
+    17
+   ],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Copilot Capability Impl",
+    "objectId": 7774
+   },
+   "frameIdentifier": -1106737998,
+   "isSynthetic": true
+  },
+  {
+   "id": 17,
+   "callFrame": {
+    "functionName": "SELECT \"Capability\",\"App Id\",\"Availability\",\"Publisher\",\"Status\",\"Learn More Url\",\"Service Type\",\"Billing Type\" FROM dbo.\"Copilot Settings\" WITH(READCOMMITTED) WHERE (\"Capability\"=@0 AND \"App Id\"=@1) OPTION(OPTIMIZE FOR UNKNOWN)",
+    "scriptId": "CodeUnit_7774",
+    "url": "al-preview://allang/Codeunit/7774/Codeunit_7774.dal",
+    "lineNumber": 543,
+    "columnNumber": 8
+   },
+   "hitCount": 6,
+   "children": [],
+   "declaringApplication": {
+    "appName": "System Application",
+    "appPublisher": "Microsoft",
+    "appVersion": "29.1.57326.58215",
+    "appId": "63ca2fa44f034f2ba480172fef340d3f"
+   },
+   "applicationDefinition": {
+    "objectType": "CodeUnit",
+    "objectName": "Copilot Capability Impl",
+    "objectId": 7774
+   },
+   "frameIdentifier": 110402999,
+   "isSynthetic": true
+  }
+ ],
+ "startTime": 63931369939557935,
+ "endTime": 63931370031817058,
+ "samples": [
+  9,
+  10,
+  15,
+  17
+ ],
+ "timeDeltas": [
+  0,
+  90911784,
+  843941,
+  5362
+ ],
+ "kind": 1,
+ "aadTenantID": "00000000-0000-0000-0000-000000000000",
+ "environmentName": "Sandbox",
+ "serverSessionId": "0",
+ "startTimeUtc": "2026-11-27T09:52:19.5579355Z",
+ "endTimeUtc": "2026-11-27T09:53:51.8170588Z",
+ "activityDescription": "redacted",
+ "firstTraceId": "00000000-0000-0000-0000-000000000000"
+}
