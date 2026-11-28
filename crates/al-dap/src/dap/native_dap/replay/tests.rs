@@ -1148,3 +1148,19 @@ fn stack_frames_and_snappoints_use_the_chosen_file() {
         ]
     );
 }
+
+#[test]
+fn same_stem_different_zips_use_different_folders() {
+    let first = sources::folder_name(Path::new("/a/snap.zip"), b"first zip");
+    let second = sources::folder_name(Path::new("/b/snap.zip"), b"second zip");
+    assert_ne!(first, second);
+    assert!(first.starts_with("snap-"), "{first}");
+}
+
+#[test]
+fn same_zip_reuses_its_folder() {
+    let once = sources::folder_name(Path::new("/a/snap.zip"), b"zip bytes");
+    let again = sources::folder_name(Path::new("/a/snap.zip"), b"zip bytes");
+    assert_eq!(once, again);
+    assert_eq!(once.len(), "snap-".len() + 16, "{once}");
+}
