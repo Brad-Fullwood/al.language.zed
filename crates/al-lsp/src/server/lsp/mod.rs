@@ -304,6 +304,11 @@ pub struct AlServer {
     /// Whether the client shows `$/progress` work-done progress
     /// (`window.workDoneProgress`).
     pub(crate) work_done_progress: AtomicBool,
+    /// Whether the client applies `documentChanges` in a `WorkspaceEdit`
+    /// (`workspace.workspaceEdit.documentChanges`). When set, edits carry the
+    /// buffer version they were computed on, so the client refuses an edit
+    /// made for an older buffer.
+    pub(crate) versioned_edits: AtomicBool,
     /// URIs that received non-empty project-scope diagnostics in the previous
     /// complete publication. The next generation clears only entries that
     /// became clean instead of sending empty arrays for every indexed file.
@@ -374,6 +379,7 @@ impl AlServer {
             watched_files_registration: AtomicBool::new(false),
             document_symbol_hierarchical: AtomicBool::new(false),
             work_done_progress: AtomicBool::new(false),
+            versioned_edits: AtomicBool::new(false),
             workspace_diagnostic_uris: Arc::new(Mutex::new(std::collections::HashSet::new())),
             semantic_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
             transaction_diagnostic_cache: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -1075,6 +1081,15 @@ impl LanguageServer for AlLsp {
             .unwrap_or(false);
         self.work_done_progress
             .store(work_done_progress, Ordering::Relaxed);
+        let versioned_edits = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.workspace_edit.as_ref())
+            .and_then(|edit| edit.document_changes)
+            .unwrap_or(false);
+        self.versioned_edits
+            .store(versioned_edits, Ordering::Relaxed);
 
         if let Some(init_opts) = params.initialization_options {
             let al_settings = extract_al_settings(init_opts);

@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tower_lsp::lsp_types::{
     Diagnostic, DiagnosticSeverity, FormattingOptions, Location, MessageType, NumberOrString,
-    Position, Range, Url, WorkspaceEdit,
+    Position, Range, Url,
 };
 
 use super::lsp::AlServer;
@@ -65,6 +65,8 @@ pub(super) async fn format_file(server: &AlServer, arguments: &[serde_json::Valu
             return;
         }
     };
+    // Read before the formatter reads the text, see `object_actions`.
+    let version = server.workspace.documents.get_client_version(&uri);
     let Some(edits) = formatting::handle_formatting(
         server,
         &uri,
@@ -76,14 +78,12 @@ pub(super) async fn format_file(server: &AlServer, arguments: &[serde_json::Valu
     ) else {
         return;
     };
-    let mut changes = std::collections::HashMap::new();
-    changes.insert(uri.clone(), edits);
     match server
         .client
-        .apply_edit(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        })
+        .apply_edit(super::handlers::versioned_workspace_edit(
+            server,
+            vec![(uri.clone(), edits, version)],
+        ))
         .await
     {
         Ok(resp) if resp.applied => {}

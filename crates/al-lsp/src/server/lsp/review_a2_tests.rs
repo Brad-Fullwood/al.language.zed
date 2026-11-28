@@ -181,3 +181,52 @@ async fn save_removes_the_pending_debounced_pass() {
     assert!(!server.diag_tasks.lock().await.contains_key(&uri));
     assert!(abort.is_finished());
 }
+
+/// A2-codex-05: with `documentChanges` declared, Sort Members carries the
+/// buffer version it was computed on. Without it, the edit stays in `changes`.
+#[tokio::test]
+async fn sort_members_edit_carries_the_buffer_version() {
+    let (service, _socket) = LspService::new(AlLsp::new);
+    let server = service.inner();
+    let uri = Url::parse("file:///tmp/review_a2_sort/Sort.al").unwrap();
+    let source = "codeunit 50100 \"Sort\"\n{\n    procedure Zebra()\n    begin\n    end;\n\n    procedure Apple()\n    begin\n    end;\n}\n";
+    server
+        .workspace
+        .documents
+        .open_with_client_version(uri.clone(), source.to_string(), 7)
+        .unwrap();
+    let sort_edit = |server: &AlServer| {
+        crate::server::handlers::handle_code_action(
+            server,
+            &uri,
+            Range::new(Position::new(0, 0), Position::new(0, 0)),
+            &[],
+            None,
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .find_map(|action| match action {
+            CodeActionOrCommand::CodeAction(action) if action.title == "AL: Sort Members" => {
+                action.edit
+            }
+            _ => None,
+        })
+        .expect("Sort Members is offered")
+    };
+
+    let unversioned = sort_edit(server);
+    assert!(unversioned.document_changes.is_none());
+    assert!(unversioned
+        .changes
+        .is_some_and(|changes| changes.contains_key(&uri)));
+
+    server.versioned_edits.store(true, Ordering::Relaxed);
+    let versioned = sort_edit(server);
+    assert!(versioned.changes.is_none());
+    let Some(DocumentChanges::Edits(edits)) = versioned.document_changes else {
+        panic!("documentChanges holds text document edits");
+    };
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].text_document.uri, uri);
+    assert_eq!(edits[0].text_document.version, Some(7));
+}

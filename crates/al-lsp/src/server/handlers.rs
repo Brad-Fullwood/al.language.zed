@@ -85,7 +85,11 @@ pub(crate) fn handle_code_action(
     diagnostics: &[Diagnostic],
     only: Option<&Vec<CodeActionKind>>,
 ) -> Option<Vec<CodeActionOrCommand>> {
-    let text = server.workspace.documents.get_text(uri)?;
+    let (text, version) = server
+        .workspace
+        .documents
+        .get_text_and_client_version(uri)?;
+    let version = Some(version);
     let mut actions = Vec::new();
 
     let quickfix_requested = kind_requested(only, &CodeActionKind::QUICKFIX);
@@ -107,7 +111,7 @@ pub(crate) fn handle_code_action(
             &text,
             &diag_info,
         ) {
-            actions.push(core_action_to_lsp(entry, Some(diag)));
+            actions.push(core_action_to_lsp(server, entry, Some(diag), uri, version));
         }
         // AL0185 (and similar "Type … not found") namespace
         // quick-fix lives in `namespace_quick_fix_for_diagnostic` but
@@ -120,7 +124,7 @@ pub(crate) fn handle_code_action(
             &text,
             &diag_info,
         ) {
-            actions.push(core_action_to_lsp(entry, Some(diag)));
+            actions.push(core_action_to_lsp(server, entry, Some(diag), uri, version));
         }
     }
 
@@ -140,7 +144,7 @@ pub(crate) fn handle_code_action(
         if !kind_requested(only, &kind) {
             continue;
         }
-        actions.push(core_action_to_lsp(entry, None));
+        actions.push(core_action_to_lsp(server, entry, None, uri, version));
     }
 
     if source_requested {
@@ -233,6 +237,9 @@ pub(crate) fn object_declared_on_line(
 /// metrics. These were global editor tasks, which ran on whatever symbol the
 /// cursor happened to be on.
 fn object_actions(server: &AlServer, uri: &Url, line: u32) -> Vec<CodeActionOrCommand> {
+    // Read before the text: a buffer that changes in between makes the
+    // version older than the text, and the client then refuses the edit.
+    let version = server.workspace.documents.get_client_version(uri);
     let Some((text, tree)) = al_source::parsing::get_or_parse(&server.workspace.documents, uri)
     else {
         return Vec::new();
@@ -251,10 +258,10 @@ fn object_actions(server: &AlServer, uri: &Url, line: u32) -> Vec<CodeActionOrCo
         actions.push(CodeActionOrCommand::CodeAction(CodeAction {
             title: "AL: Sort Members".to_string(),
             kind: Some(CodeActionKind::REFACTOR_REWRITE),
-            edit: Some(WorkspaceEdit {
-                changes: Some(std::collections::HashMap::from([(uri.clone(), vec![edit])])),
-                ..Default::default()
-            }),
+            edit: Some(versioned_workspace_edit(
+                server,
+                vec![(uri.clone(), vec![edit], version)],
+            )),
             ..Default::default()
         }));
     }
@@ -335,35 +342,91 @@ fn document_needs_formatting(server: &AlServer, uri: &Url) -> bool {
     })
 }
 
-/// Convert an `al-analysis` transport-agnostic `WorkspaceEdit` to a tower-lsp `WorkspaceEdit`.
-pub(crate) fn core_workspace_edit_to_lsp(we: al_analysis::queries::WorkspaceEdit) -> WorkspaceEdit {
-    let mut changes = std::collections::HashMap::new();
-    for (uri, edits) in we.changes {
-        let lsp_edits: Vec<TextEdit> = edits
+/// A `WorkspaceEdit` for `changes`, each entry a document, its edits and the
+/// client version of the buffer the edits were computed on.
+///
+/// When the client applies `documentChanges`, the edits go there with their
+/// versions, so the client refuses an edit made for an older buffer. A
+/// document the client has not opened has no version. Otherwise the edits go
+/// in the unversioned `changes` map.
+pub(crate) fn versioned_workspace_edit(
+    server: &AlServer,
+    changes: Vec<(Url, Vec<TextEdit>, Option<i32>)>,
+) -> WorkspaceEdit {
+    if server
+        .versioned_edits
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        let edits = changes
             .into_iter()
-            .map(|e| TextEdit {
-                range: e.range.into(),
-                new_text: e.new_text,
+            .map(|(uri, edits, version)| TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier { uri, version },
+                edits: edits.into_iter().map(OneOf::Left).collect(),
             })
             .collect();
-        changes.insert(uri, lsp_edits);
-    }
-    WorkspaceEdit {
-        changes: Some(changes),
-        ..Default::default()
+        WorkspaceEdit {
+            document_changes: Some(DocumentChanges::Edits(edits)),
+            ..Default::default()
+        }
+    } else {
+        WorkspaceEdit {
+            changes: Some(
+                changes
+                    .into_iter()
+                    .map(|(uri, edits, _)| (uri, edits))
+                    .collect(),
+            ),
+            ..Default::default()
+        }
     }
 }
 
+/// Convert an `al-analysis` transport-agnostic `WorkspaceEdit` to a tower-lsp
+/// `WorkspaceEdit`.
+///
+/// `known` is the document the caller read and the version it read with the
+/// text. Other documents take the version the client has now.
+pub(crate) fn core_workspace_edit_to_lsp(
+    server: &AlServer,
+    we: al_analysis::queries::WorkspaceEdit,
+    known: Option<(&Url, Option<i32>)>,
+) -> WorkspaceEdit {
+    let changes = we
+        .changes
+        .into_iter()
+        .map(|(uri, edits)| {
+            let version = match known {
+                Some((known_uri, version)) if *known_uri == uri => version,
+                _ => server.workspace.documents.get_client_version(&uri),
+            };
+            let lsp_edits: Vec<TextEdit> = edits
+                .into_iter()
+                .map(|e| TextEdit {
+                    range: e.range.into(),
+                    new_text: e.new_text,
+                })
+                .collect();
+            (uri, lsp_edits, version)
+        })
+        .collect();
+    versioned_workspace_edit(server, changes)
+}
+
 fn core_action_to_lsp(
+    server: &AlServer,
     entry: al_analysis::queries::code_actions::CodeActionEntry,
     diag: Option<&Diagnostic>,
+    uri: &Url,
+    version: Option<i32>,
 ) -> CodeActionOrCommand {
     let kind = match entry.kind {
         al_analysis::queries::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
         al_analysis::queries::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
         al_analysis::queries::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
     };
-    let edit = entry.edit.map(core_workspace_edit_to_lsp);
+    let edit = entry
+        .edit
+        .map(|edit| core_workspace_edit_to_lsp(server, edit, Some((uri, version))));
     CodeActionOrCommand::CodeAction(CodeAction {
         title: entry.title,
         kind: Some(kind),
