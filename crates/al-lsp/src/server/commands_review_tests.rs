@@ -6,11 +6,10 @@ use super::*;
 /// with no launch configuration in the project.
 #[tokio::test]
 async fn run_test_runs_a_local_test_without_a_launch_configuration() {
-    let (service, mut socket) = tower_lsp::LspService::new(crate::server::AlLsp::new);
-    tokio::spawn(async move {
-        use futures::StreamExt;
-        while socket.next().await.is_some() {}
-    });
+    // The client socket is dropped, so a request to the editor fails at once.
+    // A socket that is read and never answered leaves the first-run settings
+    // prompt of `initialize_workspace` waiting on a machine with a new home folder.
+    let (service, _) = tower_lsp::LspService::new(crate::server::AlLsp::new);
     let server = service.inner();
     let root = tempfile::tempdir().unwrap();
     std::fs::write(
