@@ -340,3 +340,60 @@ jobs:
 
       - name: Check glibc floor
         run: ./scripts/check-glibc-floor.sh 2.31 target/x86_64-unknown-linux-gnu/release/al-lsp target/x86_64-unknown-linux-gnu/release/al-explorer
+
+  semantic-other-os:
+    # Builds what release.yml build-binaries builds with the semantic feature,
+    # so a macOS or Windows failure shows on dev before a tag. The archive
+    # packaging steps stay in release.yml only.
+    name: Semantic build (${{ matrix.os }})
+    if: github.event_name == 'push'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40 # the Windows release leg took 7.8 min. 40 matches windows-native, which builds less and took 12.0 min
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
+        with:
+          toolchain: stable
+
+      # al-semantic's build script shells out to `dotnet build` for AlBridge.dll.
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: semantic-other-os-${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            semantic-other-os-${{ matrix.os }}-cargo-
+
+      - name: Build al-lsp with the semantic bridge (release)
+        run: cargo build -p al-lsp --bin al-lsp --release --features semantic --locked
+
+      # Same check release.yml runs before it packages the archive. It fails
+      # when the bridge DLL is missing, so a build without semantic analysis
+      # cannot pass here.
+      - name: Check the semantic bridge was built
+        shell: bash
+        run: |
+          BRIDGE_SRC="$(find target/release/build -type d -path '*/al-semantic-*/out/bridge' | head -n1)"
+          if [ -z "$BRIDGE_SRC" ] || [ ! -f "$BRIDGE_SRC/AlBridge.dll" ]; then
+            echo "::error::semantic bridge (AlBridge.dll) not found under target/release/build"
+            exit 1
+          fi
