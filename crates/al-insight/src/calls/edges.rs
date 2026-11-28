@@ -135,17 +135,17 @@ fn populate_call_edges_from_nodes(
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ProcedureCalls {
     /// The calls the body makes, in the order the walk finds them.
-    pub call_sites: Vec<CallSite>,
+    pub call_sites: Box<[CallSite]>,
     /// Lowercase variable or parameter name to table, for `Record` types.
-    pub record_vars: std::collections::BTreeMap<String, String>,
+    pub record_vars: SortedMap<String, String>,
     /// Lowercase variable or parameter name to object, for codeunit, page,
     /// report, xmlport, query and interface types.
-    pub object_vars: std::collections::BTreeMap<String, String>,
+    pub object_vars: SortedMap<String, String>,
     /// Lowercase variable or parameter name to the declared kind of its
     /// object, for the entries of `object_vars`. A codeunit variable
     /// `Sales` calls the codeunit `Sales`, not a page of the same name.
     #[serde(default)]
-    pub object_var_kinds: std::collections::BTreeMap<String, ObjectKind>,
+    pub object_var_kinds: SortedMap<String, ObjectKind>,
 }
 
 impl ProcedureCalls {
@@ -157,10 +157,10 @@ impl ProcedureCalls {
             declared_object_kinds(body, source.as_bytes(), &mut object_var_kinds);
         }
         Self {
-            call_sites: head_call_sites(object_node, source),
+            call_sites: head_call_sites(object_node, source).into_boxed_slice(),
             record_vars: record_vars.into_iter().collect(),
             object_vars: object_vars.into_iter().collect(),
-            object_var_kinds,
+            object_var_kinds: object_var_kinds.into_iter().collect(),
         }
     }
 
@@ -185,10 +185,10 @@ impl ProcedureCalls {
         // the variable name happened to equal a real object name.
         object_vars.extend(procedure_object_var_types_in_node(proc_node, source));
         Self {
-            call_sites: call_sites_in_node(proc_node, source),
+            call_sites: call_sites_in_node(proc_node, source).into_boxed_slice(),
             record_vars: record_vars.into_iter().collect(),
             object_vars: object_vars.into_iter().collect(),
-            object_var_kinds,
+            object_var_kinds: object_var_kinds.into_iter().collect(),
         }
     }
 }

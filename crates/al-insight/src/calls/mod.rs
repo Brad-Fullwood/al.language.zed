@@ -187,6 +187,7 @@ mod edges;
 mod effects;
 mod nodes;
 mod object_symbols;
+mod sorted_map;
 mod summary;
 #[cfg(test)]
 mod summary_tests;
@@ -199,5 +200,6 @@ pub use edges::*;
 pub use effects::*;
 pub use nodes::*;
 use object_symbols::*;
+pub use sorted_map::SortedMap;
 pub use summary::*;
 pub use var_types::*;
