@@ -1483,6 +1483,174 @@ mod tests {
 }
 "#;
 
+    /// The FlowField steps of the Business Central 29 run on the CDX demo
+    /// tenant on 2026-11-28 (review-loop round-02/checks-A5.md, "D3"), with
+    /// `OpenLines` for `Balance` and 2 lines for head A in place of 7. Each
+    /// procedure returns the value after each step, separated by spaces.
+    const FLOW_ASSIGN_TESTS: &str = r#"codeunit 50114 "Flow Assign Tests"
+{
+    procedure HeadA(): Text
+    var
+        H: Record Hdr;
+        L: Record Line;
+        T: Text;
+    begin
+        L.DocNo := 'A';
+        L.LineNo := 1;
+        L.Insert();
+        L.LineNo := 2;
+        L.Insert();
+        H.Init();
+        H.No := 'B';
+        H.Insert();
+        H.Init();
+        H.No := 'A';
+        H.OpenLines := 100;
+        T := Format(H.OpenLines);
+        H.Insert();
+        T += ' ' + Format(H.OpenLines);
+        H.Get('A');
+        T += ' ' + Format(H.OpenLines);
+        H.CalcFields(OpenLines);
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify();
+        T += ' ' + Format(H.OpenLines);
+        H.FindFirst();
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        T += ' ' + Format(H.OpenLines);
+        if H.Next() <> 1 then
+            exit('no next');
+        T += ' ' + H.No + Format(H.OpenLines);
+        if H.Next(-1) <> -1 then
+            exit('no previous');
+        T += ' ' + H.No + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Init();
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
+    procedure HeadC(): Text
+    var
+        H: Record Hdr;
+        T: Text;
+    begin
+        H.Init();
+        H.No := 'C';
+        H.OpenLines := 100;
+        H.Insert();
+        T := Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify();
+        T += ' ' + Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.CalcFields(OpenLines);
+        T += ' ' + Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 55;
+        H.Modify();
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
+    procedure ValidateReadsBack(): Integer
+    var
+        H: Record Hdr;
+    begin
+        H.Init();
+        H.No := 'A';
+        H.Validate(OpenLines, 5);
+        exit(H.OpenLines);
+    end;
+
+    local procedure SetupA(var H: Record Hdr)
+    var
+        L: Record Line;
+    begin
+        L.DocNo := 'A';
+        L.LineNo := 1;
+        L.Insert();
+        L.LineNo := 2;
+        L.Insert();
+        H.Init();
+        H.No := 'A';
+        H.Insert();
+    end;
+
+    procedure TestFieldAfterAssign()
+    var
+        H: Record Hdr;
+    begin
+        SetupA(H);
+        H.OpenLines := 100;
+        H.TestField(OpenLines, 100);
+    end;
+
+    procedure TestFieldAssignedAfterCalcFields()
+    var
+        H: Record Hdr;
+    begin
+        SetupA(H);
+        H.OpenLines := 100;
+        H.CalcFields(OpenLines);
+        H.TestField(OpenLines, 100);
+    end;
+
+    procedure TestFieldCalculatedAfterCalcFields()
+    var
+        H: Record Hdr;
+    begin
+        SetupA(H);
+        H.OpenLines := 100;
+        H.CalcFields(OpenLines);
+        H.TestField(OpenLines, 2);
+    end;
+}
+"#;
+
+    #[test]
+    fn assigned_flowfield_reads_back_until_the_next_read() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowAssignTests.al", FLOW_ASSIGN_TESTS),
+        ];
+        let run = |proc: &str| run_sources(&sources, "Flow Assign Tests", proc);
+        // Steps 01 to 10 of the checks table, normal record.
+        assert_eq!(
+            ok(run("HeadA")),
+            Value::Text("100 100 0 2 100 0 100 B0 A0 0".to_string())
+        );
+        // Steps 20 to 26, normal record. Head C has no lines.
+        assert_eq!(
+            ok(run("HeadC")),
+            Value::Text("100 0 100 0 0 0 0".to_string())
+        );
+        assert_eq!(ok(run("ValidateReadsBack")), Value::Integer(5));
+        // Steps 11 to 13.
+        assert!(matches!(run("TestFieldAfterAssign"), Eval::Normal(_)));
+        match run("TestFieldAssignedAfterCalcFields") {
+            Eval::Error(error) => assert!(
+                error.message.contains("must be equal to '100'")
+                    && error.message.contains("Current value is '2'"),
+                "unexpected message: {}",
+                error.message
+            ),
+            other => panic!("expected a TestField error, got {other:?}"),
+        }
+        assert!(matches!(
+            run("TestFieldCalculatedAfterCalcFields"),
+            Eval::Normal(_)
+        ));
+    }
+
     #[test]
     fn flowfield_is_zero_until_calcfields() {
         let sources = [

@@ -172,6 +172,10 @@ fn set_record_field(
     };
     let mut view = store.take_view(handle);
     store.record.field_set_in(&mut view, f, coerced);
+    // An assigned FlowField holds its value in the buffer until the next read, as after CalcFields.
+    if store.flowfields.contains_key(&f) {
+        view.mark_calculated(f);
+    }
     store.put_view(handle, view);
     Some(Eval::Normal(Value::Empty))
 }

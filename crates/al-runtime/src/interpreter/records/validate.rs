@@ -66,6 +66,10 @@ pub(super) fn dispatch_validate(
         };
         let mut view = store.take_view(handle);
         store.record.field_set_in(&mut view, field_no, coerced);
+        // An assigned FlowField holds its value in the buffer until the next read.
+        if store.flowfields.contains_key(&field_no) {
+            view.mark_calculated(field_no);
+        }
         store.put_view(handle, view);
     }
     let store = ctx.records.get(&key).expect("store just ensured");
