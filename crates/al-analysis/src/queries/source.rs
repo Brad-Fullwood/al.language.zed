@@ -453,19 +453,21 @@ fn try_package_source(
     let mut extraction_error = None;
 
     if let Some(ref path) = app_path {
-        let source_index = al_symbols::source_index::get_or_build(path).map_err(|error| {
-            SourceLookupError::PackageSourceUnavailable {
-                object: entry.name.clone(),
-                package: entry.package.clone(),
-                path: path.display().to_string(),
-                reason: error.to_string(),
-            }
-        })?;
-        let extracted = match source_index.extract_source_for_entry(entry) {
-            Ok(extracted) => extracted,
+        // A failed index build falls back to the outline, as a failed extraction does.
+        let extracted = match al_symbols::source_index::get_or_build(path) {
+            Ok(source_index) => match source_index.extract_source_for_entry(entry) {
+                Ok(extracted) => extracted,
+                Err(error) => {
+                    extraction_error = Some(format!(
+                        "Embedded source in {} could not be read: {error}",
+                        path.display()
+                    ));
+                    None
+                }
+            },
             Err(error) => {
                 extraction_error = Some(format!(
-                    "Embedded source in {} could not be read: {error}",
+                    "Embedded source index for {} could not be built: {error}",
                     path.display()
                 ));
                 None
@@ -1022,7 +1024,7 @@ pub fn event_source(
         }
     });
     if let Some(entry) = candidates.first() {
-        let app_path = workspace.symbols.app_path(&entry.package);
+        let app_path = workspace.symbols.app_path_for_entry(entry);
         match al_symbols::virtual_file::get_or_create_with_availability(entry, app_path.as_deref())
         {
             Ok(materialized) => {
@@ -1323,6 +1325,129 @@ mod tests {
         );
         let note = result.note.unwrap_or_default();
         assert!(note.contains("could not be read"), "{note}");
+    }
+
+    /// Writes a NAVX package named `Base Application` with the given symbol
+    /// JSON and embedded AL files, given as (zip path, body) pairs.
+    fn write_base_app(
+        path: &std::path::Path,
+        app_id: &str,
+        symbols: &str,
+        sources: &[(&str, &str)],
+    ) {
+        use std::io::Write;
+        let manifest = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Package><App Id="{app_id}" Name="Base Application" Publisher="Test" Version="1.0.0.0" /></Package>"#
+        );
+        let mut archive_bytes = Vec::new();
+        {
+            let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut archive_bytes));
+            let options = zip::write::SimpleFileOptions::default();
+            archive.start_file("NavxManifest.xml", options).unwrap();
+            archive.write_all(manifest.as_bytes()).unwrap();
+            archive.start_file("SymbolReference.json", options).unwrap();
+            archive.write_all(symbols.as_bytes()).unwrap();
+            for (zip_path, body) in sources {
+                archive.start_file(*zip_path, options).unwrap();
+                archive.write_all(body.as_bytes()).unwrap();
+            }
+            archive.finish().unwrap();
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"NAVX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&40u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 28]);
+        bytes.extend_from_slice(&archive_bytes);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn index_build_failure_falls_back_to_outline() {
+        let workspace = Workspace::new();
+        let directory = tempfile::tempdir().unwrap();
+        let app_path = directory.path().join("Thing.app");
+        // A field makes the entry rich enough for a generated outline. Without
+        // one, the fallback is metadata only.
+        let symbols = r#"{ "Tables": [ { "Id": 50100, "Name": "Thing", "Fields": [
+      { "Id": 1, "Name": "Id", "TypeDefinition": { "Name": "Integer" } }
+    ] } ] }"#;
+        write_base_app(
+            &app_path,
+            "00000000-0000-0000-0000-000000000077",
+            symbols,
+            &[("src/Thing.Table.al", "table 50100 Thing { }")],
+        );
+        workspace
+            .symbols
+            .load_packages(std::slice::from_ref(&app_path))
+            .expect("valid package");
+
+        let first = source(&workspace, "Thing", Some(ObjectKind::Table), None, None)
+            .expect("the embedded source reads");
+        assert_eq!(first.src, SourceLevel::Package);
+        assert_eq!(
+            first.source_availability,
+            SourceAvailability::EmbeddedSource
+        );
+
+        // The new size makes the cached index stale, and a rebuild fails on the
+        // missing NAVX header.
+        std::fs::write(&app_path, b"not a zip").unwrap();
+        let second = source(&workspace, "Thing", Some(ObjectKind::Table), None, None)
+            .expect("an index build failure still gives the outline");
+        assert_eq!(second.src, SourceLevel::Outline);
+        assert_eq!(
+            second.source_availability,
+            SourceAvailability::GeneratedOutline
+        );
+        let note = second.note.unwrap_or_default();
+        assert!(note.contains("could not be built"), "{note}");
+    }
+
+    #[test]
+    fn virtual_file_uses_the_entrys_package() {
+        let directory = tempfile::tempdir().unwrap();
+        let first_path = directory.path().join("BaseFirst.app");
+        let second_path = directory.path().join("BaseSecond.app");
+        // Both packages share a display name. A name lookup picks the smaller
+        // app id, which is the package without the codeunit.
+        write_base_app(
+            &first_path,
+            "11111111-1111-1111-1111-111111111111",
+            r#"{ "Tables": [ { "Id": 50100, "Name": "Thing" } ] }"#,
+            &[("src/Thing.Table.al", "table 50100 Thing { }")],
+        );
+        write_base_app(
+            &second_path,
+            "22222222-2222-2222-2222-222222222222",
+            r#"{ "Tables": [ { "Id": 50100, "Name": "Thing" } ],
+                "Codeunits": [ { "Id": 50200, "Name": "Only In Second" } ] }"#,
+            &[
+                ("src/Thing.Table.al", "table 50100 Thing { }"),
+                (
+                    "src/OnlyInSecond.Codeunit.al",
+                    "codeunit 50200 \"Only In Second\"\n{\n    // SECOND-PACKAGE-MARKER\n}\n",
+                ),
+            ],
+        );
+        let workspace = Workspace::new();
+        workspace
+            .symbols
+            .load_packages(&[first_path, second_path])
+            .expect("valid packages");
+
+        let entry = workspace
+            .symbols
+            .get_by_name("Only In Second")
+            .into_iter()
+            .next()
+            .expect("the codeunit is indexed");
+        let path = crate::queries::virtual_file_path(&workspace, &entry)
+            .expect("a virtual file for the codeunit");
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("SECOND-PACKAGE-MARKER"), "{text}");
     }
 
     #[test]

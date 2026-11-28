@@ -154,7 +154,7 @@ pub fn virtual_file_path(
     workspace: &al_workspace::Workspace,
     entry: &SymbolEntry,
 ) -> Option<std::path::PathBuf> {
-    let app_path = workspace.symbols.app_path(&entry.package);
+    let app_path = workspace.symbols.app_path_for_entry(entry);
     al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()).ok()
 }
 
@@ -163,7 +163,7 @@ pub fn get_or_create_virtual_file(
     entry: &SymbolEntry,
     member_name: Option<&str>,
 ) -> Option<(Url, Range)> {
-    let app_path = workspace.symbols.app_path(&entry.package);
+    let app_path = workspace.symbols.app_path_for_entry(entry);
     match al_symbols::virtual_file::get_or_create(entry, app_path.as_deref()) {
         Ok(path) => {
             let uri = match Url::from_file_path(&path) {
