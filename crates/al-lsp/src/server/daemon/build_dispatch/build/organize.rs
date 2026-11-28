@@ -117,7 +117,12 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
                     ),
                 );
             }
-            let sorted = match sort_members_strict(&indexed, &path.display().to_string()) {
+            let sorted = match sort_members_strict(
+                workspace,
+                Some(&path),
+                &indexed,
+                &path.display().to_string(),
+            ) {
                 Ok(sorted) => sorted,
                 Err(message) => {
                     return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &message);
@@ -208,7 +213,7 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
         || "supplied content".to_string(),
         |path| path.display().to_string(),
     );
-    let sorted = match sort_members_strict(&content, &label) {
+    let sorted = match sort_members_strict(workspace, path.as_deref(), &content, &label) {
         Ok(sorted) => sorted,
         Err(message) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &message),
     };
@@ -239,8 +244,13 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
     }
 }
 
-fn sort_members_strict(source: &str, label: &str) -> Result<String, String> {
-    let parsed = al_syntax::AlParser::parse_quick(source);
+fn sort_members_strict(
+    workspace: &Workspace,
+    file: Option<&std::path::Path>,
+    source: &str,
+    label: &str,
+) -> Result<String, String> {
+    let parsed = super::super::parse_for_file(workspace, file, source);
     if parsed.tree.root_node().has_error() {
         let details = parsed
             .errors
@@ -319,7 +329,7 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
                 );
             }
         };
-        let parsed = al_syntax::AlParser::parse_quick(&text);
+        let parsed = super::super::parse_for_file(workspace, Some(&path), &text);
         if parsed.tree.root_node().has_error() {
             return rpc_error(
                 id,

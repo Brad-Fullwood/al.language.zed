@@ -15,6 +15,29 @@ pub(super) use build::*;
 pub(super) use codegen::*;
 pub(super) use fixes::*;
 pub(super) use free_ids::*;
+
+/// Parse `text`, the content of `file`, with the `preprocessorSymbols` of the
+/// app that owns `file`, so `#if` blocks for those symbols are active. A file
+/// outside every app, or no file, parses with no symbols.
+pub(in crate::server::daemon) fn parse_for_file(
+    workspace: &Workspace,
+    file: Option<&std::path::Path>,
+    text: &str,
+) -> al_syntax::ParseResult {
+    let symbols = file
+        .map(|file| workspace.file_index.preprocessor_symbols_for(file))
+        .unwrap_or_default();
+    al_syntax::AlParser::parse_quick_with_symbols(text, &symbols)
+}
+
+/// [`parse_for_file`] for a document named by its URI.
+pub(in crate::server::daemon) fn parse_for_uri(
+    workspace: &Workspace,
+    uri: &url::Url,
+    text: &str,
+) -> al_syntax::ParseResult {
+    parse_for_file(workspace, uri.to_file_path().ok().as_deref(), text)
+}
 pub(super) use symbols_auth::*;
 pub(crate) use tests_dispatch::dispatch_tests_run_batch;
 pub(super) use tests_dispatch::*;
@@ -281,7 +304,7 @@ fn current_workspace_symbols(
                 std::fs::read_to_string(&path)
                     .map_err(|error| format!("read {} failed: {error}", path.display()))
             })?;
-        let parsed = al_syntax::AlParser::parse_quick(&source);
+        let parsed = parse_for_file(workspace, Some(&path), &source);
         if !parsed.errors.is_empty() {
             let details = parsed
                 .errors

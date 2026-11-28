@@ -288,7 +288,7 @@ pub(in crate::server::daemon) fn dispatch_fix(
         let Some(text) = workspace.documents.get_text(uri) else {
             return file_not_found(id);
         };
-        let result = al_syntax::AlParser::parse_quick(&text);
+        let result = super::parse_for_file(workspace, Some(path), &text);
         let diagnostics = al_syntax::lint(&result.tree, &text);
         let mut file_edits = Vec::new();
         for diagnostic in diagnostics.iter().filter(|diagnostic| {
@@ -568,7 +568,7 @@ pub(in crate::server::daemon) fn dispatch_parse(
     };
 
     let start = std::time::Instant::now();
-    let result = al_syntax::AlParser::parse_quick(&text);
+    let result = super::parse_for_uri(workspace, &uri, &text);
     let elapsed = start.elapsed();
 
     let node_count = al_source::parsing::count_nodes(&result.tree);

@@ -221,12 +221,18 @@ pub fn quick_fix_for_diagnostic(
     if !code_actions_enabled(workspace) {
         return None;
     }
+    // The fixes reparse `text`. The owning app's `preprocessorSymbols` keep
+    // the `#if` blocks the document tree has active.
+    let symbols = uri
+        .to_file_path()
+        .map(|path| workspace.file_index.preprocessor_symbols_for(&path))
+        .unwrap_or_default();
 
     if matches!(
         diag.code.as_deref(),
         Some("AL-NL010" | "AL-L005" | "AA0206")
     ) {
-        let (name, edit) = unused_local_removal_edit(text, diag)?;
+        let (name, edit) = unused_local_removal_edit(text, &symbols, diag)?;
         return Some(CodeActionEntry {
             title: format!("Remove unused variable '{name}'"),
             kind: CodeActionKind::QuickFix,
@@ -236,7 +242,7 @@ pub fn quick_fix_for_diagnostic(
     }
 
     if diag.code.as_deref() == Some(al_syntax::ALC_MISSING_SEMICOLON_CODE) {
-        let edit = missing_semicolon_edit(text, diag)?;
+        let edit = missing_semicolon_edit(text, &symbols, diag)?;
         return Some(CodeActionEntry {
             title: "Add missing ';'".to_string(),
             kind: CodeActionKind::QuickFix,
@@ -268,7 +274,11 @@ pub fn quick_fix_for_diagnostic(
 /// AL0111 (no match in the decompiled tooling), so there is nothing to reuse.
 /// The edit is offered only when the native parse tree gives the same shape that
 /// produced the diagnostic, so a stale or foreign AL0111 does not get a guessed edit.
-fn missing_semicolon_edit(text: &str, diag: &DiagnosticInfo) -> Option<TextEdit> {
+fn missing_semicolon_edit(
+    text: &str,
+    symbols: &[String],
+    diag: &DiagnosticInfo,
+) -> Option<TextEdit> {
     let line_start: usize = text
         .split_inclusive('\n')
         .take(diag.range.start.line as usize)
@@ -277,7 +287,7 @@ fn missing_semicolon_edit(text: &str, diag: &DiagnosticInfo) -> Option<TextEdit>
     let line = text[line_start..].split('\n').next()?;
     let error_start =
         line_start + al_syntax::utf16_col_to_byte_offset(line, diag.range.start.character as usize);
-    let parsed = al_syntax::AlParser::parse_quick(text);
+    let parsed = al_syntax::AlParser::parse_quick_with_symbols(text, symbols);
     let insert = al_syntax::missing_semicolon_insert_byte_at(&parsed.tree, error_start)?;
     let before = &text[..insert];
     let insert_line = before.matches('\n').count();
@@ -303,8 +313,12 @@ fn missing_semicolon_edit(text: &str, diag: &DiagnosticInfo) -> Option<TextEdit>
 /// edit is emitted only when the current native AST analysis independently
 /// proves that exact local has no references. This prevents a stale or broad
 /// external diagnostic from deleting a still-used declaration.
-fn unused_local_removal_edit(text: &str, diag: &DiagnosticInfo) -> Option<(String, TextEdit)> {
-    let parsed = al_syntax::AlParser::parse_quick(text);
+fn unused_local_removal_edit(
+    text: &str,
+    symbols: &[String],
+    diag: &DiagnosticInfo,
+) -> Option<(String, TextEdit)> {
+    let parsed = al_syntax::AlParser::parse_quick_with_symbols(text, symbols);
     let syntax_position = al_syntax::types::SyntaxPosition {
         line: diag.range.start.line,
         character: diag.range.start.character,
@@ -746,7 +760,7 @@ mod tests {
     fn missing_semicolon_quick_fix_uses_the_recorded_alc_range() {
         let diag = alc_al0111_diagnostic();
         assert_eq!(diag.code.as_deref(), Some("AL0111"));
-        let edit = missing_semicolon_edit(ALC_AL0111_SOURCE, &diag).expect("edit");
+        let edit = missing_semicolon_edit(ALC_AL0111_SOURCE, &[], &diag).expect("edit");
         assert_eq!(edit.new_text, ";");
         // End of `JourneyItem.Init()` on line 7 (0 based 6), after the `)`.
         assert_eq!(
@@ -766,7 +780,7 @@ mod tests {
     fn missing_semicolon_quick_fix_refuses_a_range_that_is_not_the_error() {
         let mut diag = alc_al0111_diagnostic();
         diag.range.start.line = 2;
-        assert!(missing_semicolon_edit(ALC_AL0111_SOURCE, &diag).is_none());
+        assert!(missing_semicolon_edit(ALC_AL0111_SOURCE, &[], &diag).is_none());
     }
 
     fn apply_edit(source: &str, edit: &TextEdit) -> String {

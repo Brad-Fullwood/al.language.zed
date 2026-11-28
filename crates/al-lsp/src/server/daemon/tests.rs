@@ -1435,6 +1435,40 @@ mod dispatch_tests {
         );
     }
 
+    /// A4 codex-11, al-lsp part: a daemon parse uses the `preprocessorSymbols`
+    /// of the app that owns the file, so the `#if CLEAN24` block is parsed as
+    /// code in the app that defines it and as skipped text in the one that
+    /// does not.
+    #[test]
+    fn a_parse_uses_the_preprocessor_symbols_of_the_owning_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    var\n        X: Integer;\n    begin\n        X := 1;\n    end;\n#endif\n}\n";
+        let mut node_counts = Vec::new();
+        for (app, symbols) in [("defines", r#"["CLEAN24"]"#), ("plain", "[]")] {
+            let root = dir.path().join(app);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("app.json"),
+                format!(r#"{{"id":"00000000-0000-0000-0000-00000000000{}","name":"{app}","preprocessorSymbols":{symbols}}}"#, app.len()),
+            )
+            .unwrap();
+            let file = root.join("C.Codeunit.al");
+            std::fs::write(&file, source).unwrap();
+            let workspace = al_workspace::Workspace::new();
+            set_test_project_root(&workspace, &root);
+
+            let params = serde_json::json!({ "file": file.to_str().unwrap() });
+            let response = super::build_dispatch::dispatch_parse(&workspace, 4, &params);
+            let result = response.result.expect("parse result");
+            assert_eq!(result["errors"], 0, "{app}: {result}");
+            node_counts.push(result["nodeCount"].as_u64().expect("nodeCount"));
+        }
+        assert!(
+            node_counts[0] > node_counts[1],
+            "the active block adds the procedure's nodes: {node_counts:?}"
+        );
+    }
+
     /// Text for a path *inside* the project is refused: the daemon holds that
     /// file itself, and substituting content for it would let a later write
     /// flush a caller's text over the real source.
