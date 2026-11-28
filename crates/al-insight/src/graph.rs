@@ -354,7 +354,7 @@ impl InsightGraph {
     /// Idempotent: `add_edge` dedups, so re-running after a rebuild is safe.
     ///
     /// When the target event has no declared Event node, the target object
-    /// exists and the name is in [`PLATFORM_EVENTS`] for that object's kind
+    /// exists and the name is in `PLATFORM_EVENTS` for that object's kind
     /// (e.g. `OnAfterInsertEvent` on a table), an Event node is synthesized
     /// under that object so the chain stays traceable. A subscriber to any
     /// other undeclared event gets no edge and is reported as an orphan.

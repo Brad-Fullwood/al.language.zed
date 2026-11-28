@@ -209,7 +209,7 @@ fn mask_line(
     (out, scanner.ends_in_block_comment())
 }
 
-/// Like [`mask_non_code`], but keeps `"…"` quoted identifiers visible.
+/// Like `mask_non_code`, but keeps `"…"` quoted identifiers visible.
 ///
 /// The label scan in `symbols.rs` needs the *name* of a declaration like
 /// `"My Lbl": Label 'text';` while still masking `'…'` string contents and
