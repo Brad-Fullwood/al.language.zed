@@ -128,3 +128,78 @@ async fn edit_is_not_blocked_by_workspace_publish() {
         .unwrap();
     reader.abort();
 }
+
+/// A project pass that finds the scope set to `OpenFiles` sends nothing and
+/// leaves `published_uris` alone. Set back to `Project`, the same pass publishes
+/// and records the open document.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_project_pass_publishes_nothing_outside_project_scope() {
+    let (mut service, mut socket) = LspService::new(crate::server::AlLsp::new);
+    let hold = Arc::new(AtomicBool::new(false));
+    let release = Arc::new(tokio::sync::Notify::new());
+    let reader = tokio::spawn({
+        let (hold, release) = (Arc::clone(&hold), Arc::clone(&release));
+        async move {
+            use futures::StreamExt;
+            loop {
+                while hold.load(Ordering::Acquire) {
+                    release.notified().await;
+                }
+                if socket.next().await.is_none() {
+                    break;
+                }
+            }
+        }
+    });
+    futures::future::poll_fn(|cx| service.poll_ready(cx))
+        .await
+        .unwrap();
+    let request = tower_lsp::jsonrpc::Request::build("initialize")
+        .params(serde_json::json!({ "capabilities": {} }))
+        .id(1)
+        .finish();
+    let response = service.call(request).await.unwrap().unwrap();
+    assert!(response.is_ok(), "{response:?}");
+    let server = service.inner();
+
+    let uri = Url::parse("file:///proj/Ghost0.Codeunit.al").unwrap();
+    server
+        .workspace
+        .documents
+        .open_with_client_version(uri.clone(), BROKEN.to_string(), 1)
+        .unwrap();
+    al_workspace::on_document_change(&server.workspace, &uri, BROKEN);
+    let session = server.session.clone();
+
+    server.workspace.config.write().await.diagnostics_scope =
+        al_project::config::DiagnosticsScope::OpenFiles;
+    let published = publish_workspace_diagnostics_parts(
+        Arc::clone(&server.workspace),
+        server.client.clone(),
+        Arc::clone(&server.semantic_diagnostic_cache),
+        Arc::clone(&server.workspace_diagnostic_uris),
+        None,
+        &session,
+    )
+    .await;
+    assert!(
+        !published,
+        "an OpenFiles scope must not publish a project pass"
+    );
+    assert!(server.workspace_diagnostic_uris.lock().await.is_empty());
+
+    server.workspace.config.write().await.diagnostics_scope =
+        al_project::config::DiagnosticsScope::Project;
+    let published = publish_workspace_diagnostics_parts(
+        Arc::clone(&server.workspace),
+        server.client.clone(),
+        Arc::clone(&server.semantic_diagnostic_cache),
+        Arc::clone(&server.workspace_diagnostic_uris),
+        None,
+        &session,
+    )
+    .await;
+    assert!(published, "the Project scope pass publishes");
+    assert!(server.workspace_diagnostic_uris.lock().await.contains(&uri));
+    reader.abort();
+}

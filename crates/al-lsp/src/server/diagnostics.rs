@@ -556,6 +556,13 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         // Taken before `published_uris`: a holder of this lock may take
         // `published_uris`, never the other way round.
         let publication = workspace.diagnostic_publication.lock().await;
+        // The scope can change while the pass computes, so it is checked under the lock.
+        if workspace.config.read().await.diagnostics_scope
+            != al_project::config::DiagnosticsScope::Project
+        {
+            drop(publication);
+            return false;
+        }
         let mut published = published_uris.lock().await;
         let mut stale: Vec<Url> = published
             .difference(&current.keys().cloned().collect())
