@@ -40,6 +40,7 @@ offers three entry points:
 Each entry point has a `_with_symbols` form that defines preprocessor symbols. The document store and
 `FileIndex` parse a file with the `preprocessorSymbols` of the `app.json` that owns it
 (`FileIndex::preprocessor_symbols_for`), so `#if` blocks on those symbols are active.
+Embedded package sources are parsed with the symbols listed in the package's `NavxManifest.xml`.
 
 Errors are collected from both `is_error()` nodes and `is_missing()` nodes (the latter reported as
 `Missing {kind}`), so syntactic diagnostics reflect both garbage and absent-but-required tokens.

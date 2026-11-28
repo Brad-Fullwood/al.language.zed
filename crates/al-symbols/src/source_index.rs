@@ -81,6 +81,8 @@ pub struct AppSourceIndex {
     /// declaration-free AL (al-workspace skips such files with a diagnostic)
     /// instead of silently treating a partially indexed package as complete.
     source_paths: Vec<String>,
+    /// `preprocessorSymbols` from the package's `NavxManifest.xml`, in document order.
+    preprocessor_symbols: Arc<[String]>,
 }
 
 impl AppSourceIndex {
@@ -198,6 +200,23 @@ impl AppSourceIndex {
         source_paths.sort_unstable();
         source_paths.dedup();
 
+        // The bounded manifest reader is `app_reader::read_app_manifest_file`.
+        // A manifest that cannot be read leaves the symbols empty, so the
+        // index still builds and the warning keeps the failure visible.
+        let preprocessor_symbols: Arc<[String]> = match crate::app_reader::read_app_manifest_file(
+            app_path,
+        ) {
+            Ok(manifest) => Arc::from(manifest.preprocessor_symbols),
+            Err(error) => {
+                tracing::warn!(
+                    path = %app_path.display(),
+                    %error,
+                    "package manifest unreadable, embedded source is parsed without preprocessor symbols"
+                );
+                Arc::from(Vec::new())
+            }
+        };
+
         Ok(Self {
             modified,
             file_size,
@@ -206,7 +225,13 @@ impl AppSourceIndex {
             by_kind_id,
             by_kind_name,
             source_paths,
+            preprocessor_symbols,
         })
+    }
+
+    /// Preprocessor symbols listed in the package's `NavxManifest.xml`.
+    pub fn preprocessor_symbols(&self) -> Arc<[String]> {
+        Arc::clone(&self.preprocessor_symbols)
     }
 
     fn touch(&self) {
@@ -1080,6 +1105,7 @@ mod tests {
             by_kind_id,
             by_kind_name,
             source_paths,
+            preprocessor_symbols: Arc::from(Vec::new()),
         }
     }
 

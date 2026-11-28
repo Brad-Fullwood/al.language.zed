@@ -180,6 +180,7 @@ fn manifest(
                 },
             )
             .collect(),
+        preprocessor_symbols: Vec::new(),
     }
 }
 

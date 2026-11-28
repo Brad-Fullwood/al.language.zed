@@ -162,7 +162,7 @@ fn member_not_found_fmt(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum SourceCandidate {
     Workspace { path: PathBuf, kind: ObjectKind },
     Package(Arc<SymbolEntry>),
@@ -175,14 +175,23 @@ pub fn source(
     package_filter: Option<&str>,
     member: Option<SourceMember<'_>>,
 ) -> Result<SourceResult, SourceLookupError> {
+    let candidate = resolve_candidate(workspace, name, kind_filter, package_filter)?;
+    source_from_candidate(workspace, name, &candidate, member)
+}
+
+/// The one object a lookup names. No match, or more than one, is an error.
+fn resolve_candidate(
+    workspace: &Workspace,
+    name: &str,
+    kind_filter: Option<ObjectKind>,
+    package_filter: Option<&str>,
+) -> Result<SourceCandidate, SourceLookupError> {
     let candidates = source_candidates(workspace, name, kind_filter, package_filter)?;
-    let candidate = match candidates.as_slice() {
-        [] => {
-            return Err(SourceLookupError::ObjectNotFound {
-                name: name.to_string(),
-            });
-        }
-        [candidate] => candidate,
+    match candidates.as_slice() {
+        [] => Err(SourceLookupError::ObjectNotFound {
+            name: name.to_string(),
+        }),
+        [candidate] => Ok(candidate.clone()),
         _ => {
             let mut matches = candidates
                 .iter()
@@ -197,18 +206,43 @@ pub fn source(
                 .collect::<Vec<_>>();
             matches.sort();
             matches.dedup();
-            return Err(SourceLookupError::Ambiguous {
+            Err(SourceLookupError::Ambiguous {
                 name: name.to_string(),
                 matches,
-            });
+            })
         }
-    };
+    }
+}
 
+fn source_from_candidate(
+    workspace: &Workspace,
+    name: &str,
+    candidate: &SourceCandidate,
+    member: Option<SourceMember<'_>>,
+) -> Result<SourceResult, SourceLookupError> {
     match candidate {
         SourceCandidate::Workspace { path, kind } => {
             try_workspace_source(workspace, path, name, *kind, member)
         }
         SourceCandidate::Package(entry) => try_package_source(workspace, entry, member),
+    }
+}
+
+/// The preprocessor symbols a candidate's source is parsed with. Package
+/// source whose index cannot be read gets none, as in `try_package_source`.
+fn candidate_symbols(workspace: &Workspace, candidate: &SourceCandidate) -> Arc<[String]> {
+    match candidate {
+        SourceCandidate::Workspace { path, .. } => {
+            workspace.file_index.preprocessor_symbols_for(path)
+        }
+        SourceCandidate::Package(entry) => workspace
+            .symbols
+            .app_path_for_entry(entry)
+            .and_then(|path| al_symbols::source_index::get_or_build(&path).ok())
+            .map_or_else(
+                || Arc::from(Vec::new()),
+                |index| index.preprocessor_symbols(),
+            ),
     }
 }
 
@@ -382,12 +416,13 @@ fn try_workspace_source(
                 note: None,
             });
         }
+        let symbols = workspace.file_index.preprocessor_symbols_for(file_path);
         return Err(SourceLookupError::MemberNotFound {
             object: name.to_string(),
             member: member.name.to_string(),
             kind: member.kind,
-            candidates: member_candidates(&text, member.name),
-            declared: member_outlines(&text).len(),
+            candidates: member_candidates(&text, &symbols, member.name),
+            declared: member_outlines(&text, &symbols).len(),
         });
     }
 
@@ -451,20 +486,26 @@ fn try_package_source(
     // An extraction failure (an embedded file that is not UTF-8, say) still
     // leaves the outline from symbol metadata, so it goes into the note.
     let mut extraction_error = None;
+    // The symbols listed in the package's own manifest. Empty when no index is
+    // built, so the outline is still returned without a member lookup.
+    let mut symbols: Arc<[String]> = Arc::from(Vec::new());
 
     if let Some(ref path) = app_path {
         // A failed index build falls back to the outline, as a failed extraction does.
         let extracted = match al_symbols::source_index::get_or_build(path) {
-            Ok(source_index) => match source_index.extract_source_for_entry(entry) {
-                Ok(extracted) => extracted,
-                Err(error) => {
-                    extraction_error = Some(format!(
-                        "Embedded source in {} could not be read: {error}",
-                        path.display()
-                    ));
-                    None
+            Ok(source_index) => {
+                symbols = source_index.preprocessor_symbols();
+                match source_index.extract_source_for_entry(entry) {
+                    Ok(extracted) => extracted,
+                    Err(error) => {
+                        extraction_error = Some(format!(
+                            "Embedded source in {} could not be read: {error}",
+                            path.display()
+                        ));
+                        None
+                    }
                 }
-            },
+            }
             Err(error) => {
                 extraction_error = Some(format!(
                     "Embedded source index for {} could not be built: {error}",
@@ -475,7 +516,8 @@ fn try_package_source(
         };
         if let Some(full_source) = extracted {
             if let Some(member) = member {
-                if let Some((code, sig)) = extract_member_from_text(&full_source, member) {
+                if let Some((code, sig)) = extract_member_from_text(&full_source, &symbols, member)
+                {
                     return Ok(SourceResult {
                         k: entry.kind,
                         id: entry.id,
@@ -494,8 +536,8 @@ fn try_package_source(
                     object: entry.name.clone(),
                     member: member.name.to_string(),
                     kind: member.kind,
-                    candidates: member_candidates(&full_source, member.name),
-                    declared: member_outlines(&full_source).len(),
+                    candidates: member_candidates(&full_source, &symbols, member.name),
+                    declared: member_outlines(&full_source, &symbols).len(),
                 });
             }
 
@@ -729,8 +771,10 @@ pub fn list_members(
     kind_filter: Option<ObjectKind>,
     package_filter: Option<&str>,
 ) -> Result<MemberList, SourceLookupError> {
-    let whole = source(workspace, name, kind_filter, package_filter, None)?;
-    let members = member_outlines(&whole.code);
+    let candidate = resolve_candidate(workspace, name, kind_filter, package_filter)?;
+    let symbols = candidate_symbols(workspace, &candidate);
+    let whole = source_from_candidate(workspace, name, &candidate, None)?;
+    let members = member_outlines(&whole.code, &symbols);
     Ok(MemberList {
         k: whole.k,
         id: whole.id,
@@ -742,10 +786,10 @@ pub fn list_members(
     })
 }
 
-/// Parse `source` and return each procedure and trigger declaration's name,
-/// signature and line range.
-fn member_outlines(source: &str) -> Vec<MemberOutline> {
-    let parsed = al_syntax::AlParser::parse_quick(source);
+/// Parse `source` with `symbols` defined and return each procedure and trigger
+/// declaration's name, signature and line range.
+fn member_outlines(source: &str, symbols: &[String]) -> Vec<MemberOutline> {
+    let parsed = al_syntax::AlParser::parse_quick_with_symbols(source, symbols);
     let mut outlines = Vec::new();
     let mut stack = vec![parsed.tree.root_node()];
     while let Some(node) = stack.pop() {
@@ -784,8 +828,8 @@ fn member_outlines(source: &str) -> Vec<MemberOutline> {
 ///
 /// A `not found` that dead-ends costs the agent a call that pulls the whole
 /// object to read one name off it.
-pub fn member_candidates(source: &str, wanted: &str) -> Vec<String> {
-    let outlines = member_outlines(source);
+pub fn member_candidates(source: &str, symbols: &[String], wanted: &str) -> Vec<String> {
+    let outlines = member_outlines(source, symbols);
     closest_names(outlines.iter().map(|outline| outline.name.as_str()), wanted)
 }
 
@@ -847,8 +891,12 @@ fn shared_prefix_len(left: &str, right: &str) -> usize {
         .count()
 }
 
-fn extract_member_from_text(source: &str, member: SourceMember<'_>) -> Option<(String, String)> {
-    let result = al_syntax::AlParser::parse_quick(source);
+fn extract_member_from_text(
+    source: &str,
+    symbols: &[String],
+    member: SourceMember<'_>,
+) -> Option<(String, String)> {
+    let result = al_syntax::AlParser::parse_quick_with_symbols(source, symbols);
     let root = result.tree.root_node();
     let (node, sig) = find_member_node(&root, source, member)?;
     let code = node.utf8_text(source.as_bytes()).unwrap_or("").to_string();
@@ -1335,11 +1383,21 @@ mod tests {
         symbols: &str,
         sources: &[(&str, &str)],
     ) {
-        use std::io::Write;
         let manifest = format!(
             r#"<?xml version="1.0" encoding="utf-8"?>
 <Package><App Id="{app_id}" Name="Base Application" Publisher="Test" Version="1.0.0.0" /></Package>"#
         );
+        write_package(path, &manifest, symbols, sources);
+    }
+
+    /// Writes a NAVX package whose `NavxManifest.xml` is `manifest`.
+    fn write_package(
+        path: &std::path::Path,
+        manifest: &str,
+        symbols: &str,
+        sources: &[(&str, &str)],
+    ) {
+        use std::io::Write;
         let mut archive_bytes = Vec::new();
         {
             let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut archive_bytes));
@@ -1404,6 +1462,84 @@ mod tests {
         );
         let note = second.note.unwrap_or_default();
         assert!(note.contains("could not be built"), "{note}");
+    }
+
+    /// A package's embedded source is parsed with the symbols its own
+    /// `NavxManifest.xml` lists. `NewApi` sits inside `#if CLEAN24`, so it is
+    /// only in the tree when the manifest lists `CLEAN24`.
+    #[test]
+    fn package_member_lookup_uses_manifest_symbols() {
+        let symbols = r#"{ "Codeunits": [ { "Id": 50200, "Name": "Thing" } ] }"#;
+        let sources = [(
+            "src/Thing.Codeunit.al",
+            "codeunit 50200 Thing\n{\n#if CLEAN24\n    procedure NewApi()\n    begin\n    end;\n#endif\n}\n",
+        )];
+        let directory = tempfile::tempdir().unwrap();
+
+        let listed_path = directory.path().join("ListsClean24.app");
+        write_package(
+            &listed_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Package><App Id="00000000-0000-0000-0000-000000000124" Name="Lists Clean24" Publisher="Test" Version="1.0.0.0" /><PreprocessorSymbols><PreprocessorSymbol Name="CLEAN24" /></PreprocessorSymbols></Package>"#,
+            symbols,
+            &sources,
+        );
+        let listed = Workspace::new();
+        listed
+            .symbols
+            .load_packages(std::slice::from_ref(&listed_path))
+            .expect("valid package");
+        let found = source(
+            &listed,
+            "Thing",
+            Some(ObjectKind::Codeunit),
+            None,
+            Some(SourceMember {
+                kind: SourceMemberKind::Procedure,
+                name: "NewApi",
+            }),
+        )
+        .expect("NewApi is active under the manifest's CLEAN24");
+        assert_eq!(found.src, SourceLevel::Package);
+        assert!(found.code.contains("procedure NewApi()"), "{}", found.code);
+        let members = list_members(&listed, "Thing", Some(ObjectKind::Codeunit), None)
+            .expect("the members list");
+        assert!(
+            members
+                .members
+                .iter()
+                .any(|outline| outline.name == "NewApi"),
+            "{:?}",
+            members.members
+        );
+
+        let bare_path = directory.path().join("NoSymbols.app");
+        write_package(
+            &bare_path,
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<Package><App Id="00000000-0000-0000-0000-000000000125" Name="No Symbols" Publisher="Test" Version="1.0.0.0" /><PreprocessorSymbols /></Package>"#,
+            symbols,
+            &sources,
+        );
+        let bare = Workspace::new();
+        bare.symbols
+            .load_packages(std::slice::from_ref(&bare_path))
+            .expect("valid package");
+        let error = source(
+            &bare,
+            "Thing",
+            Some(ObjectKind::Codeunit),
+            None,
+            Some(SourceMember {
+                kind: SourceMemberKind::Procedure,
+                name: "NewApi",
+            }),
+        )
+        .expect_err("no symbols are listed, so NewApi is not in the tree");
+        assert!(
+            matches!(error, SourceLookupError::MemberNotFound { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]
@@ -1594,7 +1730,7 @@ mod tests {
     /// — plus the attributed procedure the text scan got wrong.
     fn member_signatures_cover_the_shapes_a_text_scan_used_to() {
         let signature = |source: &str, name: &str| {
-            member_outlines(source)
+            member_outlines(source, &[])
                 .into_iter()
                 .find(|outline| outline.name == name)
                 .unwrap_or_else(|| panic!("no member named {name} in:\n{source}"))
@@ -1633,7 +1769,7 @@ mod tests {
             "the attribute's argument list is not the signature"
         );
         assert!(
-            member_outlines("").is_empty(),
+            member_outlines("", &[]).is_empty(),
             "empty source has no members"
         );
     }
@@ -1663,7 +1799,7 @@ mod tests {
     #[test]
     fn member_outlines_carry_signatures_and_line_ranges_without_bodies() {
         let source = "codeunit 50100 Helper\n{\n    procedure Alpha()\n    begin\n    end;\n\n    trigger OnRun()\n    begin\n    end;\n}\n";
-        let outlines = member_outlines(source);
+        let outlines = member_outlines(source, &[]);
         assert_eq!(outlines.len(), 2, "{outlines:?}");
         assert_eq!(outlines[0].name, "Alpha");
         assert_eq!(outlines[0].kind, "procedure");
@@ -1683,12 +1819,12 @@ mod tests {
     fn member_candidates_offer_close_names_then_fall_back_to_the_first_few() {
         let source = "codeunit 80 \"Sales-Post\"\n{\n    procedure RunWithCheck()\n    begin\n    end;\n\n    procedure PostSalesLines()\n    begin\n    end;\n}\n";
         assert_eq!(
-            member_candidates(source, "PostSalesDoc"),
+            member_candidates(source, &[], "PostSalesDoc"),
             vec!["PostSalesLines".to_string()],
             "the shared prefix must win"
         );
         assert_eq!(
-            member_candidates(source, "zzzz").len(),
+            member_candidates(source, &[], "zzzz").len(),
             2,
             "nothing close means offer what there is"
         );
@@ -1715,6 +1851,7 @@ mod tests {
         let src = "codeunit 50100 \"Helper\"\n{\n    procedure Alpha()\n    begin\n    end;\n\n    procedure Beta(x: Integer): Boolean\n    begin\n        exit(true);\n    end;\n}\n";
         let (code, sig) = extract_member_from_text(
             src,
+            &[],
             SourceMember {
                 kind: SourceMemberKind::Procedure,
                 name: "Beta",
@@ -1731,6 +1868,7 @@ mod tests {
         let src = "codeunit 50100 \"Helper\"\n{\n    procedure Alpha()\n    begin\n    end;\n}\n";
         assert!(extract_member_from_text(
             src,
+            &[],
             SourceMember {
                 kind: SourceMemberKind::Procedure,
                 name: "DoesNotExist",
