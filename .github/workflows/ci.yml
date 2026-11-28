@@ -252,7 +252,9 @@ jobs:
         run: ./scripts/check-release-hygiene.sh
 
       - name: Release script tests
-        run: bash scripts/test-release-scripts.sh
+        run: |
+          bash scripts/test-release-scripts.sh
+          bash scripts/test-dev-install.sh
 
   windows-native:
     # Default features do not require the .NET semantic bridge.

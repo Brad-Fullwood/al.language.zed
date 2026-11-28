@@ -1,21 +1,21 @@
-# Zed AL Extension — Build System
+# Zed AL Extension: build system
 #
 # Usage:
-#   make install   — build the optimised al-lsp and al-explorer, the WASM extension and bridges, copy al-lsp to the extension's work dir (dev/), verify, print status
-#   make build     — rebuild everything (all Rust crates + WASM extension + .NET bridges)
-#   make rust      — rebuild all Rust crates (native, excludes zed-al)
-#   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip2)
-#   make bridges   — rebuild just .NET bridges
-#   make grammar   — regenerate the tree-sitter-al parser sources before a
+#   make install: build the optimised al-lsp and al-explorer, the WASM extension, copy al-lsp to the extension's work dir (dev/), verify, print status
+#   make build    : rebuild everything (all Rust crates + WASM extension + .NET bridges)
+#   make rust     : rebuild all Rust crates (native, excludes zed-al)
+#   make wasm     : rebuild only the WASM extension (zed-al, wasm32-wasip2)
+#   make bridges  : rebuild just .NET bridges
+#   make grammar  : regenerate the tree-sitter-al parser sources before a
 #                    fresh `tree-sitter build`
-#   make language  — regenerate only the Zed-facing languages/al package files
-#   make record-methods — regenerate the Microsoft-derived Record method catalog
-#   make check-record-methods — prove the catalog matches the pinned Microsoft DLL
-#   make repro-artifacts — regenerate generated artifacts; fail on any diff (CI drift guard)
-#   make live-bc-contracts — strict tenant-backed publish/DAP/snapshot/profiling/symbols profile (live test run is SKIP)
-#   make release-dryrun  — release-readiness gate, never publishes (regenerates languages/al in the checkout)
-#   make plugin-validate — check the Claude Code plugin under plugin/
-#   make clean     — clean all build artifacts
+#   make language : regenerate only the Zed-facing languages/al package files
+#   make record-methods: regenerate the Microsoft-derived Record method catalog
+#   make check-record-methods: prove the catalog matches the pinned Microsoft DLL
+#   make repro-artifacts: regenerate generated artifacts; fail on any diff (CI drift guard)
+#   make live-bc-contracts: strict tenant-backed publish/DAP/snapshot/profiling/symbols profile (live test run is SKIP)
+#   make release-dryrun : release-readiness gate, never publishes (regenerates languages/al in the checkout)
+#   make plugin-validate: check the Claude Code plugin under plugin/
+#   make clean    : clean all build artifacts
 
 SHELL := /bin/bash
 ROOT := $(shell pwd)
@@ -59,19 +59,20 @@ build: rust wasm bridges
 	@echo "Build complete. Restart the LSP in Zed to pick up changes."
 
 # ── Install ──────────────────────────────────────────────────────
-# `install` builds the optimised al-lsp and al-explorer, the WASM extension and
-# the bridges, copies al-lsp into the extension's managed directory
+# `install` builds the optimised al-lsp and al-explorer and the WASM extension,
+# copies al-lsp into the extension's managed directory
 # ($(ZED_WORK_DIR)/dev, the one place the extension looks), checks what it
 # copied against `al-lsp --version`, links the dev extension into Zed and
 # prints a status. It is idempotent. It does not build the debug workspace:
 # run `make build` for that. The copy and the status run in the recipe, so
 # under `make -j` they start only after every build has finished.
-install: install-build wasm bridges
+install: install-build wasm
 	@$(MAKE) --no-print-directory install-files
 	@$(MAKE) --no-print-directory install-status
 
 # The optimised binaries `install` copies.
 install-build:
+	@case "$(UNAME_S)" in MINGW*|MSYS*|CYGWIN*) echo "ERROR: make install supports Linux and macOS. On Windows, install the dev extension from the clone in Zed and let it download the release (README, Installation)."; exit 1;; esac
 	@echo "=== Building al-lsp (semantic) and al-explorer, profile $(INSTALL_PROFILE) ==="
 	cargo build --profile $(INSTALL_PROFILE) -p al-lsp --bin al-lsp --features semantic
 	cargo build --profile $(INSTALL_PROFILE) -p al-explorer --bin al-explorer
@@ -103,6 +104,7 @@ install-lsp:
 # Microsoft's AL dotnet tool, `al` is Microsoft's altool wrapper and is left
 # alone. Use `al-explorer` in scripts.
 install-files:
+	@case "$(UNAME_S)" in MINGW*|MSYS*|CYGWIN*) echo "ERROR: make install supports Linux and macOS. On Windows, install the dev extension from the clone in Zed and let it download the release (README, Installation)."; exit 1;; esac
 	@test -x "$(LSP_BIN)" || { echo "ERROR: $(LSP_BIN) missing, run 'make install-build' first."; exit 1; }
 	@test -x "$(EXPLORER_BIN)" || { echo "ERROR: $(EXPLORER_BIN) missing, run 'make install-build' first."; exit 1; }
 	@set -e; \
@@ -165,7 +167,7 @@ install-status:
 	@echo "grammar:      $$([ -f "$(ROOT)/grammars/al.wasm" ] && echo built || echo 'not built yet, Zed builds it when the dev extension installs')"
 	@echo "dev ext link: $$([ -e "$(ZED_EXT_DIR)/al" ] && echo present || echo missing)"
 	@echo ""
-	@echo "Left to do in Zed: run 'zed: install dev extension' (first time) or 'zed: reload extensions'."
+	@echo "Left to do in Zed: run 'zed: install dev extension' and choose this clone, the first time and after each pull, so Zed loads the extension built from the same commit as al-lsp."
 
 # ── One-shot dev environment setup ───────────────────────────────
 # Installs prerequisites, then builds and copies everything. Run once
