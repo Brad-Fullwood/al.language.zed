@@ -264,6 +264,7 @@ dependencies = [
 name = "al-protocol"
 version = "0.2.2"
 dependencies = [
+ "al-types",
  "getrandom 0.4.2",
  "interprocess",
  "libc",
@@ -454,8 +455,10 @@ name = "al-types"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tree-sitter",
 ]
