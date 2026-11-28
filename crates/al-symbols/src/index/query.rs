@@ -5,13 +5,44 @@ use super::{read_derived_cache, write_derived_cache};
 use crate::model::{ObjectKind, SymbolEntry};
 use std::sync::Arc;
 
+/// The entries a [`SymbolIndex::search_with_status`] call found, and whether
+/// the substring stage examined every name.
+#[derive(Debug, Clone, Default)]
+pub struct SearchResults {
+    pub entries: Vec<Arc<SymbolEntry>>,
+    /// False when the substring stage stopped at
+    /// [`SymbolIndex::SUBSTRING_SCAN_BUDGET`] before the end of the names, so
+    /// a name past that point may match and be missing.
+    pub complete: bool,
+}
+
 impl SymbolIndex {
     /// Names the substring stage of [`search`] may examine for one query.
+    /// A scan of 200,000 names took 56 to 81 ms in the test profile on
+    /// 2026-11-27, so 60,000 names is about 20 ms. That covers a Base
+    /// Application catalogue of about 50,000 names.
     ///
     /// [`search`]: Self::search
-    pub const SUBSTRING_SCAN_BUDGET: usize = 20_000;
+    pub const SUBSTRING_SCAN_BUDGET: usize = 60_000;
 
     pub fn search(&self, query: &str, limit: usize) -> Vec<Arc<SymbolEntry>> {
+        self.search_with_status(query, limit).entries
+    }
+
+    /// [`search`](Self::search), plus whether the substring stage covered
+    /// every name.
+    pub fn search_with_status(&self, query: &str, limit: usize) -> SearchResults {
+        let mut complete = true;
+        let entries = self.search_inner(query, limit, &mut complete);
+        SearchResults { entries, complete }
+    }
+
+    fn search_inner(
+        &self,
+        query: &str,
+        limit: usize,
+        complete: &mut bool,
+    ) -> Vec<Arc<SymbolEntry>> {
         if limit == 0 {
             return Vec::new();
         }
@@ -47,6 +78,7 @@ impl SymbolIndex {
             let mut budget = Self::SUBSTRING_SCAN_BUDGET;
             for name in names.iter() {
                 if budget == 0 {
+                    *complete = false;
                     tracing::debug!(
                         query = %query_lower,
                         budget = Self::SUBSTRING_SCAN_BUDGET,
@@ -271,13 +303,36 @@ mod tests {
         // A name only the very end of the catalogue carries.
         index.add_entries(&[make_entry(ObjectKind::Table, 999_999, "Zzz Needle Object")]);
 
-        let hits = index.search("needle", 10);
+        let hits = index.search_with_status("needle", 10);
         assert!(
-            hits.is_empty(),
-            "the scan must stop at the budget rather than reaching the tail: {hits:?}"
+            hits.entries.is_empty(),
+            "the scan must stop at the budget rather than reaching the tail: {:?}",
+            hits.entries
         );
+        assert!(!hits.complete, "a stopped scan must say it is incomplete");
         // A prefix query still finds it: that stage is indexed, not scanned.
         assert_eq!(index.search("zzz needle", 10).len(), 1);
+    }
+
+    /// The budget was 20,000 names, so a match at name 24,000 was not found.
+    #[test]
+    fn substring_stage_finds_match_past_twenty_thousand_entries() {
+        let index = SymbolIndex::new();
+        let entries: Vec<_> = (0..25_000)
+            .map(|i| {
+                let name = if i == 24_000 {
+                    "Aaa Object zzunique".to_string()
+                } else {
+                    format!("Aaa Object {i:06}")
+                };
+                make_entry(ObjectKind::Table, i, &name)
+            })
+            .collect();
+        index.add_entries(&entries);
+
+        let hits = index.search_with_status("zzunique", 10);
+        assert_eq!(hits.entries.len(), 1);
+        assert!(hits.complete);
     }
 
     #[test]

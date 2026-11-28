@@ -24,14 +24,19 @@ both package symbols and your code contribute.
 Business Central raises those events either way. `RunTrigger` decides only whether the table's own
 `OnInsert`/`OnModify`/`OnDelete` code runs, which is why subscribers test `if not RunTrigger then
 exit`. `Validate` produces edges to `OnBefore/OnAfterValidateEvent` the same way, `Rename` to the
-Rename events, and `ModifyAll` and `DeleteAll` to the Modify and Delete events. In table code, calls
+Rename events, and `ModifyAll` and `DeleteAll` to the Modify and Delete events. When `RunTrigger`
+is true, `Insert`, `Modify`/`ModifyAll` and `Delete`/`DeleteAll` also link to the table's
+`OnInsert`, `OnModify` or `OnDelete` trigger. A `RunTrigger` that is not a literal counts as true.
+`Rename(true)` and `Validate` get no trigger link. In table code, calls
 on `Rec` and `xRec` and a bare record method such as `Modify()` produce the same edges. Member calls
 resolve the receiver's declared object type before lookup, and workspace subscribers are connected
 after the graph is built. Attribute names are matched case-insensitively, as AL defines them.
 A name declared more than once in an object, such as the `OnValidate` trigger of each field or the
 overloads of a procedure, is one graph node with the calls of every declaration.
 Objects from different packages that share a `(kind, name)` each get their own graph node.
-Event traversal detects cycles and enforces a 10,000-node global bound.
+Event traversal detects cycles and holds at most 10,000 nodes across all roots. When the bound
+drops a node, `trace_event_chain` sets `truncated: true` on the result and the flat `trace_event`
+ends with a step whose `edge_type` is `truncated`.
 
 `TableRelation` values are parsed in both forms: a plain `Customer WHERE(…)` and the conditional
 `IF (…) TableA ELSE TableB`, which yields a relation to *every* branch table.

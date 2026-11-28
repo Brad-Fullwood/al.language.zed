@@ -43,7 +43,19 @@ pub fn get_or_create_with_availability(
 ) -> std::io::Result<MaterializedSource> {
     let cache_root = cache_dir();
     let pkg_dir = cache_root.join(sanitize_filename(&entry.package));
+    // Backstop for the sanitizer, which already removes separators and `..`.
+    if !pkg_dir.starts_with(&cache_root) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "package directory escapes the symbol cache: {}",
+                entry.package
+            ),
+        ));
+    }
     let file_path = pkg_dir.join(cache_filename(entry, app_path));
+
+    create_private_dir(&cache_root)?;
 
     // The settings file only makes the editor mark generated files read only.
     // A hand edit that left it malformed is not a reason to refuse every
@@ -56,7 +68,7 @@ pub fn get_or_create_with_availability(
         );
     }
 
-    fs::create_dir_all(&pkg_dir)?;
+    create_private_dir(&pkg_dir)?;
 
     // Package identity and symbol metadata are part of the filename, so a
     // package replacement cannot reuse a stale object's virtual file even when
@@ -363,6 +375,7 @@ pub fn find_object_range(path: &Path, entry: &SymbolEntry) -> Option<MemberRange
         // Name runs to an ` extends ` clause, the opening ` {`, or end of line;
         // quotes (for multi-word names) are kept so the whole name highlights.
         let name_len = rest
+            .to_ascii_lowercase()
             .find(" extends ")
             .or_else(|| rest.find(" {"))
             .unwrap_or(rest.len());
@@ -432,12 +445,24 @@ fn extract_source_from_app(
 }
 
 fn sanitize_filename(s: &str) -> String {
-    s.chars()
+    let mapped: Vec<char> = s
+        .chars()
         .map(|c| {
             if c.is_alphanumeric() || c == '.' || c == '-' || c == '_' {
                 c
             } else {
                 '_'
+            }
+        })
+        .collect();
+    // A dot that starts the name or follows another dot becomes `_`, so the
+    // result has no leading dot and no `..`.
+    (0..mapped.len())
+        .map(|i| {
+            if mapped[i] == '.' && (i == 0 || mapped[i - 1] == '.') {
+                '_'
+            } else {
+                mapped[i]
             }
         })
         .collect()
@@ -546,7 +571,7 @@ pub fn render_metadata_only_with_note(entry: &SymbolEntry) -> String {
 /// with attributes, and global variables. This is the standard output for packages without
 /// embedded source — not a degraded mode.
 pub fn render_outline(entry: &SymbolEntry) -> String {
-    use super::model::{FieldSymbol, MethodSymbol};
+    use super::model::{FieldSymbol, MethodSymbol, ObjectKind};
 
     fn format_name(name: &str) -> String {
         // Quote unless the name is a plain AL identifier (letter/underscore
@@ -581,7 +606,7 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
         }
     }
 
-    fn render_method(out: &mut String, m: &MethodSymbol) {
+    fn render_method(out: &mut String, m: &MethodSymbol, has_body: bool) {
         for attr in &m.attributes {
             out.push_str(&format!("    [{}", attr.name));
             if !attr.arguments.is_empty() {
@@ -610,6 +635,9 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
             out.push_str(&format!(": {}", ret));
         }
         out.push_str(";\n");
+        if has_body {
+            out.push_str("    begin\n    end;\n");
+        }
     }
 
     let mut out = String::new();
@@ -650,7 +678,7 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             out.push_str(&format!(
-                "        key({}; {})\n",
+                "        key({}; {}) {{ }}\n",
                 format_name(&k.name),
                 fields
             ));
@@ -680,12 +708,33 @@ pub fn render_outline(entry: &SymbolEntry) -> String {
         out.push('\n');
     }
 
+    // Interface and controladdin procedures are declarations with no body in AL.
+    let has_body = !matches!(entry.kind, ObjectKind::Interface | ObjectKind::ControlAddIn);
     for m in &entry.methods {
-        render_method(&mut out, m);
+        render_method(&mut out, m, has_body);
     }
 
     out.push_str("}\n");
     out
+}
+
+/// Creates `dir` with mode 0o700 on Unix. The `set_permissions` call also
+/// tightens a directory that already exists.
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true);
+        builder.mode(0o700);
+        builder.create(dir)?;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(dir)?;
+    }
+    Ok(())
 }
 
 fn enforce_readonly(path: &Path) -> std::io::Result<()> {
@@ -693,7 +742,7 @@ fn enforce_readonly(path: &Path) -> std::io::Result<()> {
     {
         use std::os::unix::fs::PermissionsExt;
         let mut perms = fs::metadata(path)?.permissions();
-        perms.set_mode(0o444);
+        perms.set_mode(0o400);
         fs::set_permissions(path, perms)?;
     }
     #[cfg(not(unix))]
@@ -909,6 +958,9 @@ fn find_member_range_in_text(
 }
 
 fn find_procedure_range(line: &str, needle: &str) -> Option<(usize, usize)> {
+    if line.trim_start().starts_with("//") {
+        return None;
+    }
     let bytes = line.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -943,6 +995,9 @@ fn find_call_range(
     arg_index: usize,
     needle: &str,
 ) -> Option<(usize, usize)> {
+    if line.trim_start().starts_with("//") {
+        return None;
+    }
     let bytes = line.as_bytes();
     let mut i = 0usize;
     while i < bytes.len() {
@@ -1179,17 +1234,14 @@ mod tests {
 
     #[test]
     fn render_outline_carries_no_implementation_body() {
-        // The core limitation: a package outline renders the *declaration* of a
-        // method (signature, terminated by `;`) but never an implementation —
-        // there is no `begin`/`end` body because `.app` packages don't ship one.
+        // Each procedure renders with an empty `begin end;` body. The `.app`
+        // package does not ship the implementation, so the body stays empty.
         let outline = render_outline(&package_codeunit());
         assert!(
-            outline.contains("procedure PostDocument(Preview: Boolean): Boolean;"),
-            "outline should render the public signature; got:\n{outline}"
-        );
-        assert!(
-            !outline.to_ascii_lowercase().contains("begin"),
-            "a package outline must not contain an implementation body; got:\n{outline}"
+            outline.contains(
+                "procedure PostDocument(Preview: Boolean): Boolean;\n    begin\n    end;\n"
+            ),
+            "outline should render the signature with an empty body; got:\n{outline}"
         );
     }
 
@@ -1514,7 +1566,8 @@ mod tests {
             "virtual file must document the no-body limitation; got:\n{content}"
         );
         assert!(content.contains("codeunit 80 \"Sales-Post\""));
-        assert!(!content.to_ascii_lowercase().contains("begin"));
+        assert!(content
+            .contains("procedure PostDocument(Preview: Boolean): Boolean;\n    begin\n    end;\n"));
     }
 
     /// A hand-edited or half-written `.zed/settings.json` in the symbol cache
@@ -1685,5 +1738,109 @@ mod tests {
         assert_ne!(first.path, second.path);
         assert!(second_content.contains("procedure Second"));
         assert!(!second_content.contains("procedure First"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn package_name_dotdot_stays_under_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", tmp.path());
+
+        let mut entry = package_codeunit();
+        entry.package = "..".to_string();
+        let result = get_or_create(&entry, None);
+        let root = fs::canonicalize(cache_dir());
+
+        match prev {
+            Some(v) => std::env::set_var("XDG_CACHE_HOME", v),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+
+        let path = result.expect("virtual file should be written");
+        let root = root.expect("symbol cache root should exist");
+        let written = fs::canonicalize(&path).expect("virtual file should resolve");
+        assert!(
+            written.starts_with(&root),
+            "virtual file {} is outside the cache root {}",
+            written.display(),
+            root.display()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn virtual_dirs_are_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("XDG_CACHE_HOME");
+        std::env::set_var("XDG_CACHE_HOME", tmp.path());
+
+        let result = get_or_create(&package_codeunit(), None);
+
+        match prev {
+            Some(v) => std::env::set_var("XDG_CACHE_HOME", v),
+            None => std::env::remove_var("XDG_CACHE_HOME"),
+        }
+
+        let path = result.expect("virtual file should be written");
+        let dir = path.parent().expect("virtual file has a parent directory");
+        let mode = fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{} should be private", dir.display());
+    }
+
+    #[test]
+    fn outline_parses_without_errors() {
+        let mut entry = package_codeunit();
+        entry.kind = ObjectKind::Table;
+        entry.keys = vec![crate::model::KeySymbol {
+            name: "PK".to_string(),
+            field_names: vec!["No.".to_string()],
+            properties: Vec::new(),
+        }];
+        let outline = render_outline(&entry);
+        let parsed = al_syntax::AlParser::parse_quick(&outline);
+        assert!(
+            !parsed.tree.root_node().has_error(),
+            "outline has ERROR nodes: {}\n{outline}",
+            parsed.tree.root_node().to_sexp()
+        );
+        // The tree-sitter grammar also accepts a key without braces and a
+        // procedure without a body, which alc rejects, so check the text too.
+        assert!(outline.contains("key(PK; \"No.\") { }"), "{outline}");
+        assert!(outline.contains("    begin\n    end;\n"), "{outline}");
+    }
+
+    #[test]
+    fn uppercase_extends_highlights_name_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("ext.al");
+        fs::write(&path, "tableextension 50100 MyExt EXTENDS Customer {\n}\n").unwrap();
+        let entry = SymbolEntry {
+            kind: ObjectKind::TableExtension,
+            id: 50100,
+            name: "MyExt".to_string(),
+            ..Default::default()
+        };
+        let range = find_object_range(&path, &entry).expect("declaration should be found");
+        assert_eq!((range.line, range.col_start, range.col_end), (0, 21, 26));
+    }
+
+    #[test]
+    fn procedure_range_skips_comment() {
+        assert_eq!(
+            find_procedure_range(
+                "    // procedure PostDocument(Preview: Boolean);",
+                "postdocument"
+            ),
+            None
+        );
+        assert!(find_procedure_range(
+            "    procedure PostDocument(Preview: Boolean);",
+            "postdocument"
+        )
+        .is_some());
     }
 }

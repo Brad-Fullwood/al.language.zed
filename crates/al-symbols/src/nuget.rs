@@ -652,21 +652,21 @@ async fn get_package_base_address(
         url.push('/');
     }
 
-    // Refuse non-HTTPS PackageBaseAddress URLs by default — package downloads
-    // over plain HTTP are vulnerable to MITM substitution and we have no
-    // checksum verification path. Setting `AL_LSP_ALLOW_HTTP_FEED=1` opts in
-    // for local-dev / loopback feeds.
-    if !url.starts_with("https://") {
+    // Package downloads over plain HTTP from another host can be substituted
+    // in transit and there is no checksum to verify. The base address accepts
+    // what the feed URL check accepts (https, or http on loopback), and
+    // `AL_LSP_ALLOW_HTTP_FEED=1` opts in to any other http address.
+    if !is_acceptable_feed_url(&url) {
         let allow_http = std::env::var("AL_LSP_ALLOW_HTTP_FEED")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
             .unwrap_or(false);
-        if !allow_http {
+        if !base_address_allowed(&url, allow_http) {
             return Err(NuGetError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!(
-                    "PackageBaseAddress {url} is not HTTPS. Refusing to download \
-                     over plain HTTP. Set AL_LSP_ALLOW_HTTP_FEED=1 to opt in for \
-                     local-dev or loopback feeds."
+                    "PackageBaseAddress {url} is not HTTPS or a loopback address. \
+                     Refusing to download over plain HTTP. Set \
+                     AL_LSP_ALLOW_HTTP_FEED=1 to allow it."
                 ),
             )));
         }
@@ -677,6 +677,13 @@ async fn get_package_base_address(
     }
 
     Ok(url)
+}
+
+/// Whether a PackageBaseAddress may be downloaded from: anything
+/// [`is_acceptable_feed_url`] accepts, or any http address when
+/// `AL_LSP_ALLOW_HTTP_FEED` is set.
+fn base_address_allowed(url: &str, allow_http: bool) -> bool {
+    is_acceptable_feed_url(url) || (allow_http && url.starts_with("http://"))
 }
 
 #[cfg(test)]
@@ -836,6 +843,29 @@ fn nuget_manifest_satisfies(path: &Path, package: &PackageRef) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_http_base_address_is_accepted() {
+        assert!(base_address_allowed(
+            "http://127.0.0.1:5000/v3/flatcontainer/",
+            false
+        ));
+        assert!(base_address_allowed(
+            "http://localhost:5000/v3/flatcontainer/",
+            false
+        ));
+        assert!(base_address_allowed(
+            "http://[::1]:5000/v3/flatcontainer/",
+            false
+        ));
+        assert!(base_address_allowed(
+            "https://feed.example.com/flat/",
+            false
+        ));
+        assert!(!base_address_allowed("http://10.0.0.5/flat/", false));
+        assert!(base_address_allowed("http://10.0.0.5/flat/", true));
+        assert!(!base_address_allowed("ftp://127.0.0.1/flat/", true));
+    }
 
     #[test]
     fn a_feed_url_must_be_https_or_loopback_http() {

@@ -229,13 +229,13 @@ pub fn table_impact(symbols: &SymbolIndex, table_name: &str) -> TableImpactResul
     }
 }
 
-/// Add the workspace's procedure-local `Record <table>` variables to a
-/// [`table_impact`] result.
+/// Add the workspace's `Record <table>` variables to a [`table_impact`]
+/// result. Procedure-local variables and object-level globals both count.
 ///
-/// Symbol entries carry an object's global variables and its procedures'
-/// parameters, but not the variables declared inside a procedure, which is
-/// where most code holds a record: a test codeunit whose only use of
-/// Customer was two `Cust: Record Customer` locals did not appear at all.
+/// Workspace symbol entries leave `variables` empty, so the variables are
+/// read from the source files here. Without this, a test codeunit whose only
+/// use of Customer was two `Cust: Record Customer` locals did not appear at
+/// all.
 pub fn add_workspace_local_record_variables(
     result: &mut TableImpactResult,
     files: &al_source::file_index::FileIndex,
@@ -264,14 +264,13 @@ pub fn add_workspace_local_record_variables(
             if node.kind() != "regular_variable_declaration" {
                 continue;
             }
-            let Some(procedure) = std::iter::successors(node.parent(), |n| n.parent()).find(|n| {
+            // Object-level globals have no enclosing procedure, so this is None for them.
+            let procedure = std::iter::successors(node.parent(), |n| n.parent()).find(|n| {
                 matches!(
                     n.kind(),
                     "procedure_declaration" | "trigger_declaration" | "event_procedure_declaration"
                 )
-            }) else {
-                continue; // an object-level global: already in the entry
-            };
+            });
             let is_record = node
                 .child_by_field_name("type")
                 .and_then(|ty| ty.utf8_text(source).ok())
@@ -285,11 +284,11 @@ pub fn add_workspace_local_record_variables(
             }) else {
                 continue;
             };
-            let procedure_name = procedure
-                .child_by_field_name("name")
-                .and_then(|name| name.utf8_text(source).ok())
-                .map(|name| name.unquote_identifier().into_owned())
-                .unwrap_or_default();
+            let procedure_name = procedure.and_then(|procedure| {
+                let name = procedure.child_by_field_name("name")?;
+                let text = name.utf8_text(source).ok()?;
+                Some(text.unquote_identifier().into_owned())
+            });
             let mut cursor = node.walk();
             let names: Vec<String> = node
                 .children_by_field_name("name", &mut cursor)
@@ -317,9 +316,13 @@ pub fn add_workspace_local_record_variables(
                 }
             };
             for name in names {
+                let location_hint = match &procedure_name {
+                    Some(procedure_name) => format!("var {name} in {procedure_name}"),
+                    None => format!("var {name}"),
+                };
                 result.objects[index].impacts.push(TableImpact {
                     operation: TableOperationKind::RecordVariable,
-                    location_hint: Some(format!("var {name} in {procedure_name}")),
+                    location_hint: Some(location_hint),
                 });
                 result.total_impacts += 1;
             }
@@ -730,6 +733,29 @@ mod tests {
             ]
         );
         assert_eq!(result.total_impacts, 2);
+    }
+
+    /// Workspace entries carry no globals, so an object-level `Record`
+    /// global is read from the source like a local.
+    #[test]
+    fn workspace_object_global_record_counts_as_table_use() {
+        let files = al_source::file_index::FileIndex::new();
+        files.add_file(
+            std::path::PathBuf::from("/ws/C.Codeunit.al"),
+            "codeunit 50100 C\n{\n    var\n        A, B: Record Customer;\n\n    procedure Run()\n    begin\n        B.Modify();\n    end;\n}\n"
+                .to_string(),
+        );
+        let mut result = table_impact(&SymbolIndex::new(), "Customer");
+
+        add_workspace_local_record_variables(&mut result, &files, "Customer");
+
+        let hints: Vec<_> = result
+            .objects
+            .iter()
+            .flat_map(|object| &object.impacts)
+            .filter_map(|impact| impact.location_hint.clone())
+            .collect();
+        assert_eq!(hints, vec!["var A", "var B"], "{result:#?}");
     }
     use al_symbols::{
         AttributeSymbol, FieldSymbol, MethodSymbol, ObjectKind, ParameterSymbol, PropertyValue,

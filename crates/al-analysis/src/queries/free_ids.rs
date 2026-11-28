@@ -43,7 +43,7 @@ pub struct IdRange {
 impl IdRange {
     #[must_use]
     pub fn capacity(&self) -> i64 {
-        (self.to - self.from + 1).max(0)
+        self.to.saturating_sub(self.from).saturating_add(1).max(0)
     }
 
     #[must_use]
@@ -69,21 +69,19 @@ pub struct RangeUsage {
 /// lower range first. Overlapping ranges never hand out the same number twice.
 #[must_use]
 pub fn free_in_ranges(ranges: &[IdRange], used: &BTreeSet<i64>, count: usize) -> Vec<i64> {
+    let ranges = valid_ranges(ranges);
     let mut free = Vec::new();
     if count == 0 {
         return free;
     }
-    let mut emitted = BTreeSet::new();
-    for range in normalized_ranges(ranges) {
-        let mut candidate = range.from;
-        while candidate <= range.to {
-            if !used.contains(&candidate) && emitted.insert(candidate) {
+    for range in merged_ranges(&ranges) {
+        for candidate in range.from..=range.to {
+            if !used.contains(&candidate) {
                 free.push(candidate);
                 if free.len() == count {
                     return free;
                 }
             }
-            candidate += 1;
         }
     }
     free
@@ -93,6 +91,7 @@ pub fn free_in_ranges(ranges: &[IdRange], used: &BTreeSet<i64>, count: usize) ->
 /// them, so a developer can match a row to the manifest line that produced it.
 #[must_use]
 pub fn range_usage(ranges: &[IdRange], used: &BTreeSet<i64>) -> Vec<RangeUsage> {
+    let ranges = valid_ranges(ranges);
     ranges
         .iter()
         .map(|range| {
@@ -111,21 +110,10 @@ pub fn range_usage(ranges: &[IdRange], used: &BTreeSet<i64>) -> Vec<RangeUsage> 
 /// Total capacity across the declared ranges, counting an overlap once.
 #[must_use]
 pub fn total_capacity(ranges: &[IdRange]) -> i64 {
-    let mut total = 0;
-    let mut previous_end: Option<i64> = None;
-    for range in normalized_ranges(ranges) {
-        let start = match previous_end {
-            Some(end) if range.from <= end => end + 1,
-            _ => range.from,
-        };
-        if start <= range.to {
-            total += range.to - start + 1;
-            previous_end = Some(range.to);
-        } else if let Some(end) = previous_end {
-            previous_end = Some(end.max(range.to));
-        }
-    }
-    total
+    let ranges = valid_ranges(ranges);
+    merged_ranges(&ranges)
+        .iter()
+        .fold(0_i64, |total, range| total.saturating_add(range.capacity()))
 }
 
 /// Ranges sorted ascending, with reversed and empty ones dropped.
@@ -133,6 +121,53 @@ fn normalized_ranges(ranges: &[IdRange]) -> Vec<IdRange> {
     let mut sorted: Vec<IdRange> = ranges.iter().copied().filter(|r| r.from <= r.to).collect();
     sorted.sort_by_key(|range| (range.from, range.to));
     sorted
+}
+
+/// The normalised ranges with overlapping ones joined, so each ID sits in
+/// exactly one returned range.
+fn merged_ranges(ranges: &[IdRange]) -> Vec<IdRange> {
+    let mut merged: Vec<IdRange> = Vec::new();
+    for range in normalized_ranges(ranges) {
+        match merged.last_mut() {
+            Some(last) if range.from <= last.to => last.to = last.to.max(range.to),
+            _ => merged.push(range),
+        }
+    }
+    merged
+}
+
+/// Drops each range that holds no ID (`from < 1` or `from > to`) and warns once
+/// per dropped range.
+fn valid_ranges(ranges: &[IdRange]) -> Vec<IdRange> {
+    ranges
+        .iter()
+        .copied()
+        .filter(|range| {
+            let valid = range.from >= 1 && range.from <= range.to;
+            if !valid {
+                tracing::warn!(
+                    from = range.from,
+                    to = range.to,
+                    "ignoring idRanges entry: it needs 1 <= from <= to"
+                );
+            }
+            valid
+        })
+        .collect()
+}
+
+/// Free numbers across the merged ranges: their capacity minus the used
+/// numbers inside them. Per-range counts would count an overlap twice.
+fn free_count_in(ranges: &[IdRange], used: &BTreeSet<i64>) -> i64 {
+    let merged = merged_ranges(ranges);
+    let used_inside = used
+        .iter()
+        .filter(|id| merged.iter().any(|range| range.contains(**id)))
+        .count() as i64;
+    let capacity = merged
+        .iter()
+        .fold(0_i64, |total, range| total.saturating_add(range.capacity()));
+    capacity - used_inside
 }
 
 /// A workspace or package object, reduced to what allocation needs.
@@ -316,6 +351,7 @@ pub fn allocate(
     ranges: &[IdRange],
     query: &FreeIdsQuery,
 ) -> Result<FreeIdsReport, FreeIdsError> {
+    let ranges = &valid_ranges(ranges);
     let count = query.count.clamp(1, MAX_COUNT);
     let mut warnings = Vec::new();
     if ranges.is_empty() {
@@ -367,7 +403,7 @@ fn allocate_object_ids(
         next_free: free.first().copied(),
         free: free.clone(),
         used_count: in_range_used.len() as i64,
-        free_count: Some(usage.iter().map(|range| range.free).sum()),
+        free_count: Some(free_count_in(ranges, &used)),
         sources: Vec::new(),
         used: if query.include_used {
             in_range_used.into_iter().collect()
@@ -521,7 +557,7 @@ fn allocate_members(
         if free.is_empty() {
             return Err(exhausted(domain, ranges));
         }
-        let free_count = usage.iter().map(|range| range.free).sum();
+        let free_count = free_count_in(ranges, &used);
         (free, usage, Some(free_count))
     } else {
         // A base object owns its whole numbering space; `idRanges` does not
@@ -629,7 +665,7 @@ pub fn free_ids(
     query: &FreeIdsQuery,
 ) -> Result<FreeIdsReport, FreeIdsError> {
     let root = project_root.ok_or(FreeIdsError::NoProject)?;
-    let ranges = id_ranges(root)?;
+    let ranges = valid_ranges(&id_ranges(root)?);
     let objects = collect_objects(workspace, &ranges);
     allocate(&objects, &ranges, query)
 }
@@ -939,6 +975,37 @@ mod tests {
     #[test]
     fn a_reversed_range_is_ignored_rather_than_looping() {
         assert!(free_in_ranges(&ranges(&[(50099, 50000)]), &used(&[]), 1).is_empty());
+    }
+
+    #[test]
+    fn overlapping_ranges_are_counted_once() {
+        let report = allocate(
+            &[],
+            &ranges(&[(50100, 50149), (50120, 50199)]),
+            &query(Some(ObjectKind::Table), 1),
+        )
+        .unwrap();
+        assert_eq!(report.free_count, Some(100));
+    }
+
+    #[test]
+    fn inverted_range_is_ignored() {
+        let report = allocate(
+            &[],
+            &ranges(&[(50200, 50100), (50100, 50109)]),
+            &query(Some(ObjectKind::Table), 1),
+        )
+        .unwrap();
+        assert_eq!(report.free_count, Some(10));
+        assert_eq!(
+            report.ranges,
+            vec![RangeUsage {
+                from: 50100,
+                to: 50109,
+                used: 0,
+                free: 10
+            }]
+        );
     }
 
     #[test]

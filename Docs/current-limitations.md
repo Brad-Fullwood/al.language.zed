@@ -27,8 +27,9 @@ live in [ROADMAP.md](../ROADMAP.md).
 - Workspace diagnostics provide native syntax results for all indexed files and
   semantic bridge diagnostics for open documents. Semantic analysis of every
   unopened file is not enabled by default.
-- References, dead-code analysis, and call graphs cannot inspect call sites inside
-  a dependency package that embeds no source.
+- References and dead-code analysis scan workspace files only. They do not
+  inspect source embedded in dependency packages. Call graphs cannot inspect
+  call sites inside a dependency package that embeds no source.
 - Package navigation distinguishes workspace source, extractable embedded source,
   generated public-API outlines, and identity-only metadata. Generated outlines
   are not original package source, and extraction failures are reported as the
