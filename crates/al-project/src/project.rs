@@ -58,6 +58,7 @@ pub struct AppManifest {
 }
 
 pub use al_types::regular_file::read_regular_text_file;
+pub(crate) use al_types::regular_file::strip_utf8_bom;
 /// A dependency entry in app.json.
 ///
 /// Canonical type from crate::symbols — unified so no field-for-field conversion is needed.
@@ -1109,6 +1110,17 @@ mod tests {
 
         let manifest = load_app_manifest(&project).expect("a link to a regular file loads");
         assert_eq!(manifest.name, "Linked");
+    }
+
+    #[test]
+    fn app_json_with_a_bom_loads() {
+        let project = tempdir();
+        let manifest = r#"{"id":"00000000-0000-0000-0000-000000000000","name":"Test","publisher":"Test","version":"1.0.0.0","idRange":{"from":50000,"to":50099}}"#;
+        std::fs::write(project.join("app.json"), format!("\u{feff}{manifest}")).unwrap();
+
+        let loaded = load_app_manifest(&project).expect("a BOM-prefixed manifest loads");
+        assert_eq!(loaded.name, "Test");
+        assert_eq!(load_id_ranges(&project), Some(vec![(50000, 50099)]));
     }
 
     #[test]

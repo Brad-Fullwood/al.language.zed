@@ -113,7 +113,7 @@ The shipped verifier performs:
 | Declarations | duplicate object IDs/names. Duplicate field IDs/names. Duplicate enum ordinals/names. Duplicate procedure signatures/parameter names. Unknown key/field-group fields | `ALN1xxx` diagnostics point at the complete object declaration range and block emission. |
 | Declared bindings and contracts | extension targets, implemented interfaces, declared object subtypes (`Record`, `Page`, `Codeunit`, `Report`, `XmlPort`, `Query`, `Enum`, `Interface`) and `SourceTable` references resolve against project plus dependency symbols. Locally declared interface methods must be implemented | `ALN2xxx` diagnostics block emission. |
 | Permissions | permission object kinds/flags are validated and permission targets resolve against project plus dependency symbols | `ALN21xx` diagnostics block emission. |
-| Local procedure/event semantics | local call overload arity and ambiguity. Value/no-value returns and scalar literal return types. `Break`/`Continue` without a loop. Locally sourced publisher/subscriber parameter contracts `ALN2201`, `ALN2211` and `ALN2301` block emission. `ALN2202` to `ALN2210` are warnings. Publisher bodies/contracts absent from source-free dependency packages are an explicit Microsoft compatibility boundary. |
+| Local procedure/event semantics | local call overload arity and ambiguity. Value/no-value returns and scalar literal return types. `Break`/`Continue` without a loop. `ALN2301` blocks emission. `ALN2201` to `ALN2211` and `ALN2403` are warnings: they come from text scans that cannot bind every name. Publisher bodies/contracts absent from source-free dependency packages are an explicit Microsoft compatibility boundary. |
 | Artifact integrity | reopen NAVX/ZIP. Reject duplicate/empty required entries. Compare the exact embedded AL source-path set with the verified snapshot. Parse the generated manifest and `SymbolReference.json`. Compare package id/name/publisher/version with `app.json` | `ALN3xxx` failures discard the staged artifact. |
 
 ### Native diagnostic codes
@@ -242,8 +242,8 @@ package-semantic-equivalence check.
 > `emitter-02-native-app-differs-from-alc-on-dms`.
 >
 > **The verifier warns, it does not prove.** The text checks for local procedure calls, return
-> values, overloads, `Exit`, `Break`, `Continue` and identifiers in field triggers (ALN2202 to
-> ALN2210) cannot be exact without a binder. They are reported as warnings and do not stop the
+> values, overloads, `Exit`, `Break`, `Continue` and identifiers in field triggers (ALN2201 to
+> ALN2211, and the assignment check ALN2403) cannot be exact without a binder. They are reported as warnings and do not stop the
 > build (finding `emitter-01-native-verifier-rejects-valid-dms-project`). A clean native build does
 > not mean `alc` would accept the project.
 >

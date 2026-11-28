@@ -5,14 +5,20 @@
 
 use std::path::Path;
 
-/// The text `reader` holds, or `None` when it holds more than `cap` bytes.
-/// Reads at most `cap + 1` bytes, so a source that never ends stops there.
+// Windows tools write a UTF-8 BOM, which serde_json rejects.
+pub fn strip_utf8_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
+/// The text `reader` holds without a leading BOM, or `None` when it holds more
+/// than `cap` bytes. Reads at most `cap + 1` bytes, so a source that never ends
+/// stops there.
 pub fn read_text_up_to(reader: impl std::io::Read, cap: u64) -> std::io::Result<Option<String>> {
     use std::io::Read;
 
     let mut text = String::new();
     reader.take(cap + 1).read_to_string(&mut text)?;
-    Ok((text.len() as u64 <= cap).then_some(text))
+    Ok((text.len() as u64 <= cap).then(|| strip_utf8_bom(&text).to_owned()))
 }
 
 /// The text of the regular file at `path`, read up to `cap` bytes.
@@ -74,5 +80,13 @@ mod tests {
 
         let at_the_cap = read_text_up_to(std::io::repeat(b'a').take(1024), 1024).unwrap();
         assert_eq!(at_the_cap.map(|text| text.len()), Some(1024));
+    }
+
+    #[test]
+    fn read_text_up_to_drops_a_utf8_bom() {
+        assert_eq!(
+            read_text_up_to(&b"\xEF\xBB\xBF{}"[..], 64).unwrap(),
+            Some("{}".to_string())
+        );
     }
 }

@@ -302,6 +302,47 @@ fn aln2209_accepts_procedures_the_table_and_its_extensions_declare() {
 }
 
 #[test]
+fn commented_call_is_not_a_call_site() {
+    let source = r#"codeunit 50100 C
+{
+    local procedure Init()
+    begin
+    end;
+
+    procedure P()
+    var
+        Txt: Text;
+    begin
+        // Init (when empty)
+        Txt := 'Init (x)';
+    end;
+}
+"#;
+    let codes = codes_for(&[("C.Codeunit.al", source)]);
+    assert_silent(&codes, "ALN2201");
+}
+
+#[test]
+fn real_arity_mismatch_still_reported() {
+    let source = r#"codeunit 50100 C
+{
+    local procedure Init()
+    begin
+    end;
+
+    procedure P()
+    var
+        Txt: Text;
+    begin
+        Init(1);
+    end;
+}
+"#;
+    let codes = codes_for(&[("C.Codeunit.al", source)]);
+    assert_reports(&codes, "ALN2201");
+}
+
+#[test]
 fn aln2203_and_aln2204_missing_and_valueless_exit_in_a_returning_procedure() {
     let missing = codes_for(&[(
         "C.Codeunit.al",
@@ -826,6 +867,59 @@ fn implicit_false_return_only_warns() {
 }
 
 #[test]
+fn variable_redeclared_with_another_type_only_warns() {
+    // variable_types keeps one map per object, so procedure B's Record declaration
+    // of Cust reaches procedure A, where Cust is an Integer.
+    let (diagnostics, written) = build_summary(&[
+        (
+            "Customer.Table.al",
+            r#"table 50100 Customer
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+}
+"#,
+        ),
+        (
+            "Redeclared.Codeunit.al",
+            r#"codeunit 50101 "Prop Redeclared"
+{
+    procedure A()
+    var
+        Cust: Integer;
+        N: Integer;
+    begin
+        N := Cust;
+    end;
+
+    procedure B()
+    var
+        Cust: Record Customer;
+    begin
+    end;
+}
+"#,
+        ),
+    ]);
+    assert!(
+        diagnostics.contains(&(
+            "ALN2403".to_string(),
+            al_emit::VerificationSeverity::Warning
+        )),
+        "expected ALN2403 as a warning: {diagnostics:?}"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|(_, severity)| *severity == al_emit::VerificationSeverity::Error),
+        "{diagnostics:?}"
+    );
+    assert!(written, "{diagnostics:?}");
+}
+
+#[test]
 fn curr_report_break_only_warns() {
     let (diagnostics, written) = build_summary(&[(
         "Break.Report.al",
@@ -1141,4 +1235,107 @@ codeunit 50100 Finder
 "#,
     )]);
     assert_silent(&codes, "ALN2003");
+}
+
+/// A Record subtype with a namespace is checked by its object name, as a
+/// codeunit subtype is above.
+#[test]
+fn namespace_qualified_record_variable_is_known() {
+    let codes = codes_for(&[(
+        "Widget.al",
+        r#"namespace Sales.Tools;
+
+table 50100 Widget
+{
+    fields
+    {
+        field(1; Id; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; Id) { Clustered = true; }
+    }
+}
+
+codeunit 50101 User
+{
+    procedure Run()
+    var
+        W: Record Sales.Tools.Widget;
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN2401");
+}
+
+/// A quoted table name may hold a dot. The dot does not split the name.
+#[test]
+fn record_name_with_a_dot_is_known() {
+    let codes = codes_for(&[(
+        "Series.al",
+        r#"table 50102 "No. Series"
+{
+    fields
+    {
+        field(1; Id; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; Id) { Clustered = true; }
+    }
+}
+
+codeunit 50103 User
+{
+    procedure Run()
+    var
+        N: Record "No. Series";
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN2401");
+}
+
+#[test]
+fn unknown_qualified_record_is_still_reported() {
+    let codes = codes_for(&[(
+        "Missing.al",
+        r#"namespace Sales.Tools;
+
+codeunit 50100 User
+{
+    procedure Run()
+    var
+        M: Record Sales.Tools.Missing;
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_reports(&codes, "ALN2401");
+}
+
+#[test]
+fn aln2401_points_at_the_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(
+        dir.path(),
+        APP_JSON,
+        &[(
+            "Finder.al",
+            "codeunit 50100 Finder\n{\n    procedure Run()\n    var\n        c: Record Missing;\n    begin\n    end;\n}\n",
+        )],
+    );
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("verification runs");
+    let unknown = built
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "ALN2401")
+        .unwrap_or_else(|| panic!("{:?}", built.diagnostics));
+    assert_eq!(unknown.line, 5, "{:?}", built.diagnostics);
 }

@@ -693,7 +693,8 @@ fn eval_asserterror(
             Eval::Error(caught)
         }
         Eval::Error(caught) => {
-            // A caught error undoes the non-temporary record writes since the last commit, as BC does.
+            // A caught error undoes the non-temporary record writes since the test
+            // start, as BC rolls back to the last Commit and Commit runs only on LiveBc.
             ctx.rollback_records();
             // Retain the caught error so the standard pattern
             // `asserterror X; Assert.ExpectedError(GetLastErrorText())` works.
