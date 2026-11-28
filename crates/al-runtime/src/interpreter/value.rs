@@ -440,6 +440,9 @@ pub enum Value {
         start: Box<Value>,
         end: Box<Value>,
     },
+    /// AL `Time` with no value: the default of a Time variable or field, and
+    /// `0T`. Not midnight: midnight is `Time(0)`, written `000000T`.
+    UndefinedTime,
 }
 
 /// In-memory record handle backed by `mock::record::MockRecord`.
@@ -546,7 +549,7 @@ fn compare_one(left: &Value, right: &Value, met: &mut MetPairs) -> Step {
             Text(_) => 6,
             Code(_) => 7,
             Date(_) => 8,
-            Time(_) => 9,
+            Time(_) | UndefinedTime => 9,
             DateTime(_) => 10,
             Duration(_) => 11,
             Guid(_) => 12,
@@ -586,7 +589,12 @@ fn compare_one(left: &Value, right: &Value, met: &mut MetPairs) -> Step {
         (Text(a), Text(b)) | (Code(a), Code(b)) => a.cmp(b),
         (TextBuilder(a), TextBuilder(b)) if a.same(b) => Ordering::Equal,
         (TextBuilder(a), TextBuilder(b)) => a.snapshot().cmp(&b.snapshot()),
-        (Date(a), Date(b)) | (Time(a), Time(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
+        (Date(a), Date(b)) | (DateTime(a), DateTime(b)) => a.cmp(b),
+        // The undefined time sorts before midnight, the first defined time.
+        (UndefinedTime, UndefinedTime) => Ordering::Equal,
+        (UndefinedTime, Time(_)) => Ordering::Less,
+        (Time(_), UndefinedTime) => Ordering::Greater,
+        (Time(a), Time(b)) => a.cmp(b),
         (Duration(a), Duration(b)) => a.cmp(b),
         (Guid(a), Guid(b)) => a.cmp(b),
         (Json(a), Json(b)) => a.cmp(b),
@@ -950,7 +958,7 @@ impl Value {
             "text" => Some(Value::Text(String::new())),
             "code" => Some(Value::Code(String::new())),
             "date" => Some(Value::Date(0)),
-            "time" => Some(Value::Time(0)),
+            "time" => Some(Value::UndefinedTime),
             "datetime" => Some(Value::DateTime(0)),
             "duration" => Some(Value::Duration(0)),
             // Braced, as Format shows a Guid and CreateGuid returns one.
@@ -1015,7 +1023,7 @@ impl Value {
                 crate::interpreter::json::JsonKind::Value => "JsonValue",
             },
             Value::Date(_) => "Date",
-            Value::Time(_) => "Time",
+            Value::Time(_) | Value::UndefinedTime => "Time",
             Value::DateTime(_) => "DateTime",
             Value::Duration(_) => "Duration",
             Value::Guid(_) => "Guid",
@@ -1142,7 +1150,7 @@ mod tests {
             Some(Value::Decimal(Decimal::ZERO))
         );
         assert_eq!(Value::default_for("date"), Some(Value::Date(0)));
-        assert_eq!(Value::default_for("time"), Some(Value::Time(0)));
+        assert_eq!(Value::default_for("time"), Some(Value::UndefinedTime));
         assert_eq!(Value::default_for("datetime"), Some(Value::DateTime(0)));
         assert_eq!(Value::default_for("duration"), Some(Value::Duration(0)));
         assert_eq!(Value::default_for("char"), Some(Value::Char('\0')));
@@ -1178,6 +1186,7 @@ mod tests {
             Value::Text(String::new()),
             Value::Code(String::new()),
             Value::Date(0),
+            Value::UndefinedTime,
             Value::Time(0),
             Value::DateTime(0),
             Value::Duration(0),

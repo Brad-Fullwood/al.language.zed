@@ -346,7 +346,7 @@ fn cleared(value: &Value, ctx: &mut DispatchCtx) -> Result<Value, String> {
         Value::Code(_) => Value::Code(String::new()),
         Value::TextBuilder(_) => Value::text_builder(String::new()),
         Value::Date(_) => Value::Date(0),
-        Value::Time(_) => Value::Time(0),
+        Value::Time(_) | Value::UndefinedTime => Value::UndefinedTime,
         Value::DateTime(_) => Value::DateTime(0),
         Value::Duration(_) => Value::Duration(0),
         Value::Guid(_) => Value::default_for("guid").unwrap_or(Value::Null),

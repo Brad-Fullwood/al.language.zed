@@ -151,7 +151,7 @@ fn standard_picture(value: &Value, number: i64) -> Result<&'static str, String> 
 /// Render `value` with numbered standard format `number` (other than the 0
 /// and 9 the caller handles for every type).
 pub(crate) fn render_standard(value: &Value, number: i64) -> Result<String, String> {
-    if matches!(value, Value::Date(0)) {
+    if matches!(value, Value::Date(0) | Value::UndefinedTime) {
         return Ok(String::new());
     }
     render_picture(value, standard_picture(value, number)?)
@@ -172,7 +172,7 @@ fn pad_left(text: String, width: Option<usize>, filler: char) -> String {
 /// Render `value` with picture string `picture`.
 pub(crate) fn render_picture(value: &Value, picture: &str) -> Result<String, String> {
     // The undefined date 0D is empty text for every picture.
-    if matches!(value, Value::Date(0)) {
+    if matches!(value, Value::Date(0) | Value::UndefinedTime) {
         return Ok(String::new());
     }
     let parts = parts(picture)?;

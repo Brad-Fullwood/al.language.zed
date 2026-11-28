@@ -210,29 +210,26 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
                 },
             )
         }
-        ("+", Value::Time(time), offset) | ("+", offset, Value::Time(time)) => {
-            if *time == 0 {
-                return Some(Eval::Error(error_info(
-                    "Time arithmetic is undefined for 0T",
-                )));
-            }
-            Some(
-                match whole_offset(offset).and_then(|offset| {
-                    time.checked_add(offset)
-                        .map(|value| value.rem_euclid(value::MS_PER_DAY))
-                        .ok_or_else(|| error_info("Time arithmetic overflow"))
-                }) {
-                    Ok(value) => Eval::Normal(Value::Time(value)),
-                    Err(error) => Eval::Error(error),
-                },
-            )
-        }
+        // `0T` is the undefined time, not midnight, so arithmetic on it is an
+        // error. Its arms sit before the defined-Time arms below, which match
+        // only `Value::Time`.
+        ("+", Value::UndefinedTime, _)
+        | ("+", _, Value::UndefinedTime)
+        | ("-", Value::UndefinedTime, _)
+        | ("-", Value::Time(_), Value::UndefinedTime) => Some(Eval::Error(error_info(
+            "Time arithmetic is undefined for 0T",
+        ))),
+        ("+", Value::Time(time), offset) | ("+", offset, Value::Time(time)) => Some(
+            match whole_offset(offset).and_then(|offset| {
+                time.checked_add(offset)
+                    .map(|value| value.rem_euclid(value::MS_PER_DAY))
+                    .ok_or_else(|| error_info("Time arithmetic overflow"))
+            }) {
+                Ok(value) => Eval::Normal(Value::Time(value)),
+                Err(error) => Eval::Error(error),
+            },
+        ),
         ("-", Value::Time(left), Value::Time(right)) => {
-            if *left == 0 || *right == 0 {
-                return Some(Eval::Error(error_info(
-                    "Time arithmetic is undefined for 0T",
-                )));
-            }
             // BC: the difference of two Times is a Duration (milliseconds),
             // not an Integer.
             Some(match left.checked_sub(*right) {
@@ -240,23 +237,16 @@ fn apply_temporal_arithmetic(operator: &str, left: &Value, right: &Value) -> Opt
                 None => Eval::Error(error_info("Time arithmetic overflow")),
             })
         }
-        ("-", Value::Time(time), offset) => {
-            if *time == 0 {
-                return Some(Eval::Error(error_info(
-                    "Time arithmetic is undefined for 0T",
-                )));
-            }
-            Some(
-                match whole_offset(offset).and_then(|offset| {
-                    time.checked_sub(offset)
-                        .map(|value| value.rem_euclid(value::MS_PER_DAY))
-                        .ok_or_else(|| error_info("Time arithmetic overflow"))
-                }) {
-                    Ok(value) => Eval::Normal(Value::Time(value)),
-                    Err(error) => Eval::Error(error),
-                },
-            )
-        }
+        ("-", Value::Time(time), offset) => Some(
+            match whole_offset(offset).and_then(|offset| {
+                time.checked_sub(offset)
+                    .map(|value| value.rem_euclid(value::MS_PER_DAY))
+                    .ok_or_else(|| error_info("Time arithmetic overflow"))
+            }) {
+                Ok(value) => Eval::Normal(Value::Time(value)),
+                Err(error) => Eval::Error(error),
+            },
+        ),
         // Duration ± Duration/number → Duration. These arms must come AFTER
         // the Date/Time arms: their symmetric `("+", offset, Duration)`
         // pattern would otherwise capture `Duration + Date` / `Duration +
@@ -483,7 +473,9 @@ fn value_ordering(a: &Value, b: &Value) -> Result<std::cmp::Ordering, ErrorInfo>
         (Code(x), Code(y)) | (Text(x), Code(y)) | (Code(x), Text(y)) => {
             x.to_ascii_uppercase().cmp(&y.to_ascii_uppercase())
         }
-        (Date(x), Date(y)) | (Time(x), Time(y)) | (DateTime(x), DateTime(y)) => x.cmp(y),
+        (Date(x), Date(y)) | (DateTime(x), DateTime(y)) => x.cmp(y),
+        // The undefined time sorts before midnight. `Ord` holds that rule.
+        (Time(_) | UndefinedTime, Time(_) | UndefinedTime) => a.cmp(b),
         (l, r) => {
             return Err(error_info(format!(
                 "cannot compare {} and {}",

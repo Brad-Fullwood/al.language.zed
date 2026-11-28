@@ -137,7 +137,7 @@ fn zero_like(bound: &Value) -> Option<Value> {
         Value::Text(_) => Value::Text(String::new()),
         Value::Code(_) => Value::Code(String::new()),
         Value::Date(_) => Value::Date(0),
-        Value::Time(_) => Value::Time(0),
+        Value::Time(_) | Value::UndefinedTime => Value::UndefinedTime,
         Value::DateTime(_) => Value::DateTime(0),
         Value::Duration(_) => Value::Duration(0),
         Value::Char(_) => Value::Char('\0'),
@@ -2282,7 +2282,8 @@ mod tests {
             Some(Value::Code(String::new()))
         );
         assert_eq!(zero_like(&Value::Date(100)), Some(Value::Date(0)));
-        assert_eq!(zero_like(&Value::Time(100)), Some(Value::Time(0)));
+        assert_eq!(zero_like(&Value::Time(100)), Some(Value::UndefinedTime));
+        assert_eq!(zero_like(&Value::UndefinedTime), Some(Value::UndefinedTime));
         assert_eq!(zero_like(&Value::DateTime(100)), Some(Value::DateTime(0)));
         assert_eq!(zero_like(&Value::Duration(100)), Some(Value::Duration(0)));
         assert_eq!(zero_like(&Value::Char('x')), Some(Value::Char('\0')));

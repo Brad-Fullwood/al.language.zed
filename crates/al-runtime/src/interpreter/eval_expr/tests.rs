@@ -971,3 +971,68 @@ fn decimal_arithmetic_is_exact_and_overflow_errors() {
         "decimal overflow must produce Eval::Error, got: {result:?}"
     );
 }
+
+#[test]
+fn midnight_is_not_undefined_time() {
+    // 000000T is midnight, a defined time. Only 0T is the undefined time.
+    assert_eq!(ok(parse_and_eval("000000T")), Value::Time(0));
+    assert_eq!(ok(parse_and_eval("0T")), Value::UndefinedTime);
+    assert_ne!(Value::Time(0), Value::UndefinedTime);
+    assert_eq!(
+        ok(apply_binary("=", Value::UndefinedTime, Value::Time(0))),
+        Value::Boolean(false)
+    );
+    assert_eq!(
+        ok(apply_binary("<", Value::UndefinedTime, Value::Time(0))),
+        Value::Boolean(true),
+        "the undefined time sorts before midnight"
+    );
+
+    // Midnight takes part in arithmetic and wraps like any other defined time.
+    assert_eq!(
+        ok(apply_binary("+", Value::Time(0), Value::Integer(1_000))),
+        Value::Time(1_000)
+    );
+    assert_eq!(
+        ok(apply_binary("-", Value::Time(0), Value::Integer(1_000))),
+        Value::Time(value::MS_PER_DAY - 1_000)
+    );
+    assert_eq!(
+        ok(apply_binary("-", Value::Time(0), Value::Time(1_000))),
+        Value::Duration(-1_000)
+    );
+
+    // Arithmetic on 0T is still an error.
+    assert!(apply_binary("+", Value::UndefinedTime, Value::Integer(1_000)).is_error());
+    assert!(apply_binary("-", Value::Time(1_000), Value::UndefinedTime).is_error());
+
+    // A DateTime at midnight gives 000000T. The 0DT case is in the DT2Time test.
+    assert_eq!(
+        ok(parse_and_eval(
+            "DT2Time(CreateDateTime(20260101D, 000000T))"
+        )),
+        Value::Time(0)
+    );
+
+    // CreateDateTime with 0T adds no milliseconds: the result is midnight of the date.
+    assert_eq!(
+        ok(parse_and_eval("CreateDateTime(20260101D, 0T)")),
+        ok(parse_and_eval("CreateDateTime(20260101D, 000000T)"))
+    );
+}
+
+#[test]
+fn undefined_time_formats_empty() {
+    use crate::interpreter::dispatch::render::{render_value, render_value_xml};
+    assert_eq!(render_value(&Value::UndefinedTime), "");
+    assert_eq!(render_value_xml(&Value::UndefinedTime), "");
+    assert_eq!(render_value(&Value::Time(0)), "00:00:00");
+}
+
+#[test]
+fn undefined_time_is_default_of_time_variable() {
+    // A Time variable or field starts at 0T, not at midnight.
+    assert_eq!(Value::default_for("time"), Some(Value::UndefinedTime));
+    assert_eq!(Value::default_for("Time"), Some(Value::UndefinedTime));
+    assert_ne!(Value::default_for("Time"), Some(Value::Time(0)));
+}
