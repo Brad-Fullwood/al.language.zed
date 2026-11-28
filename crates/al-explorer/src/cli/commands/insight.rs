@@ -54,9 +54,51 @@ fn trace_text(event: &str, steps: &[serde_json::Value]) -> String {
         let node_type = text_field(step, "nodeType", "?");
         let name = text_field(step, "name", "?");
         let object = text_field(step, "object", "?");
+        // The daemon ends a trace that reached its node budget with this
+        // step. It names no object.
+        if edge == "truncated" {
+            let _ = writeln!(
+                out,
+                "The {name}, so steps past this point are not shown. A smaller --depth gives a complete trace."
+            );
+            continue;
+        }
         let _ = writeln!(out, "{indent}[{edge}] {node_type}: {object}::{name}");
     }
     out
+}
+
+#[cfg(test)]
+mod trace_text_tests {
+    use super::trace_text;
+
+    /// A4 codex-31 follow-up: the budget marker reads as a sentence, not as a
+    /// step with an empty object.
+    #[test]
+    fn a_cut_trace_ends_with_a_sentence() {
+        let steps = vec![
+            serde_json::json!({
+                "depth": 0, "edgeType": "origin", "nodeType": "event",
+                "name": "OnAfterPost", "object": "Sales-Post",
+            }),
+            serde_json::json!({
+                "depth": 0, "edgeType": "truncated", "nodeType": "",
+                "name": "trace stopped at 10000 steps", "object": "",
+            }),
+        ];
+        let text = trace_text("OnAfterPost", &steps);
+        assert!(
+            text.contains("[origin] event: Sales-Post::OnAfterPost"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "The trace stopped at 10000 steps, so steps past this point are not shown."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("[truncated]"), "{text}");
+    }
 }
 
 pub fn cmd_entrypoints(json: bool) -> ExitCode {
