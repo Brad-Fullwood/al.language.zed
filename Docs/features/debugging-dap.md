@@ -116,7 +116,7 @@ The hub URL follows Microsoft's adapter. In the cloud it is
 only), `sessionId` (when set and not -1) and `userid` (both only for an attach, they come from the attach options),
 and `Authentication=Bearer <token>`. Negotiate and the WebSocket both carry them, and the affinity cookie
 that negotiate sets is sent on the WebSocket (`HubBasedService.cs:57-58`). Not sent: `deploymentId` (no
-configuration field), application family and sovereign cloud hosts. Live check on CDX pending in the lead's contract run.
+configuration field), application family and sovereign cloud hosts. Not yet checked against a live service.
 
 A from-scratch SignalR (protocol v1) client: negotiates (`/negotiate?negotiateVersion=1`, validating
 the negotiated version and `connectionToken`), opens a WebSocket with the record-separator handshake,
@@ -146,7 +146,7 @@ lines inside each object's own compilation unit (the `using`/`namespace` header,
 comments), so the line also moves by an object offset: `DocumentHelper.cs:25-66` adds it to breakpoint lines
 and `DebugAdapterStackTraceHandler.cs:80-101` takes it off stack frame lines. The offset is computed by
 `object_line_shift` from `GetDebuggerLineOffsetForNode` (CodeAnalysis `SyntaxNodeExtensions`). A one-object file
-has offset 0. Live check on CDX pending in the lead's contract run: break on a line in the second object. The MCP path treats its clients as
+has offset 0. Not yet checked against a live service with a break on a line in the second object. The MCP path treats its clients as
 one-based.
 
 **Debugger version.** `connect` reads `debuggerVersion` from `GET dev/metadata` (`ServerInfo.cs:11-12`,
@@ -158,7 +158,7 @@ has the `WatchOption` argument from major 4 (`:349-353`), and `DebugOptions` car
 `BreakOnError`/`BreakOnRecordWrite` booleans below major 5 and only the behaviour values from major 5
 (`DebugAdapterStartRequestHandler.cs:69-119`). `SkipSystemTriggers` is always sent as true, the
 `DebugOptions` default, and has no launch.json field. A metadata body without a parsable version uses the newest
-shapes with a warning. Live check on CDX pending in the lead's contract run.
+shapes with a warning. Not yet checked against a live service.
 
 ### Engineering details worth knowing
 

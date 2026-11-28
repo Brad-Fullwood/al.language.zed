@@ -865,7 +865,7 @@ fn tools() -> &'static [ToolDef] {
                         },
                         "context": {
                             "type": "string",
-                            "description": "For status and finish: debugging context (GUID). Default: the latest session."
+                            "description": "For status and finish: debugging context (GUID). Default: the newest unfinished session of this project."
                         },
                         "outputDir": {
                             "type": "string",

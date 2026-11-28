@@ -135,7 +135,7 @@ pub enum SnapshotCommands {
     },
     /// Show the status of a started snapshot session
     Status {
-        /// Debugging context (GUID). Default: the latest session.
+        /// Debugging context (GUID). Default: the newest unfinished snapshot session of this project.
         #[arg(long)]
         context: Option<String>,
 
@@ -145,7 +145,7 @@ pub enum SnapshotCommands {
     },
     /// Finish a snapshot session and save the snapshot zip
     Finish {
-        /// Debugging context (GUID). Default: the latest session.
+        /// Debugging context (GUID). Default: the newest unfinished snapshot session of this project.
         #[arg(long)]
         context: Option<String>,
         /// Folder for the zip, inside the project. Default: `.snapshots`.
@@ -204,7 +204,7 @@ pub enum ProfileCommands {
     },
     /// Show the status of a started profiling session
     Status {
-        /// Debugging context (GUID). Default: the latest profiling session.
+        /// Debugging context (GUID). Default: the newest unfinished profiling session of this project.
         #[arg(long)]
         context: Option<String>,
         /// Allow a Production environment
@@ -213,7 +213,7 @@ pub enum ProfileCommands {
     },
     /// Finish the profiling session, save the zip and extract the .alcpuprofile
     Stop {
-        /// Debugging context (GUID). Default: the latest profiling session.
+        /// Debugging context (GUID). Default: the newest unfinished profiling session of this project.
         #[arg(long)]
         context: Option<String>,
         /// Folder for the files, inside the project. Default: `.snapshots`.
