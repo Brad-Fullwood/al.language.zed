@@ -541,6 +541,19 @@ impl FileIndex {
         let metadata = strict_metadata_for_paths(&paths, &mut delta.skipped)?;
         let mut staged = Vec::new();
 
+        // The owner each indexed file was parsed with is only recorded in the
+        // directory memo. Read it before the memo is cleared, so the loop below
+        // sees an `app.json` added, removed or moved since the last scan.
+        let previous_owner: std::collections::HashMap<PathBuf, Option<PathBuf>> = self
+            .file_metadata
+            .iter()
+            .map(|entry| (entry.key().clone(), self.app_root_for(entry.key())))
+            .collect();
+        self.dir_app_root.clear();
+        // An app whose `app.json` is gone reads as no app again.
+        self.apps
+            .retain(|app_root, _| app_root.join("app.json").is_file());
+
         // An edited `app.json` changes how every file of that app parses
         // (`preprocessorSymbols`) and how its objects rank. Reread each known
         // app and reparse the files of an app whose identity changed.
@@ -555,10 +568,15 @@ impl FileIndex {
         }
 
         for (path, current_meta) in &metadata {
-            let app_changed = !stale_apps.is_empty()
-                && self
-                    .app_root_for(path)
-                    .is_some_and(|app_root| stale_apps.contains(&app_root));
+            let owner = self.app_root_for(path);
+            let owner_changed = previous_owner
+                .get(path)
+                .is_some_and(|previous| *previous != owner);
+            let app_changed = owner_changed
+                || (!stale_apps.is_empty()
+                    && owner
+                        .as_ref()
+                        .is_some_and(|app_root| stale_apps.contains(app_root)));
             let unchanged = !app_changed
                 && self
                     .file_metadata

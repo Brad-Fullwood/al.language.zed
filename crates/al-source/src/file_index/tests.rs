@@ -1471,3 +1471,56 @@ fn incremental_scan_reparses_files_when_app_symbols_change() {
         .collect();
     assert_eq!(owners, vec![file]);
 }
+
+/// An `app.json` added in a subfolder after the first scan takes the files
+/// under it. Their preprocessor symbols change, so the next incremental scan
+/// reparses them and lists them as changed.
+#[test]
+fn nested_app_added_after_the_first_scan_takes_its_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let sub = root.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(
+        root.join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"outer","preprocessorSymbols":[]}"#,
+    )
+    .unwrap();
+    let file = sub.join("C.Codeunit.al");
+    fs::write(
+        &file,
+        "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    begin\n    end;\n#endif\n}\n",
+    )
+    .unwrap();
+    // Older than the racy window, so only the owner change can reparse the file.
+    let old = SystemTime::now() - std::time::Duration::from_secs(60);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+
+    let index = FileIndex::new();
+    index.scan(root).unwrap();
+    assert!(index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .is_empty());
+
+    fs::write(
+        sub.join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000002","name":"inner","preprocessorSymbols":["CLEAN24"]}"#,
+    )
+    .unwrap();
+    let delta = index.incremental_scan(root).unwrap();
+
+    assert_eq!(delta.changed, vec![file.clone()]);
+    let owners: Vec<PathBuf> = index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|procedure| procedure.file)
+        .collect();
+    assert_eq!(owners, vec![file]);
+}
