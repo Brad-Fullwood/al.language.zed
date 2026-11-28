@@ -89,7 +89,9 @@ with `total` and `truncated`, and `impact`, `tableImpact`, `entrypoints`, `event
 one line per member. The [MCP tool reference](../reference/mcp-tools.md#result-size) has the
 details. A `search` sent through MCP, by `al_symbolsearch` or `al_call`,
 returns summaries unless it passes `summary: false`: three Base Application results take about
-500 bytes instead of about 210 KB.
+500 bytes instead of about 210 KB. The symbol index scans at most 60,000 names for a query that
+matches the middle of a name. When a search stops there, its result has `complete: false` and
+`truncated: true`, and a longer query or the start of the name finds the rest.
 
 ## Microsoft comparison
 

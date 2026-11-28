@@ -411,7 +411,10 @@ pub(super) fn dispatch_search(
     } else {
         (limit, usize::MAX)
     };
-    let results = workspace.symbols.search(query, limit);
+    let al_symbols::SearchResults {
+        entries: results,
+        complete,
+    } = workspace.symbols.search_with_status(query, limit);
     let mut value: Vec<serde_json::Value> = match results
         .iter()
         .enumerate()
@@ -449,12 +452,44 @@ pub(super) fn dispatch_search(
             &format!("workspace search produced invalid object metadata: {error}"),
         );
     }
-    Response {
+    let response = Response {
         id,
         result: Some(serde_json::json!(value)),
         error: None,
         ..Default::default()
+    };
+    if complete {
+        return response;
     }
+    search_scan_incomplete(query, params, response)
+}
+
+/// Mark a search whose substring stage stopped at
+/// `SymbolIndex::SUBSTRING_SCAN_BUDGET` names, so a matching name past that
+/// point is missing from the result.
+///
+/// A paged request (`limit`, `offset` or `fields`, which the CLI and MCP
+/// always send) is projected here, and the envelope gains `complete: false`
+/// and `truncated: true`. The projection in `dispatch_request_inner` then sees
+/// an object, which it passes through unchanged. A plain request keeps its
+/// array shape, so the mark is only in the log.
+fn search_scan_incomplete(query: &str, params: &serde_json::Value, response: Response) -> Response {
+    tracing::warn!(
+        query,
+        budget = al_symbols::SymbolIndex::SUBSTRING_SCAN_BUDGET,
+        "daemon: search stopped its substring scan at the budget, more matches may exist"
+    );
+    let paged = super::projection::Projection::from_params(params)
+        .is_ok_and(|projection| !projection.is_empty());
+    if !paged {
+        return response;
+    }
+    let mut response = super::projection::apply("search", params, response);
+    if let Some(serde_json::Value::Object(envelope)) = response.result.as_mut() {
+        envelope.insert("complete".into(), serde_json::Value::Bool(false));
+        envelope.insert("truncated".into(), serde_json::Value::Bool(true));
+    }
+    response
 }
 
 fn symbol_entry_to_json(

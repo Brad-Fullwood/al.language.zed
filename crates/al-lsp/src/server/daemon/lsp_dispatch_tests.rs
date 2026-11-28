@@ -1218,3 +1218,48 @@ fn dispatch_deps_no_project_returns_internal_error() {
         err.message
     );
 }
+
+/// A4 neon-07 display part: a search whose substring scan stopped at the
+/// index budget says so in the paged envelope, and a plain request keeps
+/// its array.
+#[test]
+fn dispatch_search_marks_a_stopped_substring_scan() {
+    let ws = al_workspace::Workspace::new();
+    let over_budget = al_symbols::SymbolIndex::SUBSTRING_SCAN_BUDGET + 10;
+    let mut entries: Vec<al_symbols::SymbolEntry> = (0..over_budget)
+        .map(|i| al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: i as i32 + 1,
+            name: format!("Aaa Object {i:06}"),
+            package: "Base Application".to_string(),
+            ..Default::default()
+        })
+        .collect();
+    entries.push(al_symbols::SymbolEntry {
+        kind: al_symbols::ObjectKind::Table,
+        id: 999_999,
+        name: "Zzz Needle Object".to_string(),
+        package: "Base Application".to_string(),
+        ..Default::default()
+    });
+    ws.symbols.add_entries(&entries);
+
+    let paged = dispatch_search(
+        &ws,
+        21,
+        &serde_json::json!({ "query": "needle", "limit": 5 }),
+    );
+    let envelope = paged.result.expect("paged search result");
+    assert_eq!(envelope["complete"], false, "{envelope}");
+    assert_eq!(envelope["truncated"], true, "{envelope}");
+    assert!(envelope["items"].is_array(), "{envelope}");
+
+    // The outer projection leaves the envelope as it is.
+    let params = serde_json::json!({ "query": "needle", "limit": 5 });
+    let again =
+        super::super::projection::apply("search", &params, dispatch_search(&ws, 22, &params));
+    assert_eq!(again.result.expect("result")["complete"], false);
+
+    let plain = dispatch_search(&ws, 23, &serde_json::json!({ "query": "needle" }));
+    assert!(plain.result.expect("plain result").is_array());
+}

@@ -5,6 +5,10 @@ use std::process::ExitCode;
 
 use crate::cli::commands::*;
 
+/// Printed when the daemon reports `complete: false`: the index's substring
+/// scan stopped at its name budget.
+const SEARCH_INCOMPLETE_NOTE: &str = "The symbol index stopped its scan for names that contain the query, so more matches may exist. A longer query or the start of the name finds them.";
+
 /// `limit` is the global `--limit`. For `search` it is the index's own search
 /// bound as well as the page size, which is why it is passed rather than left
 /// to the projection layer: a bound of 20 keeps the index from ranking every
@@ -27,10 +31,16 @@ pub fn cmd_search(query: &str, limit: Option<usize>, json: bool) -> ExitCode {
                 let entries = list_rows(&result).as_array().map(|v| &v[..]).unwrap_or(&[]);
                 if entries.is_empty() {
                     eprintln!("No results for '{}'", terminal_text(query));
+                    if result.get("complete") == Some(&serde_json::Value::Bool(false)) {
+                        eprintln!("{SEARCH_INCOMPLETE_NOTE}");
+                    }
                     return ExitCode::SUCCESS;
                 }
                 print!("{}", search_table_text(entries));
                 eprintln!("\n{}", count_text(entries.len(), "result"));
+            }
+            if !json && result.get("complete") == Some(&serde_json::Value::Bool(false)) {
+                eprintln!("{SEARCH_INCOMPLETE_NOTE}");
             }
             ExitCode::SUCCESS
         }
