@@ -73,7 +73,7 @@ TUI renders immediately with a "Loading workspace…" status while symbols load 
 
 ## Zed integration
 
-The language package ships 55 tasks in `languages/al/tasks.json` and inline runnables in
+The language package ships 42 tasks in `languages/al/tasks.json` and inline runnables in
 `languages/al/runnables.scm`, and every one runs `al-explorer`. Stable Zed task JSON cannot address
 the `al-explorer` binary inside the extension's download directory, so the tasks need `al-explorer`
 on `PATH`. See [Language assets](language-assets.md#al-explorer-must-be-on-path) for the install step.

@@ -428,7 +428,8 @@ have no Entra tenant and are not checked.
 tenant, `--purpose <TEXT>`. The command is refused when `--tenant` is missing or differs from
 the `tenant` in launch.json. A refusal exits with code 3. A cloud launch.json without `tenant`
 makes `download-symbols --source server` exit non-zero with the message instead of reporting
-nothing downloaded.
+nothing downloaded. A launch configuration's `tenantPurpose` does not count for a CLI or MCP
+call. Type `--purpose` (`cliPurpose`).
 
 ```
 al-explorer --tenant 1b7a9471-d313-4aa4-99e8-7a6c762c8e7d download-symbols --source server

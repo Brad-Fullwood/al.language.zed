@@ -242,7 +242,7 @@ one continuous debugging session rather than isolated commands.
 | `history` | `var?` | Return the bounded breakpoint-hit history, optionally filtered by variable name. |
 | `stop` | | Stop and terminate the BC debug session and clear it from the MCP workspace. |
 
-Every follow-up `debug` command on a cloud session (`breakpoint`, `state`, `eval`, `continue`, `step`, `history`, `stop`) needs `--tenant` as `start` does. MCP callers pass `cliTenant` and `cliPurpose`. A refusal names the session's tenant.
+Every follow-up `debug` command on a cloud session (`breakpoint`, `state`, `eval`, `continue`, `step`, `stop`) needs `--tenant` as `start` does. MCP callers pass `cliTenant` and `cliPurpose`. A refusal names the session's tenant. `history` reads the hits kept on this machine and needs no `--tenant`.
 
 A typical client loop is `start` → `breakpoint` → poll `state` until paused → inspect `stack`
 and `variables`/`globals` → `eval` and/or `step` → `continue` → `stop`. All results use MCP's normal
