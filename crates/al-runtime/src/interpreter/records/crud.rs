@@ -793,9 +793,6 @@ fn run_record_method(
             Err(error) => eval_error(error),
         },
         "get" => {
-            if values.is_empty() {
-                return eval_error("Get: requires at least one primary-key value");
-            }
             let key_len = store.record.primary_key_len();
             if values.len() > key_len {
                 return eval_error(format!(
@@ -1067,6 +1064,37 @@ mod tests {
 }
 "#;
 
+    const SETUP_TESTS: &str = r#"codeunit 50112 "Setup Tests"
+{
+    procedure GetBlankKeyAfterInsert(): Integer
+    var
+        R: Record T;
+        R2: Record T;
+    begin
+        R.Init();
+        R.Quantity := 3;
+        R.Insert();
+        if not R2.Get() then
+            exit(-1);
+        exit(R2.Quantity);
+    end;
+
+    procedure GetOnEmptyTable(): Boolean
+    var
+        R: Record T;
+    begin
+        exit(R.Get());
+    end;
+
+    procedure GetStatementOnEmptyTable()
+    var
+        R: Record T;
+    begin
+        R.Get();
+    end;
+}
+"#;
+
     const FORM_TABLE: &str = r#"table 50103 Forms
 {
     fields
@@ -1150,6 +1178,31 @@ mod tests {
                 error
                     .message
                     .contains("3 values given for a primary key of 2 fields"),
+                "unexpected message: {}",
+                error.message
+            ),
+            other => panic!("expected an interpreter error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_with_no_values_finds_the_blank_key_row() {
+        let sources = [("/ws/T.al", INIT_TABLE), ("/ws/SetupTests.al", SETUP_TESTS)];
+        assert_eq!(
+            ok(run_sources(
+                &sources,
+                "Setup Tests",
+                "GetBlankKeyAfterInsert"
+            )),
+            Value::Integer(3)
+        );
+        assert_eq!(
+            ok(run_sources(&sources, "Setup Tests", "GetOnEmptyTable")),
+            Value::Boolean(false)
+        );
+        match run_sources(&sources, "Setup Tests", "GetStatementOnEmptyTable") {
+            Eval::Error(error) => assert!(
+                error.message.contains("does not exist in table"),
                 "unexpected message: {}",
                 error.message
             ),
