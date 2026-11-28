@@ -116,7 +116,7 @@ pub struct ExternalSymbols {
     /// from `.alpackages` instead of emitting against an incomplete symbol set.
     pub package_ids: std::collections::HashSet<String>,
     /// Lowercase, brace-free app ID → the highest version loaded for it, as the
-    /// package states it. Compare with [`version_key`].
+    /// package states it. Compare with `version_key`.
     pub package_versions: std::collections::HashMap<String, String>,
     /// `(table, procedure)` for every procedure a dependency's table, or a
     /// dependency's extension of a table, declares. Lowercase.
