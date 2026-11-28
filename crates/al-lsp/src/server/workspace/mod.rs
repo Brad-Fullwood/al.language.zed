@@ -1597,6 +1597,9 @@ fn unit_test_sentinel() -> PathBuf {
 /// `languages.AL.language_servers` contains "al-lsp". This prevents the
 /// prompt from being skipped when settings are present but broken (e.g.
 /// empty `language_servers: []`).
+// In a test build the only callers are tests that run on Linux, because the
+// test build of `settings_prompt_needed` reads its own sentinel.
+#[cfg_attr(all(test, not(target_os = "linux")), allow(dead_code))]
 fn zed_has_al_settings() -> bool {
     let Some(path) = zed_settings_path() else {
         return false;
