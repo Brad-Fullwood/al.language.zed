@@ -126,8 +126,9 @@ pub struct DispatchCtx {
     /// variables of the same table share one backing store (shared physical
     /// table semantics — see `records.rs`).
     pub records: HashMap<String, RecordStore>,
-    /// Rows of each non-temporary record table at the last commit. Empty at test
-    /// start, so a rollback clears every table. See [`DispatchCtx::rollback_records`].
+    /// Rows of each non-temporary table at the rollback point. A test that calls
+    /// Commit runs on LiveBc, so locally the rollback point is always the test
+    /// start and this map stays empty.
     pub committed_records: HashMap<String, MockRecord>,
     pub mode: DispatchMode,
     /// Current call depth — incremented on each workspace-procedure call and
@@ -299,20 +300,8 @@ impl DispatchCtx {
         }
     }
 
-    /// Make the current non-temporary record rows the committed state that
-    /// `rollback_records` restores. Temporary tables are keyed by owner and are
-    /// not rolled back.
-    pub fn commit_records(&mut self) {
-        self.committed_records = self
-            .records
-            .iter()
-            .filter(|(key, _)| !key.contains(" temporary#"))
-            .map(|(key, store)| (key.clone(), store.record.clone()))
-            .collect();
-    }
-
-    /// Restore each non-temporary record table to its committed rows. A table
-    /// with no snapshot was created after the commit, so its rows are cleared.
+    /// Restore each non-temporary record table to the rollback point (the test
+    /// start, see `committed_records`). A table with no saved rows is cleared.
     pub fn rollback_records(&mut self) {
         for (key, store) in self.records.iter_mut() {
             if key.contains(" temporary#") {
