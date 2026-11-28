@@ -7,8 +7,8 @@ use super::*;
 #[tokio::test]
 async fn run_test_runs_a_local_test_without_a_launch_configuration() {
     // The client socket is dropped, so a request to the editor fails at once.
-    // A socket that is read and never answered leaves the first-run settings
-    // prompt of `initialize_workspace` waiting on a machine with a new home folder.
+    // A socket that is read and never answered leaves a request that is awaited
+    // waiting, for example the symbol download prompt of `initialize_workspace`.
     let (service, _) = tower_lsp::LspService::new(crate::server::AlLsp::new);
     let server = service.inner();
     let root = tempfile::tempdir().unwrap();

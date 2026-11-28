@@ -911,6 +911,77 @@ async fn unreadable_package_is_skipped_and_initialization_succeeds() {
     );
 }
 
+/// An unanswered settings prompt does not hold back initialization.
+#[tokio::test(flavor = "multi_thread")]
+async fn unanswered_settings_prompt_does_not_hold_back_initialization() {
+    let (service, mut socket) = tower_lsp::LspService::new(crate::server::AlLsp::new);
+    let methods = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&methods);
+    // Record every request the server sends. No request is answered.
+    let socket_task = tokio::spawn(async move {
+        while let Some(request) = futures::StreamExt::next(&mut socket).await {
+            seen.lock().unwrap().push(request.method().to_string());
+        }
+    });
+
+    let server = service.inner();
+    let root = tempfile::tempdir().expect("temporary workspace");
+    std::fs::write(
+        root.path().join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"Lens","publisher":"Test","version":"1.0.0.0"}"#,
+    )
+    .unwrap();
+    if unit_test_sentinel().exists() {
+        std::fs::remove_file(unit_test_sentinel()).unwrap();
+    }
+    // Other tests in this process send the prompt to a dropped socket. Wait
+    // until such a prompt has closed, so this test's prompt is the one sent.
+    for _ in 0..250 {
+        if !SETTINGS_PROMPT_OPEN.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        initialize_workspace(
+            Arc::clone(&server.workspace),
+            server.client.clone(),
+            Some(Url::from_directory_path(root.path()).expect("workspace URI")),
+            Some(server.workspace_init_state.clone()),
+            None,
+        ),
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(Ok(()))),
+        "initialization waited for the settings prompt: {result:?}"
+    );
+
+    let mut sent = false;
+    for _ in 0..250 {
+        if methods
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|method| method == "window/showMessageRequest")
+        {
+            sent = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        sent,
+        "the settings prompt was not sent: {:?}",
+        methods.lock().unwrap()
+    );
+
+    socket_task.abort();
+    drop(service);
+}
+
 #[tokio::test]
 async fn successful_reindex_reapplies_unsaved_open_documents_at_commit() {
     let root = tempfile::tempdir().expect("temporary workspace");
