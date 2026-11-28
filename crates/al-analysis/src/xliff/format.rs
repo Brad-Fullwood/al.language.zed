@@ -96,184 +96,216 @@ pub(super) fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+/// Why `parse_xliff` refused a file.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("malformed XLIFF at byte {position}: {message}")]
+pub struct XliffParseError {
+    /// Byte offset in the input where the reader stopped.
+    pub position: u64,
+    pub message: String,
+}
+
 /// Parse an XLIFF 1.2 file into a map of `id → TranslationUnit`.
 ///
-/// Uses a simple line-based parser that handles typical AL XLIFF output without
-/// requiring a full XML parser dependency.
-///
-/// Multi-line `<source>` / `<target>` / `<note>` bodies are collected through
-/// their closing tags.
-pub fn parse_xliff(content: &str) -> HashMap<String, TranslationUnit> {
-    let mut units: HashMap<String, TranslationUnit> = HashMap::new();
-    let mut current_id: Option<String> = None;
-    let mut current_source: Option<String> = None;
-    let mut current_target: Option<String> = None;
-    let mut current_state = TranslationState::New;
-    let mut current_note: Option<String> = None;
-    let mut current_developer_note: Option<String> = None;
-    let mut current_object_target: Option<String> = None;
+/// Reads any well-formed layout: one element per line, a whole unit on one
+/// line, or anything between. Malformed XML returns an error, so a caller
+/// that rewrites the file can stop before it loses translations.
+pub fn parse_xliff(content: &str) -> Result<HashMap<String, TranslationUnit>, XliffParseError> {
+    use quick_xml::events::{BytesStart, Event};
 
-    /// Per-tag state for multi-line accumulation. When `accumulator` is
-    /// `Some(buf)` the next line(s) are body content of the named tag and
-    /// get appended (with a leading `\n` between them) until we see the
-    /// closing tag.
+    /// The unit being read, between `<trans-unit>` and `</trans-unit>`.
     #[derive(Default)]
-    struct MultiLine {
-        // "source" | "target" | "note" | "developer-note" (a `<note>` from
-        // the Developer, which closes with `</note>` like the other)
-        target_tag: Option<&'static str>,
-        accumulator: String,
-    }
-    let mut multi = MultiLine::default();
-
-    /// Try to extract a single-line `<tag …>body</tag>` payload from a line.
-    /// Returns Some(body) if both opening `>` and closing `</tag>` are
-    /// present on the same line. Returns None if the closing tag isn't
-    /// on this line (caller will switch to multi-line accumulation).
-    fn extract_single_line(line: &str, tag: &str) -> Option<String> {
-        let open_end = line.find('>')?;
-        let close_marker = format!("</{tag}>");
-        let close_start = line[open_end + 1..].find(&close_marker)?;
-        let body = &line[open_end + 1..open_end + 1 + close_start];
-        // An empty body (`<source></source>`) is a valid, present element.
-        // Return `Some(String::new())` rather than `None` so the caller treats
-        // it as a found single-line element instead of switching to multi-line
-        // mode and hunting for a closing tag that has already passed — which
-        // would silently drop the trans-unit on round-trip.
-        Some(xml_unescape(body))
+    struct OpenUnit {
+        id: Option<String>,
+        object_target: Option<String>,
+        source: Option<String>,
+        target: Option<String>,
+        state: Option<TranslationState>,
+        note: Option<String>,
+        developer_note: Option<String>,
     }
 
-    /// Extract a partial body when the opening tag is on this line but the
-    /// closing tag isn't. Returns the body portion (everything after `>`).
-    fn extract_open_only(line: &str) -> Option<String> {
-        let open_end = line.find('>')?;
-        let after = &line[open_end + 1..];
-        // Self-closing form `<tag .../>` — open_end falls on the `/` so the
-        // body would be empty.
-        if line[..open_end].trim_end().ends_with('/') {
-            return None;
+    #[derive(Clone, Copy, PartialEq)]
+    enum Body {
+        Source,
+        Target,
+        Note,
+        DeveloperNote,
+    }
+
+    fn attr(element: &BytesStart<'_>, name: &str) -> Result<Option<String>, quick_xml::Error> {
+        match element.try_get_attribute(name)? {
+            Some(attribute) => Ok(Some(
+                attribute
+                    .normalized_value(quick_xml::XmlVersion::Implicit1_0)?
+                    .into_owned(),
+            )),
+            None => Ok(None),
         }
-        Some(xml_unescape(after))
     }
 
-    fn append_to_accumulator(acc: &mut String, text: &str) {
-        if !acc.is_empty() {
-            acc.push('\n');
-        }
-        acc.push_str(text);
-    }
+    let mut reader = quick_xml::Reader::from_str(content);
+    let mut units: HashMap<String, TranslationUnit> = HashMap::new();
+    let mut depth = 0usize;
+    let mut unit: Option<OpenUnit> = None;
+    // The body element being read, with its depth and the text so far.
+    let mut body: Option<(Body, usize, String)> = None;
 
-    for line in content.lines() {
-        let trimmed = line.trim();
+    let fail = |reader: &quick_xml::Reader<&[u8]>, error: &dyn std::fmt::Display| XliffParseError {
+        position: reader.error_position(),
+        message: error.to_string(),
+    };
 
-        if let Some(tag) = multi.target_tag {
-            let element = if tag == "developer-note" { "note" } else { tag };
-            let close_marker = format!("</{element}>");
-            if let Some(close_idx) = line.find(&close_marker) {
-                // Last chunk — append everything up to the close marker.
-                let last = &line[..close_idx];
-                append_to_accumulator(&mut multi.accumulator, &xml_unescape(last));
-                let body = std::mem::take(&mut multi.accumulator);
-                match tag {
-                    "source" => current_source = Some(body),
-                    "target" => current_target = Some(body),
-                    "note" => current_note = Some(body),
-                    "developer-note" => current_developer_note = Some(body),
-                    _ => {}
+    loop {
+        let event = reader.read_event().map_err(|error| fail(&reader, &error))?;
+        let empty = matches!(event, Event::Empty(_));
+        match event {
+            Event::Start(element) | Event::Empty(element) => {
+                let name = element.local_name();
+                let name = name.as_ref();
+                let read = |key: &str| attr(&element, key).map_err(|error| fail(&reader, &error));
+                if name == b"trans-unit" {
+                    unit = Some(OpenUnit {
+                        id: read("id")?,
+                        object_target: read("al-object-target")?,
+                        ..OpenUnit::default()
+                    });
+                } else if let Some(open) = unit.as_mut().filter(|_| body.is_none()) {
+                    let kind = match name {
+                        b"source" => Some(Body::Source),
+                        b"target" => {
+                            let state = read("state")?.unwrap_or_default();
+                            open.state = Some(TranslationState::from_xliff_state(&state));
+                            Some(Body::Target)
+                        }
+                        b"note" if read("from")?.as_deref() == Some("Developer") => {
+                            Some(Body::DeveloperNote)
+                        }
+                        b"note" => Some(Body::Note),
+                        _ => None,
+                    };
+                    match (kind, empty) {
+                        // `<source/>` is an empty source. `<target/>` and an
+                        // empty note carry no text, as before.
+                        (Some(Body::Source), true) => open.source = Some(String::new()),
+                        (Some(kind), false) => body = Some((kind, depth + 1, String::new())),
+                        _ => {}
+                    }
                 }
-                multi.target_tag = None;
-            } else {
-                append_to_accumulator(&mut multi.accumulator, &xml_unescape(line));
-            }
-            continue;
-        }
-
-        if trimmed.starts_with("<trans-unit ") {
-            current_id = extract_xml_attr(trimmed, "id");
-            current_object_target = extract_xml_attr(trimmed, "al-object-target");
-            current_source = None;
-            current_target = None;
-            current_state = TranslationState::New;
-            current_note = None;
-            current_developer_note = None;
-        } else if trimmed.starts_with("<source") {
-            if let Some(body) = extract_single_line(trimmed, "source") {
-                current_source = Some(body);
-            } else if let Some(partial) = extract_open_only(trimmed) {
-                multi.target_tag = Some("source");
-                multi.accumulator = partial;
-            }
-        } else if trimmed.starts_with("<target") {
-            let state_str = extract_xml_attr(trimmed, "state").unwrap_or_default();
-            current_state = TranslationState::from_xliff_state(&state_str);
-            if let Some(body) = extract_single_line(trimmed, "target") {
-                current_target = Some(body);
-            } else if let Some(partial) = extract_open_only(trimmed) {
-                multi.target_tag = Some("target");
-                multi.accumulator = partial;
-            }
-        } else if trimmed.starts_with("<note>") || trimmed.starts_with("<note ") {
-            // MS-format `.xlf` notes carry attributes
-            // (`<note from="Developer" annotates="general" priority="2">…`),
-            // so match both the bare `<note>` form (what we generate) and the
-            // attributed `<note …>` form. `extract_single_line` /
-            // `extract_open_only` already skip past the attributes by anchoring
-            // on the first `>` of the open tag.
-            if let Some(body) = extract_single_line(trimmed, "note") {
-                // The developer's `Comment` travels as its own note; the
-                // generator's note is the object path.
-                if trimmed.contains("from=\"Developer\"") {
-                    current_developer_note = Some(body);
-                } else {
-                    current_note = Some(body);
+                if !empty {
+                    depth += 1;
                 }
-            } else if let Some(partial) = extract_open_only(trimmed) {
-                multi.target_tag = Some(if trimmed.contains("from=\"Developer\"") {
-                    "developer-note"
-                } else {
-                    "note"
-                });
-                multi.accumulator = partial;
             }
-        } else if trimmed.starts_with("</trans-unit>") {
-            if let (Some(id), Some(source)) = (current_id.take(), current_source.take()) {
-                // Files that carry only a Developer note (older generators
-                // put the object path there) keep it as the unit's note too.
-                let note = current_note
-                    .take()
-                    .or_else(|| current_developer_note.clone());
-                let unit = TranslationUnit {
-                    object_type: object_type_from_id(&id),
-                    object_id: 0,
-                    object_name: object_name_from_note(note.as_deref()),
-                    id: id.clone(),
-                    source,
-                    target: current_target.take(),
-                    state: current_state.clone(),
-                    note,
-                    developer_note: current_developer_note.take(),
-                    object_target: current_object_target.take(),
+            Event::Text(text) => {
+                if let Some((_, _, buffer)) = body.as_mut() {
+                    buffer.push_str(
+                        &text
+                            .xml10_content()
+                            .map_err(|error| fail(&reader, &error))?,
+                    );
+                }
+            }
+            Event::CData(data) => {
+                if let Some((_, _, buffer)) = body.as_mut() {
+                    buffer.push_str(
+                        &data
+                            .xml10_content()
+                            .map_err(|error| fail(&reader, &error))?,
+                    );
+                }
+            }
+            Event::GeneralRef(reference) => {
+                let resolved = match reference
+                    .resolve_char_ref()
+                    .map_err(|error| fail(&reader, &error))?
+                {
+                    Some(ch) => ch.to_string(),
+                    None => {
+                        let name = reference.decode().map_err(|error| fail(&reader, &error))?;
+                        quick_xml::escape::resolve_predefined_entity(&name)
+                            .ok_or_else(|| fail(&reader, &format!("unknown entity `&{name};`")))?
+                            .to_string()
+                    }
                 };
-                // Duplicate ids are malformed input. Keep the *first*
-                // occurrence (deterministic and document-order) rather than
-                // letting a later one silently overwrite an already-reviewed
-                // translation, and make the condition observable.
-                match units.entry(id) {
-                    std::collections::hash_map::Entry::Vacant(slot) => {
-                        slot.insert(unit);
+                if let Some((_, _, buffer)) = body.as_mut() {
+                    buffer.push_str(&resolved);
+                }
+            }
+            Event::End(element) => {
+                if let Some((kind, body_depth, _)) = &body {
+                    if *body_depth == depth {
+                        let kind = *kind;
+                        let (_, _, text) = body.take().expect("body is open");
+                        if let Some(open) = unit.as_mut() {
+                            match kind {
+                                Body::Source => open.source = Some(text),
+                                Body::Target => open.target = Some(text),
+                                Body::Note => open.note = Some(text),
+                                Body::DeveloperNote => open.developer_note = Some(text),
+                            }
+                        }
                     }
-                    std::collections::hash_map::Entry::Occupied(existing) => {
-                        tracing::warn!(
-                            id = %existing.key(),
-                            "xliff: duplicate trans-unit id in input; keeping the first occurrence"
-                        );
+                }
+                depth -= 1;
+                if element.local_name().as_ref() == b"trans-unit" {
+                    if let Some(open) = unit.take() {
+                        insert_unit(&mut units, open.id, open.source, |id, source| {
+                            // Files that carry only a Developer note (older
+                            // generators put the object path there) keep it
+                            // as the unit's note too.
+                            let note = open.note.or_else(|| open.developer_note.clone());
+                            TranslationUnit {
+                                object_type: object_type_from_id(&id),
+                                object_id: 0,
+                                object_name: object_name_from_note(note.as_deref()),
+                                id,
+                                source,
+                                target: open.target,
+                                state: open.state.unwrap_or(TranslationState::New),
+                                note,
+                                developer_note: open.developer_note,
+                                object_target: open.object_target,
+                            }
+                        });
                     }
                 }
             }
+            Event::Eof => break,
+            _ => {}
         }
     }
+    if depth != 0 {
+        return Err(XliffParseError {
+            position: reader.buffer_position(),
+            message: format!("{depth} element(s) not closed at end of file"),
+        });
+    }
+    Ok(units)
+}
 
-    units
+/// Record a finished unit. A unit without an id or a source is skipped.
+/// Duplicate ids are malformed input: the first occurrence is kept, in
+/// document order, so a later one does not overwrite a reviewed translation.
+fn insert_unit(
+    units: &mut HashMap<String, TranslationUnit>,
+    id: Option<String>,
+    source: Option<String>,
+    build: impl FnOnce(String, String) -> TranslationUnit,
+) {
+    let (Some(id), Some(source)) = (id, source) else {
+        return;
+    };
+    match units.entry(id.clone()) {
+        std::collections::hash_map::Entry::Vacant(slot) => {
+            slot.insert(build(id, source));
+        }
+        std::collections::hash_map::Entry::Occupied(existing) => {
+            tracing::warn!(
+                id = %existing.key(),
+                "xliff: duplicate trans-unit id in input; keeping the first occurrence"
+            );
+        }
+    }
 }
 
 /// The object type from a translation-unit id.
@@ -302,25 +334,43 @@ pub(super) fn object_name_from_note(note: Option<&str>) -> String {
     }
 }
 
-/// Extract an XML attribute value from a tag string.
-pub(super) fn extract_xml_attr(tag: &str, attr: &str) -> Option<String> {
-    let search = format!("{}=\"", attr);
-    let start = tag.find(&search)? + search.len();
-    let end = tag[start..].find('"')? + start;
-    let raw = &tag[start..end];
-    Some(xml_unescape(raw))
-}
+#[cfg(test)]
+mod parse_tests {
+    use super::*;
 
-pub(super) fn xml_unescape(s: &str) -> String {
-    // `&amp;` MUST be unescaped last. With chained `str::replace`, doing it
-    // first would let the `&` it produces be re-interpreted as the start of a
-    // later entity: e.g. user text `&lt;` is escaped to `&amp;lt;`, and an
-    // `&amp;`-first order would turn that back into `&lt;` → `<`, silently
-    // losing the original literal. Unescaping the named entities first and
-    // `&amp;` last keeps the escape/unescape cycle lossless.
-    s.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&apos;", "'")
-        .replace("&amp;", "&")
+    #[test]
+    fn parse_compact_trans_unit_keeps_target() {
+        let xml = r#"<xliff><file><body><group id="body"><trans-unit id="Table 1"><source>Open</source><target state="final">Öffnen</target></trans-unit></group></body></file></xliff>"#;
+        let units = parse_xliff(xml).expect("valid xliff");
+        let unit = &units["Table 1"];
+        assert_eq!(unit.source, "Open");
+        assert_eq!(unit.target.as_deref(), Some("Öffnen"));
+        assert_eq!(unit.state, TranslationState::from_xliff_state("final"));
+    }
+
+    #[test]
+    fn parse_numeric_entity() {
+        let xml = "<xliff><trans-unit id=\"a\"><source>Open</source><target>&#246;ffnen &amp; &#x41;</target></trans-unit></xliff>";
+        let units = parse_xliff(xml).expect("valid xliff");
+        assert_eq!(units["a"].target.as_deref(), Some("öffnen & A"));
+    }
+
+    #[test]
+    fn parse_compact_and_indented_files_give_the_same_units() {
+        let compact = r#"<xliff><trans-unit id="a"><source>Open</source><target state="translated">Auf</target><note from="Developer" annotates="general">Dev</note><note from="Xliff Generator">Table T - Property Caption</note></trans-unit></xliff>"#;
+        let indented = "<xliff>\n  <trans-unit id=\"a\">\n    <source>Open</source>\n    <target state=\"translated\">Auf</target>\n    <note from=\"Developer\" annotates=\"general\">Dev</note>\n    <note from=\"Xliff Generator\">Table T - Property Caption</note>\n  </trans-unit>\n</xliff>\n";
+        let compact = parse_xliff(compact).expect("valid xliff");
+        let indented = parse_xliff(indented).expect("valid xliff");
+        assert_eq!(compact, indented);
+        let unit = &compact["a"];
+        assert_eq!(unit.developer_note.as_deref(), Some("Dev"));
+        assert_eq!(unit.note.as_deref(), Some("Table T - Property Caption"));
+        assert_eq!(unit.object_name, "T");
+    }
+
+    #[test]
+    fn parse_malformed_returns_error() {
+        assert!(parse_xliff(r#"<trans-unit id="a"><source>x</trans-unit>"#).is_err());
+        assert!(parse_xliff(r#"<xliff><trans-unit id="a"><source>x</source>"#).is_err());
+    }
 }

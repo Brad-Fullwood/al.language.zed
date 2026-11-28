@@ -185,7 +185,15 @@ mod tests {
             .spawn()
             .expect("spawn sleep");
         let pid = child.id() as i32;
-        let found = processes_with_env("XDG_RUNTIME_DIR", &dir);
+        // `spawn` returns when the child's exec has replaced its memory map, and
+        // the kernel fills in the environment the `/proc` file reads a moment
+        // later, so the first reads can come back empty on a loaded machine.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut found = processes_with_env("XDG_RUNTIME_DIR", &dir);
+        while !found.contains(&pid) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            found = processes_with_env("XDG_RUNTIME_DIR", &dir);
+        }
         let _ = child.kill();
         let _ = child.wait();
         assert!(found.contains(&pid), "child {pid} not in {found:?}");

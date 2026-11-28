@@ -18,9 +18,10 @@ live in [ROADMAP.md](../ROADMAP.md).
 - A dependency `.app` package that embeds no AL source exposes declarations but
   not executable bodies, so call-graph analysis does not infer side effects it
   cannot observe there. Embedded source is indexed and joins the call graph.
-- External rulesets, probing paths, analyzer statistics, incremental mode, and
-  extra compiler options apply to the official `alc` backend. They do not change
-  the native emitter or in-process semantic bridge.
+- External rulesets, probing paths and extra compiler options apply to the
+  official `alc` backend. They do not change the native emitter or in-process
+  semantic bridge. Analyzer statistics and incremental mode are read from
+  `.vscode/settings.json` and not passed to `alc`, which has no such switch.
 
 ## Language services and symbols
 
@@ -53,10 +54,8 @@ live in [ROADMAP.md](../ROADMAP.md).
   entry/natural-exit paths, and condition-level MC/DC for compound
   IF/WHILE/REPEAT decisions. MC/DC vectors come from the original evaluation,
   so coverage does not repeat calls or alter runtime semantics.
-- `test-snapshot capture` is meant to record explicit breakpoint samples from a live BC test. Starting that test needs the missing TestRunnerHub client, so capture returns a "not implemented" error. `replay`
-  re-runs that exact indexed test method against an explicitly identified current BC runtime,
-  recreates its breakpoint conditions, and compares samples by stable source location. Capture and
-  replay require a reachable configured BC environment. `validate` and `diff` remain BC-free.
+- `test-snapshot capture` is meant to record explicit breakpoint samples from a live BC test. Starting that test needs the missing TestRunnerHub client, so capture returns a "not implemented" error. `replay` needs the same client and returns the same
+  error. `validate` and `diff` work offline.
 
 ## Debugging and Business Central
 
@@ -77,8 +76,8 @@ live in [ROADMAP.md](../ROADMAP.md).
   spaces are dropped or wrong. The `TargetObject` app id of extensions and manifest `Features` were
   fixed after that measurement (emitter-02).
   Builds use `alc` by default when the toolchain is found, so this applies to the native fallback and `al.useOfficialCompiler: false`. The native
-  verifier's text checks for procedure calls, return values, overloads, `Continue` and record fields
-  only warn. Findings `emitter-01-native-verifier-rejects-valid-dms-project` and
+  verifier's text checks for procedure calls, return values, overloads, `Exit`, `Break`, `Continue`
+  and record fields only warn (ALN2202 to ALN2210). Findings `emitter-01-native-verifier-rejects-valid-dms-project` and
   `emitter-02-native-app-differs-from-alc-on-dms`.
 - Native `.app` output has current `alc` 17 differential coverage for the small
   through XL generated Base Application benchmark projects plus an env-gated fixture for
@@ -149,7 +148,7 @@ live in [ROADMAP.md](../ROADMAP.md).
 - `dotnetPath` is different, because al-lsp is already running when it matters,
   and al-lsp can read the repository's files. The language server and debug
   adapter routes filter by location: a relative path, or an absolute path
-  under the worktree root, is not used (`settings::is_worktree_resident_program`,
+  under the worktree root, is not used (`settings::child_dotnet_path`,
   called in `language_server_command` and `src/dap.rs`). The AL Tools context
   server reads its own `al.dotnetPath` setting, and a `Project` has no root path
   to filter against, so al-lsp's check covers that route. The trust digest
@@ -166,14 +165,23 @@ live in [ROADMAP.md](../ROADMAP.md).
   WASM module with no filesystem API, so a path that reaches inside the worktree
   through a symlinked ancestor is accepted there. al-lsp's own check resolves
   symlinks, which covers `AL_DOTNET_PATH`.
-- The consequence for a legitimate setup: a `dotnet` you keep inside a project
-  directory needs `al-explorer trust` on that project, or a path outside it.
+- The consequence for a legitimate setup: `al.dotnetPath` in
+  `lsp."al-lsp".settings` that names a `dotnet` inside the project is not used
+  by the language server or the debug adapter, trusted or not. Use a `dotnet`
+  outside the project.
+- The `al-tools` context server's own `al.dotnetPath` reaches al-lsp, which uses
+  it in a trusted project, so a trusted project can run a different `dotnet` for
+  MCP than for the language server. The extension cannot filter that route,
+  because a `Project` has no root path.
 
 ## Daemon endpoint
 
-- The endpoint path is derived from the project path, so it is guessable, and
-  whoever binds it first receives every request. Those requests carry Business
-  Central credentials, so a socket planted there reads them in cleartext.
+- The endpoint path is derived from the project path, so it is guessable. A
+  process that binds it first can stop the CLI from reaching the daemon: it
+  receives the handshake and nothing after it. It does not receive requests or
+  Business Central credentials, because the client sends nothing until the
+  daemon answers a nonce with an HMAC keyed by this user's `handshake.key`, and
+  that process cannot read the key.
 - On Unix the client checks before it sends: every existing ancestor of the
   endpoint's directory must be owned by this user, or by root and not writable
   by anyone else without the sticky bit. The endpoint must be a socket and not
@@ -181,13 +189,11 @@ live in [ROADMAP.md](../ROADMAP.md).
   `getpeereid`), must be this user's. The daemon runs the same directory check
   before it creates the socket. `al_protocol::endpoint` holds both.
 - On Windows the endpoint is a named pipe, pipe names are a global namespace,
-  and the client does not check who owns the name. The equivalent check is
-  `GetNamedPipeServerProcessId` plus a comparison of that process's user SID,
-  or creating the pipe with `FILE_FLAG_FIRST_PIPE_INSTANCE` and a DACL and
-  treating a pre-existing name as hostile. Neither is written. Any local user
-  who can guess the two FNV-1a hashes in the pipe name can own the endpoint.
-- The build-identity handshake does not answer who is on the other end and was
-  never meant to. See [daemon protocol](features/daemon-protocol.md).
+  and the kernel does not check who owns the name. The handshake proof is the
+  only check there, and an endpoint that gives no proof is refused. Any local
+  user who can guess the two FNV-1a hashes in the pipe name can take the name
+  and so stop the CLI from reaching the daemon. See
+  [daemon protocol](features/daemon-protocol.md).
 
 ## Releases
 

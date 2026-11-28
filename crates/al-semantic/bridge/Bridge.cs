@@ -802,6 +802,7 @@ internal class CodeAnalysisBridge
         if (source == null)
         {
             if (!File.Exists(file)) return null;
+            if (new FileInfo(file).Length > MaxProjectFileBytes) throw new InvalidOperationException($"{file} is larger than {MaxProjectFileBytes} bytes");
             source = File.ReadAllText(file);
         }
         var inProject = ProjectCompilationFor(prms, file, source);
@@ -861,6 +862,7 @@ internal class CodeAnalysisBridge
         if (source == null)
         {
             if (!File.Exists(file)) return Array.Empty<object>();
+            if (new FileInfo(file).Length > MaxProjectFileBytes) throw new InvalidOperationException($"{file} is larger than {MaxProjectFileBytes} bytes");
             source = File.ReadAllText(file);
         }
         int offset = LineColToOffset(source, (int)line, (int)col);

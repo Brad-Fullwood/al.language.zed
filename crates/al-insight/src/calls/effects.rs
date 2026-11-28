@@ -200,7 +200,7 @@ fn collect_effect_sites(
                     if !matches!(
                         decl.type_name.to_ascii_lowercase().as_str(),
                         "record" | "recordref"
-                    ) || declaration_is_temporary(tree, source, &decl)
+                    ) || resolver.is_temporary(&decl)
                     {
                         continue;
                     }
@@ -237,41 +237,6 @@ fn syntax_position(source: &str, point: tree_sitter::Point) -> al_syntax::Syntax
     al_syntax::SyntaxPosition {
         line: point.row as u32,
         character: al_syntax::byte_col_to_utf16_col(line, point.column),
-    }
-}
-
-fn declaration_is_temporary(
-    tree: &tree_sitter::Tree,
-    source: &str,
-    decl: &al_syntax::VariableDecl,
-) -> bool {
-    let point = decl.range.start_point;
-    let Some(mut node) = tree.root_node().descendant_for_point_range(point, point) else {
-        return false;
-    };
-    loop {
-        if matches!(
-            node.kind(),
-            "regular_variable_declaration"
-                | "variable_declaration"
-                | "object_variable_declaration"
-                | "parameter"
-        ) && node.utf8_text(source.as_bytes()).is_ok_and(|text| {
-            text.split(|ch: char| !ch.is_alphanumeric())
-                .any(|word| word.eq_ignore_ascii_case("temporary"))
-        }) {
-            return true;
-        }
-        if matches!(
-            node.kind(),
-            "var_section" | "object_var_section" | "procedure_declaration" | "trigger_declaration"
-        ) {
-            return false;
-        }
-        let Some(parent) = node.parent() else {
-            return false;
-        };
-        node = parent;
     }
 }
 

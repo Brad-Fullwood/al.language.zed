@@ -73,7 +73,12 @@ pub fn rename(
     let source_bytes = text.as_bytes();
 
     // Procedure-local bindings must not enter the workspace-wide rename path.
-    if let Some(proc) = al_syntax::find_procedure_at(&tree, &text, position.into()) {
+    // A member after `.` or `::` is a field or procedure, never a local, even
+    // when its spelling matches one.
+    let member_access = is_member_access(node);
+    if let Some(proc) =
+        al_syntax::find_procedure_at(&tree, &text, position.into()).filter(|_| !member_access)
+    {
         let is_local_binding = proc
             .parameters
             .iter()
@@ -122,19 +127,35 @@ pub fn rename(
             }
             let proc_start = proc.range.start_byte;
             let proc_end = proc.range.end_byte;
+            // Keep only the occurrences that bind to the local under the cursor.
+            // A `Name` after `Customer.` is a record member, and a same-named
+            // local must not rewrite it.
+            let cursor_decl = node_decl_loc(workspace, uri, node, source_bytes)?;
+            let mut binder = binding::DeclLocCache::new();
             let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-            let edits: Vec<TextEdit> = refs
+            let mut edits: Vec<TextEdit> = Vec::new();
+            for r in refs
                 .iter()
                 .filter(|r| r.start_byte >= proc_start && r.end_byte <= proc_end)
-                .filter_map(|r| {
-                    let matched_text = text.get(r.start_byte..r.end_byte)?;
-                    let replacement = new_name.spelled_over(matched_text);
-                    Some(TextEdit {
-                        range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
-                        new_text: replacement,
-                    })
-                })
-                .collect();
+            {
+                let is_member = tree
+                    .root_node()
+                    .descendant_for_byte_range(r.start_byte, r.end_byte)
+                    .is_some_and(is_member_access);
+                if is_member
+                    || binder.decl_loc_for_reference(workspace, uri, &text, &tree, r)?
+                        != cursor_decl
+                {
+                    continue;
+                }
+                let Some(matched_text) = text.get(r.start_byte..r.end_byte) else {
+                    continue;
+                };
+                edits.push(TextEdit {
+                    range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
+                    new_text: new_name.spelled_over(matched_text),
+                });
+            }
             if edits.is_empty() {
                 return Ok(None);
             }
@@ -246,6 +267,22 @@ fn node_decl_loc(
     decl_loc(workspace, uri, range.start)
 }
 
+/// True when `node` is the member name after `.` or `::`, as in `Customer.Name`.
+/// `count_call_references` in al-syntax navigation.rs matches the same node
+/// kinds. An identifier can sit inside a `name` node, so check that parent too.
+fn is_member_access(node: tree_sitter::Node) -> bool {
+    let name = match node.parent() {
+        Some(parent) if parent.kind() == "name" => parent,
+        _ => node,
+    };
+    name.parent().is_some_and(|parent| {
+        matches!(
+            parent.kind(),
+            "member_suffix" | "member_call_suffix" | "scope_suffix" | "scope_call_suffix"
+        ) && parent.child_by_field_name("member") == Some(name)
+    })
+}
+
 /// Which `[EventSubscriber]` argument a rename has to rewrite, and the
 /// publisher the subscriber must name for the rewrite to apply.
 ///
@@ -257,9 +294,10 @@ pub(crate) struct SubscriberTarget {
     /// element (table field) the event belongs to.
     argument: SubscriberArgumentKind,
     /// The object declaring the renamed symbol: its AL keyword (`codeunit`,
-    /// `table`, …) and its name.
+    /// `table`, …), its name and its id (`50101` in `codeunit 50101 Pub`).
     object_keyword: String,
     object_name: String,
+    object_id: Option<i64>,
     /// The name being renamed, as the subscriber spells it.
     current_name: String,
 }
@@ -286,11 +324,12 @@ fn subscriber_target_at(
                 if !covers_name_field(ancestor, node) || !publishes_an_event(ancestor, source) {
                     return None;
                 }
-                let (object_keyword, object_name) = enclosing_object(ancestor, source)?;
+                let (object_keyword, object_name, object_id) = enclosing_object(ancestor, source)?;
                 return Some(SubscriberTarget {
                     argument: SubscriberArgumentKind::Event,
                     object_keyword,
                     object_name,
+                    object_id,
                     current_name: clean_name.to_string(),
                 });
             }
@@ -301,7 +340,7 @@ fn subscriber_target_at(
                 if !name.eq_ignore_ascii_case(clean_name) {
                     return None;
                 }
-                let (object_keyword, object_name) = enclosing_object(ancestor, source)?;
+                let (object_keyword, object_name, object_id) = enclosing_object(ancestor, source)?;
                 if !object_keyword.eq_ignore_ascii_case("table") {
                     return None;
                 }
@@ -309,6 +348,7 @@ fn subscriber_target_at(
                     argument: SubscriberArgumentKind::Element,
                     object_keyword,
                     object_name,
+                    object_id,
                     current_name: clean_name.to_string(),
                 });
             }
@@ -324,6 +364,7 @@ fn subscriber_target_at(
                     argument: SubscriberArgumentKind::Object,
                     object_keyword: keyword,
                     object_name: clean_name.to_string(),
+                    object_id: declared_object_id(ancestor, source),
                     current_name: clean_name.to_string(),
                 });
             }
@@ -365,8 +406,11 @@ fn publishes_an_event(declaration: tree_sitter::Node<'_>, source: &[u8]) -> bool
     publishes
 }
 
-/// The AL keyword and name of the object declaration enclosing `node`.
-fn enclosing_object(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(String, String)> {
+/// The AL keyword, name and id of the object declaration enclosing `node`.
+fn enclosing_object(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+) -> Option<(String, String, Option<i64>)> {
     let mut current = node.parent();
     while let Some(ancestor) = current {
         if ancestor.kind() == "object_declaration" {
@@ -376,11 +420,22 @@ fn enclosing_object(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(Strin
                 .ok()?
                 .to_string();
             let name = al_syntax::node_text_clean(ancestor.child_by_field_name("name")?, source)?;
-            return Some((keyword, name));
+            return Some((keyword, name, declared_object_id(ancestor, source)));
         }
         current = ancestor.parent();
     }
     None
+}
+
+/// The numeric id of an object declaration, `50101` in `codeunit 50101 Pub`.
+/// `None` for an object without an integer id, such as an interface.
+fn declared_object_id(declaration: tree_sitter::Node<'_>, source: &[u8]) -> Option<i64> {
+    declaration
+        .child_by_field_name("id")?
+        .utf8_text(source)
+        .ok()?
+        .parse::<i64>()
+        .ok()
 }
 
 /// The name token in an `object_section`'s parenthesized header, e.g.
@@ -434,8 +489,8 @@ fn merge_subscriber_edits(edits: &mut Vec<TextEdit>, from_subscribers: Vec<TextE
 }
 
 /// Whether the `[EventSubscriber]` `attribute` subscribes to the publisher
-/// that `target` names. The publisher is matched by object type and object
-/// name, so a publisher named by id (`Codeunit::50101`) does not match.
+/// that `target` names. The publisher matches on object type and on either
+/// its name or, when the subscriber writes an integer (`50101`), its id.
 pub(crate) fn subscriber_matches_publisher(
     attribute: &al_syntax::EventSubscriberAttribute,
     target: &SubscriberTarget,
@@ -449,10 +504,14 @@ pub(crate) fn subscriber_matches_publisher(
     {
         return false;
     }
-    attribute
-        .object
-        .as_ref()
-        .is_some_and(|object| object.name.eq_ignore_ascii_case(&target.object_name))
+    let Some(object) = attribute.object.as_ref() else {
+        return false;
+    };
+    // The id guard keeps two objects without an id (`None == None`) from matching.
+    let id_matches = target
+        .object_id
+        .is_some_and(|id| object.name.parse::<i64>().ok() == Some(id));
+    object.name.eq_ignore_ascii_case(&target.object_name) || id_matches
 }
 
 /// The publisher of the event declared at `decl`, a `decl_loc` key, as the
@@ -491,10 +550,12 @@ pub(crate) fn event_publisher(
                     && event.range.start_byte <= node.end_byte()
             })
         })?;
+    let object = attribute.object?;
     Some(SubscriberTarget {
         argument: SubscriberArgumentKind::Event,
         object_keyword: attribute.object_type.to_ascii_lowercase(),
-        object_name: attribute.object?.name,
+        object_id: object.name.parse::<i64>().ok(),
+        object_name: object.name,
         current_name: clean_name.to_string(),
     })
 }
@@ -526,6 +587,12 @@ fn subscriber_edits(
             ),
         };
         let Some(argument) = argument else { continue };
+        // A numeric publisher names the object by id. A rename of the object
+        // keeps that integer.
+        if target.argument == SubscriberArgumentKind::Object && argument.name.parse::<i64>().is_ok()
+        {
+            continue;
+        }
         if !argument.name.eq_ignore_ascii_case(&target.current_name) {
             continue;
         }
@@ -1484,6 +1551,16 @@ mod tests {
 }
 "#;
 
+    /// A subscriber that names the publisher by its bare integer id, 50100.
+    const NUMERIC_SUBSCRIBER: &str = r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, 50100, 'OnAfterPostSalesDoc', '', false, false)]
+    local procedure OnAfterPostBare(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#;
+
     /// Renaming a published event has to rewrite the subscriber's event-name
     /// string. It is a string literal, so the identifier walk cannot see it and
     /// the subscriber is left naming an event that no longer exists.
@@ -1625,6 +1702,82 @@ mod tests {
         );
     }
 
+    /// A subscriber that names the publisher by id is still a subscriber of its
+    /// events, so renaming an event rewrites its event-name string.
+    #[test]
+    fn rename_event_updates_numeric_subscriber() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &subscriber_uri, NUMERIC_SUBSCRIBER);
+
+        let pos = Position {
+            line: 3,
+            character: 24,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (publisher_uri.clone(), PUBLISHER),
+                (subscriber_uri.clone(), NUMERIC_SUBSCRIBER),
+            ],
+            &publisher_uri,
+            pos,
+            |placeholder| {
+                assert_eq!(placeholder, "OnAfterPostSalesDoc");
+                "OnAfterPostSales".to_string()
+            },
+        );
+        assert_eq!(
+            text_for(&renamed, &subscriber_uri),
+            r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, 50100, 'OnAfterPostSales', '', false, false)]
+    local procedure OnAfterPostBare(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#
+        );
+    }
+
+    /// A subscriber that names the publisher by id has no name to rewrite.
+    #[test]
+    fn rename_publisher_keeps_numeric_selector() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &subscriber_uri, NUMERIC_SUBSCRIBER);
+
+        let pos = Position {
+            line: 0,
+            character: 18,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (publisher_uri.clone(), PUBLISHER),
+                (subscriber_uri.clone(), NUMERIC_SUBSCRIBER),
+            ],
+            &publisher_uri,
+            pos,
+            |placeholder| {
+                assert_eq!(placeholder, "Sales Post");
+                "Sales Posting".to_string()
+            },
+        );
+        assert!(
+            text_for(&renamed, &publisher_uri).starts_with(r#"codeunit 50100 "Sales Posting""#),
+            "the publisher object was not renamed"
+        );
+        assert!(
+            renamed.iter().all(|(u, _)| u != &subscriber_uri),
+            "renaming the publisher object edited a numeric subscriber: {renamed:?}"
+        );
+    }
+
     /// A field-level table event names the field in the 4th argument, which is
     /// a string literal like the event name.
     #[test]
@@ -1676,5 +1829,129 @@ mod tests {
 }
 "#
         );
+    }
+}
+
+#[cfg(test)]
+mod local_member_tests {
+    use super::*;
+    use al_workspace::Workspace;
+
+    const CODEUNIT: &str = r#"codeunit 50100 "Name Test"
+{
+    procedure P()
+    var
+        Name: Text;
+        Customer: Record Customer;
+    begin
+        Name := Customer.Name;
+    end;
+}
+"#;
+
+    const CUSTOMER_TABLE: &str = r#"table 50100 Customer
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Name; Text[100]) { }
+    }
+}
+"#;
+
+    fn codeunit_uri() -> Url {
+        Url::parse("file:///test/src/Cod50100.al").unwrap()
+    }
+
+    fn table_uri() -> Url {
+        Url::parse("file:///test/src/Tab50100.al").unwrap()
+    }
+
+    // Helpers copied from the rename tests in this file (`mod tests`).
+    fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
+        ws.documents.open(uri.clone(), al_code.to_string()).unwrap();
+    }
+
+    /// Index `al_code` as well as opening it, so the cross-file loop sees it.
+    fn open_and_index(ws: &Workspace, uri: &Url, al_code: &str) {
+        open_doc(ws, uri, al_code);
+        ws.file_index
+            .add_file(uri.to_file_path().unwrap(), al_code.to_string());
+    }
+
+    /// Position of the first `needle` in `source`, moved `offset` bytes on.
+    fn position_of(source: &str, needle: &str, offset: usize) -> Position {
+        let byte = source
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not in source"))
+            + offset;
+        let before = &source[..byte];
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        Position {
+            line: before.matches('\n').count() as u32,
+            character: (byte - line_start) as u32,
+        }
+    }
+
+    /// True when the single-line `range` contains `at`.
+    fn covers(range: Range, at: Position) -> bool {
+        range.start.line == at.line
+            && range.start.character <= at.character
+            && at.character < range.end.character
+    }
+
+    #[test]
+    fn local_rename_leaves_record_member() {
+        let ws = Workspace::new();
+        let codeunit = codeunit_uri();
+        open_and_index(&ws, &table_uri(), CUSTOMER_TABLE);
+        open_and_index(&ws, &codeunit, CODEUNIT);
+
+        let left = position_of(CODEUNIT, "Name := Customer", 0);
+        let edit = rename(&ws, &codeunit, left, "DisplayName")
+            .expect("rename does not fail")
+            .expect("rename returns an edit");
+
+        assert_eq!(edit.changes.len(), 1, "only the codeunit changes: {edit:?}");
+        let (changed, edits) = &edit.changes[0];
+        assert_eq!(changed, &codeunit);
+        assert_eq!(edits.len(), 2, "declaration and left side only: {edits:?}");
+        assert_eq!(edits[0].range.start, position_of(CODEUNIT, "Name: Text", 0));
+        assert_eq!(edits[1].range.start, left);
+        assert!(edits.iter().all(|e| e.new_text == "DisplayName"));
+
+        let member = position_of(CODEUNIT, "Customer.Name", "Customer.".len());
+        assert!(
+            edits.iter().all(|e| !covers(e.range, member)),
+            "an edit rewrote Customer.Name: {edits:?}"
+        );
+    }
+
+    #[test]
+    fn rename_on_record_member_does_not_touch_local() {
+        let ws = Workspace::new();
+        let codeunit = codeunit_uri();
+        open_and_index(&ws, &table_uri(), CUSTOMER_TABLE);
+        open_and_index(&ws, &codeunit, CODEUNIT);
+
+        let member = position_of(CODEUNIT, "Customer.Name", "Customer.".len());
+        let edit = rename(&ws, &codeunit, member, "DisplayName")
+            .expect("rename does not fail")
+            .expect("rename returns edits for the record field");
+
+        let local_line = position_of(CODEUNIT, "Name: Text", 0).line;
+        for (changed, edits) in &edit.changes {
+            if changed != &codeunit {
+                continue;
+            }
+            assert!(
+                edits.iter().all(|e| e.range.start.line != local_line),
+                "an edit lies on the local declaration: {edits:?}"
+            );
+            assert!(
+                edits.iter().any(|e| covers(e.range, member)),
+                "Customer.Name is not renamed: {edits:?}"
+            );
+        }
     }
 }

@@ -180,6 +180,7 @@ fn manifest(
                 },
             )
             .collect(),
+        preprocessor_symbols: Vec::new(),
     }
 }
 
@@ -853,8 +854,9 @@ async fn malformed_project_is_returned_as_failed_initialization_state() {
     assert!(server.workspace.project.read().await.is_none());
 }
 
+/// A2-codex-06: one unreadable `.app` is skipped and the rest loads.
 #[tokio::test]
-async fn failed_reindex_retains_the_previous_complete_generation() {
+async fn unreadable_package_is_skipped_and_initialization_succeeds() {
     let root = tempfile::tempdir().expect("temporary workspace");
     std::fs::write(
         root.path().join("app.json"),
@@ -872,61 +874,113 @@ async fn failed_reindex_retains_the_previous_complete_generation() {
     )
     .unwrap();
     std::fs::create_dir(root.path().join(".alpackages")).unwrap();
-    std::fs::write(
-        root.path().join(".alpackages/Broken.app"),
-        b"not a NAVX package",
+    std::fs::write(root.path().join(".alpackages/x.app"), b"").unwrap();
+    std::fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/fixtures/representative.app"),
+        root.path().join(".alpackages/Representative.app"),
     )
     .unwrap();
 
     let service = test_server();
     let server = service.inner();
-    let old_path = PathBuf::from("/previous/Stable.al");
-    server
-        .workspace
-        .file_index
-        .add_file(old_path.clone(), r#"codeunit 50100 Stable { }"#.to_string());
-    server
-        .workspace
-        .symbols
-        .add_entries(&[al_symbols::SymbolEntry {
-            kind: al_symbols::ObjectKind::Codeunit,
-            id: 50_100,
-            name: "Stable".to_string(),
-            package: "Previous".to_string(),
-            ..Default::default()
-        }]);
-
+    let state = server.workspace_init_state.clone();
     let result = initialize_workspace(
         Arc::clone(&server.workspace),
         server.client.clone(),
         Some(Url::from_directory_path(root.path()).expect("workspace URI")),
-        None,
+        Some(state.clone()),
         None,
     )
     .await;
 
-    assert!(result.is_err(), "invalid replacement package must fail");
-    assert_eq!(
-        server
-            .workspace
-            .file_index
-            .get_content(&old_path)
-            .as_deref(),
-        Some(r#"codeunit 50100 Stable { }"#),
-        "failed reindex must leave the old source generation intact"
-    );
     assert!(
-        server.workspace.symbols.find_by_name("Stable").is_some(),
-        "failed reindex must leave the old symbol generation intact"
+        result.is_ok(),
+        "a zero byte package must not fail: {result:?}"
     );
+    assert!(matches!(*state.borrow(), WorkspaceInitState::Ready));
     assert!(
         server
             .workspace
             .file_index
             .find_by_object_name("Replacement")
-            .is_none(),
-        "staged replacement sources must not leak into the active index"
+            .is_some(),
+        "the project sources are indexed"
     );
+    assert!(
+        !server.workspace.symbols.is_empty(),
+        "the readable package is indexed"
+    );
+}
+
+/// An unanswered settings prompt does not hold back initialization.
+#[tokio::test(flavor = "multi_thread")]
+async fn unanswered_settings_prompt_does_not_hold_back_initialization() {
+    let (service, mut socket) = tower_lsp::LspService::new(crate::server::AlLsp::new);
+    let methods = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = Arc::clone(&methods);
+    // Record every request the server sends. No request is answered.
+    let socket_task = tokio::spawn(async move {
+        while let Some(request) = futures::StreamExt::next(&mut socket).await {
+            seen.lock().unwrap().push(request.method().to_string());
+        }
+    });
+
+    let server = service.inner();
+    let root = tempfile::tempdir().expect("temporary workspace");
+    std::fs::write(
+        root.path().join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"Lens","publisher":"Test","version":"1.0.0.0"}"#,
+    )
+    .unwrap();
+    if unit_test_sentinel().exists() {
+        std::fs::remove_file(unit_test_sentinel()).unwrap();
+    }
+    // Other tests in this process send the prompt to a dropped socket. Wait
+    // until such a prompt has closed, so this test's prompt is the one sent.
+    for _ in 0..250 {
+        if !SETTINGS_PROMPT_OPEN.load(Ordering::Acquire) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        initialize_workspace(
+            Arc::clone(&server.workspace),
+            server.client.clone(),
+            Some(Url::from_directory_path(root.path()).expect("workspace URI")),
+            Some(server.workspace_init_state.clone()),
+            None,
+        ),
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(Ok(()))),
+        "initialization waited for the settings prompt: {result:?}"
+    );
+
+    let mut sent = false;
+    for _ in 0..250 {
+        if methods
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|method| method == "window/showMessageRequest")
+        {
+            sent = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        sent,
+        "the settings prompt was not sent: {:?}",
+        methods.lock().unwrap()
+    );
+
+    socket_task.abort();
+    drop(service);
 }
 
 #[tokio::test]
@@ -1186,7 +1240,7 @@ async fn symbol_staging_converges_while_documents_are_edited() {
         "document edits must not move the package generation"
     );
 
-    let (loaded, _symbols) = tokio::time::timeout(
+    let (loaded, _symbols, _failures) = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         refresh_current_symbol_generation(&workspace),
     )
@@ -1338,4 +1392,25 @@ async fn the_editor_download_refuses_a_linked_alpackages_in_an_untrusted_project
     }
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     assert!(refuse_symbol_download_into(&project.root, &project.packages_dir).is_some());
+}
+
+/// Unit tests keep the source summary store and the settings prompt sentinel
+/// out of the user data directory.
+#[test]
+fn unit_tests_keep_summaries_out_of_the_user_data_dir() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let cache = crate::server::daemon::summary_cache_for(tempdir.path())
+        .expect("unit tests get a summary cache");
+    assert!(
+        cache
+            .dir()
+            .starts_with(crate::server::daemon::unit_test_data_dir()),
+        "{}",
+        cache.dir().display()
+    );
+
+    if unit_test_sentinel().exists() {
+        std::fs::remove_file(unit_test_sentinel()).unwrap();
+    }
+    assert!(settings_prompt_needed());
 }

@@ -631,9 +631,17 @@ where
         );
         let archive = {
             let zip = zip.clone();
-            tokio::task::spawn_blocking(move || SnapshotArchive::open(&zip)).await
+            tokio::task::spawn_blocking(move || {
+                let bytes = std::fs::read(&zip)?;
+                let archive = SnapshotArchive::from_bytes(&bytes)?;
+                Ok::<_, al_bc::snapshot::archive::ArchiveError>((
+                    archive,
+                    sources::folder_name(&zip, &bytes),
+                ))
+            })
+            .await
         };
-        let archive = match archive {
+        let (archive, folder) = match archive {
             Ok(Ok(a)) => a,
             Ok(Err(e)) => {
                 return self
@@ -656,7 +664,7 @@ where
                     .await;
             }
         };
-        let dir = self.replay.sources_dir.join(sources::folder_name(&zip));
+        let dir = self.replay.sources_dir.join(folder);
         let (extracted, mut notices) = match sources::write_sources(&dir, &archive).await {
             Ok(f) => f,
             Err(e) => {

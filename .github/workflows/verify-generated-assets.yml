@@ -23,6 +23,7 @@ jobs:
   full-regeneration:
     name: Full AL-extension regeneration
     runs-on: ubuntu-latest
+    timeout-minutes: 60 # no run recorded, so no measurement backs 60. Same value as property-tests in property-nightly.yml
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

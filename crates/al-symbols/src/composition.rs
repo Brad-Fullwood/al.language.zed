@@ -50,6 +50,22 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
             .then_with(|| a.id.cmp(&b.id))
     });
     let base: Arc<SymbolEntry> = candidates.into_iter().next()?;
+    get_composed_for_base(index, base)
+}
+
+/// Compose one base entry with the extensions that apply to it.
+///
+/// [`get_composed`] keeps a single base per name. Callers that hold a specific
+/// entry use this, so each package that declares the same object gets its own
+/// extensions.
+pub fn get_composed_for_base(
+    index: &SymbolIndex,
+    base: Arc<SymbolEntry>,
+) -> Option<ComposedObject> {
+    let kind = base.kind;
+    if kind.is_extension() {
+        return None;
+    }
 
     // An extension that names its target app joins only an object of that
     // app. One without an id, or a base whose app id is unknown, matches by
@@ -57,7 +73,7 @@ pub fn get_composed(index: &SymbolIndex, kind: ObjectKind, name: &str) -> Option
     let base_app_id = index
         .package_key_of(&base)
         .and_then(|key| key.strip_prefix("id:").map(|id| id.replace('-', "")));
-    let extensions = index.get_extensions_of(name);
+    let extensions = index.get_extensions_of(&base.name);
     let relevant_extensions: Vec<Arc<SymbolEntry>> = extensions
         .into_iter()
         .filter(|ext| ext.kind.base_kind() == Some(kind))
@@ -886,6 +902,62 @@ mod tests {
             "X targets App B's Setup: {:?}",
             composed.extensions
         );
+    }
+
+    #[test]
+    fn same_named_bases_compose_their_own_extensions() {
+        let index = SymbolIndex::new();
+        let setup = |package: &str, field: &str| SymbolEntry {
+            package: package.to_string(),
+            fields: vec![FieldSymbol {
+                id: 1,
+                name: field.to_string(),
+                type_name: "Text[10]".to_string(),
+                properties: Vec::new(),
+            }],
+            ..make_table(50100, "Setup", Vec::new(), Vec::new())
+        };
+        index.add_entries_owned_with_key(
+            vec![setup("App P1", "F1")],
+            Some("id:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string()),
+        );
+        index.add_entries_owned_with_key(
+            vec![setup("App P2", "F2")],
+            Some("id:bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb".to_string()),
+        );
+        index.add_entries_owned_with_key(
+            vec![SymbolEntry {
+                kind: ObjectKind::TableExtension,
+                id: 50101,
+                name: "Setup Ext".to_string(),
+                extends: Some("Setup".to_string()),
+                extends_app_id: Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()),
+                fields: vec![FieldSymbol {
+                    id: 2,
+                    name: "X1".to_string(),
+                    type_name: "Text[10]".to_string(),
+                    properties: Vec::new(),
+                }],
+                package: "App X".to_string(),
+                ..Default::default()
+            }],
+            Some("id:cccccccc-cccc-cccc-cccc-cccccccccccc".to_string()),
+        );
+
+        let base_in = |package: &str| {
+            index
+                .get_by_name("Setup")
+                .into_iter()
+                .find(|entry| entry.kind == ObjectKind::Table && entry.package == package)
+                .unwrap()
+        };
+        let p1 = get_composed_for_base(&index, base_in("App P1")).unwrap();
+        let p2 = get_composed_for_base(&index, base_in("App P2")).unwrap();
+
+        let p1_fields: Vec<&str> = p1.all_fields.iter().map(|f| f.name.as_str()).collect();
+        let p2_fields: Vec<&str> = p2.all_fields.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(p1_fields, ["F1", "X1"]);
+        assert_eq!(p2_fields, ["F2"]);
     }
 
     #[test]

@@ -49,6 +49,7 @@ use std::sync::Arc;
 use crate::interpreter::records::RecordStore;
 use crate::interpreter::scope::CallFrame;
 use crate::interpreter::value::{ErrorInfo, Value};
+use crate::mock::record::MockRecord;
 
 thread_local! {
     /// The cancel flag of the test running on this thread, for the steps
@@ -125,6 +126,10 @@ pub struct DispatchCtx {
     /// variables of the same table share one backing store (shared physical
     /// table semantics — see `records.rs`).
     pub records: HashMap<String, RecordStore>,
+    /// Rows of each non-temporary table at the rollback point. A test that calls
+    /// Commit runs on LiveBc, so locally the rollback point is always the test
+    /// start and this map stays empty.
+    pub committed_records: HashMap<String, MockRecord>,
     pub mode: DispatchMode,
     /// Current call depth — incremented on each workspace-procedure call and
     /// decremented on return. Capped at `MAX_RECURSION_DEPTH`.
@@ -173,6 +178,9 @@ pub struct DispatchCtx {
     /// non-workspace calls leave it empty.
     pub var_writebacks: Vec<(usize, Value)>,
     pub test_handlers: TestHandlers,
+    /// Lowercased names of the handler procedures that ran during the test.
+    /// The test runner compares this with the `[HandlerFunctions]` list.
+    pub handlers_called: std::collections::HashSet<String>,
     /// Allocator for per-record-variable view handles. Each record variable
     /// gets its own filter/cursor/buffer view over the shared table store
     /// (BC semantics); the handle is stored on the variable's `RecordValue`.
@@ -250,6 +258,7 @@ impl DispatchCtx {
         Self {
             source,
             records: HashMap::new(),
+            committed_records: HashMap::new(),
             mode: DispatchMode::PureLogic,
             recursion_depth: 0,
             ast_depth: 0,
@@ -259,6 +268,7 @@ impl DispatchCtx {
             condition_trace_stack: Vec::new(),
             var_writebacks: Vec::new(),
             test_handlers: TestHandlers::default(),
+            handlers_called: std::collections::HashSet::new(),
             next_record_handle: 0,
             stmt_position: false,
             last_error: None,
@@ -287,6 +297,20 @@ impl DispatchCtx {
             records,
             mode: DispatchMode::WithRecords,
             ..Self::new_pure(source)
+        }
+    }
+
+    /// Restore each non-temporary record table to the rollback point (the test
+    /// start, see `committed_records`). A table with no saved rows is cleared.
+    pub fn rollback_records(&mut self) {
+        for (key, store) in self.records.iter_mut() {
+            if key.contains(" temporary#") {
+                continue;
+            }
+            match self.committed_records.get(key) {
+                Some(saved) => store.record.restore_rows_from(saved),
+                None => store.record.clear_rows(),
+            }
         }
     }
 

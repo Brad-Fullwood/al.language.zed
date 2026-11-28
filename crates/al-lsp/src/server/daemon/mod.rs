@@ -26,7 +26,7 @@ mod snapshot_dispatch;
 #[cfg(test)]
 pub(crate) use snapshot_dispatch::use_test_store;
 
-pub(crate) use debug_dispatch::authorize_live_test_target;
+pub(crate) use build_dispatch::dispatch_tests_run_batch;
 pub(crate) use projection::list_target;
 pub(crate) use scope::accepts_scope;
 
@@ -586,7 +586,7 @@ async fn load_project(workspace: &Arc<Workspace>, project_root: &Path) -> Result
     if let Some(advisory) = evaluated.decision.advisory() {
         tracing::warn!("daemon: {advisory}");
     }
-    if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root) {
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root).advisory {
         tracing::warn!("daemon: {advisory}");
     }
     let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
@@ -920,7 +920,11 @@ async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
 /// inline on the async connection task stalls the tokio worker that drives I/O
 /// for *every* connection, so they get the same treatment `deadCode` already
 /// had.
-async fn offload<F>(id: u64, method: &'static str, work: F) -> Response
+pub(in crate::server::daemon) async fn offload<F>(
+    id: u64,
+    method: &'static str,
+    work: F,
+) -> Response
 where
     F: FnOnce() -> Response + Send + 'static,
 {
@@ -952,42 +956,68 @@ static TRUST_INPUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64
 /// that changes the files under a probing path, takes effect on the next
 /// request.
 async fn refresh_trust(workspace: &Workspace) {
-    use std::sync::atomic::Ordering;
+    refresh_trust_with(workspace, |project_root| {
+        let evaluated = al_project::trust::evaluate(project_root)?;
+        if let Some(advisory) = evaluated.decision.advisory() {
+            tracing::warn!("daemon: {advisory}");
+        }
+        // A `dotnet` host in the tree is part of the record, so a replaced
+        // one makes the project stale and is dropped here, not only at
+        // startup.
+        if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root).advisory {
+            tracing::warn!("daemon: {advisory}");
+        }
+        Ok::<_, al_project::config::ConfigLoadError>(evaluated.config)
+    })
+    .await;
+}
 
+/// `refresh_trust` with the evaluation passed in, so a test can check the
+/// order of the steps.
+///
+/// Refreshes run one at a time. The new fingerprint is stored only after the
+/// configuration evaluated from it is in place, so a request that starts while
+/// a refresh runs waits for it and then runs with the new configuration.
+/// `evaluate` hashes files, so it runs on the blocking pool.
+async fn refresh_trust_with<F, E>(workspace: &Workspace, evaluate: F)
+where
+    F: FnOnce(&Path) -> Result<al_project::config::AlConfig, E> + Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    use std::sync::atomic::Ordering;
+    static TRUST_REFRESH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    let _refresh = TRUST_REFRESH.lock().await;
     let Some(project_root) = workspace
         .project
-        .try_read()
-        .ok()
-        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()))
+        .read()
+        .await
+        .as_ref()
+        .map(|project| project.root.clone())
     else {
         return;
     };
 
     let fingerprint = al_project::trust::inputs_fingerprint(&project_root);
-    if TRUST_INPUTS.swap(fingerprint, Ordering::Relaxed) == fingerprint {
+    if TRUST_INPUTS.load(Ordering::Acquire) == fingerprint {
         return;
     }
 
-    match al_project::trust::evaluate(&project_root) {
-        Ok(evaluated) => {
-            if let Some(advisory) = evaluated.decision.advisory() {
-                tracing::warn!("daemon: {advisory}");
-            }
-            // A `dotnet` host in the tree is part of the record, so a replaced
-            // one makes the project stale and is dropped here, not only at
-            // startup.
-            if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
-                tracing::warn!("daemon: {advisory}");
-            }
-            *workspace.config.write().await = evaluated.config;
-        }
+    let evaluated = tokio::task::spawn_blocking(move || evaluate(&project_root)).await;
+    match evaluated {
+        Ok(Ok(config)) => *workspace.config.write().await = config,
         // A settings file that stopped parsing is not a reason to keep serving
         // the configuration it used to hold.
-        Err(error) => {
+        Ok(Err(error)) => {
             tracing::warn!(%error, "daemon: trust re-evaluation failed, denying privileged settings");
             al_project::trust::deny_privileged(&mut *workspace.config.write().await);
         }
+        Err(error) => {
+            tracing::warn!(%error, "daemon: trust re-evaluation worker failed, denying privileged settings");
+            al_project::trust::deny_privileged(&mut *workspace.config.write().await);
+        }
     }
+    TRUST_INPUTS.store(fingerprint, Ordering::Release);
 }
 
 /// Pick up `.al` files written, edited or deleted since the last request.
@@ -1031,6 +1061,14 @@ async fn refresh_workspace_files(workspace: &std::sync::Arc<Workspace>) {
     }
 }
 
+/// Record the owning app's preprocessor symbols for `uri`, the same step as
+/// `al_workspace::on_document_change`. The store parses a document with the
+/// symbols it holds, so each daemon open calls this once the open succeeds.
+fn set_document_symbols(workspace: &Workspace, uri: &url::Url, path: &Path) {
+    let symbols = workspace.file_index.preprocessor_symbols_for(path);
+    workspace.documents.set_preprocessor_symbols(uri, symbols);
+}
+
 /// Carry a disk refresh into the daemon's document store.
 ///
 /// The daemon opens every scanned file as a document at startup, and the
@@ -1050,8 +1088,10 @@ fn sync_disk_documents(workspace: &Workspace, delta: &al_source::file_index::Sca
         else {
             continue;
         };
-        if let Err(error) = workspace.documents.replace_or_open(uri, text) {
+        if let Err(error) = workspace.documents.replace_or_open(uri.clone(), text) {
             tracing::warn!(path = %path.display(), %error, "daemon: changed file rejected by the document store");
+        } else {
+            set_document_symbols(workspace, &uri, path);
         }
     }
     for path in &delta.removed {
@@ -1394,24 +1434,56 @@ dispatch_table! {
         "foldingRanges" [read] => lsp_dispatch::dispatch_folding_ranges(workspace, id, &params),
         "semanticTokens" [read] => lsp_dispatch::dispatch_semantic_tokens(workspace, id, &params),
         "inlayHints" [read] => lsp_dispatch::dispatch_inlay_hints(workspace, id, &params),
-        "codeActions" [read] => lsp_dispatch::dispatch_code_actions(workspace, id, &params),
+        "codeActions" [read] => lsp_dispatch::dispatch_code_actions(workspace, id, &params).await,
         "search" [] => lsp_dispatch::dispatch_search(workspace, id, &params),
-        "object" [] => lsp_dispatch::dispatch_object(workspace, id, &params),
-        "byId" [] => lsp_dispatch::dispatch_by_id(workspace, id, &params),
-        "events" [] => lsp_dispatch::dispatch_events(workspace, id, &params),
-        "subscribers" [] => lsp_dispatch::dispatch_subscribers(workspace, id, &params),
-        "composed" [] => lsp_dispatch::dispatch_composed(workspace, id, &params),
+        "object" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "object", move || lsp_dispatch::dispatch_object(&ws, id, &args)).await
+        },
+        "byId" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "byId", move || lsp_dispatch::dispatch_by_id(&ws, id, &args)).await
+        },
+        "events" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "events", move || lsp_dispatch::dispatch_events(&ws, id, &args)).await
+        },
+        "subscribers" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "subscribers", move || lsp_dispatch::dispatch_subscribers(&ws, id, &args)).await
+        },
+        "composed" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "composed", move || lsp_dispatch::dispatch_composed(&ws, id, &args)).await
+        },
         "packages" [] => lsp_dispatch::dispatch_packages(workspace, id),
         "deps" [] => lsp_dispatch::dispatch_deps(workspace, id),
         "lint" [read] => build_dispatch::dispatch_lint(workspace, id, &params).await,
         "format" [write] => build_dispatch::dispatch_format(workspace, id, &params).await,
-        "fix" [write] => build_dispatch::dispatch_fix(workspace, id, &params),
-        "fix.applicationArea" [] => {
-            build_dispatch::dispatch_fix_application_area(workspace, id, &params)
+        "fix" [write] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix", move || build_dispatch::dispatch_fix(&ws, id, &args)).await
         },
-        "fix.tooltips" [] => build_dispatch::dispatch_fix_tooltips(workspace, id, &params),
+        "fix.applicationArea" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix.applicationArea", move || {
+                build_dispatch::dispatch_fix_application_area(&ws, id, &args)
+            })
+            .await
+        },
+        "fix.tooltips" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix.tooltips", move || {
+                build_dispatch::dispatch_fix_tooltips(&ws, id, &args)
+            })
+            .await
+        },
         "fix.dataClassification" [] => {
-            build_dispatch::dispatch_fix_data_classification(workspace, id, &params)
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix.dataClassification", move || {
+                build_dispatch::dispatch_fix_data_classification(&ws, id, &args)
+            })
+            .await
         },
         "rules" [] => build_dispatch::dispatch_rules(id),
         "parse" [read] => build_dispatch::dispatch_parse(workspace, id, &params),
@@ -2022,7 +2094,9 @@ pub(crate) fn ensure_document(
                 error_codes::INVALID_PARAMS,
                 &format!("Document was rejected: {error}"),
             )
-        })
+        })?;
+    set_document_symbols(workspace, uri, &path);
+    Ok(())
 }
 
 /// A path parameter the daemon refused, carrying the JSON-RPC code the client
@@ -2175,9 +2249,23 @@ pub(crate) struct SuppliedDocument<'a> {
     uri: url::Url,
 }
 
+/// The URIs a request currently holds supplied text for. The text sits in the
+/// shared document store under the real file URI, so a second request for the
+/// same URI is refused while the first runs, and a request without text does
+/// not answer from it.
+static SUPPLIED: std::sync::LazyLock<std::sync::Mutex<std::collections::HashSet<url::Url>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn supplied_uris() -> std::sync::MutexGuard<'static, std::collections::HashSet<url::Url>> {
+    SUPPLIED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl Drop for SuppliedDocument<'_> {
     fn drop(&mut self) {
         self.workspace.documents.close(&self.uri);
+        supplied_uris().remove(&self.uri);
     }
 }
 
@@ -2191,23 +2279,7 @@ impl Drop for SuppliedDocument<'_> {
 /// written out by hand drifted once already: `al_getdiagnostics` rejected
 /// `text` that `lint` accepts.
 pub(crate) fn reads_document(method: &str) -> bool {
-    matches!(
-        method,
-        "hover"
-            | "definition"
-            | "references"
-            | "implementations"
-            | "completions"
-            | "signatureHelp"
-            | "documentSymbols"
-            | "foldingRanges"
-            | "semanticTokens"
-            | "inlayHints"
-            | "codeActions"
-            | "lint"
-            | "format"
-            | "metrics"
-    )
+    al_protocol::methods::TEXT_CAPABLE_METHODS.contains(&method)
 }
 
 /// The document a read-only single-file request works on, and the guard that
@@ -2268,16 +2340,22 @@ pub(crate) fn read_document_from_params<'a>(
                 ),
             )
         })?;
-        workspace
-            .documents
-            .open(uri.clone(), text)
-            .map_err(|error| {
-                rpc_error(
-                    id,
-                    error_codes::INVALID_PARAMS,
-                    &format!("supplied document was rejected: {error}"),
-                )
-            })?;
+        if !supplied_uris().insert(uri.clone()) {
+            return Err(rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                "another request is using supplied text for this path, retry",
+            ));
+        }
+        if let Err(error) = workspace.documents.open(uri.clone(), text) {
+            supplied_uris().remove(&uri);
+            return Err(rpc_error(
+                id,
+                error_codes::INVALID_PARAMS,
+                &format!("supplied document was rejected: {error}"),
+            ));
+        }
+        set_document_symbols(workspace, &uri, &absolute);
         let guard = SuppliedDocument {
             workspace,
             uri: uri.clone(),
@@ -2289,7 +2367,7 @@ pub(crate) fn read_document_from_params<'a>(
     // answered from the store, exactly as `ensure_document` has always done,
     // and reading it touches no filesystem for containment to guard.
     if let Some(uri) = extract_uri(params) {
-        if workspace.documents.contains(&uri) {
+        if workspace.documents.contains(&uri) && !supplied_uris().contains(&uri) {
             return Ok((uri, None));
         }
     }
@@ -2340,11 +2418,34 @@ pub(crate) enum DaemonWorkspaceInitError {
     Core(#[from] al_workspace::CoreInitError),
 }
 
+/// The folder the al-lsp unit tests use in place of the user data directory.
+/// One folder per test process under the system temp dir.
+#[cfg(test)]
+pub(crate) fn unit_test_data_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("al-lsp-unit-{}", std::process::id()))
+}
+
+/// The dependency source summary store for the project at `project_root`.
+/// The unit tests get a store under [`unit_test_data_dir`]. Other builds use
+/// the per-user store, which `for_project` names.
+#[cfg(not(test))]
+pub(crate) fn summary_cache_for(project_root: &Path) -> Option<al_workspace::SourceSummaryCache> {
+    al_workspace::SourceSummaryCache::for_project(project_root)
+}
+
+#[cfg(test)]
+pub(crate) fn summary_cache_for(project_root: &Path) -> Option<al_workspace::SourceSummaryCache> {
+    let _ = project_root;
+    Some(al_workspace::SourceSummaryCache::at(
+        unit_test_data_dir().join("al-lsp").join("source-index"),
+    ))
+}
+
 /// Keep the dependency source summaries of `project_root` in its data
 /// directory, so the next daemon or MCP server on the same packages loads
 /// them instead of parsing every embedded file again.
 pub(crate) fn persist_dependency_source_summaries(workspace: &Workspace, project_root: &Path) {
-    match al_workspace::SourceSummaryCache::for_project(project_root) {
+    match summary_cache_for(project_root) {
         Some(cache) => {
             tracing::info!(
                 dir = %cache.dir().display(),
@@ -2394,13 +2495,15 @@ pub(crate) async fn initialize_daemon_workspace(
             skipped.push(path.display().to_string());
             continue;
         };
-        if let Err(error) = workspace.documents.open(uri, entry.value().clone()) {
+        if let Err(error) = workspace.documents.open(uri.clone(), entry.value().clone()) {
             tracing::warn!(
                 path = %path.display(),
                 %error,
                 "daemon: skipping workspace file rejected by the document store"
             );
             skipped.push(format!("{}: {error}", path.display()));
+        } else {
+            set_document_symbols(workspace, &uri, &path);
         }
     }
     if !skipped.is_empty() {

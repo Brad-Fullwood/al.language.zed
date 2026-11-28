@@ -153,18 +153,29 @@ fn resolve_object_metadata(
 
 pub(super) use al_bc::launch::pick_config as pick_named_config;
 
+/// The active project's root, waiting up to about 50 ms for a writer.
+///
+/// A manifest refresh holds the project write lock for a moment. These sync
+/// callers used one `try_read`, so a request that overlapped a refresh was
+/// told there was no active project.
+fn project_root(workspace: &Workspace) -> Option<std::path::PathBuf> {
+    for _ in 0..50 {
+        if let Ok(guard) = workspace.project.try_read() {
+            return guard.as_ref().map(|project| project.root.clone());
+        }
+        std::thread::yield_now();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    None
+}
+
 pub(super) fn resolve_debug_config(
     workspace: &Workspace,
     params: &serde_json::Value,
 ) -> Result<al_dap::dap::bc_debug::BcDebugConfig, String> {
     use al_bc::launch::find_launch_config;
 
-    let project_root = workspace
-        .project
-        .try_read()
-        .ok()
-        .and_then(|g| g.as_ref().map(|p| p.root.clone()))
-        .ok_or_else(|| "No active project".to_string())?;
+    let project_root = project_root(workspace).ok_or_else(|| "No active project".to_string())?;
 
     let debug_file = find_launch_config(&project_root)
         .map_err(|error| error.to_string())?
@@ -245,12 +256,7 @@ pub(super) fn authorize_debug_target(
     config: &al_dap::dap::bc_debug::BcDebugConfig,
     source: al_project::trust::TargetSource,
 ) -> Result<al_project::trust::CredentialAuthorization, String> {
-    let Some(project_root) = workspace
-        .project
-        .try_read()
-        .ok()
-        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()))
-    else {
+    let Some(project_root) = project_root(workspace) else {
         return Err(
             "No active project, so no Business Central target can be authorised".to_string(),
         );
@@ -279,12 +285,7 @@ pub(in crate::server) fn authorize_launch_target(
     workspace: &Workspace,
     config: &al_bc::launch::BcServerConfig,
 ) -> Result<al_project::trust::CredentialAuthorization, String> {
-    let Some(project_root) = workspace
-        .project
-        .try_read()
-        .ok()
-        .and_then(|guard| guard.as_ref().map(|project| project.root.clone()))
-    else {
+    let Some(project_root) = project_root(workspace) else {
         return Err(
             "No active project, so no Business Central target can be authorised".to_string(),
         );
@@ -308,7 +309,10 @@ pub(in crate::server) fn authorize_launch_target(
 /// The test runner sends `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`,
 /// from the environment. The environment is the user's, but the server comes
 /// from a launch file the repository carries, which is the case `publish` is
-/// authorised for. `tests.run*` and the Run Test code lens both call this.
+/// authorised for. Nothing calls this yet: `tests.run*` and the Run Test code
+/// lens report live tests as skipped until a TestRunnerHub client exists, and
+/// that client calls this before it connects.
+#[allow(dead_code)]
 pub(crate) fn authorize_live_test_target(
     project_root: &std::path::Path,
     config: &mut al_bc::launch::BcServerConfig,
@@ -399,8 +403,12 @@ pub(super) async fn acquire_bc_token(
                 al_symbols::oauth::SignInMode::Auto
             };
             let client = reqwest::Client::new();
-            let settings = match workspace.project.try_read() {
-                Ok(guard) => guard.as_ref().map_or_else(
+            let settings = workspace
+                .project
+                .read()
+                .await
+                .as_ref()
+                .map_or_else(
                     || Ok(Default::default()),
                     |p| {
                         al_symbols::oauth::AuthSettings::for_tenant(
@@ -409,15 +417,13 @@ pub(super) async fn acquire_bc_token(
                             &config.tenant,
                         )
                     },
-                ),
-                Err(_) => Ok(Default::default()),
-            }
-            .map_err(|error| {
-                (
-                    error_codes::INVALID_PARAMS,
-                    format!("Invalid entraIdAuthentication: {error}"),
                 )
-            })?;
+                .map_err(|error| {
+                    (
+                        error_codes::INVALID_PARAMS,
+                        format!("Invalid entraIdAuthentication: {error}"),
+                    )
+                })?;
             al_symbols::oauth::acquire_token_with_settings(
                 &client,
                 &config.tenant,
@@ -549,7 +555,7 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
     let launch_browser = config.launch_browser;
 
     match NativeDebugSession::start(config, &access_token).await {
-        Ok(session) => {
+        Ok(mut session) => {
             let session_id = session.session_id().to_string();
             let browser_url = if launch_browser {
                 match al_dap::dap::native_dap::build_debug_browser_url_with_affinity(
@@ -560,6 +566,12 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
                 ) {
                     Ok(url) => Some(url),
                     Err(error) => {
+                        // A2-neon-13 item 2: the session is attached in
+                        // Business Central and has no Drop, so dropping it
+                        // here left the debugger attached.
+                        if let Err(stop_error) = session.stop().await {
+                            tracing::warn!(%stop_error, "debug start: stopping the unused session failed");
+                        }
                         return Response::error(
                             id,
                             error_codes::INTERNAL_ERROR,
@@ -570,7 +582,16 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
             } else {
                 None
             };
-            *workspace.debug_session.lock().await = Some(session);
+            let mut slot = workspace.debug_session.lock().await;
+            // A2-neon-13 item 2: replacing the stored session without a stop
+            // left the old one attached in Business Central.
+            if let Some(mut old) = slot.take() {
+                if let Err(stop_error) = old.stop().await {
+                    tracing::warn!(%stop_error, "debug start: stopping the previous session failed");
+                }
+            }
+            *slot = Some(session);
+            drop(slot);
             spawn_bind_pump(workspace.debug_session.clone(), session_id.clone());
             Response {
                 id,
@@ -2089,6 +2110,71 @@ mod dispatch_debug_tests {
             assert_eq!(err_code(&response), error_codes::INVALID_PARAMS);
         }
     }
+
+    #[tokio::test]
+    async fn follow_up_handlers_refuse_a_session_outside_the_declared_tenant() {
+        use al_bc::tenant_guard::{
+            install_test_registry, scope_declaration, Declaration, TEST_DEMO_TENANT,
+        };
+        use al_dap::dap::bc_debug::BcDebugConfig;
+        use al_dap::native_debug::NativeDebugSession;
+
+        install_test_registry();
+        let ws = Workspace::new();
+        let config = BcDebugConfig {
+            environment_type: "Sandbox".into(),
+            tenant: TEST_DEMO_TENANT.into(),
+            ..BcDebugConfig::default()
+        };
+        *ws.debug_session.lock().await = Some(NativeDebugSession::test_with_config(config));
+
+        // Each command carries the params its handler reads before the guard runs.
+        let commands = [
+            (
+                "breakpoint",
+                json!({"cmd": "breakpoint", "file": "/tmp/Foo.al", "line": 3,
+                       "objectType": 5, "objectId": 50000}),
+            ),
+            ("state", json!({"cmd": "state"})),
+            ("stack", json!({"cmd": "stack"})),
+            ("variables", json!({"cmd": "variables"})),
+            ("expand", json!({"cmd": "expand", "path": "Rec"})),
+            ("eval", json!({"cmd": "eval", "expr": "Rec"})),
+            ("continue", json!({"cmd": "continue"})),
+            ("step", json!({"cmd": "step", "stepType": "into"})),
+            ("stop", json!({"cmd": "stop"})),
+        ];
+
+        let other = Declaration {
+            tenant: Some("00000000-0000-0000-0000-000000000001".into()),
+            purpose: None,
+        };
+        scope_declaration(other, async {
+            for (name, params) in commands {
+                let r = dispatch_debug(&ws, 1, &params).await;
+                let Some(err) = r.error.as_ref() else {
+                    panic!("{name} ran on a session declared for another tenant");
+                };
+                assert_eq!(
+                    err.code,
+                    error_codes::INVALID_PARAMS,
+                    "{name}: {}",
+                    err.message
+                );
+                assert!(
+                    err.message.contains("does not match"),
+                    "{name}: {}",
+                    err.message
+                );
+                assert!(
+                    err.message.contains(TEST_DEMO_TENANT),
+                    "{name}: {}",
+                    err.message
+                );
+            }
+        })
+        .await;
+    }
 }
 
 #[cfg(test)]
@@ -2154,5 +2240,32 @@ mod serialization_helper_tests {
             err.error.expect("error present").code,
             al_protocol::jsonrpc::error_codes::INTERNAL_ERROR
         );
+    }
+}
+
+#[cfg(test)]
+mod review_a2_tests {
+    use super::*;
+
+    /// A2-neon-17 item 3: a request that overlaps a manifest refresh waits
+    /// for the project lock instead of reporting no active project.
+    #[test]
+    fn resolve_debug_config_waits_for_a_short_project_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let workspace = std::sync::Arc::new(Workspace::new());
+        crate::server::daemon::set_test_project_root(&workspace, dir.path());
+        let holder_workspace = std::sync::Arc::clone(&workspace);
+        let (locked, wait_locked) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let guard = holder_workspace.project.blocking_write();
+            locked.send(()).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            drop(guard);
+        });
+        wait_locked.recv().unwrap();
+        let result = resolve_debug_config(&workspace, &serde_json::json!({}));
+        holder.join().unwrap();
+        let error = result.expect_err("the temp project has no launch configuration");
+        assert!(!error.contains("No active project"), "{error}");
     }
 }

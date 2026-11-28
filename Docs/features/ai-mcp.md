@@ -24,6 +24,14 @@ a daemon `Request`, calls `dispatch_request()`, and serializes the result.
 answered while a long call (a live-BC `al_testsnapshot`, a full `al_build`) runs, and a client can
 tell a busy server from a dead one. Responses are written under a single stdout lock and may
 therefore arrive out of request order, which JSON-RPC allows.
+At most 8 `tools/call` requests run at once. Later calls wait in arrival order for a free slot,
+with no limit on how many wait. `ping` and `notifications/cancelled` are answered while they wait,
+and a call cancelled while it waits does not start. A `tools/call` that reuses the `id` of a call
+that is still running is refused with error code `-32600`, and the running call goes on and can
+still be cancelled.
+The tools that write files (format, the fix methods and `sortMembers`) write nothing when the file
+changed on disk after the daemon read it, and answer an error that says to run the command again.
+See "Files changed on disk" under [Transport](daemon-protocol.md#transport-al-protocol).
 `notifications/cancelled` aborts the matching in-flight `tools/call` by `requestId`. Cancellation
 aborts the MCP task but does not roll back work already handed to an external process: a running
 `alc` build or a live BC test run continues to completion. Everything other than `tools/call` is
@@ -42,7 +50,7 @@ published input schema, including `minItems`/`maxItems` on array arguments.
 | `al_call` | selected at call time | `method` (string, required), `params` (object, default `{}`) | Call any method in the shared daemon catalog through one generic entry point. |
 | `al_debug` | `debug` | `cmd` (required) plus command-specific debug parameters | Drive a persistent BC debug session: start, breakpoint, state, stack, locals/globals/expansion, evaluate, continue, step, history, and stop. |
 | `al_snapshot` | `snapshot` | `action` (required) plus action-specific parameters | Snapshot debugging of a BC environment, see [snapshot-debugging](./snapshot-debugging.md): `start` needs `breakOnNext` and takes optional snappoints, status, finish to save the zip under `.snapshots`, list the sessions, show the stops of a zip. Production needs `allowProduction`. |
-| `al_build` | `compile` | | Compile the project (native emitter by default). Returns success, diagnostics, `.app` path. |
+| `al_build` | `compile` | | Compile the project. Uses Microsoft's `alc` when the AL toolchain is found and the native emitter otherwise. `al.useOfficialCompiler` forces either. Returns success, diagnostics, `.app` path. |
 | `al_downloadsymbols` | `downloadSymbols` | `source` (`nuget` or `server`, default `nuget`), `config` (launch configuration for `server`) | Download dependency symbol packages into `.alpackages`. |
 | `al_symbolsearch` | `search` | `query` (string), `limit` (number, default 50 through MCP), `summary` (default true: name, kind, id and package only, false adds every member) | Fuzzy-search symbols across workspace and packages. |
 | `al_getdiagnostics` | `lint` | `file` or `uri`, plus `text` for a file outside the project | Run diagnostics for an AL file. |
@@ -59,6 +67,12 @@ published input schema, including `minItems`/`maxItems` on array arguments.
 | `al_testsnapshotreplay` | `tests.snapshot_replay` | `snapshotPath`, `bcVersion`. Optional `config`, `timeoutMs` | Re-run a baseline snapshot's exact test method on live BC and return divergences. Returns "not implemented" until the TestRunnerHub client exists. |
 | `al_depgraph` | `deps.graph` | `format` (`json` or `dot`) | Return the GUID-keyed current-manifest/package dependency graph. |
 | `al_freeids` | `freeIds` | `kind` (object-kind keyword, omit for a per-kind summary), `object` (table/tableextension/enum/enumextension, wins over `kind`), `count` (1 to 100, default 1), `includeUsed` (default false) | Pick the next free object ID, table field number or enum value ordinal inside the `app.json` idRanges. |
+
+The tools that connect to Business Central (`al_debug`, `al_snapshot`, `al_downloadsymbols`,
+`al_runtests`, `al_testsnapshot` and `al_testsnapshotreplay`) also take optional string parameters
+`cliTenant` and `cliPurpose`. `cliTenant` is the tenant GUID the user typed. It is required for a
+Business Central online target and is checked against the launch configuration. `cliPurpose` says
+why the connection is made and is required for a customer tenant.
 
 `al_debug` keeps state: the MCP process holds the workspace's `NativeDebugSession` between calls,
 so an agent can work through one debugging session across many calls. See
@@ -83,7 +97,11 @@ with `total` and `truncated`, and `impact`, `tableImpact`, `entrypoints`, `event
 one line per member. The [MCP tool reference](../reference/mcp-tools.md#result-size) has the
 details. A `search` sent through MCP, by `al_symbolsearch` or `al_call`,
 returns summaries unless it passes `summary: false`: three Base Application results take about
-500 bytes instead of about 210 KB.
+500 bytes instead of about 210 KB. The symbol index scans at most 60,000 names for a query that
+matches the middle of a name. When a search stops there, its result has `complete: false` and
+`truncated: true`, and a longer query or the start of the name finds the rest. A `trace` that
+reaches 10,000 steps ends with a step whose `edgeType` is `truncated`, and its paged result has
+`complete: false` too.
 
 ## Microsoft comparison
 

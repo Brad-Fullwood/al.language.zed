@@ -234,10 +234,11 @@ pub async fn compile_project_with_analyzers(
 
     // A `dotnet` inside the project runs with the runtime beside it, which a
     // running process does not stamp, so trust is decided again here.
-    if let Some(advisory) = al_project::trust::enforce_dotnet_path_before_spawn(project_root) {
+    let dotnet = al_project::trust::enforce_dotnet_path_before_spawn(project_root);
+    if let Some(advisory) = &dotnet.advisory {
         tracing::warn!("{advisory}");
     }
-    let mut cmd = al_project::toolchain::dotnet_command_async(&toolchain.alc);
+    let mut cmd = al_project::toolchain::dotnet_command_async(&dotnet.program, &toolchain.alc);
     cmd.arg(format!("/project:{}", project_root.display()));
     let out_file_name = manifest_app_filename(project_root)?;
     cmd.arg(format!("/out:{}", out_dir.join(&out_file_name).display()));
@@ -357,18 +358,51 @@ pub async fn compile_project_with_analyzers(
         None
     };
 
+    let expected_output = out_dir.join(&out_file_name);
     // TmpDirGuard drops here — sweeps `out_dir` if it was the tmp dir. The
     // .app has already been moved out on success; everything else (logs,
     // intermediates) is alc transient state that we don't keep.
     drop(tmp_guard);
 
+    let (success, diagnostics) = delivered_result(
+        output.status.success(),
+        app_path.as_deref(),
+        &expected_output,
+        diagnostics,
+    );
     Ok(CompileResult {
-        success: output.status.success(),
+        success,
         app_path,
         diagnostics,
         output: combined,
         timings: None,
     })
+}
+
+/// The build outcome once the package is known. alc can exit 0 without
+/// writing the file `/out:` names, and that is a failed build with one error.
+fn delivered_result(
+    status_ok: bool,
+    app_path: Option<&Path>,
+    expected_output: &Path,
+    mut diagnostics: Vec<CompileDiagnostic>,
+) -> (bool, Vec<CompileDiagnostic>) {
+    if status_ok && app_path.is_none() {
+        diagnostics.push(CompileDiagnostic {
+            file: "app.json".to_string(),
+            line: 0,
+            column: 0,
+            end_line: None,
+            end_column: None,
+            severity: DiagnosticSeverity::Error,
+            code: "ALN0000".to_string(),
+            message: format!(
+                "alc exited 0 but wrote no package at {}",
+                expected_output.display()
+            ),
+        });
+    }
+    (status_ok && app_path.is_some(), diagnostics)
 }
 
 fn resolve_analyzer_paths(
@@ -498,6 +532,47 @@ fn find_diagnostic_coord_span(line: &str) -> Option<(usize, usize)> {
     None
 }
 
+/// Parse an alc diagnostic that has no `(line,col)`, such as
+/// `error AL1022: A package with publisher ...` for a missing dependency or
+/// `error AL1006: Metadata file ... could not be found` for an analyzer.
+/// alc prints these for the project, so a line without a file prefix is
+/// reported on `app.json` at line 0. The code must look like `AL1022` so
+/// that other output that starts with a severity word is not taken.
+fn parse_unlocated_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
+    let line = line.trim();
+    let severities = [
+        ("error", DiagnosticSeverity::Error),
+        ("warning", DiagnosticSeverity::Warning),
+        ("info", DiagnosticSeverity::Info),
+    ];
+    let (file, severity, rest) = severities.into_iter().find_map(|(word, severity)| {
+        if let Some(rest) = line.strip_prefix(word).and_then(|r| r.strip_prefix(' ')) {
+            return Some(("app.json".to_string(), severity, rest));
+        }
+        let marker = format!(": {word} ");
+        let at = line.find(&marker)?;
+        Some((line[..at].to_string(), severity, &line[at + marker.len()..]))
+    })?;
+    let (code, message) = rest.split_once(':')?;
+    let letters = code.trim_end_matches(|c: char| c.is_ascii_digit());
+    let is_code = !letters.is_empty()
+        && letters.len() < code.len()
+        && letters.chars().all(|c| c.is_ascii_uppercase());
+    if !is_code || file.is_empty() {
+        return None;
+    }
+    Some(CompileDiagnostic {
+        file,
+        line: 0,
+        column: 0,
+        end_line: None,
+        end_column: None,
+        severity,
+        code: code.to_string(),
+        message: message.trim().to_string(),
+    })
+}
+
 fn parse_alc_output(output: &str) -> Vec<CompileDiagnostic> {
     let mut diagnostics = Vec::new();
 
@@ -518,7 +593,9 @@ fn parse_alc_output(output: &str) -> Vec<CompileDiagnostic> {
 /// rightmost `(<digits>,<digits>):` followed by a severity keyword instead
 /// of the first `(`, so the path keeps its embedded parentheses.
 fn parse_diagnostic_line(line: &str) -> Option<CompileDiagnostic> {
-    let (paren_open, paren_close) = find_diagnostic_coord_span(line)?;
+    let Some((paren_open, paren_close)) = find_diagnostic_coord_span(line) else {
+        return parse_unlocated_diagnostic_line(line);
+    };
     let coords = &line[paren_open + 1..paren_close];
     let mut parts = coords.split(',');
     let line_num: u32 = parts.next()?.trim().parse().ok()?;
@@ -854,6 +931,12 @@ fn find_app_file_from_manifest(project_root: &Path) -> Result<Option<PathBuf>, A
 mod tests {
     use super::*;
 
+    /// Held by every test that sets or removes `AL_COMPILE_TIMEOUT_SECS`,
+    /// `AL_DOTNET_PATH` or `XDG_CONFIG_HOME`, or runs `compile_project` while
+    /// one of them is changed. The environment is process-wide, so these tests
+    /// must not overlap on any of the three variables.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn analyzer_test_toolchain(root: &Path) -> AlToolchain {
         AlToolchain {
             version: "1.0.0".to_string(),
@@ -875,16 +958,9 @@ mod tests {
     /// A name the user wrote resolves to the project's own `.netpackages` copy
     /// only once the project is trusted. Before, a clone that shipped a DLL of
     /// that name had it passed to alc as `/analyzer:` on every build.
-    ///
-    /// Held by the tests that point `XDG_CONFIG_HOME` somewhere else. Every
-    /// other test reads an untrusted store either way.
-    static TRUST_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn named_custom_analyzer_in_the_project_needs_trust() {
-        let _lock = TRUST_STORE_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let config = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", config.path());
@@ -931,9 +1007,7 @@ mod tests {
     #[test]
     fn a_build_does_not_run_a_project_dotnet_whose_runtime_changed() {
         use std::os::unix::fs::PermissionsExt;
-        let _lock = TRUST_STORE_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let config = tempfile::tempdir().unwrap();
         let previous_config = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", config.path());
@@ -1160,6 +1234,62 @@ mod tests {
         }
     }
 
+    /// alc 18.1 stdout for a dependency missing from the package cache and for
+    /// an analyzer path that does not exist (round-01/checks-A5.md, c10, c11).
+    #[test]
+    fn project_level_errors_without_a_location_are_parsed() {
+        let output = include_str!("../tests/fixtures/alc_output/project_level_errors.txt");
+        let diagnostics = parse_alc_output(output);
+        let codes: Vec<(&str, &str, u32)> = diagnostics
+            .iter()
+            .map(|d| (d.code.as_str(), d.file.as_str(), d.line))
+            .collect();
+        assert_eq!(
+            codes,
+            [("AL1022", "app.json", 0), ("AL1006", "app.json", 0)],
+            "{diagnostics:?}"
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.severity == DiagnosticSeverity::Error));
+        assert!(diagnostics[1]
+            .message
+            .starts_with("Metadata file '/nonexistent.dll'"));
+    }
+
+    #[test]
+    fn unlocated_line_needs_a_diagnostic_code() {
+        assert!(parse_diagnostic_line("error: something went wrong").is_none());
+        assert!(parse_diagnostic_line("Compilation ended at '10:16:17.760'.").is_none());
+        let diag = parse_diagnostic_line("src/A.al: warning AL0432: obsolete").unwrap();
+        assert_eq!(diag.file, "src/A.al");
+        assert_eq!(diag.severity, DiagnosticSeverity::Warning);
+    }
+
+    #[test]
+    fn exit_zero_without_a_package_is_a_failure() {
+        let (success, diagnostics) =
+            delivered_result(true, None, Path::new("/tmp/out/App.app"), Vec::new());
+        assert!(!success);
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "ALN0000");
+        assert_eq!(diagnostics[0].severity, DiagnosticSeverity::Error);
+        assert!(diagnostics[0].message.contains("/tmp/out/App.app"));
+
+        let (success, diagnostics) = delivered_result(
+            true,
+            Some(Path::new("/p/App.app")),
+            Path::new("/tmp/out/App.app"),
+            Vec::new(),
+        );
+        assert!(success);
+        assert!(diagnostics.is_empty());
+        let (success, diagnostics) =
+            delivered_result(false, None, Path::new("/tmp/out/App.app"), Vec::new());
+        assert!(!success);
+        assert!(diagnostics.is_empty());
+    }
+
     #[test]
     fn parse_error_diagnostic() {
         let line = r#"src/MyTable.al(10,5): error AL0001: Variable 'x' is not defined"#;
@@ -1373,17 +1503,10 @@ Build failed.";
         );
     }
 
-    /// Serialize env-var access to avoid races between concurrent #[test] threads.
-    /// (cargo test runs tests in parallel; AL_COMPILE_TIMEOUT_SECS is a process-
-    /// global.)
-    static COMPILE_TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn compile_timeout_default_when_env_unset() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1453,20 +1576,18 @@ Build failed.";
 
     #[test]
     fn compile_timeout_zero_disables_cap() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "0");
         }
         assert_eq!(compile_timeout().unwrap(), None);
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "-1");
         }
         assert_eq!(compile_timeout().unwrap(), None);
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1474,10 +1595,8 @@ Build failed.";
 
     #[test]
     fn compile_timeout_valid_number_used() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "30");
         }
@@ -1485,7 +1604,7 @@ Build failed.";
             compile_timeout().unwrap(),
             Some(std::time::Duration::from_secs(30))
         );
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1493,15 +1612,13 @@ Build failed.";
 
     #[test]
     fn compile_timeout_rejects_invalid_value() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "not-a-number");
         }
         assert!(compile_timeout().is_err());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }

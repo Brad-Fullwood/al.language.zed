@@ -222,6 +222,55 @@ pub fn mask_non_code_keep_quoted_identifiers(line: &str, in_block_comment: bool)
     })
 }
 
+/// Returns the text of `node` with every byte of its `inactive_code`
+/// descendants (disabled `#if` branches) replaced by a space. Newlines and
+/// the length stay, so line numbers match the file.
+///
+/// `source` is the whole file, since the node's byte offsets index into it.
+/// `Node::utf8_text` keeps the disabled branches, so it does not fit here.
+pub fn text_without_inactive_code(node: tree_sitter::Node, source: &str) -> String {
+    let (start, end) = (node.start_byte(), node.end_byte());
+    let mut bytes = source.as_bytes()[start..end].to_vec();
+    let mut cursor = node.walk();
+    let mut descend = true;
+    loop {
+        let current = cursor.node();
+        if current.kind() == "inactive_code" {
+            for byte in &mut bytes[current.start_byte() - start..current.end_byte() - start] {
+                if *byte != b'\n' && *byte != b'\r' {
+                    *byte = b' ';
+                }
+            }
+            descend = false;
+        }
+        if descend && cursor.goto_first_child() {
+            continue;
+        }
+        descend = true;
+        if cursor.node().id() == node.id() {
+            break;
+        }
+        if cursor.goto_next_sibling() {
+            continue;
+        }
+        // Climb until a next sibling exists. Stop at `node`, never above it.
+        loop {
+            if !cursor.goto_parent() || cursor.node().id() == node.id() {
+                return finish_blanked(bytes);
+            }
+            if cursor.goto_next_sibling() {
+                break;
+            }
+        }
+    }
+    finish_blanked(bytes)
+}
+
+fn finish_blanked(bytes: Vec<u8>) -> String {
+    // Node edges sit on character boundaries and blanks are ASCII, so this stays UTF-8.
+    String::from_utf8(bytes).expect("blanked AL source stays valid UTF-8")
+}
+
 fn is_loop_start(lower: &str) -> bool {
     lower.starts_with("for ")
         || lower.starts_with("foreach ")

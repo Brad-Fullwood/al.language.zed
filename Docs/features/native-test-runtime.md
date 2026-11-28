@@ -158,8 +158,11 @@ Supported behavior:
 
 - Workspace table metadata supplies field numbers, field types, and primary keys. Fields never
   assigned read back as their typed zero value (0 / '' / false / 0D) and match zero filters.
-- Init/Get/Insert/Modify/Delete, field reads/writes, Find/FindSet/FindFirst/FindLast/Next, with
-  BC statement/expression semantics (a statement-position `Get`/`Find*` miss raises, `if Rec.Get`
+- Init/Get/Insert/Modify/Delete (`Get` with fewer values than key fields, or none, fills the
+  rest with their defaults, as BC does), field reads/writes, Find/FindSet/FindFirst/FindLast/Next,
+  `Find` with no argument as `Find('=')`, and a `Find` string of `=`, `>` and `<` tried in the order
+  written, where `>` and `<` are the next and previous record in the current sort order, with BC
+  statement/expression semantics (a statement-position `Get`/`Find*` miss raises, `if Rec.Get`
   yields false, and `if Rec.Insert() then` takes the false branch on a duplicate key).
 - A record method or table procedure written without parentheses (`R.Insert;`,
   `if R.FindFirst then`, `exit(R.Count)`) runs as the call. A field of the same name takes
@@ -176,9 +179,14 @@ Supported behavior:
 - BC-style comparisons, ranges, union/intersection, wildcards, and BC filter case rules:
   unprefixed Text patterns match case-sensitively, the `@` prefix makes a pattern
   case-insensitive, and Code cells always compare caselessly.
-- CalcFields and automatic reads for Sum/Average/Min/Max/Count/Exist/Lookup FlowFields with
-  CONST/FIELD/FILTER clauses (including Boolean CONST values), and CalcSums, which totals each
-  named field over the rows the current filters select.
+- CalcFields for Sum/Average/Min/Max/Count/Exist/Lookup FlowFields with CONST/FIELD/FILTER clauses
+  (including Boolean CONST values), and CalcSums, which totals each named field over the rows the
+  current filters select. A FlowField reads as its typed zero value until CalcFields calculates it
+  on that view. A value assigned in code reads back until the next read of the record. Insert and
+  Modify keep it in the buffer and do not store it. Init, Get, Find and Next clear the calculation
+  and the assigned value. A temporary record differs, as in BC: Insert sets each FlowField to zero
+  and stores zero, Modify stores the assigned value, and later reads return the stored value.
+  SetAutoCalcFields has no local support and selects LiveBc.
 - Rename (the full new primary key, written with the rest of the buffer), TestField (empty, or a
   given value), IsTemporary. As in BC, a rename updates every field whose plain TableRelation names
   the renamed table's single-field key. A test that renames a table named by a conditional or

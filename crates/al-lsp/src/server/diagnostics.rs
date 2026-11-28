@@ -483,10 +483,12 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
     // interleave with `coherent_snapshot`, producing MissingCachedParse or
     // GenerationChanged errors during ordinary editor traffic.
     //
-    // We release the lock before publishing over the client transport, then
-    // retry if a newer generation won the race between computation and
-    // publication. This keeps the snapshot atomic without holding edits behind
-    // potentially slow client I/O.
+    // The lock is released before publishing over the client transport, and
+    // the pass retries if a newer generation won the race between computation
+    // and publication. The sends hold `diagnostic_publication` instead, with
+    // each URI's `is_current` check right before its send, so an edit is
+    // applied while the notifications go out and a close's clear cannot be
+    // followed by a report this pass checked before the close.
     //
     // The retry is bounded. `on_document_change` bumps the revision on every
     // keystroke, so on a project where the pass takes longer than the typing
@@ -515,6 +517,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         {
             Ok(staged) => staged,
             Err(error) => {
+                drop(generation);
                 if session.is_cancelled() {
                     return false;
                 }
@@ -533,9 +536,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         if session.is_cancelled() {
             return false;
         }
-        let generation = workspace.generation_lock.read().await;
         if workspace.generation_revision() != revision && attempt < MAX_STAGING_ATTEMPTS {
-            drop(generation);
             tokio::task::yield_now().await;
             continue;
         }
@@ -551,6 +552,16 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
                     current.insert(uri, (input, diagnostics));
                 }
             }
+        }
+        // Taken before `published_uris`: a holder of this lock may take
+        // `published_uris`, never the other way round.
+        let publication = workspace.diagnostic_publication.lock().await;
+        // The scope can change while the pass computes, so it is checked under the lock.
+        if workspace.config.read().await.diagnostics_scope
+            != al_project::config::DiagnosticsScope::Project
+        {
+            drop(publication);
+            return false;
         }
         let mut published = published_uris.lock().await;
         let mut stale: Vec<Url> = published
@@ -607,7 +618,7 @@ pub(crate) async fn publish_workspace_diagnostics_parts(
         }
         *published = current.into_keys().chain(kept).collect();
         drop(published);
-        drop(generation);
+        drop(publication);
         return true;
     }
     false
@@ -882,12 +893,12 @@ async fn schedule_transaction_refresh(
 /// Publish `diagnostics` for `uri` only while the document still holds `text`
 /// at `client_version`.
 ///
-/// The generation read lock spans the check and the publish. `did_close`
-/// closes the document and sends its clearing publish under the write lock,
-/// so a publish that passes the check here reaches the client before that
-/// clear and can never land after it as a ghost on a closed document. The
-/// check alone left a window in which a close on another worker thread ran
-/// between the check and the send.
+/// `diagnostic_publication` spans the check and the publish. `did_close`
+/// closes the document and then sends its clear through `publish_clear`,
+/// which takes the same lock, so a publish that passes the check here reaches
+/// the client before that clear and can never land after it as a ghost on a
+/// closed document. The check alone left a window in which a close on
+/// another worker thread ran between the check and the send.
 pub(crate) async fn publish_if_current(
     workspace: &al_workspace::Workspace,
     client: &tower_lsp::Client,
@@ -896,15 +907,27 @@ pub(crate) async fn publish_if_current(
     client_version: i32,
     diagnostics: Vec<Diagnostic>,
 ) -> bool {
-    let generation = workspace.generation_lock.read().await;
+    let publication = workspace.diagnostic_publication.lock().await;
     if !snapshot_is_current(workspace, uri, text, client_version) {
         return false;
     }
     client
         .publish_diagnostics(uri.clone(), diagnostics, Some(client_version))
         .await;
-    drop(generation);
+    drop(publication);
     true
+}
+
+/// Clear `uri`'s diagnostics after its document was closed, under
+/// `diagnostic_publication`, so no publish checked before the close lands
+/// after the clear.
+pub(crate) async fn publish_clear(
+    workspace: &al_workspace::Workspace,
+    client: &tower_lsp::Client,
+    uri: Url,
+) {
+    let _publication = workspace.diagnostic_publication.lock().await;
+    client.publish_diagnostics(uri, Vec::new(), None).await;
 }
 
 fn document_snapshot_is_current(
@@ -1267,7 +1290,8 @@ pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
     let progress = ProjectProgress::begin(server).await;
     let outcome = match server.get_or_init_bridge().await {
         Some(guard) => match guard.as_ref() {
-            Some(bridge) => Some(
+            Some(bridge) => Some((
+                bridge.generation(),
                 bridge
                     .analyze_project(crate::semantic::AnalyzeProjectRequest {
                         project_root: root.clone(),
@@ -1276,12 +1300,12 @@ pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
                         open_documents,
                     })
                     .await,
-            ),
+            )),
             None => None,
         },
         None => None,
     };
-    let Some(outcome) = outcome else {
+    let Some((bridge_generation, outcome)) = outcome else {
         progress
             .end(server, "The AL compiler is not available.")
             .await;
@@ -1294,9 +1318,29 @@ pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
             progress
                 .end(server, "The AL compiler pass failed. See the log.")
                 .await;
+            // A2-neon-17 item 2: a bridge that timed out or is poisoned is
+            // restarted, as the per-file pass does.
+            if matches!(
+                &error,
+                crate::semantic::SemanticError::Timeout(_)
+                    | crate::semantic::SemanticError::Poisoned
+            ) {
+                if let Err(restart_error) =
+                    al_workspace::restart_bridge_if_current(&server.workspace, bridge_generation)
+                        .await
+                {
+                    tracing::warn!(error = %restart_error, "semantic bridge restart failed");
+                }
+            }
             return;
         }
     };
+    // A2-neon-17 item 2: the scope may have changed while the pass ran.
+    if server.workspace.config.read().await.diagnostics_scope
+        != al_project::config::DiagnosticsScope::Project
+    {
+        return;
+    }
     progress
         .end(
             server,
@@ -1345,8 +1389,10 @@ pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
             if is_cache_path(&uri) {
                 continue;
             }
-            let current = documents.get_client_version(&uri);
-            if current.is_some() && current != versions.get(&uri).copied() {
+            if !project_result_is_current(
+                versions.get(&uri).copied(),
+                documents.get_client_version(&uri),
+            ) {
                 continue;
             }
             let diagnostics = by_file.get(&uri).cloned().unwrap_or_default();
@@ -1354,6 +1400,15 @@ pub(crate) async fn run_project_semantic_analysis(server: &AlServer) {
         }
     }
     publish_workspace_diagnostics(server).await;
+}
+
+/// Whether a project pass result for a URI may be cached: its open state and
+/// client version are the same at the end of the pass as at the start.
+///
+/// A buffer open at the start and closed before the end was analysed from
+/// unsaved text that `did_close` discarded, so its result is dropped.
+fn project_result_is_current(started: Option<i32>, now: Option<i32>) -> bool {
+    started == now
 }
 
 fn resolve_semantic_analyzer_entries(
@@ -1617,6 +1672,10 @@ pub fn semantic_to_diagnostic(entry: &crate::semantic::DiagnosticEntry) -> Diagn
         ..Default::default()
     }
 }
+
+#[cfg(test)]
+#[path = "diagnostics_review_tests.rs"]
+mod diagnostics_review_tests;
 
 #[cfg(test)]
 mod tests {

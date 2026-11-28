@@ -186,6 +186,8 @@ fn http_client(config: &BcDebugConfig) -> Result<reqwest::Client, Failure> {
         .danger_accept_invalid_certs(config.accept_invalid_certs)
         .connect_timeout(Duration::from_secs(30))
         .timeout(Duration::from_secs(300))
+        // A sign-in redirect answering 200 would otherwise pass as a result.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| internal(format!("Cannot create the HTTP client: {error}")))
 }
@@ -466,14 +468,35 @@ fn pick_record(
     }
 }
 
+/// `stop` for the JSON output, with `locals` and `globals` cut to the names in
+/// `vars` (case insensitive, as the text output does). Children are kept.
+/// `fields` has no JSON meaning, because JSON carries the whole record.
+fn json_stop(
+    stop: &al_bc::snapshot::archive::Stop,
+    vars: Option<&[String]>,
+) -> al_bc::snapshot::archive::Stop {
+    let mut stop = stop.clone();
+    if let Some(vars) = vars {
+        let wanted: Vec<String> = vars.iter().map(|v| v.trim().to_lowercase()).collect();
+        let keep = |v: &al_bc::snapshot::archive::Variable| wanted.contains(&v.name.to_lowercase());
+        stop.locals.retain(keep);
+        stop.globals.retain(keep);
+    }
+    stop
+}
+
 /// The configuration of a record that has no configuration name (a Zed
-/// capture). It is the one whose target matches the record.
+/// capture). It is the one whose target matches the record. Also used for a
+/// named record whose name is no longer in the configuration file.
 fn nameless_config(root: &Path, record: &SessionRecord) -> Result<BcDebugConfig, Failure> {
     let file = launch_file(root)?;
     let matching: Vec<_> = file
         .configs
         .iter()
-        .filter(|server| same_target(&debug_config_from_server_config(server), record))
+        .filter(|server| {
+            let config = debug_config_from_server_config(server);
+            same_target(&config, record) && config.snapshot_port == record.snapshot_port
+        })
         .collect();
     match matching.as_slice() {
         [] => Err(invalid(
@@ -508,7 +531,19 @@ fn config_for_record(
         )));
     }
     let config = match record.configuration_name.as_deref() {
-        Some(name) => load_config(&root, Some(name))?.0,
+        Some(name) => {
+            // The same exact name test that `pick_named_config` applies.
+            let in_file = launch_file(&root)?.configs.iter().any(|c| c.name == name);
+            if in_file {
+                load_config(&root, Some(name))?.0
+            } else {
+                nameless_config(&root, record).map_err(|(_, message)| {
+                    invalid(format!(
+                        "configuration `{name}` is not in the configuration file, and {message}"
+                    ))
+                })?
+            }
+        }
         None => nameless_config(&root, record)?,
     };
     let differs = !same_target(&config, record) || config.snapshot_port != record.snapshot_port;
@@ -677,7 +712,7 @@ async fn show(workspace: &Workspace, params: &Value) -> Result<Value, Failure> {
                 .iter()
                 .enumerate()
                 .filter(|(i, _)| options.only_stop.is_none_or(|n| n == i + 1))
-                .map(|(_, stop)| stop)
+                .map(|(_, stop)| json_stop(stop, options.vars.as_deref()))
                 .collect();
             Ok(json!({ "cmd": "show", "stops": shown }))
         } else {

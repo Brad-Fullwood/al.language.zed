@@ -312,14 +312,15 @@ pub(super) fn eval_date_literal(node: Node<'_>, source: &[u8]) -> Eval {
 
 /// Evaluate an AL time literal (`063030T`, `063030500T`, `0T`) into a
 /// `Value::Time` (milliseconds since midnight). Digits are `HHMMSS` with an
-/// optional trailing thousandths group.
+/// optional trailing thousandths group. `0T` is the undefined time and gives
+/// `Value::UndefinedTime`. `000000T` gives midnight.
 pub(super) fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
     let Some(text) = utf8_text(node, source) else {
         return Eval::Error(error_info("invalid time literal text"));
     };
     let digits = text.trim().trim_end_matches(['t', 'T']);
     if digits == "0" {
-        return Eval::Normal(Value::Time(0));
+        return Eval::Normal(Value::UndefinedTime);
     }
     if !(6..=9).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
         return Eval::Error(error_info(format!("malformed time literal: {text}")));
@@ -359,6 +360,24 @@ pub(super) fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
     }
     let ms = ((hours * 60 + minutes) * 60 + seconds) * 1000 + millis;
     Eval::Normal(Value::Time(ms))
+}
+
+/// Evaluate an AL DateTime literal. `0DT` is the only one: the undefined
+/// DateTime, which is also the default of a DateTime variable. Other DateTime
+/// values come from CreateDateTime. See Microsoft Learn, "DateTime data type".
+pub(super) fn eval_datetime_literal(node: Node<'_>, source: &[u8]) -> Eval {
+    let Some(text) = utf8_text(node, source) else {
+        return Eval::Error(error_info("invalid datetime literal text"));
+    };
+    let trimmed = text.trim();
+    let without_t = trimmed.strip_suffix(['t', 'T']).unwrap_or(trimmed);
+    let digits = without_t.strip_suffix(['d', 'D']).unwrap_or(without_t);
+    if digits == "0" {
+        return Eval::Normal(Value::DateTime(0));
+    }
+    Eval::Error(error_info(format!(
+        "malformed datetime literal: {text}; only 0DT is a DateTime literal, use CreateDateTime"
+    )))
 }
 
 fn is_leap_year(year: i64) -> bool {

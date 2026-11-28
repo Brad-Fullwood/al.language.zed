@@ -20,6 +20,9 @@ pub const MAX_AL_FILE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
 /// Reaching the cap is an explicit scan error rather than a partial index.
 pub const MAX_WORKSPACE_SOURCE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
 
+/// Largest `app.json` the index reads. Matches the cap `al-project` applies to the same file.
+const MAX_APP_JSON_BYTES: u64 = 1_048_576;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ScanError {
     #[error("failed to read workspace directory '{}': {source}", path.display())]
@@ -95,6 +98,11 @@ pub struct ScanDelta {
     /// Whether an object was added, removed or renamed, or a file's procedure
     /// set changed. A body-only edit leaves the object and call topology alone.
     pub topology_changed: bool,
+    /// Files set aside this scan, with the reason. A file is set aside when it
+    /// cannot be read, is not valid UTF-8, or is over [`MAX_AL_FILE_BYTES`].
+    /// Its previous entries are removed and the next scan retries it. A skipped
+    /// file that was indexed is also listed in `changed`.
+    pub skipped: Vec<(PathBuf, String)>,
 }
 
 impl ScanDelta {
@@ -146,12 +154,20 @@ struct AppIdentity {
 }
 
 impl AppIdentity {
-    fn read(app_json: &Path) -> Self {
-        let Ok(text) = std::fs::read_to_string(app_json) else {
-            return Self::default();
+    /// The identity `app_json` declares. A missing or unparsable file gives the
+    /// default identity. `Err` when the file is refused: not a regular file, over
+    /// [`MAX_APP_JSON_BYTES`], unreadable or not UTF-8. The caller then keeps the
+    /// identity it already holds.
+    fn read(app_json: &Path) -> Result<Self, String> {
+        // Standard route checked: `al_types::regular_file` is the bounded, non-blocking
+        // reader `al-project` uses for the same manifest. A plain `read_to_string` waits
+        // on a FIFO and reads a file of any size whole.
+        let read = al_types::regular_file::read_regular_text_file(app_json, MAX_APP_JSON_BYTES)?;
+        let Some(text) = read else {
+            return Ok(Self::default());
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return Self::default();
+            return Ok(Self::default());
         };
         let id = value
             .get("id")
@@ -182,11 +198,11 @@ impl AppIdentity {
                     .collect()
             })
             .unwrap_or_default();
-        Self {
+        Ok(Self {
             id,
             dependency_ids,
             preprocessor_symbols,
-        }
+        })
     }
 }
 
@@ -479,16 +495,32 @@ impl FileIndex {
     /// exist on disk are removed from every index (primary + secondary
     /// object-name / object-id / procedure maps).
     ///
-    /// The refresh is atomic with respect to discovery and file reads: a walk,
-    /// size, UTF-8, or concurrent-modification failure leaves the previous
-    /// generation intact and returns the precise error.
+    /// A file that cannot be read, is not valid UTF-8, or is over
+    /// [`MAX_AL_FILE_BYTES`] is skipped and reported; the other files are
+    /// indexed. A walk failure, an inspection failure, or a total over
+    /// [`MAX_WORKSPACE_SOURCE_BYTES`] fails the scan before anything is
+    /// published, so the previous generation stays in place.
     pub fn scan(&self, root: &Path) -> Result<usize, ScanError> {
+        self.scan_reporting(root).map(|(found, _)| found)
+    }
+
+    /// Like [`Self::scan`], and also returns each skipped file with its reason.
+    /// The count is the number of `.al` files found, skipped files included.
+    pub fn scan_reporting(
+        &self,
+        root: &Path,
+    ) -> Result<(usize, Vec<(PathBuf, String)>), ScanError> {
         let paths = collect_al_files(root)?;
-        let staged = stage_files(&paths)?;
+        let staged = stage_files(&paths, &self.racy)?;
         let on_disk: std::collections::HashSet<PathBuf> = paths.iter().cloned().collect();
 
-        for (path, content, metadata) in staged {
+        for (path, content, metadata) in staged.files {
             self.add_file_with_meta(path, content, Some(metadata));
+        }
+
+        // A skipped file keeps no entries from an earlier scan, as in incremental_scan.
+        for (path, _) in &staged.skipped {
+            self.remove_file(path);
         }
 
         // Drop entries for files that disappeared from disk between scans.
@@ -500,7 +532,7 @@ impl FileIndex {
                 self.remove_file(&path);
             }
         }
-        Ok(paths.len())
+        Ok((paths.len(), staged.skipped))
     }
 
     /// Incrementally scan a directory tree for changed `.al` files.
@@ -517,8 +549,21 @@ impl FileIndex {
         let mut delta = ScanDelta::default();
         let paths = collect_al_files(root)?;
         let on_disk: std::collections::HashSet<PathBuf> = paths.iter().cloned().collect();
-        let metadata = strict_metadata_for_paths(&paths)?;
+        let metadata = strict_metadata_for_paths(&paths, &mut delta.skipped)?;
         let mut staged = Vec::new();
+
+        // The owner each indexed file was parsed with is only recorded in the
+        // directory memo. Read it before the memo is cleared, so the loop below
+        // sees an `app.json` added, removed or moved since the last scan.
+        let previous_owner: std::collections::HashMap<PathBuf, Option<PathBuf>> = self
+            .file_metadata
+            .iter()
+            .map(|entry| (entry.key().clone(), self.app_root_for(entry.key())))
+            .collect();
+        self.dir_app_root.clear();
+        // An app whose `app.json` is gone reads as no app again.
+        self.apps
+            .retain(|app_root, _| app_root.join("app.json").is_file());
 
         // An edited `app.json` changes how every file of that app parses
         // (`preprocessorSymbols`) and how its objects rank. Reread each known
@@ -526,7 +571,14 @@ impl FileIndex {
         let mut stale_apps = std::collections::HashSet::new();
         let known_apps: Vec<PathBuf> = self.apps.iter().map(|e| e.key().clone()).collect();
         for app_root in known_apps {
-            let fresh = AppIdentity::read(&app_root.join("app.json"));
+            let app_json = app_root.join("app.json");
+            let fresh = match AppIdentity::read(&app_json) {
+                Ok(fresh) => fresh,
+                Err(reason) => {
+                    tracing::warn!(path = %app_json.display(), %reason, "app.json refused, keeping the last identity");
+                    continue;
+                }
+            };
             if self.apps.get(&app_root).is_some_and(|old| *old != fresh) {
                 self.apps.insert(app_root.clone(), fresh);
                 stale_apps.insert(app_root);
@@ -534,10 +586,15 @@ impl FileIndex {
         }
 
         for (path, current_meta) in &metadata {
-            let app_changed = !stale_apps.is_empty()
-                && self
-                    .app_root_for(path)
-                    .is_some_and(|app_root| stale_apps.contains(&app_root));
+            let owner = self.app_root_for(path);
+            let owner_changed = previous_owner
+                .get(path)
+                .is_some_and(|previous| *previous != owner);
+            let app_changed = owner_changed
+                || (!stale_apps.is_empty()
+                    && owner
+                        .as_ref()
+                        .is_some_and(|app_root| stale_apps.contains(app_root)));
             let unchanged = !app_changed
                 && self
                     .file_metadata
@@ -546,7 +603,13 @@ impl FileIndex {
             if unchanged && !self.racy.contains(path) {
                 continue;
             }
-            let content = read_stable_file(path, current_meta)?;
+            let content = match read_stable_file(path, current_meta) {
+                Ok(content) => content,
+                Err(err) => {
+                    set_aside(err, &mut delta.skipped, &self.racy)?;
+                    continue;
+                }
+            };
             if unchanged
                 && self
                     .files
@@ -570,6 +633,18 @@ impl FileIndex {
             let after = self.topology_of(&path);
             delta.topology_changed |= before != after;
             delta.changed.push(path);
+        }
+
+        // A skipped file that was indexed loses its entries. It is listed as
+        // changed, and the next scan retries it.
+        for (path, _) in &delta.skipped {
+            if !self.files.contains_key(path) {
+                continue;
+            }
+            let before = self.topology_of(path);
+            self.remove_file(path);
+            delta.topology_changed |= before != self.topology_of(path);
+            delta.changed.push(path.clone());
         }
 
         // Only a file this index read from disk (it has recorded metadata) and
@@ -927,7 +1002,11 @@ impl FileIndex {
         if let Some(cached) = self.apps.get(app_root) {
             return cached.value().clone();
         }
-        let identity = AppIdentity::read(&app_root.join("app.json"));
+        let app_json = app_root.join("app.json");
+        let identity = AppIdentity::read(&app_json).unwrap_or_else(|reason| {
+            tracing::warn!(path = %app_json.display(), %reason, "app.json refused, the app gets no identity");
+            AppIdentity::default()
+        });
         self.apps.insert(app_root.to_path_buf(), identity.clone());
         identity
     }
@@ -1250,11 +1329,24 @@ fn strict_file_metadata(path: &Path) -> Result<FileMetadata, ScanError> {
     Ok(FileMetadata { modified, size })
 }
 
-fn strict_metadata_for_paths(paths: &[PathBuf]) -> Result<Vec<(PathBuf, FileMetadata)>, ScanError> {
+/// Stats each path. A file over [`MAX_AL_FILE_BYTES`] is set aside in `skipped`
+/// and does not count toward the workspace total. Any other failure, and a
+/// total over [`MAX_WORKSPACE_SOURCE_BYTES`], fails the scan.
+fn strict_metadata_for_paths(
+    paths: &[PathBuf],
+    skipped: &mut Vec<(PathBuf, String)>,
+) -> Result<Vec<(PathBuf, FileMetadata)>, ScanError> {
     let mut total = 0u64;
     let mut result = Vec::with_capacity(paths.len());
     for path in paths {
-        let metadata = strict_file_metadata(path)?;
+        let metadata = match strict_file_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(err @ ScanError::FileTooLarge { .. }) => {
+                skipped.push((path.clone(), err.to_string()));
+                continue;
+            }
+            Err(err) => return Err(err),
+        };
         total = total
             .checked_add(metadata.size)
             .ok_or(ScanError::WorkspaceTooLarge {
@@ -1286,14 +1378,44 @@ fn read_stable_file(path: &Path, expected: &FileMetadata) -> Result<String, Scan
     Ok(content)
 }
 
-fn stage_files(paths: &[PathBuf]) -> Result<Vec<(PathBuf, String, FileMetadata)>, ScanError> {
-    strict_metadata_for_paths(paths)?
-        .into_iter()
-        .map(|(path, metadata)| {
-            let content = read_stable_file(&path, &metadata)?;
-            Ok((path, content, metadata))
-        })
-        .collect()
+/// The files a full scan read, and the ones it set aside.
+struct Staged {
+    files: Vec<(PathBuf, String, FileMetadata)>,
+    skipped: Vec<(PathBuf, String)>,
+}
+
+fn stage_files(paths: &[PathBuf], racy: &dashmap::DashSet<PathBuf>) -> Result<Staged, ScanError> {
+    let mut staged = Staged {
+        files: Vec::new(),
+        skipped: Vec::new(),
+    };
+    for (path, metadata) in strict_metadata_for_paths(paths, &mut staged.skipped)? {
+        match read_stable_file(&path, &metadata) {
+            Ok(content) => staged.files.push((path, content, metadata)),
+            Err(err) => set_aside(err, &mut staged.skipped, racy)?,
+        }
+    }
+    Ok(staged)
+}
+
+/// Routes a failed read. An unreadable, non-UTF-8, or over-cap file is skipped
+/// and reported. A file that changed while it was read is marked racy, so the
+/// next scan compares its content. Any other error fails the scan.
+fn set_aside(
+    err: ScanError,
+    skipped: &mut Vec<(PathBuf, String)>,
+    racy: &dashmap::DashSet<PathBuf>,
+) -> Result<(), ScanError> {
+    match err {
+        ScanError::ChangedDuringScan { path } => {
+            racy.insert(path);
+        }
+        ScanError::ReadFile { ref path, .. } | ScanError::FileTooLarge { ref path, .. } => {
+            skipped.push((path.clone(), err.to_string()));
+        }
+        other => return Err(other),
+    }
+    Ok(())
 }
 
 /// Production `ProcedureSource` for the AL interpreter (al-runtime).

@@ -798,7 +798,7 @@ fn scalar_of(value: &Value) -> Result<Scalar, String> {
         Value::Char(c) => Scalar::Text(c.to_string()),
         Value::Guid(g) => Scalar::Text(g.clone()),
         Value::Option { member, .. } => Scalar::Text(member.clone()),
-        Value::Date(_) | Value::Time(_) | Value::DateTime(_) => {
+        Value::Date(_) | Value::Time(_) | Value::UndefinedTime | Value::DateTime(_) => {
             Scalar::Text(crate::interpreter::dispatch::render_value_xml(value))
         }
         other => {

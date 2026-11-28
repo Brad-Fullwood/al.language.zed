@@ -289,7 +289,7 @@ pub fn dequeue_date_time(_args: &[Value]) -> Eval {
 
 pub fn dequeue_time(_args: &[Value]) -> Eval {
     QUEUE.with(|q| match q.borrow_mut().dequeue() {
-        Ok(Value::Time(t)) => ok(Value::Time(t)),
+        Ok(v @ (Value::Time(_) | Value::UndefinedTime)) => ok(v),
         Ok(v) => err(format!(
             "Library Variable Storage: DequeueTime type mismatch — got {}",
             v.type_name()
@@ -372,7 +372,7 @@ pub fn peek_time(args: &[Value]) -> Eval {
         _ => return err("Library Variable Storage: PeekTime expects (Integer)"),
     };
     QUEUE.with(|q| match q.borrow().peek(index) {
-        Ok(Value::Time(t)) => ok(Value::Time(*t)),
+        Ok(v @ (Value::Time(_) | Value::UndefinedTime)) => ok(v.clone()),
         Ok(v) => err(format!(
             "Library Variable Storage: PeekTime type mismatch — got {}",
             v.type_name()

@@ -439,6 +439,33 @@ fn an_entry_written_by_another_summary_builder_is_a_miss() {
     assert_eq!(rebuilt.summaries(), fresh.summaries());
 }
 
+#[test]
+fn an_entry_of_schema_7_is_rebuilt() {
+    let fixture = Fixture::new();
+    let fresh = fixture.start();
+    let cache = fixture.cache();
+    let key = PackageKey::of(&fixture.fixture_app).unwrap();
+    assert_ne!(key.schema_version, 7, "the current schema is not 7");
+    let schema_7 = PackageKey {
+        schema_version: 7,
+        ..key.clone()
+    };
+    let summary = PackageSourceSummary::build(&fixture.fixture_app, || {}).unwrap();
+    cache.save(&schema_7, &summary).unwrap();
+    assert!(
+        cache.load(&schema_7).is_some(),
+        "the schema 7 entry reads under its own key"
+    );
+
+    // A schema 7 entry found where this build looks is refused on its header
+    // and summarized again.
+    std::fs::rename(cache.entry_path(&schema_7), cache.entry_path(&key)).unwrap();
+    assert!(cache.load(&key).is_none());
+    let rebuilt = fixture.start();
+    assert_eq!(rebuilt.from_disk, 1, "only the other package loads");
+    assert_eq!(rebuilt.summaries(), fresh.summaries());
+}
+
 /// The snapshot of the summaries of [`snapshot_package`], kept in the repository.
 const SUMMARY_SNAPSHOT: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),

@@ -202,6 +202,10 @@ pub fn application_version_for_runtime(runtime: &str) -> Result<String, String> 
 pub struct ScaffoldResult {
     pub project_dir: String,
     pub files_created: Vec<String>,
+    /// Fields the author must fill before AppSourceCop passes. Set only for
+    /// AppSourceApp. Left out of the JSON when empty.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub fields_to_fill: Vec<String>,
 }
 
 /// Rewrite `application` and `platform` in a scaffolded app.json to the major
@@ -293,6 +297,7 @@ pub fn create_project(dir: &Path, config: &ScaffoldConfig) -> Result<ScaffoldRes
     Ok(ScaffoldResult {
         project_dir: dir.display().to_string(),
         files_created: files,
+        fields_to_fill: template_fields_to_fill(&config.template),
     })
 }
 
@@ -417,14 +422,24 @@ fn refuse_linked_destinations<'a>(
     names: impl Iterator<Item = &'a str>,
 ) -> Result<(), String> {
     for name in names {
+        let depth = Path::new(name).components().count();
         let mut walked = dir.to_path_buf();
-        for component in Path::new(name).components() {
+        for (index, component) in Path::new(name).components().enumerate() {
             walked.push(component);
             match std::fs::symlink_metadata(&walked) {
                 Ok(metadata) if metadata.file_type().is_symlink() => {
                     return Err(format!(
                         "Refusing to scaffold into {}: {} is a symbolic link, and the scaffold \
                          would write through it",
+                        dir.display(),
+                        walked.strip_prefix(dir).unwrap_or(&walked).display()
+                    ));
+                }
+                // A file where a directory must go. The final component is left to
+                // refuse_existing_destinations, which reports it as an existing file.
+                Ok(metadata) if index + 1 < depth && !metadata.is_dir() => {
+                    return Err(format!(
+                        "Refusing to scaffold into {}: {} exists and is not a directory",
                         dir.display(),
                         walked.strip_prefix(dir).unwrap_or(&walked).display()
                     ));
@@ -535,7 +550,8 @@ fn generate_template_files(config: &ScaffoldConfig) -> Result<Vec<(String, Vec<u
 }
 
 /// Resolve the custom-template directory from `AL_TEMPLATES_DIR`,
-/// `XDG_CONFIG_HOME/al/templates`, or `HOME/.config/al/templates`.
+/// `XDG_CONFIG_HOME/al/templates`, `HOME/.config/al/templates`, or
+/// `APPDATA/al/templates` on Windows.
 fn templates_root() -> Option<PathBuf> {
     let non_empty = |v: std::ffi::OsString| (!v.is_empty()).then_some(v);
     if let Some(dir) = std::env::var_os("AL_TEMPLATES_DIR").and_then(non_empty) {
@@ -551,6 +567,12 @@ fn templates_root() -> Option<PathBuf> {
                 .join("al")
                 .join("templates"),
         );
+    }
+    // Windows sessions usually have no HOME. Same fallback as AlConfig::default_settings_path.
+    if cfg!(target_os = "windows") {
+        if let Some(appdata) = std::env::var_os("APPDATA").and_then(non_empty) {
+            return Some(PathBuf::from(appdata).join("al").join("templates"));
+        }
     }
     None
 }
@@ -676,6 +698,8 @@ fn materialize_custom_template(
 
     // Render every file before writing any, so the destinations can be
     // checked as a set and a template cannot replace half a directory.
+    let mut planned_sources: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut planned: Vec<(String, PathBuf, Vec<u8>)> = Vec::new();
     for rel in &rel_files {
         // Defence in depth: the source path must be a normal relative path.
@@ -696,6 +720,15 @@ fn materialize_custom_template(
             Err(err) => err.into_bytes(),
         };
         let rel_display = dest_rel.to_string_lossy().replace('\\', "/");
+        // Compared without case: on a case-insensitive filesystem two names that
+        // differ only in case are one file, and the second write would replace the first.
+        let source = rel.to_string_lossy().replace('\\', "/");
+        if let Some(first) = planned_sources.insert(rel_display.to_lowercase(), source.clone()) {
+            return Err(format!(
+                "Custom template '{}' maps {first} and {source} to the same destination {rel_display}",
+                custom.name
+            ));
+        }
         planned.push((rel_display, dest_rel, out_bytes));
     }
 
@@ -726,6 +759,7 @@ fn materialize_custom_template(
     Ok(ScaffoldResult {
         project_dir: dir.display().to_string(),
         files_created: created,
+        fields_to_fill: template_fields_to_fill(&config.template),
     })
 }
 
@@ -904,6 +938,20 @@ fn template_code_analyzers(template: &ProjectTemplate) -> &'static [&'static str
     match template {
         ProjectTemplate::AppSourceApp => &["AppSourceCop", "PerTenantExtensionCop", "UICop"],
         _ => &["PerTenantExtensionCop"],
+    }
+}
+
+/// Fields the AppSourceApp template leaves for the author. AppSourceCop reports
+/// each of them on a fresh project.
+fn template_fields_to_fill(template: &ProjectTemplate) -> Vec<String> {
+    match template {
+        ProjectTemplate::AppSourceApp => vec![
+            "app.json `brief`, `description`, `privacyStatement`, `EULA`, `help`, `logo`, `contextSensitiveHelpUrl`: AppSourceCop AS0051 needs a value".to_string(),
+            "app.json `url`: AppSourceCop AS0052 needs a valid URL".to_string(),
+            "app.json `idRanges`: AppSourceCop AS0084 needs a range inside the publisher's AppSource allocation (50100-50149 is refused)".to_string(),
+            "AppSourceCop.json `mandatoryPrefix`, `mandatorySuffix` or `mandatoryAffixes`: AppSourceCop AS0054 needs one set".to_string(),
+        ],
+        _ => Vec::new(),
     }
 }
 
@@ -1710,6 +1758,7 @@ mod tests {
         let result = ScaffoldResult {
             project_dir: "/tmp/test".to_string(),
             files_created: vec!["app.json".to_string()],
+            fields_to_fill: Vec::new(),
         };
         let json = serde_json::to_string(&result).unwrap();
         assert!(json.contains("\"projectDir\""));
@@ -2058,6 +2107,38 @@ mod tests {
     }
 
     #[test]
+    fn appsource_template_lists_fields_to_fill() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ScaffoldConfig {
+            template: ProjectTemplate::AppSourceApp,
+            ..Default::default()
+        };
+        let result = create_project(dir.path(), &config).unwrap();
+        for code in ["AS0051", "AS0052", "AS0054", "AS0084"] {
+            assert!(
+                result.fields_to_fill.iter().any(|line| line.contains(code)),
+                "fields_to_fill must cover {code}: {:?}",
+                result.fields_to_fill
+            );
+        }
+
+        let plain = tempfile::tempdir().unwrap();
+        let result = create_project(plain.path(), &ScaffoldConfig::default()).unwrap();
+        assert!(result.fields_to_fill.is_empty());
+    }
+
+    #[test]
+    fn scaffold_refuses_a_file_where_a_directory_is_needed() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("src"), "not a directory").unwrap();
+
+        let error = create_project(dir.path(), &ScaffoldConfig::default())
+            .expect_err("must refuse a file where a directory is needed");
+        assert!(error.contains("is not a directory"), "{error}");
+        assert!(!dir.path().join("app.json").exists());
+    }
+
+    #[test]
     fn atomic_write_does_not_leave_tempfile_on_success() {
         // A successful scaffold must not leave
         // `<file>.<pid>.tmp` lingering next to the final artefact. The
@@ -2204,6 +2285,32 @@ mod tests {
             }
             std::fs::write(p, content).unwrap();
         }
+    }
+
+    #[test]
+    fn custom_template_refuses_two_files_with_one_destination() {
+        let store = tempfile::tempdir().unwrap();
+        write_custom_template(
+            store.path(),
+            "mytmpl",
+            r#"{ "description": "demo" }"#,
+            &[("Fixed.al", "// fixed\n"), ("{{name}}.al", "// named\n")],
+        );
+        let custom = resolve_custom_template_in(store.path(), "mytmpl")
+            .unwrap()
+            .unwrap();
+        let proj = tempfile::tempdir().unwrap();
+        let target = proj.path().join("new");
+        let config = ScaffoldConfig {
+            name: "Fixed".to_string(),
+            template: ProjectTemplate::Custom(custom),
+            ..Default::default()
+        };
+
+        let error = create_project(&target, &config)
+            .expect_err("two template files with one destination must be refused");
+        assert!(error.contains("same destination"), "{error}");
+        assert!(!target.join("Fixed.al").exists());
     }
 
     #[test]

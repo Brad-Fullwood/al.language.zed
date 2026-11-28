@@ -44,7 +44,7 @@ use tree_sitter::{Node, Tree};
 use crate::{EmitObject, ExternalSymbols, VerificationDiagnostic, VerificationSeverity};
 
 /// Fields every table has and no `fields` block declares.
-const SYSTEM_FIELDS: &[&str] = &[
+pub(crate) const SYSTEM_FIELDS: &[&str] = &[
     "systemid",
     "systemcreatedat",
     "systemcreatedby",
@@ -337,14 +337,8 @@ pub fn bind_objects(
     if parser.set_language(&al_syntax::parser::language()).is_err() {
         return Vec::new();
     }
-    // A file with several objects yields one `EmitObject` per object that all
-    // carry the whole file text. Bind each file once.
-    let mut seen = HashSet::new();
     let mut out = Vec::new();
     for object in objects {
-        if !seen.insert(object.source_file.as_str()) {
-            continue;
-        }
         if let Some(tree) = parser.parse(&object.source_text, None) {
             out.extend(bind_tree(
                 &symbols,

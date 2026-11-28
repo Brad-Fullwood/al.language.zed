@@ -65,9 +65,10 @@
 
         // ── Toolchain ──
         // Path to the dotnet host used for Microsoft ALTool, alc, the semantic
-        // bridge, and the official LSP/DAP escape hatches. Exported to every
-        // spawned sidecar process as AL_DOTNET_PATH. null = resolve `dotnet`
-        // from PATH.
+        // bridge, and the official LSP/DAP escape hatches. Exported to al-lsp
+        // as AL_DOTNET_PATH when it names a program outside the project. A
+        // relative path, or one inside the project, is dropped. null = resolve
+        // `dotnet` from PATH.
         "al.dotnetPath": null,
 
         // ── Escape hatches ──

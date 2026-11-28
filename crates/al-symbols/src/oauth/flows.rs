@@ -2,7 +2,9 @@
 //! refresh, plus the polling rules the token endpoint drives.
 
 use super::al_cache::al_refresh_token;
-use super::cache::{load_cached_token, now_unix, save_cached_token, token_cache_path};
+use super::cache::{
+    cached_token_matches, load_cached_token, now_unix, save_cached_token, token_cache_path,
+};
 use super::encoding::percent_encode;
 use super::pkce::{generate_code_verifier, generate_random_string, pkce_challenge};
 use super::redirect::{open_browser, wait_for_auth_callback};
@@ -137,7 +139,11 @@ pub async fn acquire_token_with_settings(
     // the refresh error, so the caller sees why the sign-in stopped working.
     let mut refresh_error = None;
 
-    if let Some(cached) = load_cached_token(&cache_path, tenant) {
+    // A token issued for another client id, scope or endpoint is a miss, and
+    // its refresh token is not sent with the current client id.
+    if let Some(cached) =
+        load_cached_token(&cache_path, tenant).filter(|cached| cached_token_matches(cached, &auth))
+    {
         let now = now_unix();
         if cached.expires_at > now + 60 {
             debug!(tenant, "Using cached BC access token");
@@ -150,7 +156,7 @@ pub async fn acquire_token_with_settings(
             debug!(tenant, "Access token expired, refreshing");
             match refresh_token_flow(client, tenant, &auth, refresh).await {
                 Ok(tok) => {
-                    save_cached_token(&cache_path, tenant, &tok);
+                    save_cached_token(&cache_path, tenant, &tok, &auth);
                     info!(tenant, "Refreshed BC access token");
                     // Clone so `tok` drops intact (Drop scrubs the secrets).
                     return Ok(tok.access_token.clone());
@@ -168,7 +174,7 @@ pub async fn acquire_token_with_settings(
     if let Some(al_refresh) = al_refresh_token(tenant, &auth.client_id) {
         match refresh_token_flow(client, tenant, &auth, &al_refresh).await {
             Ok(tok) => {
-                save_cached_token(&cache_path, tenant, &tok);
+                save_cached_token(&cache_path, tenant, &tok, &auth);
                 info!(
                     tenant,
                     "Signed in with the AL extension's cached refresh token"
@@ -187,7 +193,7 @@ pub async fn acquire_token_with_settings(
     }
 
     let tok = interactive_sign_in(client, tenant, &auth, mode, &on_message).await?;
-    save_cached_token(&cache_path, tenant, &tok);
+    save_cached_token(&cache_path, tenant, &tok, &auth);
     info!(tenant, "Acquired BC access token");
     // Clone so `tok` drops intact (Drop scrubs the secrets).
     Ok(tok.access_token.clone())
@@ -739,5 +745,93 @@ mod tests {
             }
             other => panic!("expected Other(allowed hosts), got {other:?}"),
         }
+    }
+
+    /// Unsets `BC_CLIENT_ID` for one test and restores the old value on drop.
+    /// Tests that use it are `#[serial]`, like the other tests that touch env.
+    struct ClientIdUnset(Option<std::ffi::OsString>);
+
+    impl ClientIdUnset {
+        fn new() -> Self {
+            let previous = std::env::var_os("BC_CLIENT_ID");
+            std::env::remove_var("BC_CLIENT_ID");
+            Self(previous)
+        }
+    }
+
+    impl Drop for ClientIdUnset {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("BC_CLIENT_ID", value),
+                None => std::env::remove_var("BC_CLIENT_ID"),
+            }
+        }
+    }
+
+    /// Deletes the tenant's token cache file on drop, also when the test panics.
+    struct CacheFile(&'static str);
+
+    impl Drop for CacheFile {
+        fn drop(&mut self) {
+            crate::oauth::invalidate_cached_token(self.0);
+        }
+    }
+
+    fn save_token_for(tenant: &str, settings: &AuthSettings, access_token: &str) {
+        let tok = TokenResponse {
+            access_token: access_token.into(),
+            refresh_token: None,
+            expires_in: 3600,
+        };
+        save_cached_token(&token_cache_path(tenant), tenant, &tok, settings);
+    }
+
+    fn acquire_cached_only(tenant: &str, settings: &AuthSettings) -> Result<String, OAuthError> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(acquire_token_with_settings(
+                &reqwest::Client::new(),
+                tenant,
+                settings,
+                SignInMode::CachedOnly,
+                |_| {},
+            ))
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cached_token_for_another_client_is_not_used() {
+        let _client_id = ClientIdUnset::new();
+        let tenant = "3a3e0001-0000-4000-8000-000000000001";
+        let _cache = CacheFile(tenant);
+        let other_client = AuthSettings {
+            client_id: "3a3e0003-0000-4000-8000-000000000003".into(),
+            ..Default::default()
+        };
+        save_token_for(tenant, &other_client, "token-issued-to-another-client");
+
+        match acquire_cached_only(tenant, &AuthSettings::default()) {
+            Err(OAuthError::SignInRequired) => {}
+            Err(other) => panic!("expected SignInRequired, got {other:?}"),
+            Ok(_) => panic!("a token issued to another client id was returned"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cached_token_for_the_current_client_is_used() {
+        let _client_id = ClientIdUnset::new();
+        let tenant = "3a3e0002-0000-4000-8000-000000000002";
+        let _cache = CacheFile(tenant);
+        save_token_for(
+            tenant,
+            &AuthSettings::default(),
+            "token-for-the-current-client",
+        );
+
+        let token = acquire_cached_only(tenant, &AuthSettings::default())
+            .expect("the cached token for the current client should be returned");
+        assert_eq!(token, "token-for-the-current-client");
     }
 }

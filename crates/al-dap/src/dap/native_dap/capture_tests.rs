@@ -11,7 +11,7 @@ use std::time::Duration;
 use al_bc::snapshot::state::{now_secs, SessionStore};
 use serde_json::{json, Value};
 use tokio::sync::{watch, Mutex};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::dap::framing::read_dap_body;
@@ -21,7 +21,9 @@ use super::test_support::{no_compile, TokenFut};
 use super::{NativeDapState, ResolvedObject, TargetAuthorizer, VariableHandleStore};
 
 const SOURCE: &str = "/proj/src/Poster.al";
-const ZIP_BYTES: &[u8] = b"PK-synthetic-snapshot";
+/// A minimal empty zip: the 22-byte end-of-central-directory record.
+const ZIP_BYTES: &[u8] =
+    b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
 
 fn resolver() -> SnappointResolver {
     Arc::new(|path, line| {
@@ -619,4 +621,163 @@ async fn launch_with_the_capture_mode_and_unknown_modes_are_refused() {
         .as_str()
         .unwrap()
         .contains("capture"));
+}
+
+/// Reads the one session record the store holds.
+fn saved_record(store: &Path) -> Value {
+    let mut records = std::fs::read_dir(store)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.extension().is_some_and(|e| e == "json"));
+    let record = records.next().expect("a saved session record");
+    assert!(records.next().is_none(), "one session record per capture");
+    serde_json::from_str(&std::fs::read_to_string(record).unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn capture_record_keeps_the_scenario_label() {
+    let rig = rig().await;
+    let reads = rig.token_reads.clone();
+    // A long poll keeps the status poll out of the way of this test.
+    let (state, _events) = build_state(
+        rig.project.path(),
+        &rig.store,
+        &reads,
+        super::test_support::allow_every_target(),
+        Duration::from_secs(60),
+    );
+    mock_op(
+        &rig,
+        "attach",
+        ResponseTemplate::new(200).set_body_string("UserSession"),
+    )
+    .await;
+    mock_op(
+        &rig,
+        "status",
+        ResponseTemplate::new(200).set_body_string("Started"),
+    )
+    .await;
+    mock_op(
+        &rig,
+        "finish",
+        ResponseTemplate::new(200).set_body_bytes(ZIP_BYTES.to_vec()),
+    )
+    .await;
+
+    send(&state, "initialize", json!({})).await;
+    let (_, frames) = send(
+        &state,
+        "attach",
+        attach_args(&rig, json!({ "label": "Capture sandbox" })),
+    )
+    .await;
+    assert_eq!(response(&frames)["success"], true, "{frames:?}");
+    let (_, frames) = send(&state, "configurationDone", json!({})).await;
+    assert_eq!(response(&frames)["success"], true, "{frames:?}");
+
+    let (terminate, frames) = send(&state, "disconnect", json!({})).await;
+    assert!(terminate);
+    assert!(output_text(&frames).contains(".snapshots"), "{frames:?}");
+
+    let record = saved_record(&rig.store);
+    assert_eq!(
+        record["configurationName"],
+        json!("Capture sandbox"),
+        "{record}"
+    );
+}
+
+#[tokio::test]
+async fn failed_finish_after_server_finish_gives_no_retry_advice() {
+    let rig = rig().await;
+    let reads = rig.token_reads.clone();
+    // A long poll keeps the status poll out of the way of this test.
+    let (state, _events) = build_state(
+        rig.project.path(),
+        &rig.store,
+        &reads,
+        super::test_support::allow_every_target(),
+        Duration::from_secs(60),
+    );
+    mock_op(
+        &rig,
+        "attach",
+        ResponseTemplate::new(200).set_body_string("UserSession"),
+    )
+    .await;
+    mock_op(
+        &rig,
+        "status",
+        ResponseTemplate::new(200).set_body_string("Started"),
+    )
+    .await;
+    mock_op(
+        &rig,
+        "finish",
+        ResponseTemplate::new(200).set_body_bytes(ZIP_BYTES.to_vec()),
+    )
+    .await;
+
+    send(&state, "initialize", json!({})).await;
+    let (_, frames) = send(&state, "attach", attach_args(&rig, json!({}))).await;
+    assert_eq!(response(&frames)["success"], true, "{frames:?}");
+    let (_, frames) = send(&state, "configurationDone", json!({})).await;
+    assert_eq!(response(&frames)["success"], true, "{frames:?}");
+
+    // A regular file where the output folder goes makes the zip save fail
+    // after the server has finished the capture.
+    std::fs::write(rig.project.path().join(".snapshots"), b"not a folder").unwrap();
+
+    let (terminate, frames) = send(&state, "disconnect", json!({})).await;
+    assert!(terminate);
+    let text = output_text(&frames);
+    let finished = rig.server.received_requests().await.unwrap();
+    assert!(
+        finished
+            .iter()
+            .any(|request| request.url.path() == "/BC/snapshotdebugger/finish"),
+        "the server must have received the finish: {finished:?}"
+    );
+    assert!(text.contains("Snapshot finish failed:"), "{text}");
+    assert!(
+        text.contains(
+            "The server has already finished this capture, so finishing it again returns nothing."
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("retry"), "{text}");
+}
+
+#[tokio::test]
+async fn capture_http_client_does_not_follow_redirects() {
+    let rig = rig().await;
+    let reads = rig.token_reads.clone();
+    let (state, _events) = build_state(
+        rig.project.path(),
+        &rig.store,
+        &reads,
+        super::test_support::allow_every_target(),
+        Duration::from_secs(60),
+    );
+    // Following the redirect would send the attach POST to this server as a GET.
+    let target = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&target)
+        .await;
+    mock_op(
+        &rig,
+        "attach",
+        ResponseTemplate::new(302).insert_header("location", format!("{}/landed", target.uri())),
+    )
+    .await;
+
+    send(&state, "initialize", json!({})).await;
+    let (_, frames) = send(&state, "attach", attach_args(&rig, json!({}))).await;
+    assert_eq!(response(&frames)["success"], true, "{frames:?}");
+    let (_, frames) = send(&state, "configurationDone", json!({})).await;
+    assert_eq!(response(&frames)["success"], false, "{frames:?}");
+    target.verify().await;
 }

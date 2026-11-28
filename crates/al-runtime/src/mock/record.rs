@@ -7,7 +7,7 @@
 //! This module does **not** wire into the interpreter's `Value::Record(handle)`
 //! semantics — the handle mapping is the interpreter's responsibility.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use thiserror::Error;
 
 use crate::interpreter::value::{Decimal, Value};
@@ -68,8 +68,13 @@ pub enum RecordError {
     FlowArithmeticOverflow(&'static str),
     #[error("field {0} is part of the primary key; ModifyAll cannot change it")]
     PrimaryKeyModifyAll(FieldNo),
-    #[error("invalid FIND direction '{0}' (expected '-' or '+')")]
-    InvalidFindDirection(char),
+    /// The text Business Central 29 gives for `Find('')` and other invalid strings.
+    #[error(
+        "There is an invalid character in the Find expression '{0}'.  In Find expressions, you \
+         can use =, >, and < in combinations, where each sign can only appear once, or you can \
+         use - or +."
+    )]
+    InvalidFindDirection(String),
 }
 
 #[derive(Debug, Clone)]
@@ -137,7 +142,7 @@ fn zero_like(bound: &Value) -> Option<Value> {
         Value::Text(_) => Value::Text(String::new()),
         Value::Code(_) => Value::Code(String::new()),
         Value::Date(_) => Value::Date(0),
-        Value::Time(_) => Value::Time(0),
+        Value::Time(_) | Value::UndefinedTime => Value::UndefinedTime,
         Value::DateTime(_) => Value::DateTime(0),
         Value::Duration(_) => Value::Duration(0),
         Value::Char(_) => Value::Char('\0'),
@@ -203,11 +208,24 @@ pub struct RecordView {
     /// Filtered, sorted keys ready for iteration (built by FindFirst/FindSet).
     iter_set: Vec<PrimaryKey>,
     iter_pos: Option<usize>,
+    /// FlowFields calculated on this view by `CalcFields`. A FlowField outside
+    /// this set reads as its type default (zero), as in BC before a calculation.
+    calculated: BTreeSet<FieldNo>,
 }
 
 impl RecordView {
-    /// Copy another view's row buffer and `xRec` snapshot into this view,
-    /// leaving filters, sort key and cursor untouched.
+    /// Record that `CalcFields` has calculated `field` on this view.
+    pub fn mark_calculated(&mut self, field: FieldNo) {
+        self.calculated.insert(field);
+    }
+
+    /// Whether `CalcFields` has calculated `field` since the buffer was last loaded.
+    pub fn is_calculated(&self, field: FieldNo) -> bool {
+        self.calculated.contains(&field)
+    }
+
+    /// Copy another view's row buffer, `xRec` snapshot and calculated FlowFields
+    /// into this view, leaving filters, sort key and cursor untouched.
     ///
     /// This is the by-value record parameter rule: BC hands the callee a
     /// *copy* of the caller's buffer (so unsaved field assignments made before
@@ -216,6 +234,7 @@ impl RecordView {
     pub fn copy_buffers_from(&mut self, other: &RecordView) {
         self.current = other.current.clone();
         self.x_rec = other.x_rec.clone();
+        self.calculated = other.calculated.clone();
     }
 
     /// Drop the iteration set and position, as `DeleteAll` does.
@@ -310,6 +329,9 @@ pub struct MockRecord {
     /// field that was never assigned, notably the primary key of a row
     /// inserted straight after `Init`.
     field_defaults: HashMap<FieldNo, Value>,
+    /// Field number → the field's evaluated `InitValue`. `init_in` writes
+    /// these over the type defaults, except on primary-key fields.
+    field_init_values: HashMap<FieldNo, Value>,
     /// Built-in view backing the plain (view-less) API.
     view: RecordView,
 }
@@ -328,6 +350,7 @@ impl MockRecord {
             primary_key_fields: primary_key_fields.clone(),
             rows: BTreeMap::new(),
             field_defaults: HashMap::new(),
+            field_init_values: HashMap::new(),
             view: RecordView {
                 sort_key,
                 ..RecordView::default()
@@ -335,10 +358,27 @@ impl MockRecord {
         }
     }
 
+    /// Replace this table's rows with a copy of the rows in `saved`. `asserterror`
+    /// uses it to undo the writes its statement made.
+    pub fn restore_rows_from(&mut self, saved: &MockRecord) {
+        self.rows.clone_from(&saved.rows);
+    }
+
+    /// Remove every row from this table.
+    pub fn clear_rows(&mut self) {
+        self.rows.clear();
+    }
+
     /// Attach the table's per-field zero values, recovered from the workspace
     /// table definition.
     pub fn with_field_defaults(mut self, field_defaults: HashMap<FieldNo, Value>) -> Self {
         self.field_defaults = field_defaults;
+        self
+    }
+
+    /// Attach the evaluated `InitValue` of each field that declares one.
+    pub fn with_field_init_values(mut self, field_init_values: HashMap<FieldNo, Value>) -> Self {
+        self.field_init_values = field_init_values;
         self
     }
 
@@ -410,7 +450,13 @@ impl MockRecord {
             .collect();
         view.current.clear();
         view.x_rec.clear();
+        view.calculated.clear();
         view.iter_pos = None;
+        for (f, v) in &self.field_init_values {
+            if !self.primary_key_fields.contains(f) {
+                view.current.insert(*f, v.clone());
+            }
+        }
         for (f, v) in preserved {
             view.current.insert(f, v);
         }
@@ -441,6 +487,7 @@ impl MockRecord {
             if let Some(row) = self.rows.get(&normalize_key(&key)) {
                 view.current = row.clone();
                 view.x_rec = row.clone();
+                view.calculated.clear();
             }
         }
     }
@@ -450,6 +497,7 @@ impl MockRecord {
         let row = self.rows.get(&key).ok_or(RecordError::NotFound)?;
         view.current = row.clone();
         view.x_rec = row.clone();
+        view.calculated.clear();
         Ok(())
     }
 
@@ -457,7 +505,19 @@ impl MockRecord {
         self.with_default_view(|table, view| table.get_in(view, key))
     }
 
-    /// `INSERT` — insert the current buffer as a new row.
+    /// The full key for a `Get` given `values` for the leading key fields.
+    /// Each trailing key field left out takes its declared default, as BC
+    /// fills it, so the lookup still needs an exact match. Returns the first
+    /// left-out field that has no declared default as the error.
+    pub fn key_with_defaults(&self, mut values: Vec<Value>) -> Result<PrimaryKey, FieldNo> {
+        for &field in self.primary_key_fields.get(values.len()..).unwrap_or(&[]) {
+            let default = self.field_defaults.get(&field).ok_or(field)?;
+            values.push(default.clone());
+        }
+        Ok(values)
+    }
+
+    /// `INSERT`, insert the current buffer as a new row.
     ///
     /// The local store cannot execute table triggers. A caller that explicitly
     /// requests trigger execution must be routed to live Business Central.
@@ -751,6 +811,7 @@ impl MockRecord {
         let row = self.rows.get(&key).ok_or(RecordError::NotFound)?;
         view.current = row.clone();
         view.x_rec = row.clone();
+        view.calculated.clear();
         view.iter_pos = Some(pos);
         Ok(())
     }
@@ -797,17 +858,65 @@ impl MockRecord {
         self.with_default_view(|table, view| table.find_set_in(view))
     }
 
-    /// `FIND('-')` / `FIND('+')` — position at first (−) or last (+) record.
-    pub fn find_in(&self, view: &mut RecordView, direction: char) -> Result<bool, RecordError> {
-        match direction {
-            '-' => self.find_first_in(view),
-            '+' => self.find_last_in(view),
-            _ => Err(RecordError::InvalidFindDirection(direction)),
+    /// `FIND(which)`. `-` and `+` stand alone and act as FindFirst and FindLast.
+    /// Otherwise `which` holds each of `=`, `>` and `<` at most once, and the
+    /// characters are tried in the order written until one finds a record:
+    /// `=` the row with the buffer's primary key, `>` the next row and `<` the
+    /// previous row in the view's order, measured from the buffer's position.
+    /// The buffer row does not need to exist or pass the filters. A miss leaves
+    /// the buffer as it was. Checked against Business Central 29 on 2026-11-28.
+    pub fn find_in(&self, view: &mut RecordView, which: &str) -> Result<bool, RecordError> {
+        match which {
+            "-" => return self.find_first_in(view),
+            "+" => return self.find_last_in(view),
+            _ => {}
         }
+        let mut seen = BTreeSet::new();
+        let valid = !which.is_empty()
+            && which
+                .chars()
+                .all(|c| matches!(c, '=' | '<' | '>') && seen.insert(c));
+        if !valid {
+            return Err(RecordError::InvalidFindDirection(which.to_string()));
+        }
+        self.build_iter_set(view);
+        let buffer_key = self.current_primary_key(view)?;
+        let buffer_sort = view.sort_key.key_of(&view.current);
+        let descending = view.sort_key.descending;
+        // Where an entry stands against the buffer in the view's order.
+        let order = |key: &PrimaryKey| {
+            let row = self.rows.get(key).expect("iter_set holds stored keys");
+            let ordering =
+                (view.sort_key.key_of(row), key).cmp(&(buffer_sort.clone(), &buffer_key));
+            if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        };
+        for c in which.chars() {
+            let found = match c {
+                '=' => view.iter_set.iter().position(|key| *key == buffer_key),
+                '>' => view
+                    .iter_set
+                    .iter()
+                    .position(|key| order(key) == std::cmp::Ordering::Greater),
+                _ => view
+                    .iter_set
+                    .iter()
+                    .rposition(|key| order(key) == std::cmp::Ordering::Less),
+            };
+            if let Some(pos) = found {
+                self.load_row_at(view, pos)?;
+                return Ok(true);
+            }
+        }
+        view.iter_pos = None;
+        Ok(false)
     }
 
-    pub fn find(&mut self, direction: char) -> Result<bool, RecordError> {
-        self.with_default_view(|table, view| table.find_in(view, direction))
+    pub fn find(&mut self, which: &str) -> Result<bool, RecordError> {
+        self.with_default_view(|table, view| table.find_in(view, which))
     }
 
     /// `NEXT` — advance to the next (or previous) record.
@@ -1002,12 +1111,16 @@ impl MockRecord {
         target: Option<FieldNo>,
         agg: FlowAgg,
     ) -> Result<Value, RecordError> {
+        let defaults = &self.field_defaults;
         let matching: Vec<&Row> = self
             .rows
             .values()
             .filter(|row| {
                 conditions.iter().all(|(field, filt)| {
-                    flow_filter_matches(filt, row.get(field).unwrap_or(&Value::Empty))
+                    flow_filter_matches(
+                        filt,
+                        cell_or_default(row, defaults, *field).unwrap_or(&Value::Empty),
+                    )
                 })
             })
             .collect();
@@ -1016,7 +1129,7 @@ impl MockRecord {
         let target_cells = || {
             matching
                 .iter()
-                .filter_map(|row| target.and_then(|t| row.get(&t)))
+                .filter_map(|row| target.and_then(|t| cell_or_default(row, defaults, t)))
         };
 
         match agg {
@@ -1075,6 +1188,16 @@ impl MockRecord {
             FlowAgg::Lookup => Ok(target_cells().next().cloned().unwrap_or(Value::Empty)),
         }
     }
+}
+
+/// A row's cell for `field`, or the field's declared zero when the row never
+/// assigned it. `Init` keeps only the key, so most rows lack most cells.
+fn cell_or_default<'a>(
+    row: &'a Row,
+    defaults: &'a HashMap<FieldNo, Value>,
+    field: FieldNo,
+) -> Option<&'a Value> {
+    row.get(&field).or_else(|| defaults.get(&field))
 }
 
 /// Numeric view of a value for FlowField aggregation (`Integer`/`Decimal`).
@@ -1555,11 +1678,180 @@ mod tests {
         for i in [10i64, 20, 30] {
             insert_row(&mut rec, i, "x");
         }
-        assert!(rec.find('-').unwrap());
+        assert!(rec.find("-").unwrap());
         assert_eq!(rec.field_get(1), Some(&Value::Integer(10)));
 
-        assert!(rec.find('+').unwrap());
+        assert!(rec.find("+").unwrap());
         assert_eq!(rec.field_get(1), Some(&Value::Integer(30)));
+    }
+
+    #[derive(Clone, Copy)]
+    enum Setup {
+        Asc,
+        Desc,
+        Filter,
+        GapAsc,
+        GapDesc,
+        Empty,
+    }
+
+    /// Each row is a case from the Business Central 29 run on the CDX demo
+    /// tenant on 2026-11-28 (review-loop round-02/checks-A5.md, "D2: Find"):
+    /// setup, buffer key, Find string, then the return value and the key in the
+    /// buffer afterwards, or `None` for a runtime error. Rows 1, 2 and 3 exist,
+    /// except after `GapAsc`/`GapDesc` (rows 1 and 3) and `Empty` (no rows).
+    /// `Find()` rows use `=`, which the interpreter passes for no argument.
+    #[test]
+    fn find_follows_business_central_for_every_checked_case() {
+        type Case = (Setup, i64, &'static str, Option<(bool, i64)>);
+        let cases: &[Case] = &[
+            (Setup::Asc, 2, "=", Some((true, 2))),
+            (Setup::Asc, 2, ">", Some((true, 3))),
+            (Setup::Asc, 2, "<", Some((true, 1))),
+            (Setup::Asc, 2, "=><", Some((true, 2))),
+            (Setup::Asc, 2, "=<>", Some((true, 2))),
+            (Setup::Asc, 2, "<>", Some((true, 1))),
+            (Setup::Asc, 2, "><", Some((true, 3))),
+            (Setup::Asc, 4, "=><", Some((true, 3))),
+            (Setup::Asc, 4, "=>", Some((false, 4))),
+            (Setup::Asc, 4, "=<", Some((true, 3))),
+            (Setup::Asc, 4, ">", Some((false, 4))),
+            (Setup::Asc, 4, "<", Some((true, 3))),
+            (Setup::Asc, 0, "=><", Some((true, 1))),
+            (Setup::Asc, 0, ">", Some((true, 1))),
+            (Setup::Asc, 0, "<", Some((false, 0))),
+            (Setup::Asc, 2, ">=", Some((true, 3))),
+            (Setup::Asc, 2, "<=", Some((true, 1))),
+            (Setup::Asc, 2, ">=<", Some((true, 3))),
+            (Setup::Asc, 2, "<=>", Some((true, 1))),
+            (Setup::Asc, 2, "><=", Some((true, 3))),
+            (Setup::Asc, 2, "<>=", Some((true, 1))),
+            (Setup::Asc, 1, "<>", Some((true, 2))),
+            (Setup::Asc, 3, "<>", Some((true, 2))),
+            (Setup::Asc, 1, "><", Some((true, 2))),
+            (Setup::Asc, 3, "><", Some((true, 2))),
+            (Setup::Asc, 4, "<>", Some((true, 3))),
+            (Setup::Asc, 0, "<>", Some((true, 1))),
+            (Setup::Asc, 2, "-", Some((true, 1))),
+            (Setup::Asc, 2, "+", Some((true, 3))),
+            (Setup::Asc, 2, "=", Some((true, 2))),
+            (Setup::Desc, 2, "=", Some((true, 2))),
+            (Setup::Desc, 2, ">", Some((true, 1))),
+            (Setup::Desc, 2, "<", Some((true, 3))),
+            (Setup::Desc, 2, "=><", Some((true, 2))),
+            (Setup::Desc, 2, "=<>", Some((true, 2))),
+            (Setup::Desc, 2, "<>", Some((true, 3))),
+            (Setup::Desc, 2, "><", Some((true, 1))),
+            (Setup::Desc, 4, "=><", Some((true, 3))),
+            (Setup::Desc, 4, "=>", Some((true, 3))),
+            (Setup::Desc, 4, "=<", Some((false, 4))),
+            (Setup::Desc, 4, ">", Some((true, 3))),
+            (Setup::Desc, 4, "<", Some((false, 4))),
+            (Setup::Desc, 0, "=><", Some((true, 1))),
+            (Setup::Desc, 0, ">", Some((false, 0))),
+            (Setup::Desc, 0, "<", Some((true, 1))),
+            (Setup::Desc, 2, ">=", Some((true, 1))),
+            (Setup::Desc, 2, "<=", Some((true, 3))),
+            (Setup::Desc, 2, ">=<", Some((true, 1))),
+            (Setup::Desc, 2, "<=>", Some((true, 3))),
+            (Setup::Desc, 2, "><=", Some((true, 1))),
+            (Setup::Desc, 2, "<>=", Some((true, 3))),
+            (Setup::Desc, 1, "<>", Some((true, 2))),
+            (Setup::Desc, 3, "<>", Some((true, 2))),
+            (Setup::Desc, 1, "><", Some((true, 2))),
+            (Setup::Desc, 3, "><", Some((true, 2))),
+            (Setup::Desc, 4, "<>", Some((true, 3))),
+            (Setup::Desc, 0, "<>", Some((true, 1))),
+            (Setup::Desc, 2, "-", Some((true, 3))),
+            (Setup::Desc, 2, "+", Some((true, 1))),
+            (Setup::Desc, 2, "=", Some((true, 2))),
+            (Setup::Filter, 2, "=", Some((false, 2))),
+            (Setup::Filter, 2, "=><", Some((true, 3))),
+            (Setup::Asc, 1, "<=>", Some((true, 1))),
+            (Setup::Asc, 1, "<>=", Some((true, 2))),
+            (Setup::Asc, 1, "<=", Some((true, 1))),
+            (Setup::Asc, 3, ">=<", Some((true, 3))),
+            (Setup::Asc, 3, "><=", Some((true, 2))),
+            (Setup::Asc, 3, ">=", Some((true, 3))),
+            (Setup::Asc, 4, "=", Some((false, 4))),
+            (Setup::Asc, 4, "=", Some((false, 4))),
+            (Setup::GapAsc, 2, "=><", Some((true, 3))),
+            (Setup::GapAsc, 2, "=<>", Some((true, 1))),
+            (Setup::GapDesc, 2, "=><", Some((true, 1))),
+            (Setup::GapDesc, 2, "=<>", Some((true, 3))),
+            (Setup::Empty, 2, "=><", Some((false, 2))),
+            (Setup::Empty, 2, "-", Some((false, 2))),
+            (Setup::Empty, 2, "+", Some((false, 2))),
+            (Setup::Empty, 2, "=", Some((false, 2))),
+            (Setup::Empty, 2, "", None),
+        ];
+        for (index, &(setup, key, which, expected)) in cases.iter().enumerate() {
+            let mut rec = make_table();
+            for i in 1i64..=3 {
+                insert_row(&mut rec, i, "x");
+            }
+            match setup {
+                Setup::Asc => {}
+                Setup::Desc => rec.with_default_view(|t, v| t.set_ascending_in(v, false)),
+                Setup::Filter => rec.set_range(1, Value::Integer(3), Value::Integer(3)),
+                Setup::GapAsc | Setup::GapDesc => {
+                    rec.get(vec![Value::Integer(2)]).unwrap();
+                    rec.delete(false).unwrap();
+                    if matches!(setup, Setup::GapDesc) {
+                        rec.with_default_view(|t, v| t.set_ascending_in(v, false));
+                    }
+                }
+                Setup::Empty => {
+                    rec.delete_all(false).unwrap();
+                }
+            }
+            rec.field_set(1, Value::Integer(key));
+            let result = rec.find(which);
+            match expected {
+                None => assert_eq!(
+                    result,
+                    Err(RecordError::InvalidFindDirection(which.to_string())),
+                    "case {index}"
+                ),
+                Some((found, after)) => {
+                    assert_eq!(
+                        result,
+                        Ok(found),
+                        "case {index}: Find('{which}') at key {key}"
+                    );
+                    assert_eq!(
+                        rec.field_get(1).map(normalize_key_value),
+                        Some(normalize_key_value(&Value::Integer(after))),
+                        "case {index}: key after Find('{which}') at key {key}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn find_continues_with_next_from_the_row_it_found() {
+        let mut rec = make_table();
+        for i in 1i64..=3 {
+            insert_row(&mut rec, i, "x");
+        }
+        rec.field_set(1, Value::Integer(2));
+        assert_eq!(rec.find("="), Ok(true));
+        assert_eq!(rec.next(1), Ok(1));
+        assert_eq!(rec.field_get(1), Some(&Value::Integer(3)));
+    }
+
+    #[test]
+    fn find_rejects_a_repeated_or_mixed_string() {
+        let mut rec = make_table();
+        insert_row(&mut rec, 1, "x");
+        for which in ["==", "<<", "=-", "-+", "+=", "?"] {
+            assert_eq!(
+                rec.find(which),
+                Err(RecordError::InvalidFindDirection(which.to_string())),
+                "{which}"
+            );
+        }
     }
 
     #[test]
@@ -1981,6 +2273,58 @@ mod tests {
         );
     }
 
+    /// Field 1 is the key, field 2 is Closed (Boolean, default false) and
+    /// field 3 is Amount (Integer, default 0).
+    fn sparse_line_table() -> MockRecord {
+        let defaults = HashMap::from([(2, Value::Boolean(false)), (3, Value::Integer(0))]);
+        MockRecord::new(50101, "Line", vec![1]).with_field_defaults(defaults)
+    }
+
+    /// Insert a row with only `cells` assigned, as `Init` leaves a row.
+    fn insert_sparse(rec: &mut MockRecord, key: i64, cells: &[(FieldNo, Value)]) {
+        rec.init();
+        rec.field_set(1, Value::Integer(key));
+        for (field, value) in cells {
+            rec.field_set(*field, value.clone());
+        }
+        rec.insert(false).expect("insert should succeed");
+    }
+
+    #[test]
+    fn flowfield_const_false_matches_unassigned_boolean() {
+        let mut rec = sparse_line_table();
+        insert_sparse(&mut rec, 1, &[(2, Value::Boolean(false))]);
+        insert_sparse(&mut rec, 2, &[]);
+        insert_sparse(&mut rec, 3, &[(2, Value::Boolean(true))]);
+        let conds = [(2, FlowFilter::Eq(Value::Boolean(false)))];
+        assert_eq!(
+            rec.calc_flow(&conds, None, FlowAgg::Count),
+            Ok(Value::Integer(2))
+        );
+    }
+
+    #[test]
+    fn average_counts_unassigned_rows_as_zero() {
+        let mut rec = sparse_line_table();
+        insert_sparse(&mut rec, 1, &[(3, Value::Integer(10))]);
+        insert_sparse(&mut rec, 2, &[]);
+        assert_eq!(
+            rec.calc_flow(&[], Some(3), FlowAgg::Average),
+            Ok(Value::Decimal(dec!(5)))
+        );
+    }
+
+    #[test]
+    fn lookup_returns_first_row_zero() {
+        let mut rec = sparse_line_table();
+        insert_sparse(&mut rec, 1, &[]);
+        insert_sparse(&mut rec, 2, &[(3, Value::Integer(7))]);
+        assert_eq!(
+            rec.calc_flow(&[], Some(3), FlowAgg::Lookup),
+            Ok(Value::Integer(0))
+        );
+    }
+
     #[test]
     fn calc_flow_empty_defaults() {
         let rec = detail_table();
@@ -2064,7 +2408,10 @@ mod tests {
     #[test]
     fn invalid_find_direction_is_rejected() {
         let mut rec = detail_table();
-        assert_eq!(rec.find('?'), Err(RecordError::InvalidFindDirection('?')));
+        assert_eq!(
+            rec.find("?"),
+            Err(RecordError::InvalidFindDirection("?".to_string()))
+        );
     }
 
     #[test]
@@ -2160,7 +2507,8 @@ mod tests {
             Some(Value::Code(String::new()))
         );
         assert_eq!(zero_like(&Value::Date(100)), Some(Value::Date(0)));
-        assert_eq!(zero_like(&Value::Time(100)), Some(Value::Time(0)));
+        assert_eq!(zero_like(&Value::Time(100)), Some(Value::UndefinedTime));
+        assert_eq!(zero_like(&Value::UndefinedTime), Some(Value::UndefinedTime));
         assert_eq!(zero_like(&Value::DateTime(100)), Some(Value::DateTime(0)));
         assert_eq!(zero_like(&Value::Duration(100)), Some(Value::Duration(0)));
         assert_eq!(zero_like(&Value::Char('x')), Some(Value::Char('\0')));

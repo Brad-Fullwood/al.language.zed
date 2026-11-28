@@ -114,3 +114,60 @@ fn validate_refuses_parseable_but_invalid_project() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `al.packageCachePath` names the symbol package folder. The project has no
+/// `.alpackages`, so validation has to read the configured `pkgs` folder.
+#[test]
+#[ignore = "Microsoft toolchain profile"]
+fn validate_uses_configured_package_cache() {
+    assert!(
+        alc_available(),
+        "AL_TOOL_PATH/alc.dll and a working dotnet host are required"
+    );
+    let cache = std::env::var_os("AL_PACKAGE_CACHE_PATH")
+        .expect("AL_PACKAGE_CACHE_PATH is required for the package cache test");
+    let dir = std::env::temp_dir().join(format!("al-pkgcache-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let src = dir.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::create_dir_all(dir.join(".vscode")).unwrap();
+    std::fs::write(dir.join("app.json"), APP_JSON).unwrap();
+    std::fs::write(
+        src.join("C.Codeunit.al"),
+        "codeunit 50100 C\n{\n    procedure Add(A: Integer; B: Integer): Integer begin exit(A + B); end;\n}",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join(".vscode/settings.json"),
+        r#"{"al.packageCachePath": "pkgs"}"#,
+    )
+    .unwrap();
+
+    let pkgs = dir.join("pkgs");
+    std::fs::create_dir_all(&pkgs).unwrap();
+    let mut copied = 0;
+    for entry in std::fs::read_dir(&cache).unwrap() {
+        let entry = entry.unwrap();
+        let source = entry.path();
+        if source.extension().and_then(|ext| ext.to_str()) != Some("app") {
+            continue;
+        }
+        std::fs::copy(&source, pkgs.join(entry.file_name())).unwrap();
+        copied += 1;
+    }
+    assert!(
+        copied > 0,
+        "AL_PACKAGE_CACHE_PATH contains no top-level .app packages"
+    );
+
+    let out = dir.join("ok.app");
+    let res = pack_validate(&dir, &out);
+    assert!(
+        res.status.success() && out.is_file(),
+        "project with a configured package cache should validate and emit:\n{}\n{}",
+        String::from_utf8_lossy(&res.stdout),
+        String::from_utf8_lossy(&res.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

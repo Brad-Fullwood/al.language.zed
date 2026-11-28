@@ -420,7 +420,10 @@ pub struct StatusOutcome {
     pub save_error: Option<String>,
 }
 
-/// Poll the server, note the answer in `record` and save it.
+/// Poll the server, note the answer in `record` and save it. A finish that
+/// another process saved to the store is kept. There is no lock across
+/// processes, so a finish saved between the load and the save can still be
+/// overwritten.
 pub async fn status(
     http: &reqwest::Client,
     token: &str,
@@ -441,6 +444,15 @@ pub async fn status(
     let now = now_secs();
     let status = result.status.to_string();
     record.note_status(&status, now);
+    if let Ok(Some(stored)) = store.load(&record.debugging_context) {
+        if stored.finished_at.is_some() {
+            record.finished_at = stored.finished_at;
+            record.zip_path = stored.zip_path;
+        }
+        if record.profile.is_none() {
+            record.profile = stored.profile;
+        }
+    }
     let save_error = store
         .save(record)
         .err()
@@ -595,35 +607,6 @@ async fn save_zip(
         .map_err(|error| internal(format!("cannot save the snapshot: {error}")))
 }
 
-/// Keep a zip that could not be saved at the store's recovery path, and point
-/// the session at it. The returned error keeps the original text.
-async fn keep_zip(
-    store: &SessionStore,
-    record: &mut SessionRecord,
-    zip: Vec<u8>,
-    error: CaptureError,
-) -> CaptureError {
-    let note = match store.recovery_path(&record.debugging_context) {
-        Err(recovery_error) => format!("and keeping the zip failed: {recovery_error}"),
-        Ok(path) => {
-            let shown = path.display().to_string();
-            match al_bc::output_file::write_no_follow(&path, zip).await {
-                Err(write_error) => format!("and keeping it at {shown} failed: {write_error}"),
-                Ok(()) => {
-                    record.zip_path = Some(path);
-                    match store.save(record) {
-                        Ok(_) => format!("the snapshot zip was kept at {shown}"),
-                        Err(save_error) => format!(
-                            "the snapshot zip was kept at {shown}, and the session could not be updated: {save_error}"
-                        ),
-                    }
-                }
-            }
-        }
-    };
-    with_note(error, &note)
-}
-
 /// Append `note` to the text of `error`. `Invalid` stays `Invalid`, because
 /// `al-lsp` maps the two kinds to different responses.
 fn with_note(error: CaptureError, note: &str) -> CaptureError {
@@ -633,12 +616,157 @@ fn with_note(error: CaptureError, note: &str) -> CaptureError {
     }
 }
 
+/// Where `finish` writes the zip when the session store and the output folder
+/// fail. Tests replace both fields.
+struct FinishPlaces<F> {
+    /// Returns the third folder. Called only when the first two writes fail.
+    fallback_dir: F,
+    /// Writes the zip bytes into the open staging file.
+    write_staging: fn(&mut std::fs::File, &[u8]) -> std::io::Result<()>,
+}
+
+fn write_and_sync(file: &mut std::fs::File, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// The staging file of `context`, in the store dir. Used by both
+/// `create_staging_file` and `rescue_staged_zip`.
+fn staging_path(store: &SessionStore, context: &str) -> PathBuf {
+    store
+        .dir()
+        .join(format!(".{}.zip.partial", context.to_ascii_lowercase()))
+}
+
+/// `<store dir>/.<context>.zip.partial`, created empty with mode 0600. A stale
+/// regular file left by an earlier run is replaced. A link or any other entry
+/// at that name is refused.
+fn create_staging_file(store: &SessionStore, context: &str) -> Result<(PathBuf, std::fs::File)> {
+    let path = staging_path(store, context);
+    let fail = |error: &dyn std::fmt::Display| {
+        invalid(format!(
+            "cannot create the staging file {} in the session store {}: {error}. The capture was not finished.",
+            path.display(),
+            store.dir().display()
+        ))
+    };
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(store.dir()).map_err(|e| fail(&e))?;
+    match std::fs::symlink_metadata(&path) {
+        Ok(meta) if meta.file_type().is_file() => {
+            std::fs::remove_file(&path).map_err(|e| fail(&e))?
+        }
+        Ok(_) => return Err(fail(&"an entry that is not a regular file is in the way")),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(fail(&error)),
+    }
+    let mut options = std::fs::OpenOptions::new();
+    // `create_new` refuses any entry at the name, a link included.
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(&path).map_err(|e| fail(&e))?;
+    Ok((path, file))
+}
+
+fn remove_staging(path: &Path) -> Option<String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => Some(format!(
+            "The staging file {} could not be removed: {error}",
+            path.display()
+        )),
+    }
+}
+
+/// Save `record` and add a failed save to `note`.
+fn save_with_note(store: &SessionStore, record: &SessionRecord, note: String) -> String {
+    match store.save(record) {
+        Ok(_) => note,
+        Err(error) => format!("{note}, and the session could not be updated: {error}"),
+    }
+}
+
+/// Move a valid zip that an earlier finish left at `staging` to `recovery`,
+/// before `create_staging_file` deletes the staging file. Anything else at
+/// `staging` returns `Ok`, and `create_staging_file` handles it as before. An
+/// `Err` stops finish before the server call, so the zip stays on disk.
+fn rescue_staged_zip(
+    store: &SessionStore,
+    record: &mut SessionRecord,
+    staging: &Path,
+    recovery: &Path,
+) -> Result<()> {
+    let Ok(meta) = std::fs::symlink_metadata(staging) else {
+        return Ok(());
+    };
+    if !meta.is_file() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(staging).map_err(|error| {
+        invalid(format!(
+            "cannot read the staging file {} left by an earlier finish: {error}. Move or delete it, then run finish again. The capture was not finished. No finish request was sent to the server.",
+            staging.display()
+        ))
+    })?;
+    if al_bc::snapshot::check_zip(&bytes).is_err() {
+        return Ok(());
+    }
+    match std::fs::symlink_metadata(recovery) {
+        Ok(_) => {
+            return Err(invalid(format!(
+                "A snapshot zip from an earlier finish is at {}, and {} is already in use. Move one of them, then run finish again. The capture was not finished. No finish request was sent to the server.",
+                staging.display(),
+                recovery.display()
+            )));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(invalid(format!(
+                "cannot check the recovery path {}: {error}. The capture was not finished. No finish request was sent to the server.",
+                recovery.display()
+            )));
+        }
+    }
+    if let Err(error) = std::fs::rename(staging, recovery) {
+        return Err(invalid(format!(
+            "The snapshot zip from an earlier finish is at {} and could not be moved to {}: {error}. The capture was not finished. No finish request was sent to the server.",
+            staging.display(),
+            recovery.display()
+        )));
+    }
+    record.zip_path = Some(recovery.to_path_buf());
+    let note = format!(
+        "The snapshot zip from an earlier finish was kept at {}. Move it before running finish again, if you expect a new capture. No finish request was sent to the server",
+        recovery.display()
+    );
+    Err(invalid(save_with_note(store, record, note)))
+}
+
 /// Finish the session, save the zip into `output_dir` (default
-/// `<project>/.snapshots`) and update the record. The directory is checked
-/// before the server is asked to finish, so a refused directory does not cost
-/// the snapshot. It is created only when there is a zip to save. A zip that
-/// cannot be saved is kept at the store's recovery path, and the error names
-/// that path.
+/// `<project>/.snapshots`) and update the record. The output directory is
+/// checked, and a staging file is created in the session store, before the
+/// server is asked to finish. A refused directory or an unwritable store
+/// therefore does not cost the snapshot.
+///
+/// The zip is written to the staging file first, then saved to the output
+/// directory. When the output save fails, the staging file is renamed to the
+/// store's recovery path. When the staging write failed as well, the zip goes
+/// to a private recovery folder on the runtime filesystem
+/// ([`al_bc::snapshot::private_recovery_dir`]). The error names the place the
+/// zip was kept, or all three places and the byte count when none could be
+/// written.
 pub async fn finish(
     http: &reqwest::Client,
     token: &str,
@@ -648,8 +776,45 @@ pub async fn finish(
     record: &mut SessionRecord,
     output_dir: Option<&Path>,
 ) -> Result<FinishOutcome> {
+    let places = FinishPlaces {
+        fallback_dir: al_bc::snapshot::private_recovery_dir,
+        write_staging: write_and_sync,
+    };
+    finish_with(
+        http,
+        token,
+        store,
+        config,
+        allow_production,
+        record,
+        output_dir,
+        places,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_with<F>(
+    http: &reqwest::Client,
+    token: &str,
+    store: &SessionStore,
+    config: &BcDebugConfig,
+    allow_production: bool,
+    record: &mut SessionRecord,
+    output_dir: Option<&Path>,
+    places: FinishPlaces<F>,
+) -> Result<FinishOutcome>
+where
+    F: FnOnce() -> std::io::Result<PathBuf> + Send,
+{
     let dir = resolve_output_dir(&record.project_root, output_dir)?;
-    let finished = snapshot_finish(
+    let context = record.debugging_context.to_ascii_lowercase();
+    let recovery = store
+        .recovery_path(&record.debugging_context)
+        .map_err(|error| invalid(error.to_string()))?;
+    rescue_staged_zip(store, record, &staging_path(store, &context), &recovery)?;
+    let (staging, mut staging_file) = create_staging_file(store, &context)?;
+    let finished = match snapshot_finish(
         http,
         config,
         token,
@@ -657,22 +822,34 @@ pub async fn finish(
         &record.debugging_context,
         record.affinity_cookie.as_deref(),
     )
-    .await?;
+    .await
+    {
+        Ok(finished) => finished,
+        Err(error) => {
+            drop(staging_file);
+            let _ = remove_staging(&staging);
+            return Err(error.into());
+        }
+    };
     let now = now_secs();
     record.finished_at = Some(now);
     record.last_status = Some("Finished".to_string());
     record.last_status_at = Some(now);
     let Some(zip) = finished.zip else {
-        let save_error = store
+        drop(staging_file);
+        let staging_error = remove_staging(&staging);
+        let record_error = store
             .save(record)
             .err()
             .map(|error| format!("The session could not be updated: {error}"));
         return Ok(FinishOutcome {
             result: FinishResult::Empty,
-            save_error,
+            save_error: record_error.or(staging_error),
         });
     };
     let bytes = zip.len();
+    let staged = (places.write_staging)(&mut staging_file, &zip);
+    drop(staging_file);
     // The cloud server sends no ETag on finish (recorded from CDX
     // 2026-10-27), so Microsoft's ETag test alone would never extract the
     // profile. The record knows the attach asked for a sampling profile.
@@ -680,17 +857,24 @@ pub async fn finish(
     // A copy, so the zip can be kept if the save fails.
     let saved = match save_zip(&dir, record, zip.clone(), sampling).await {
         Ok(saved) => saved,
-        Err(error) => return Err(keep_zip(store, record, zip, error).await),
+        Err(error) => {
+            return Err(keep_zip(
+                store, record, zip, error, staged, &staging, &recovery, &dir, places,
+            )
+            .await)
+        }
     };
+    let staging_error = remove_staging(&staging);
     record.zip_path = Some(saved.zip.clone());
     let record_error = store
         .save(record)
         .err()
         .map(|error| format!("The session could not be updated: {error}"));
-    let save_error = match (saved.profile_error, record_error) {
-        (Some(profile), Some(record_error)) => Some(format!("{profile}. {record_error}")),
-        (profile, record_error) => profile.or(record_error),
-    };
+    let messages: Vec<String> = [saved.profile_error, record_error, staging_error]
+        .into_iter()
+        .flatten()
+        .collect();
+    let save_error = (!messages.is_empty()).then(|| messages.join(". "));
     Ok(FinishOutcome {
         result: FinishResult::Saved {
             zip: saved.zip,
@@ -699,6 +883,72 @@ pub async fn finish(
         },
         save_error,
     })
+}
+
+/// Keep a zip that could not be saved to the output folder, and point the
+/// session at it. The returned error keeps the original text and names where
+/// the zip is.
+#[allow(clippy::too_many_arguments)]
+async fn keep_zip<F>(
+    store: &SessionStore,
+    record: &mut SessionRecord,
+    zip: Vec<u8>,
+    error: CaptureError,
+    staged: std::io::Result<()>,
+    staging: &Path,
+    recovery: &Path,
+    dir: &Path,
+    places: FinishPlaces<F>,
+) -> CaptureError
+where
+    F: FnOnce() -> std::io::Result<PathBuf> + Send,
+{
+    let bytes = zip.len();
+    let stage_error = match staged {
+        Ok(()) => {
+            let note = match std::fs::rename(staging, recovery) {
+                Ok(()) => {
+                    record.zip_path = Some(recovery.to_path_buf());
+                    format!("the snapshot zip was kept at {}", recovery.display())
+                }
+                Err(rename_error) => {
+                    record.zip_path = Some(staging.to_path_buf());
+                    format!(
+                        "the snapshot zip was kept at {} (renaming it to {} failed: {rename_error})",
+                        staging.display(),
+                        recovery.display()
+                    )
+                }
+            };
+            return with_note(error, &save_with_note(store, record, note));
+        }
+        Err(stage_error) => stage_error,
+    };
+    // The staging file holds a partial zip.
+    let _ = remove_staging(staging);
+    let name = format!("{}.zip", record.debugging_context.to_ascii_lowercase());
+    let (shown, fallback_error) = match (places.fallback_dir)() {
+        Err(dir_error) => ("none".to_string(), dir_error),
+        Ok(fallback) => {
+            let path = fallback.join(&name);
+            match al_bc::output_file::write_no_follow(&path, zip).await {
+                Ok(()) => {
+                    record.zip_path = Some(path.clone());
+                    let note = format!(
+                        "the session store could not be written ({stage_error}), so the snapshot zip was kept at {}",
+                        path.display()
+                    );
+                    return with_note(error, &save_with_note(store, record, note));
+                }
+                Err(write_error) => (path.display().to_string(), write_error),
+            }
+        }
+    };
+    internal(format!(
+        "The server has finished the capture, and the snapshot zip ({bytes} bytes) could not be written to the session store ({}: {stage_error}), the output folder ({}: {error}) or the recovery folder ({shown}: {fallback_error})",
+        staging.display(),
+        dir.display(),
+    ))
 }
 
 #[cfg(test)]
@@ -865,7 +1115,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_save_keeps_the_zip_in_the_store() {
-        let served = b"zip bytes from the server".to_vec();
+        let served = EMPTY_ZIP.to_vec();
         let server = serve(served.clone()).await;
         let project = tempfile::tempdir().unwrap();
         let root = project.path().canonicalize().unwrap();
@@ -917,5 +1167,366 @@ mod tests {
         assert!(text.contains(&recovery.display().to_string()), "{text}");
         assert_eq!(std::fs::read(&recovery).unwrap(), served);
         assert_eq!(store.load(ctx).unwrap().unwrap().zip_path, Some(recovery));
+    }
+
+    /// A minimal empty zip: the 22 byte end of central directory record.
+    const EMPTY_ZIP: &[u8] =
+        b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
+
+    const CTX: &str = "c4fbb573-e325-443c-9887-8d0574e833ee";
+
+    fn record_in(root: &Path) -> SessionRecord {
+        SessionRecord {
+            debugging_context: CTX.to_string(),
+            affinity_cookie: None,
+            attach_kind: "UserSession".to_string(),
+            created_at: 0,
+            project_root: root.to_path_buf(),
+            configuration_name: None,
+            tenant: "00000000-0000-0000-0000-000000000000".to_string(),
+            environment_type: "OnPrem".to_string(),
+            environment_name: None,
+            server: None,
+            server_instance: None,
+            snapshot_port: None,
+            client_type: "WebClient".to_string(),
+            user_id: None,
+            session_id: -1,
+            verbosity: "SnapPoint".to_string(),
+            snappoints: Vec::new(),
+            last_status: None,
+            last_status_at: None,
+            started_at: None,
+            zip_path: None,
+            finished_at: None,
+            profile: None,
+        }
+    }
+
+    fn staging_in(store: &Path) -> PathBuf {
+        store.join(format!(".{CTX}.zip.partial"))
+    }
+
+    fn failing_write(_: &mut std::fs::File, _: &[u8]) -> std::io::Result<()> {
+        Err(std::io::Error::other("disk full"))
+    }
+
+    /// A server whose finish must not be called.
+    async fn serve_nothing() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"zip".to_vec()))
+            .expect(0)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn run_finish(
+        server: &MockServer,
+        store: &SessionStore,
+        record: &mut SessionRecord,
+        output: Option<&Path>,
+    ) -> Result<FinishOutcome> {
+        finish(
+            &reqwest::Client::new(),
+            "token",
+            store,
+            &config_for(server),
+            false,
+            record,
+            output,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn unwritable_store_refuses_finish_before_the_server_call() {
+        let server = serve_nothing().await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let store_path = other.path().join("store");
+        std::fs::write(&store_path, b"a file, not a folder").unwrap();
+        let store = SessionStore::at(&store_path);
+        let mut record = record_in(&root);
+        let error = run_finish(&server, &store, &mut record, None)
+            .await
+            .err()
+            .expect("an unwritable store refuses finish");
+        assert!(matches!(error, CaptureError::Invalid(_)), "{error}");
+        let text = error.to_string();
+        assert!(text.contains(&store_path.display().to_string()), "{text}");
+        assert!(record.finished_at.is_none());
+        server.verify().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stale_staging_link_is_refused() {
+        let server = serve_nothing().await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        std::os::unix::fs::symlink(root.join("elsewhere"), staging_in(store_dir.path())).unwrap();
+        let mut record = record_in(&root);
+        let error = run_finish(&server, &store, &mut record, None)
+            .await
+            .err()
+            .expect("a link at the staging name is refused");
+        assert!(matches!(error, CaptureError::Invalid(_)), "{error}");
+        assert!(!root.join("elsewhere").exists());
+        server.verify().await;
+    }
+
+    #[tokio::test]
+    async fn staging_file_is_removed_after_a_good_save() {
+        let served = EMPTY_ZIP.to_vec();
+        let server = serve(served.clone()).await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        let mut record = record_in(&root);
+        let outcome = run_finish(&server, &store, &mut record, None)
+            .await
+            .unwrap();
+        let FinishResult::Saved { zip, .. } = outcome.result else {
+            panic!("expected a saved zip");
+        };
+        assert_eq!(std::fs::read(zip).unwrap(), served);
+        assert!(!staging_in(store_dir.path()).exists());
+        assert!(outcome.save_error.is_none(), "{:?}", outcome.save_error);
+    }
+
+    #[tokio::test]
+    async fn stale_staging_file_does_not_block_finish() {
+        let server = serve(EMPTY_ZIP.to_vec()).await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        std::fs::write(staging_in(store_dir.path()), b"left by a crashed run").unwrap();
+        let mut record = record_in(&root);
+        run_finish(&server, &store, &mut record, None)
+            .await
+            .unwrap();
+        assert!(!staging_in(store_dir.path()).exists());
+    }
+
+    #[tokio::test]
+    async fn valid_staged_zip_survives_a_retried_finish() {
+        let server = serve(EMPTY_ZIP.to_vec()).await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        std::fs::write(staging_in(store_dir.path()), EMPTY_ZIP).unwrap();
+        let mut record = record_in(&root);
+        let error = run_finish(&server, &store, &mut record, None)
+            .await
+            .err()
+            .expect("the rescued zip stops finish");
+        assert!(matches!(error, CaptureError::Invalid(_)), "{error}");
+        let recovery = store.recovery_path(CTX).unwrap();
+        let text = error.to_string();
+        assert!(text.contains(&recovery.display().to_string()), "{text}");
+        assert_eq!(std::fs::read(&recovery).unwrap(), EMPTY_ZIP);
+        assert!(!staging_in(store_dir.path()).exists());
+        assert_eq!(record.zip_path, Some(recovery.clone()));
+        assert_eq!(store.load(CTX).unwrap().unwrap().zip_path, Some(recovery));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn staged_zip_with_occupied_recovery_path_is_left_alone() {
+        let server = serve(EMPTY_ZIP.to_vec()).await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        let staging = staging_in(store_dir.path());
+        let recovery = store.recovery_path(CTX).unwrap();
+        std::fs::write(&staging, EMPTY_ZIP).unwrap();
+        std::fs::write(&recovery, b"an older capture").unwrap();
+        let mut record = record_in(&root);
+        let error = run_finish(&server, &store, &mut record, None)
+            .await
+            .err()
+            .expect("an occupied recovery path refuses the rescue");
+        assert!(matches!(error, CaptureError::Invalid(_)), "{error}");
+        let text = error.to_string();
+        assert!(text.contains(&staging.display().to_string()), "{text}");
+        assert!(text.contains(&recovery.display().to_string()), "{text}");
+        assert_eq!(std::fs::read(&staging).unwrap(), EMPTY_ZIP);
+        assert_eq!(std::fs::read(&recovery).unwrap(), b"an older capture");
+        assert!(record.zip_path.is_none());
+        assert!(store.load(CTX).unwrap().is_none());
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn record_pointing_at_staging_is_repointed() {
+        let server = serve(EMPTY_ZIP.to_vec()).await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        let staging = staging_in(store_dir.path());
+        std::fs::write(&staging, EMPTY_ZIP).unwrap();
+        let mut record = record_in(&root);
+        record.zip_path = Some(staging.clone());
+        store.save(&record).unwrap();
+        let error = run_finish(&server, &store, &mut record, None)
+            .await
+            .err()
+            .expect("the rescued zip stops finish");
+        assert!(matches!(error, CaptureError::Invalid(_)), "{error}");
+        let recovery = store.recovery_path(CTX).unwrap();
+        assert_eq!(std::fs::read(&recovery).unwrap(), EMPTY_ZIP);
+        assert!(!staging.exists());
+        assert_eq!(store.load(CTX).unwrap().unwrap().zip_path, Some(recovery));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_server_finish_leaves_no_staging_file_and_retry_works() {
+        let served = EMPTY_ZIP.to_vec();
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(500))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(served.clone()))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        let mut record = record_in(&root);
+        assert!(run_finish(&server, &store, &mut record, None)
+            .await
+            .is_err());
+        assert!(!staging_in(store_dir.path()).exists());
+        assert!(record.finished_at.is_none());
+        let outcome = run_finish(&server, &store, &mut record, None)
+            .await
+            .unwrap();
+        let FinishResult::Saved { zip, .. } = outcome.result else {
+            panic!("expected a saved zip");
+        };
+        assert_eq!(std::fs::read(zip).unwrap(), served);
+    }
+
+    #[tokio::test]
+    async fn full_store_and_output_fall_back_to_the_runtime_folder() {
+        let served = EMPTY_ZIP.to_vec();
+        let server = serve(served.clone()).await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        std::fs::write(root.join("out.txt"), b"not a directory").unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        let fallback = tempfile::tempdir().unwrap();
+        let fallback_path = fallback.path().to_path_buf();
+        let mut record = record_in(&root);
+        store.save(&record).unwrap();
+        let error = finish_with(
+            &reqwest::Client::new(),
+            "token",
+            &store,
+            &config_for(&server),
+            false,
+            &mut record,
+            Some(Path::new("out.txt")),
+            FinishPlaces {
+                fallback_dir: move || Ok(fallback_path),
+                write_staging: failing_write,
+            },
+        )
+        .await
+        .err()
+        .expect("finish fails when the output save fails");
+        let kept = fallback.path().join(format!("{CTX}.zip"));
+        let text = error.to_string();
+        assert!(text.contains(&kept.display().to_string()), "{text}");
+        assert_eq!(std::fs::read(&kept).unwrap(), served);
+        assert!(!staging_in(store_dir.path()).exists());
+        assert_eq!(store.load(CTX).unwrap().unwrap().zip_path, Some(kept));
+    }
+
+    #[tokio::test]
+    async fn all_destinations_failing_names_them_and_the_byte_count() {
+        let served = EMPTY_ZIP.to_vec();
+        let server = serve(served.clone()).await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        std::fs::write(root.join("out.txt"), b"not a directory").unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        let mut record = record_in(&root);
+        let error = finish_with(
+            &reqwest::Client::new(),
+            "token",
+            &store,
+            &config_for(&server),
+            false,
+            &mut record,
+            Some(Path::new("out.txt")),
+            FinishPlaces {
+                fallback_dir: || Err(std::io::Error::other("no runtime folder")),
+                write_staging: failing_write,
+            },
+        )
+        .await
+        .err()
+        .expect("finish fails when nothing can be written");
+        let text = error.to_string();
+        assert!(text.contains("has finished the capture"), "{text}");
+        assert!(
+            text.contains(&format!("({} bytes)", served.len())),
+            "{text}"
+        );
+        let staging = staging_in(store_dir.path());
+        assert!(text.contains(&staging.display().to_string()), "{text}");
+        assert!(
+            text.contains(&root.join("out.txt").display().to_string()),
+            "{text}"
+        );
+        assert!(text.contains("recovery folder"), "{text}");
+        assert!(!staging.exists());
+    }
+
+    #[tokio::test]
+    async fn status_keeps_a_finish_saved_by_another_process() {
+        let server = serve(b"Finished".to_vec()).await;
+        let project = tempfile::tempdir().unwrap();
+        let root = project.path().canonicalize().unwrap();
+        let store_dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::at(store_dir.path());
+        let mut stored = record_in(&root);
+        stored.finished_at = Some(5);
+        stored.zip_path = Some(root.join(".snapshots").join(format!("{CTX}.zip")));
+        store.save(&stored).unwrap();
+        let mut stale = record_in(&root);
+        status(
+            &reqwest::Client::new(),
+            "token",
+            &store,
+            &config_for(&server),
+            false,
+            &mut stale,
+        )
+        .await
+        .unwrap();
+        let reloaded = store.load(CTX).unwrap().unwrap();
+        assert_eq!(reloaded.finished_at, Some(5));
+        assert_eq!(reloaded.zip_path, stored.zip_path);
     }
 }

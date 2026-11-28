@@ -132,7 +132,7 @@ Current MCP tools:
 - `al_testclassify` - classify every discovered AL test by where it runs (local interpreter or live BC), with the reasons behind each decision.
 - `al_testcoverage` - report conservative qualified/transitive static coverage across the workspace. Ambiguous overload targets are returned in `unresolvedCalls` and are not credited. No live BC required.
 - `al_testsnapshot` - capture breakpoint-sampled variables while one exact test method runs on live BC.
-- `al_testsnapshotreplay` - re-run the exact test recorded by a baseline snapshot on live BC and return field-level divergences.
+- `al_testsnapshotreplay` - meant to re-run the test recorded by a baseline snapshot on live BC and return field-level divergences. It needs the TestRunnerHub client and returns a "not implemented" error.
 - `al_depgraph` - build a GUID-keyed graph from the current `app.json` and loaded `.app` manifests, including implicit/transitive dependencies, missing packages, and real minimum-version conflicts, as JSON or Graphviz `dot`.
 - `al_freeids` - pick the next free object ID, table field number or enum value ordinal inside the `app.json` idRanges, counting every object in the workspace and every dependency package object in the same range. A table extension's fields are checked against the base table and the other extensions of it.
 
@@ -158,8 +158,9 @@ symbol-index lookup that also covers Base Application and every other dependency
 ```
 
 The plugin drives `al-lsp` and `al-explorer` and does not ship them.
-`plugin/scripts/al-bin.sh` looks for both, in this order: `$AL_BIN_DIR`, a
-`target/release` or `target/debug` directory in an enclosing checkout of this
+`plugin/scripts/al-bin.sh` looks for both, in this order: `$AL_BIN_DIR`,
+`$CARGO_TARGET_DIR/editor`, `release` or `debug` when `CARGO_TARGET_DIR` is set, a
+`target/editor`, `target/release` or `target/debug` directory in an enclosing checkout of this
 repository, `PATH`, then `$CLAUDE_PLUGIN_DATA/bin`. The two binaries have to
 sit in the same directory, because `al-explorer` starts the daemon by looking
 next to itself first.
@@ -167,7 +168,7 @@ next to itself first.
 If none of those has both binaries, the `SessionStart` hook
 (`plugin/scripts/al-session-context.sh`) runs `plugin/scripts/al-fetch-release.sh`
 before `al-bin.sh` has to print installation instructions. That script first
-runs `al-bin.sh --resolve`, which checks the same four places as above, with
+runs `al-bin.sh --resolve`, which checks the same places as above, with
 `~/.claude/plugins/data/al-bc/bin` when `CLAUDE_PLUGIN_DATA` is unset. When it
 finds both binaries, the script stops and downloads nothing. Otherwise it needs a SHA-256 digest of the release's
 `binary-checksums.txt` in `AL_PIN_CHECKSUMS_SHA256`. That default is `unset`, so
@@ -209,9 +210,9 @@ hundreds of kilobytes. `bc-cop-fixer` drives lint diagnostics to
 zero on a named set of files.
 
 Two hooks. `SessionStart` emits a short routing note when the working
-directory holds an AL `app.json`, and nothing anywhere else; in that
-directory it also downloads and verifies `al-lsp`/`al-explorer` when neither
-is available (see above). `SessionEnd` runs `al-explorer daemon-shutdown` in
+directory holds an AL `app.json`, and nothing anywhere else. In that
+directory it also prints how to install `al-lsp` and `al-explorer` when neither
+is available, because automatic download is off for v0.5.0 (see above). `SessionEnd` runs `al-explorer daemon-shutdown` in
 the same kind of directory, so the daemon and its dependency source index do
 not outlive the session.
 
@@ -249,9 +250,9 @@ The record runtime reads workspace table definitions and provides isolated in-me
 characters, before backend routing, including when the initial request targets a whole codeunit.
 
 `test-snapshot capture` is meant to run one exact test method on live Business Central and write breakpoint
-samples to a snapshot file. It needs the TestRunnerHub client that is not built yet and returns a "not implemented" error. `replay` resolves and re-runs that recorded method, recreates its
-breakpoints, and compares the live samples with the baseline. `validate` checks an existing file
-and `diff` compares two files. Each runs only when asked for.
+samples to a snapshot file. `capture` and `replay` both need the TestRunnerHub client, which is
+not built yet, and return a "not implemented" error. `validate` and `diff` work offline: `validate`
+checks an existing file and `diff` compares two files.
 
 ## Specialized AL Workflows
 
@@ -306,8 +307,7 @@ The Zed extension resolves `al-lsp` in this order:
    that is `$XDG_DATA_HOME/zed/extensions/work/al`, default
    `~/.local/share/zed/extensions/work/al`. On macOS it is
    `~/Library/Application Support/Zed/extensions/work/al`. `make install`
-   writes to the default path, so set `ZED_WORK_DIR` when `XDG_DATA_HOME` is
-   set. It builds with the optimised `editor` cargo profile (`target/editor`) and
+   follows `XDG_DATA_HOME`. `ZED_WORK_DIR` overrides the directory. It builds with the optimised `editor` cargo profile (`target/editor`) and
    writes `dev/al-lsp` together with `dev/al-explorer`, `dev/bridge` and `dev/BUILD`, which
    holds the `al-lsp --version` line of the copy.
 2. The GitHub release tagged with the extension's own version (`v` plus the
@@ -428,7 +428,7 @@ So symbol search, completions, object lookup, event discovery, and impact analys
 - The package cache path is selected explicitly.
 - Analyzer lists can be passed through command surfaces.
 - The Rust-managed `dotnet alc` fallback uses deterministic temp output and final handoff when possible.
-- Native `.app` emission is the default build path, and publishing to live Business Central remains the final compatibility check.
+- Builds use `alc` when the toolchain is found. Native `.app` emission is the fallback, or the build path when `al.useOfficialCompiler` is `false`. Publishing to live Business Central remains the final compatibility check.
 - Launch/debug workflows compile on launch, locate the correct `.app`, publish/deploy where needed, and connect Zed to the BC debug backend through the native adapter.
 
 Zed users get launch and attach workflows from the extension itself, without a copy of the VS Code extension.
@@ -462,6 +462,9 @@ Install from source. The extension is not listed in Zed's extension gallery yet.
 1. Run `git clone --recurse-submodules https://github.com/Brad-Fullwood/al.language.zed`.
 2. In the clone, run `make install`. It copies `al-lsp` and `al-explorer` to `~/.local/bin` and into `dev/` in the extension's work directory.
 3. In Zed, run `zed: install dev extension` from the command palette and choose the clone's directory.
+
+`make install` supports Linux and macOS. On Windows, skip step 2: after the v0.5.0 release
+exists, `zed: install dev extension` on the clone downloads `al-lsp` from that release.
 
 Auto-download release assets are published for Linux x86_64/aarch64, macOS x86_64/aarch64, and Windows x86_64. No 32-bit x86 build is published.
 
@@ -592,7 +595,7 @@ Common commands:
 ```bash
 make build
 make install       # optimised al-lsp and al-explorer for Zed (cargo profile `editor`)
-make install-lsp   # rebuild and copy only al-lsp
+make install-lsp   # rebuild and copy al-lsp and al-explorer
 make grammar
 make language
 scripts/check-repo-consistency.sh
@@ -626,22 +629,27 @@ The semantic bridge is behind the `semantic` cargo feature. Release binaries bui
 
 ## Release Process
 
-Releases are tag-driven. Pushing a `v*` tag starts `.github/workflows/release.yml`, which first runs the release hygiene preflight, then builds native binaries for Linux, macOS, and Windows, builds the Zed WASM extension, generates checksums, and creates the GitHub release. The preflight blocks artifact creation unless the tag/version/submodule/generated-file invariants pass and CI has succeeded on the exact tagged commit.
+Releases are tag-driven. Pushing a `v*` tag starts `.github/workflows/release.yml`, which first runs the release hygiene preflight, then builds native binaries for Linux, macOS, and Windows, builds the Zed WASM extension, generates checksums, and creates the GitHub release. The preflight blocks artifact creation unless the tag/version/submodule/generated-file invariants pass, a CI push run on `dev` or `main` has succeeded on the tagged commit, and that commit is on `dev` or `main`.
 
 Before tagging:
 
 1. Start from a clean worktree except for the intentional release changes.
 2. Commit and push any `tree-sitter-al` changes inside the submodule.
-3. Verify the grammar commit is reachable from the grammar remote.
+3. Merge the grammar commit into the grammar repository's `dev` with a fast-forward or a merge commit.
+   The release preflight fails when the pinned commit is not on that branch.
 4. Update the superproject gitlink and `extension.toml` revision to that commit.
 5. Regenerate `languages/al` and confirm `git submodule status` has no leading `+`.
 6. Bump the synchronized product versions in `extension.toml`, root `Cargo.toml`, `al-lsp`,
    `al-explorer`, and `Cargo.lock`. Version library crates independently when their APIs change.
 7. Make the tag name match the product version, for example `v0.3.0` for version `0.3.0`.
-8. Run repository consistency checks, release hygiene checks, and the relevant test suite.
-9. Require green CI on the exact commit being tagged. The tag workflow enforces this before building artifacts.
-10. Push the superproject commit only after the referenced grammar commit is available remotely.
-11. Tag from the exact commit you want users to install.
+8. Write the release notes in `Docs/release-notes/<tag>.md`. The release publishes that file
+   above the generated list of changes, and the preflight fails when it is missing or empty.
+9. Run repository consistency checks, release hygiene checks, and the relevant test suite.
+10. Require a green CI push run on `dev` or `main` for the commit being tagged, and that commit on
+    `dev` or `main`. The tag workflow enforces both before building artifacts. Tag the merge
+    commit, not a branch head.
+11. Push the superproject commit only after the referenced grammar commit is available remotely.
+12. Tag from the exact commit you want users to install.
 
 Every asset listed in `checksums.txt` also gets a Sigstore build-provenance attestation, signed
 against the release workflow's own identity. Check a downloaded asset with:

@@ -195,7 +195,7 @@ impl Default for BcDebugConfig {
         Self {
             server: None,
             server_instance: None,
-            port: 7049,
+            port: al_bc::launch::DEFAULT_ONPREM_DEV_PORT,
             snapshot_port: None,
             tenant: "default".to_string(),
             tenant_purpose: None,
@@ -243,6 +243,17 @@ impl BcDebugConfig {
                     .validation_errors
                     .push("port must be an integer from 1 through 65535".to_string()),
                 Ok(port) => cfg.port = port,
+            }
+        }
+        if args.get("port").is_none() {
+            if let Some(port) = cfg
+                .server
+                .as_deref()
+                .and_then(al_bc::launch::server_with_scheme)
+                .and_then(|s| url::Url::parse(&s).ok())
+                .and_then(|u| u.port())
+            {
+                cfg.port = port;
             }
         }
         if let Some(value) = optional_i64(args, "snapshotPort", &mut cfg.validation_errors) {
@@ -684,6 +695,37 @@ mod tests {
             "out-of-range port must not truncate into a valid-looking port"
         );
         assert!(cfg.validate_native().unwrap_err().contains("port"));
+    }
+
+    #[test]
+    fn port_in_server_is_used_without_port_field() {
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
+            "environmentType": "OnPrem",
+            "server": "https://bc.corp:8049",
+            "serverInstance": "BC"
+        }));
+        assert_eq!(cfg.port, 8049);
+        assert!(
+            cfg.base_url().starts_with("https://bc.corp:8049/BC/"),
+            "{}",
+            cfg.base_url()
+        );
+    }
+
+    #[test]
+    fn port_field_wins_over_port_in_server() {
+        let cfg = BcDebugConfig::from_dap_args(&serde_json::json!({
+            "environmentType": "OnPrem",
+            "server": "https://bc.corp:8049",
+            "serverInstance": "BC",
+            "port": 7049
+        }));
+        assert_eq!(cfg.port, 7049);
+        assert!(
+            cfg.base_url().starts_with("https://bc.corp:7049/BC/"),
+            "{}",
+            cfg.base_url()
+        );
     }
 
     #[test]

@@ -1200,3 +1200,187 @@ async fn empty_finish_reports_warnings_field() {
     assert_eq!(result["empty"], true);
     assert_eq!(result["warnings"], json!([]));
 }
+
+#[tokio::test]
+async fn nameless_record_resolves_by_snapshot_port() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // Two configurations for the same server that differ only in snapshotPort.
+    let port = env.server.address().port();
+    let entries: Vec<Value> = [("Local", port), ("Other port", 1)]
+        .iter()
+        .map(|(name, snapshot_port)| {
+            json!({
+                "name": name,
+                "type": "al",
+                "request": "launch",
+                "environmentType": "OnPrem",
+                "server": "http://127.0.0.1",
+                "serverInstance": "BC",
+                "authentication": "AAD",
+                "tenant": "default",
+                "snapshotPort": snapshot_port,
+            })
+        })
+        .collect();
+    std::fs::write(
+        env.root.join(".vscode/launch.json"),
+        json!({ "configurations": entries }).to_string(),
+    )
+    .unwrap();
+    let store = SessionStore::at(&env.store);
+    let record = store.load(&first).unwrap().unwrap();
+    store
+        .save(&nameless_copy(&record, SECOND_CONTEXT, "BC"))
+        .unwrap();
+    mock_op(
+        &env,
+        "status",
+        ResponseTemplate::new(200).set_body_string("Started"),
+    )
+    .await;
+
+    let status = ok(
+        &env,
+        json!({ "cmd": "status", "context": SECOND_CONTEXT, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(status["status"], "Started");
+}
+
+#[tokio::test]
+async fn renamed_label_resolves_by_target() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    // The record names "Local", which the file no longer has. The one
+    // configuration left has the same target.
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    write_configs(&env, &[("Renamed", "BC")]);
+    mock_op(
+        &env,
+        "status",
+        ResponseTemplate::new(200).set_body_string("Started"),
+    )
+    .await;
+
+    let status = ok(
+        &env,
+        json!({ "cmd": "status", "context": first, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(status["status"], "Started");
+}
+
+#[tokio::test]
+async fn renamed_label_with_two_matches_is_refused() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    write_configs(&env, &[("Renamed", "BC"), ("Copy", "BC")]);
+
+    let (code, message) = err(
+        &env,
+        json!({ "cmd": "status", "context": first, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+    assert!(
+        message.contains("configuration `Local` is not in the configuration file"),
+        "{message}"
+    );
+    assert!(
+        message.contains("several debug configurations"),
+        "{message}"
+    );
+    assert!(message.contains("Renamed, Copy"), "{message}");
+    assert_eq!(requests(&env).await.len(), 1, "only the attach was sent");
+}
+
+#[tokio::test]
+async fn renamed_label_with_no_match_is_refused() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    write_configs(&env, &[("Renamed", "OTHER")]);
+
+    let (code, message) = err(
+        &env,
+        json!({ "cmd": "status", "context": first, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+    assert!(
+        message.contains("configuration `Local` is not in the configuration file"),
+        "{message}"
+    );
+    assert!(
+        message.contains("no debug configuration matches"),
+        "{message}"
+    );
+    assert_eq!(requests(&env).await.len(), 1, "only the attach was sent");
+}
+
+#[tokio::test]
+async fn json_show_applies_the_vars_filter() {
+    let env = env().await;
+    let zip = project_zip(&env);
+    let path = zip.to_str().unwrap();
+    let all = ok(
+        &env,
+        json!({ "cmd": "show", "path": path, "json": true, "stop": 1 }),
+    )
+    .await;
+    let names = |stop: &Value| -> Vec<String> {
+        ["locals", "globals"]
+            .iter()
+            .flat_map(|scope| stop[scope].as_array().unwrap().clone())
+            .map(|v| v["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let before = names(&all["stops"][0]);
+    assert!(before.iter().any(|n| n == "Rec"), "{before:?}");
+    assert!(before.iter().any(|n| n != "Rec"), "{before:?}");
+
+    let filtered = ok(
+        &env,
+        json!({ "cmd": "show", "path": path, "json": true, "stop": 1, "vars": ["rec"] }),
+    )
+    .await;
+    let after = names(&filtered["stops"][0]);
+    assert!(!after.is_empty());
+    assert!(after.iter().all(|n| n == "Rec"), "{after:?}");
+}
+
+#[tokio::test]
+async fn snapshot_http_client_does_not_follow_redirects() {
+    let server = MockServer::start().await;
+    let target = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&target)
+        .await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(302).insert_header("Location", format!("{}/login", target.uri())),
+        )
+        .mount(&server)
+        .await;
+    let client = super::http_client(&al_dap::dap::bc_debug::BcDebugConfig::default()).unwrap();
+    let response = client.get(server.uri()).send().await.unwrap();
+    assert_eq!(response.status().as_u16(), 302);
+    target.verify().await;
+}

@@ -118,10 +118,10 @@ fn collect_block_calls(block: tree_sitter::Node<'_>, source: &[u8], sites: &mut 
                 .flatten();
                 sites.push(match receiver {
                     Some(object) => CallSite::MemberCall {
-                        object: object.unquote_identifier().into_owned(),
-                        method: name,
+                        object: object.unquote_identifier().into(),
+                        method: name.into(),
                     },
-                    None => CallSite::BareCall { name },
+                    None => CallSite::BareCall { name: name.into() },
                 });
             }
             _ => {}
@@ -147,7 +147,7 @@ pub(super) fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -
         "call_suffix" => {
             let primary = children.first()?;
             let name = extract_primary_expression_name(*primary, source)?;
-            Some(CallSite::BareCall { name })
+            Some(CallSite::BareCall { name: name.into() })
         }
         "member_call_suffix" => {
             let primary = children.first()?;
@@ -163,7 +163,7 @@ pub(super) fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -
             if let Some(op) = RecordOp::from_method_name(&method_name) {
                 let run_trigger = parse_run_trigger_arg(*last, source, op);
                 Some(CallSite::RecordOp {
-                    variable: object_name,
+                    variable: object_name.into(),
                     op,
                     run_trigger,
                 })
@@ -173,17 +173,19 @@ pub(super) fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -
                 // member call when the argument is not a `Codeunit::<name>`
                 // literal (e.g. a variable), which keeps the dispatch sound.
                 if let Some(target) = extract_codeunit_run_target(*last, source) {
-                    Some(CallSite::CodeunitRun { target })
+                    Some(CallSite::CodeunitRun {
+                        target: target.into(),
+                    })
                 } else {
                     Some(CallSite::MemberCall {
-                        object: object_name,
-                        method: method_name,
+                        object: object_name.into(),
+                        method: method_name.into(),
                     })
                 }
             } else {
                 Some(CallSite::MemberCall {
-                    object: object_name,
-                    method: method_name,
+                    object: object_name.into(),
+                    method: method_name.into(),
                 })
             }
         }
@@ -199,8 +201,8 @@ pub(super) fn parse_postfix_expression(node: tree_sitter::Node, source: &[u8]) -
                 .to_string();
 
             Some(CallSite::MemberCall {
-                object: object_name,
-                method: method_name,
+                object: object_name.into(),
+                method: method_name.into(),
             })
         }
         _ => {

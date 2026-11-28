@@ -346,42 +346,59 @@ does not replace focused valid/invalid fixtures or editor inspection.
 ## 7. Release dry-run
 
 `make release-dryrun` is a release-readiness gate. It does not publish, but it rewrites files in the
-checkout (step 9 regenerates `languages/al`). The release hygiene checks
+checkout (step 11 regenerates `languages/al`). The release hygiene checks
 refuse to start a generator while `git status --porcelain -- languages/al tree-sitter-al`
 lists any change, so commit or revert those paths first. Its numbered output is the authoritative order:
 
-1. Grammar crate tests.
-2. Grammar generator tests.
-3. Focused grammar fixtures and the pinned external repository corpus.
-4. Grammar package-manifest listing.
-5. Binary-download repository-slug consistency.
+1. Grammar crate tests: `cargo test --all-targets` in `tree-sitter-al`.
+2. Grammar generator tests: `cargo test --manifest-path generator/Cargo.toml --all-targets`
+   in `tree-sitter-al`.
+3. Focused grammar fixtures and the pinned external repository corpus:
+   `tree-sitter-al/tests/run_repo_tests.sh`.
+4. Grammar package-manifest listing: `cargo package --list` in `tree-sitter-al`.
+5. Binary-download repository-slug consistency: `scripts/check-repo-consistency.sh`
+   and `scripts/test-use-api.sh`.
 6. ShellCheck over `scripts/`, `plugin/scripts/`, the editor-e2e harness scripts
-   and the grammar test scripts, the same file set as the `ci` job in `ci.yml`.
-7. Stale `crates/<name>` documentation-path rejection.
+   and the grammar test scripts, the same file set as the `ci` job in `ci.yml`:
+   `make shellcheck`.
+7. Stale `crates/<name>` documentation-path rejection: `scripts/check-doc-paths.sh`.
 8. Release hygiene: product-version alignment (root `zed-al` =
    `extension.toml` = `al-lsp` = `al-explorer` = their `Cargo.lock` entries),
    submodule/grammar-revision alignment, commit-SHA pinning of every workflow
-   action, required generated assets, and `languages/al` currency.
-9. `make repro-artifacts`, including language-package regeneration/diff and
-   deterministic Zed-index generation.
-10. Workspace formatting, `clippy -D warnings` for the workspace and for
-    `zed-al`, and the benchmark harness contract tests
+   action, required generated assets, and `languages/al` currency:
+   `scripts/check-release-hygiene.sh`.
+9. Release script tests: `scripts/test-release-scripts.sh`.
+10. Dev-install script tests: `scripts/test-dev-install.sh`.
+11. Reproducible generated artifacts: `make repro-artifacts`, including
+    language-package regeneration/diff and deterministic Zed-index generation.
+12. Workspace formatting (`cargo fmt --all -- --check`), `clippy -D warnings` for
+    the workspace and for `zed-al`, and the benchmark harness contract tests
     (`python3 -m unittest` over `benchmarks/scripts`).
-11. `cargo deny --workspace check`: the `deny.toml` license, advisory, source
-    and banned-crate policy.
-12. Native workspace build plus the real semantic-feature `al-lsp` binary.
-13. Full native workspace tests.
-14. `al-semantic` and `al-lsp` clippy and tests under the `semantic` feature,
+13. Dependency policy: `cargo deny --workspace check`, the `deny.toml` license,
+    advisory, source and banned-crate policy.
+14. Unused dependencies: `cargo machete` in the workspace.
+15. Native workspace build (`cargo build --workspace --exclude zed-al`) plus the
+    real semantic-feature `al-lsp` binary.
+16. Full native workspace tests: `cargo test --workspace --exclude zed-al`.
+17. `al-semantic` and `al-lsp` clippy and tests under the `semantic` feature,
     which is where every `unsafe` CLR FFI block in the workspace lives.
-15. Host tests and the release WASM build for the actual Zed extension.
-16. `cargo package --list` for every publishable library crate. This validates
+18. Host tests for the actual Zed extension (`cargo test -p zed-al`), then the
+    release WASM build (`cargo build -p zed-al --target wasm32-wasip2 --release`)
+    and the WASM component check.
+19. Perf bench: `cargo bench -p al-lsp --bench perf` with the short warm-up,
+    measurement and sample settings the `ci` job uses.
+20. `cargo package --list` for every publishable library crate. This validates
     local package manifests/content without pretending that unpublished
     workspace dependencies already resolve on crates.io.
+21. Claude Code plugin validation: `make plugin-validate`.
+22. Rustdoc with warnings denied: `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude zed-al --no-deps`.
 
-Stages 6 and 11 print a skip note instead of running when `shellcheck` or
-`cargo-deny` is not installed. CI installs both, and a tag push waits for the
-whole `CI` workflow to succeed, so a local skip is not a pass on the release
-path. Run `make shellcheck` or `make deny` on their own to check one of them.
+Stages 6, 13 and 14 print a skip note instead of running when `shellcheck`,
+`cargo-deny` or `cargo-machete` is not installed. CI installs all three, and a
+tag push waits for the whole `CI` workflow to succeed, so a local skip is not a
+pass on the release path. Run `make shellcheck` or `make deny` on their own to
+check one of them. `cargo-machete` has no make target, so run `cargo machete`
+directly.
 
 Registry publication has a separate strict gate:
 

@@ -18,16 +18,16 @@ REQUIRE_CI=0
 CI_TIMEOUT_SECONDS="${CI_TIMEOUT_SECONDS:-3600}"
 CI_POLL_SECONDS="${CI_POLL_SECONDS:-30}"
 CI_WORKFLOW="${CI_WORKFLOW:-CI}"
-# ci.yml only triggers on push to main/dev; a tag pushed on a commit that
-# never landed on one of those branches (or tagged before the branch push
-# propagated) will NEVER get a CI run — waiting the full CI_TIMEOUT_SECONDS
-# for one is just a slow, unhelpful failure. Bound how long we wait to see
-# ANY run appear at all (queued/in_progress/etc.) before giving up with an
-# actionable message; once a run is discovered, the full CI_TIMEOUT_SECONDS
-# still applies to waiting for it to finish.
+# CI runs on push and on pull_request to main and dev. Only a push run on
+# main or dev counts for a release (require-ci-success.sh). A commit that never
+# reached main or dev has no such run, so CI_DISCOVERY_TIMEOUT_SECONDS bounds how
+# long to wait for any run to appear. Once a run is found, CI_TIMEOUT_SECONDS
+# applies to it finishing.
 CI_DISCOVERY_TIMEOUT_SECONDS="${CI_DISCOVERY_TIMEOUT_SECONDS:-120}"
 REGENERATE=0
 FULL_REGENERATE=0
+# The grammar branch that the pinned tree-sitter-al rev must be on. Checked only with --tag.
+GRAMMAR_BRANCH="${GRAMMAR_BRANCH:-dev}"
 
 usage() {
     cat <<'USAGE'
@@ -54,10 +54,10 @@ Environment:
   CI_DISCOVERY_TIMEOUT_SECONDS how long --require-ci waits for a FIRST run to
                                 appear for the tagged commit before failing
                                 fast, instead of hanging for the full
-                                CI_TIMEOUT_SECONDS (default: 120). ci.yml only
-                                runs on push to main/dev, so a commit that
-                                never reached one of those branches will never
-                                get a run at all.
+                                CI_TIMEOUT_SECONDS (default: 120). CI runs on
+                                push and on pull_request to main and dev. Only
+                                a push run on main or dev counts, so a commit
+                                that never reached main or dev has no such run.
 USAGE
 }
 
@@ -219,6 +219,15 @@ check_versions() {
     ok "versions aligned at ${extension_version}"
 }
 
+# A tagged release publishes Docs/release-notes/<tag>.md as the top of its notes
+# (release.yml create-release, body_path), so the file must exist and hold text.
+check_release_notes() {
+    [ -n "${TAG_NAME}" ] || return 0
+    local notes="Docs/release-notes/${TAG_NAME#refs/tags/}.md"
+    [ -s "${notes}" ] || fail "missing ${notes}: write the release notes for this tag before tagging"
+    ok "release notes ${notes} present"
+}
+
 # examples/zed-settings.jsonc tells users which schema to load. A URL that names an
 # older tag loads a schema that no longer matches this release, so every tag in
 # those URLs must equal the extension version.
@@ -289,6 +298,42 @@ check_submodule_and_grammar_rev() {
     [ -n "${manifest_rev}" ] || fail "could not parse [grammars.al].rev from extension.toml"
     [ "${manifest_rev}" = "${gitlink}" ] \
         || fail "extension.toml [grammars.al].rev (${manifest_rev}) != tree-sitter-al gitlink (${gitlink})"
+
+    # toml_first_string would return the [package] repository, which comes first in extension.toml.
+    local manifest_repo sub_url
+    manifest_repo="$(awk -F'"' '
+        /^\[grammars\.al\]/ { in_grammar = 1; next }
+        /^\[/ { in_grammar = 0 }
+        in_grammar && /^[[:space:]]*repository[[:space:]]*=/ { print $2; exit }
+    ' extension.toml)"
+    [ -n "${manifest_repo}" ] || fail "could not parse [grammars.al].repository from extension.toml"
+    sub_url="$(git config -f .gitmodules --get submodule.tree-sitter-al.url || true)"
+    [ -n "${sub_url}" ] || fail "could not read submodule.tree-sitter-al.url from .gitmodules"
+    sub_url="${sub_url%.git}"
+    manifest_repo="${manifest_repo%.git}"
+    [ "${sub_url}" = "${manifest_repo}" ] \
+        || fail ".gitmodules tree-sitter-al url (${sub_url}) != extension.toml [grammars.al].repository (${manifest_repo}), trailing .git removed"
+
+    # A tagged release needs the pin on the grammar's branch. Without --tag a pull request may pin
+    # an unmerged grammar commit, so the same result is only a warning there.
+    local merged_out merged_rc=0
+    if [ -n "${TAG_NAME}" ]; then
+        local fetch_args=(--quiet --no-tags)
+        if [ "$(git -C tree-sitter-al rev-parse --is-shallow-repository)" = true ]; then
+            fetch_args+=(--unshallow)
+        fi
+        git -C tree-sitter-al fetch "${fetch_args[@]}" origin \
+            "+refs/heads/${GRAMMAR_BRANCH}:refs/remotes/origin/${GRAMMAR_BRANCH}" \
+            || fail "could not fetch ${GRAMMAR_BRANCH} of tree-sitter-al (git's error is above)"
+    fi
+    merged_out="$("${SCRIPT_DIR}/check-grammar-rev-merged.sh" tree-sitter-al "${gitlink}" "${GRAMMAR_BRANCH}" 2>&1)" \
+        || merged_rc=$?
+    if [ "${merged_rc}" -ne 0 ]; then
+        if [ -n "${TAG_NAME}" ]; then
+            fail "${merged_out#ERROR: }"
+        fi
+        warn "${merged_out#ERROR: }"
+    fi
 
     ok "tree-sitter-al gitlink, HEAD, and extension.toml grammar rev are aligned"
 }
@@ -595,79 +640,6 @@ check_full_regenerate_clean() {
     ok "full AL-extension regeneration, Record catalog, and pinned external corpus produced no diff or failures"
 }
 
-repo_slug() {
-    if [ -n "${GITHUB_REPOSITORY:-}" ]; then
-        echo "${GITHUB_REPOSITORY}"
-        return 0
-    fi
-    local url
-    url="$(git remote get-url origin 2>/dev/null || true)"
-    url="${url%.git}"
-    url="${url%/}"
-    case "${url}" in
-        https://github.com/*) echo "${url#https://github.com/}" ;;
-        http://github.com/*) echo "${url#http://github.com/}" ;;
-        git@github.com:*) echo "${url#git@github.com:}" ;;
-        *) return 1 ;;
-    esac
-}
-
-require_ci_success() {
-    [ "${REQUIRE_CI}" -eq 1 ] || return 0
-    command -v gh >/dev/null || fail "--require-ci needs the GitHub CLI (gh)"
-    local token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
-    [ -n "${token}" ] || fail "--require-ci needs GH_TOKEN or GITHUB_TOKEN"
-    export GH_TOKEN="${token}"
-
-    local repo sha deadline discovery_deadline discovered now rows status conclusion url
-    repo="$(repo_slug)" || fail "could not determine GitHub repository slug for --require-ci"
-    sha="$(git rev-parse HEAD)"
-    deadline=$(( $(date +%s) + CI_TIMEOUT_SECONDS ))
-    discovery_deadline=$(( $(date +%s) + CI_DISCOVERY_TIMEOUT_SECONDS ))
-    discovered=0
-
-    echo "Waiting for successful ${CI_WORKFLOW} run on ${sha} in ${repo}..."
-    while true; do
-        rows="$(gh run list \
-            --repo "${repo}" \
-            --workflow "${CI_WORKFLOW}" \
-            --commit "${sha}" \
-            --limit 20 \
-            --json databaseId,status,conclusion,url,headSha \
-            --jq ".[] | select(.headSha == \"${sha}\") | [.databaseId, .status, (.conclusion // \"\"), .url] | @tsv")"
-
-        if [ -n "${rows}" ]; then
-            discovered=1
-            while IFS=$'\t' read -r _ status conclusion url; do
-                case "${status}:${conclusion}" in
-                    completed:success)
-                        ok "${CI_WORKFLOW} succeeded for ${sha}: ${url}"
-                        return 0
-                        ;;
-                esac
-            done <<< "${rows}"
-
-            if ! grep -Eq $'\t(queued|in_progress|waiting|requested)\t' <<< "${rows}"; then
-                echo "${rows}" >&2
-                fail "found ${CI_WORKFLOW} run(s) for ${sha}, but none succeeded"
-            fi
-        fi
-
-        now="$(date +%s)"
-        if [ "${discovered}" -eq 0 ] && [ "${now}" -ge "${discovery_deadline}" ]; then
-            fail "no ${CI_WORKFLOW} run was found for ${sha} in ${repo} after ${CI_DISCOVERY_TIMEOUT_SECONDS}s. \
-This usually means the tagged commit never triggered CI: ci.yml only runs on push to main/dev, so a tag \
-pushed on a commit that isn't (yet) on one of those branches will never get a run. Push the commit to \
-main/dev (e.g. merge the PR) before tagging, or verify the tagged sha with 'git log --oneline main..${sha}'. \
-Set CI_DISCOVERY_TIMEOUT_SECONDS to wait longer if CI is just slow to be scheduled. Not retrying for the \
-full --ci-timeout-seconds (${CI_TIMEOUT_SECONDS}s)."
-        fi
-        [ "${now}" -lt "${deadline}" ] \
-            || fail "timed out waiting for successful ${CI_WORKFLOW} run on ${sha}"
-        sleep "${CI_POLL_SECONDS}"
-    done
-}
-
 if [ "${CHANGED_SINCE}" = "auto" ]; then
     [ -n "${TAG_NAME}" ] || fail "--changed-since auto requires --tag"
     CHANGED_SINCE="$(previous_tag_before "${TAG_NAME}" || true)"
@@ -679,6 +651,7 @@ elif [ -z "${CHANGED_SINCE}" ] && [ -n "${TAG_NAME}" ]; then
 fi
 
 check_versions
+check_release_notes
 check_example_schema_tag
 check_submodule_and_grammar_rev
 check_actions_sha_pinned
@@ -687,6 +660,9 @@ check_zed_language_generated
 check_generated_cochange "${CHANGED_SINCE}"
 check_regenerate_clean
 check_full_regenerate_clean
-require_ci_success
+REQUIRE_CI="${REQUIRE_CI}" CI_WORKFLOW="${CI_WORKFLOW}" \
+    CI_TIMEOUT_SECONDS="${CI_TIMEOUT_SECONDS}" CI_POLL_SECONDS="${CI_POLL_SECONDS}" \
+    CI_DISCOVERY_TIMEOUT_SECONDS="${CI_DISCOVERY_TIMEOUT_SECONDS}" \
+    "${SCRIPT_DIR}/require-ci-success.sh"
 
 ok "release hygiene checks passed"

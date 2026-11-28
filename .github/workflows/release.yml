@@ -19,6 +19,7 @@ jobs:
   release-preflight:
     name: Release hygiene
     runs-on: ubuntu-latest
+    timeout-minutes: 75 # the job took 9.3 min on 2026-10-18. It must outlast the 60 min CI wait (CI_TIMEOUT_SECONDS 3600)
     permissions:
       contents: read
       actions: read
@@ -50,6 +51,7 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: release-preflight
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25 # about 3x the longest green leg (8.3 min, aarch64 Linux, 2026-10-18), rounded up
     strategy:
       fail-fast: false
       matrix:
@@ -229,6 +231,7 @@ jobs:
     name: Build WASM extension
     needs: release-preflight
     runs-on: ubuntu-latest
+    timeout-minutes: 5 # longest green run 0.3 min, 5 min minimum
 
     steps:
       - name: Checkout
@@ -275,6 +278,7 @@ jobs:
     name: Create GitHub Release
     needs: [build-binaries, build-wasm]
     runs-on: ubuntu-latest
+    timeout-minutes: 5 # longest green run 0.3 min, 5 min minimum
     permissions:
       contents: write
       # Build provenance: `id-token` mints the Sigstore signing certificate and
@@ -366,6 +370,8 @@ jobs:
           name: "AL Extension ${{ github.ref_name }}"
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+          # The tracked notes come first and the generated list of changes follows them.
+          body_path: Docs/release-notes/${{ github.ref_name }}.md
           generate_release_notes: true
           files: |
             artifacts/**/*.tar.gz

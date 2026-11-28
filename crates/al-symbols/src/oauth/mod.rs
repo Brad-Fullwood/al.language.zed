@@ -16,7 +16,7 @@ mod redirect;
 mod settings;
 mod validation;
 
-pub use cache::{cached_token_expiry, invalidate_cached_token, token_cache_path};
+pub use cache::{cached_token_expiry_for, invalidate_cached_token, token_cache_path};
 pub use flows::{
     acquire_token, acquire_token_blocking, acquire_token_with_mode, acquire_token_with_settings,
     SignInMode,
@@ -91,6 +91,17 @@ struct CachedToken {
     expires_at: u64,
     #[zeroize(skip)]
     tenant: String,
+    /// The settings the token was issued for. A cache written before these
+    /// fields existed has `None`, which counts as the default value.
+    #[serde(default)]
+    #[zeroize(skip)]
+    client_id: Option<String>,
+    #[serde(default)]
+    #[zeroize(skip)]
+    scope: Option<String>,
+    #[serde(default)]
+    #[zeroize(skip)]
+    endpoint: Option<String>,
 }
 
 #[cfg(test)]
@@ -125,6 +136,9 @@ mod zeroize_tests {
             refresh_token: Some("secret-refresh".to_string()),
             expires_at: 1_700_000_000,
             tenant: "contoso.onmicrosoft.com".to_string(),
+            client_id: None,
+            scope: None,
+            endpoint: None,
         };
         cached.zeroize();
         assert!(cached.access_token.is_empty(), "access_token must be wiped");

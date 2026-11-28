@@ -302,6 +302,47 @@ fn aln2209_accepts_procedures_the_table_and_its_extensions_declare() {
 }
 
 #[test]
+fn commented_call_is_not_a_call_site() {
+    let source = r#"codeunit 50100 C
+{
+    local procedure Init()
+    begin
+    end;
+
+    procedure P()
+    var
+        Txt: Text;
+    begin
+        // Init (when empty)
+        Txt := 'Init (x)';
+    end;
+}
+"#;
+    let codes = codes_for(&[("C.Codeunit.al", source)]);
+    assert_silent(&codes, "ALN2201");
+}
+
+#[test]
+fn real_arity_mismatch_still_reported() {
+    let source = r#"codeunit 50100 C
+{
+    local procedure Init()
+    begin
+    end;
+
+    procedure P()
+    var
+        Txt: Text;
+    begin
+        Init(1);
+    end;
+}
+"#;
+    let codes = codes_for(&[("C.Codeunit.al", source)]);
+    assert_reports(&codes, "ALN2201");
+}
+
+#[test]
 fn aln2203_and_aln2204_missing_and_valueless_exit_in_a_returning_procedure() {
     let missing = codes_for(&[(
         "C.Codeunit.al",
@@ -515,28 +556,29 @@ fn a_temporary_record_of_a_known_table_is_known() {
     assert_silent(&codes, "ALN2401");
 }
 
-/// Every object in a file was checked against the whole file, so one
-/// error came back once per object, attributed to each.
+/// Every object of a multi-object file is bound, so an error in each object
+/// is reported on that object's own line.
 #[test]
-fn an_error_in_a_multi_object_file_is_reported_once() {
+fn errors_in_each_object_of_a_multi_object_file_are_reported() {
     let dir = tempfile::tempdir().unwrap();
     write_project(
         dir.path(),
         APP_JSON,
         &[(
             "Two.al",
-            "codeunit 50100 A\n{\n    procedure P()\n    begin\n        Nowhere := 1;\n    end;\n}\n\ncodeunit 50101 B\n{\n    procedure Q()\n    begin\n    end;\n}\n",
+            "codeunit 50100 A\n{\n    procedure P()\n    begin\n        Nowhere := 1;\n    end;\n}\n\ncodeunit 50101 B\n{\n    procedure Q()\n    begin\n        Elsewhere := 1;\n    end;\n}\n",
         )],
     );
     let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
         .expect("verification runs");
-    let undeclared: Vec<_> = built
+    let mut lines: Vec<_> = built
         .diagnostics
         .iter()
         .filter(|d| d.code == "AL0118")
+        .map(|d| d.line)
         .collect();
-    assert_eq!(undeclared.len(), 1, "{:?}", built.diagnostics);
-    assert_eq!(undeclared[0].line, 5);
+    lines.sort();
+    assert_eq!(lines, [5, 13], "{:?}", built.diagnostics);
 }
 
 #[test]
@@ -774,4 +816,526 @@ fn a_logo_outside_res_and_a_dot_slash_layout_path_package_like_alc() {
     // alc 18.1 names these `logo/logo.png` and `layout/Layouts/Sheet.xlsx`.
     assert!(archive.by_name("logo/logo.png").is_ok());
     assert!(archive.by_name("layout/Layouts/Sheet.xlsx").is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Heuristic checks that only warn (ALN2204 to ALN2210 are in HEURISTIC_CODES).
+// ---------------------------------------------------------------------------
+
+/// Build a project and return each diagnostic as (code, severity), and whether the .app was written.
+fn build_summary(sources: &[(&str, &str)]) -> (Vec<(String, al_emit::VerificationSeverity)>, bool) {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(dir.path(), APP_JSON, sources);
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("verification must run");
+    let diagnostics = built
+        .diagnostics
+        .iter()
+        .map(|d| (d.code.to_string(), d.severity))
+        .collect();
+    (diagnostics, built.app.is_some())
+}
+
+#[test]
+fn implicit_false_return_only_warns() {
+    let (diagnostics, written) = build_summary(&[(
+        "Implicit.Codeunit.al",
+        r#"codeunit 50100 "Prop Implicit"
+{
+    procedure Check(Value: Integer): Boolean
+    begin
+        if Value < 0 then
+            exit(true);
+    end;
+}
+"#,
+    )]);
+    assert!(
+        diagnostics.contains(&(
+            "ALN2210".to_string(),
+            al_emit::VerificationSeverity::Warning
+        )),
+        "expected ALN2210 as a warning: {diagnostics:?}"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|(_, severity)| *severity == al_emit::VerificationSeverity::Error),
+        "{diagnostics:?}"
+    );
+    assert!(written, "{diagnostics:?}");
+}
+
+#[test]
+fn variable_redeclared_with_another_type_only_warns() {
+    // variable_types keeps one map per object, so procedure B's Record declaration
+    // of Cust reaches procedure A, where Cust is an Integer.
+    let (diagnostics, written) = build_summary(&[
+        (
+            "Customer.Table.al",
+            r#"table 50100 Customer
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+}
+"#,
+        ),
+        (
+            "Redeclared.Codeunit.al",
+            r#"codeunit 50101 "Prop Redeclared"
+{
+    procedure A()
+    var
+        Cust: Integer;
+        N: Integer;
+    begin
+        N := Cust;
+    end;
+
+    procedure B()
+    var
+        Cust: Record Customer;
+    begin
+    end;
+}
+"#,
+        ),
+    ]);
+    assert!(
+        diagnostics.contains(&(
+            "ALN2403".to_string(),
+            al_emit::VerificationSeverity::Warning
+        )),
+        "expected ALN2403 as a warning: {diagnostics:?}"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|(_, severity)| *severity == al_emit::VerificationSeverity::Error),
+        "{diagnostics:?}"
+    );
+    assert!(written, "{diagnostics:?}");
+}
+
+#[test]
+fn curr_report_break_only_warns() {
+    let (diagnostics, written) = build_summary(&[(
+        "Break.Report.al",
+        r#"report 50100 "Prop Break"
+{
+    dataset
+    {
+        dataitem(Integer; Integer)
+        {
+            trigger OnAfterGetRecord()
+            begin
+                StopLoop();
+            end;
+        }
+    }
+
+    procedure StopLoop()
+    begin
+        CurrReport.Break();
+    end;
+}
+"#,
+    )]);
+    assert!(
+        diagnostics.contains(&(
+            "ALN2207".to_string(),
+            al_emit::VerificationSeverity::Warning
+        )),
+        "expected ALN2207 as a warning: {diagnostics:?}"
+    );
+    assert!(
+        !diagnostics.iter().any(|(code, severity)| code == "ALN2207"
+            && *severity == al_emit::VerificationSeverity::Error),
+        "{diagnostics:?}"
+    );
+    assert!(written, "{diagnostics:?}");
+}
+
+// ---------------------------------------------------------------------------
+// Permissions, keys, event subscribers and manifest runtime.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn system_permission_is_accepted() {
+    let codes = codes_for(&[(
+        "System.PermissionSet.al",
+        r#"permissionset 50100 "Prop System"
+{
+    Assignable = true;
+    Permissions = system "Tools, Object Designer" = X;
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN2101");
+    assert_silent(&codes, "ALN2103");
+}
+
+#[test]
+fn key_on_system_id_is_accepted() {
+    let codes = codes_for(&[(
+        "Keyed.Table.al",
+        r#"table 50100 "Prop Keyed"
+{
+    DataClassification = CustomerContent;
+
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+        }
+    }
+
+    keys
+    {
+        key(PK; "No.")
+        {
+            Clustered = true;
+        }
+        key(BySystemId; SystemId)
+        {
+        }
+    }
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN1107");
+}
+
+const EVENT_PUBLISHER: (&str, &str) = (
+    "Publisher.Codeunit.al",
+    r#"codeunit 50100 Publisher
+{
+    [IntegrationEvent(false, false)]
+    procedure OnPosted(Value: Integer; Other: Text)
+    begin
+    end;
+}
+"#,
+);
+
+#[test]
+fn subscriber_with_fewer_parameters_is_accepted() {
+    let codes = codes_for(&[
+        EVENT_PUBLISHER,
+        (
+            "Subscriber.Codeunit.al",
+            r#"codeunit 50101 Subscriber
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnPosted', '', false, false)]
+    procedure HandlePosted(Value: Integer)
+    begin
+    end;
+}
+"#,
+        ),
+    ]);
+    assert_silent(&codes, "ALN2301");
+}
+
+#[test]
+fn subscriber_with_unknown_parameter_is_rejected() {
+    let errors = errors_for(&[
+        EVENT_PUBLISHER,
+        (
+            "Subscriber.Codeunit.al",
+            r#"codeunit 50101 Subscriber
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::Publisher, 'OnPosted', '', false, false)]
+    procedure HandlePosted(Sender: Codeunit Publisher; Missing: Text)
+    begin
+    end;
+}
+"#,
+        ),
+    ]);
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.starts_with("ALN2301") && error.contains("'Missing'")),
+        "{errors:?}"
+    );
+}
+
+#[test]
+fn wildcard_tabledata_in_permissionset_is_accepted() {
+    assert_no_errors(&[(
+        "Chk.PermissionSet.al",
+        r#"permissionset 50100 "Chk Perm"
+{
+    Assignable = true;
+    Permissions = tabledata * = R;
+}
+"#,
+    )]);
+}
+
+#[test]
+fn runtime_with_suffix_is_rejected() {
+    let app_json = APP_JSON.replace("\"runtime\": \"13.0\"", "\"runtime\": \"17.typo\"");
+    let dir = tempfile::tempdir().unwrap();
+    write_project(dir.path(), &app_json, &[CUSTOMER_TABLE]);
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("verification must run");
+    assert!(
+        built.diagnostics.iter().any(|d| d.code == "ALN0103"
+            && d.message == "app.json field `runtime` is not a valid version: 17.typo"),
+        "{:?}",
+        built.diagnostics
+    );
+}
+
+#[test]
+fn runtime_14_0_is_accepted() {
+    let app_json = APP_JSON.replace("\"runtime\": \"13.0\"", "\"runtime\": \"14.0\"");
+    let codes = codes_for_with_manifest(&app_json, &[CUSTOMER_TABLE]);
+    assert_silent(&codes, "ALN0103");
+}
+
+/// A dependency app at `version`, with one table, built into `.app` bytes.
+const DEP_APP_JSON: &str = r#"{
+  "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
+  "name": "DepApp",
+  "publisher": "Pub",
+  "version": "VERSION",
+  "brief": "",
+  "description": "",
+  "platform": "1.0.0.0",
+  "application": "24.0.0.0",
+  "runtime": "13.0",
+  "idRanges": [ { "from": 50100, "to": 50199 } ],
+  "dependencies": []
+}
+"#;
+
+const DEP_TABLE: (&str, &str) = (
+    "Item.Table.al",
+    "table 50100 \"Dep Item\"\n{\n    DataClassification = CustomerContent;\n    fields\n    {\n        field(1; Code; Code[20]) { }\n    }\n}\n",
+);
+
+fn dependency_app_bytes(version: &str) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(
+        dir.path(),
+        &DEP_APP_JSON.replace("VERSION", version),
+        &[DEP_TABLE],
+    );
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("dependency project must build");
+    assert!(
+        !built.has_errors(),
+        "dependency {version} must build, got {:?}",
+        built.diagnostics
+    );
+    built.app.expect("dependency app is written").bytes
+}
+
+/// Build a consumer that depends on `DepApp` at `required`, with `packages` in
+/// `.alpackages`. Returns the ALN1007 messages.
+fn consumer_aln1007(required: &str, packages: &[(&str, Vec<u8>)]) -> Vec<String> {
+    let dir = tempfile::tempdir().unwrap();
+    let app_json = format!(
+        r#"{{
+  "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+  "name": "VerifyApp",
+  "publisher": "Pub",
+  "version": "1.0.0.0",
+  "brief": "",
+  "description": "",
+  "platform": "1.0.0.0",
+  "application": "24.0.0.0",
+  "runtime": "13.0",
+  "idRanges": [ {{ "from": 50100, "to": 50199 }} ],
+  "dependencies": [ {{ "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff", "name": "DepApp", "publisher": "Pub", "version": "{required}" }} ]
+}}
+"#
+    );
+    write_project(dir.path(), &app_json, &[]);
+    let alpackages = dir.path().join(".alpackages");
+    std::fs::create_dir_all(&alpackages).unwrap();
+    for (file, bytes) in packages {
+        std::fs::write(alpackages.join(file), bytes).unwrap();
+    }
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("consumer project must run");
+    built
+        .diagnostics
+        .iter()
+        .filter(|d| d.code == "ALN1007")
+        .map(|d| d.message.clone())
+        .collect()
+}
+
+#[test]
+fn dependency_below_required_version_is_rejected() {
+    let dep_9 = dependency_app_bytes("9.0.0.0");
+    let dep_10 = dependency_app_bytes("10.0.0.0");
+
+    // The loaded package is below the required version: one ALN1007 with both versions.
+    let below = consumer_aln1007("10.0.0.0", &[("Pub_DepApp_9.0.0.0.app", dep_9.clone())]);
+    assert_eq!(
+        below,
+        vec![
+            "Dependency 'DepApp' (bbbbbbbb-cccc-dddd-eeee-ffffffffffff) requires version 10.0.0.0 but the highest loaded package is 9.0.0.0"
+                .to_string()
+        ],
+        "a loaded 9.0.0.0 must not satisfy a required 10.0.0.0"
+    );
+
+    // Equal versions satisfy the requirement (control).
+    let equal = consumer_aln1007("9.0.0.0", &[("Pub_DepApp_9.0.0.0.app", dep_9.clone())]);
+    assert!(
+        equal.is_empty(),
+        "an equal version must pass, got {equal:?}"
+    );
+
+    // Numeric comparison: 10.0.0.0 is above 9.0.0.0, although text order puts "10" first.
+    let numeric = consumer_aln1007("9.0.0.0", &[("Pub_DepApp_10.0.0.0.app", dep_10.clone())]);
+    assert!(
+        numeric.is_empty(),
+        "10.0.0.0 must satisfy a required 9.0.0.0, got {numeric:?}"
+    );
+
+    // The highest loaded version counts, not the first one found.
+    let highest = consumer_aln1007(
+        "10.0.0.0",
+        &[
+            ("Pub_DepApp_9.0.0.0.app", dep_9),
+            ("Pub_DepApp_10.0.0.0.app", dep_10),
+        ],
+    );
+    assert!(
+        highest.is_empty(),
+        "the highest loaded 10.0.0.0 must satisfy a required 10.0.0.0, got {highest:?}"
+    );
+}
+
+/// A namespace qualified type names the object by its full name. The verifier
+/// checks the object name, so a known codeunit gives no ALN2003.
+#[test]
+fn namespace_qualified_codeunit_variable_is_known() {
+    let codes = codes_for(&[(
+        "Finder.Codeunit.al",
+        r#"namespace Purchases.Tools;
+
+codeunit 50100 Finder
+{
+    procedure Run()
+    var
+        Own: Codeunit Purchases.Tools.Finder;
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN2003");
+}
+
+/// A Record subtype with a namespace is checked by its object name, as a
+/// codeunit subtype is above.
+#[test]
+fn namespace_qualified_record_variable_is_known() {
+    let codes = codes_for(&[(
+        "Widget.al",
+        r#"namespace Sales.Tools;
+
+table 50100 Widget
+{
+    fields
+    {
+        field(1; Id; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; Id) { Clustered = true; }
+    }
+}
+
+codeunit 50101 User
+{
+    procedure Run()
+    var
+        W: Record Sales.Tools.Widget;
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN2401");
+}
+
+/// A quoted table name may hold a dot. The dot does not split the name.
+#[test]
+fn record_name_with_a_dot_is_known() {
+    let codes = codes_for(&[(
+        "Series.al",
+        r#"table 50102 "No. Series"
+{
+    fields
+    {
+        field(1; Id; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; Id) { Clustered = true; }
+    }
+}
+
+codeunit 50103 User
+{
+    procedure Run()
+    var
+        N: Record "No. Series";
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN2401");
+}
+
+#[test]
+fn unknown_qualified_record_is_still_reported() {
+    let codes = codes_for(&[(
+        "Missing.al",
+        r#"namespace Sales.Tools;
+
+codeunit 50100 User
+{
+    procedure Run()
+    var
+        M: Record Sales.Tools.Missing;
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_reports(&codes, "ALN2401");
+}
+
+#[test]
+fn aln2401_points_at_the_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(
+        dir.path(),
+        APP_JSON,
+        &[(
+            "Finder.al",
+            "codeunit 50100 Finder\n{\n    procedure Run()\n    var\n        c: Record Missing;\n    begin\n    end;\n}\n",
+        )],
+    );
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("verification runs");
+    let unknown = built
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "ALN2401")
+        .unwrap_or_else(|| panic!("{:?}", built.diagnostics));
+    assert_eq!(unknown.line, 5, "{:?}", built.diagnostics);
 }

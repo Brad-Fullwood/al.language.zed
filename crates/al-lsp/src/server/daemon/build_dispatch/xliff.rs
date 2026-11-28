@@ -14,6 +14,16 @@ use al_workspace::Workspace;
 fn read_xlf_capped(path: &std::path::Path) -> Result<String, String> {
     use std::io::Read;
     let limit = al_analysis::xliff::MAX_XLF_FILE_BYTES;
+    // `open` on a FIFO with no writer blocks, so the path is checked before it
+    // is opened. The handle is checked again below, because the path can be
+    // replaced between the two calls.
+    let not_regular = || format!("{} is not a regular file", path.display());
+    if !std::fs::metadata(path)
+        .map_err(|e| format!("Cannot read {}: {e}", path.display()))?
+        .is_file()
+    {
+        return Err(not_regular());
+    }
     let file =
         std::fs::File::open(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
     let is_file = file
@@ -21,7 +31,7 @@ fn read_xlf_capped(path: &std::path::Path) -> Result<String, String> {
         .map_err(|e| format!("Cannot read {}: {e}", path.display()))?
         .is_file();
     if !is_file {
-        return Err(format!("{} is not a regular file", path.display()));
+        return Err(not_regular());
     }
     let mut bytes = Vec::new();
     file.take(limit + 1)
@@ -34,6 +44,21 @@ fn read_xlf_capped(path: &std::path::Path) -> Result<String, String> {
         ));
     }
     String::from_utf8(bytes).map_err(|e| format!("Cannot read {}: {e}", path.display()))
+}
+
+/// Parse an `.xlf` file, or the `INVALID_PARAMS` response that names it.
+fn parse_xlf(
+    id: u64,
+    path: &std::path::Path,
+    content: &str,
+) -> Result<std::collections::HashMap<String, al_analysis::xliff::TranslationUnit>, Box<Response>> {
+    al_analysis::xliff::parse_xliff(content).map_err(|error| {
+        Box::new(rpc_error(
+            id,
+            al_protocol::jsonrpc::error_codes::INVALID_PARAMS,
+            &format!("Cannot parse {}: {error}", path.display()),
+        ))
+    })
 }
 
 pub(in crate::server::daemon) async fn dispatch_xlf_generate(
@@ -309,7 +334,10 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
         }
     };
 
-    let gen_units_map = al_analysis::xliff::parse_xliff(&gen_content);
+    let gen_units_map = match parse_xlf(id, &generated_path, &gen_content) {
+        Ok(units) => units,
+        Err(response) => return *response,
+    };
     // `parse_xliff` returns a HashMap, whose iteration order is randomised per
     // process. Feeding that straight into `refresh_xliff` made every refresh
     // rewrite the language file in a different unit order — huge spurious VCS
@@ -317,7 +345,10 @@ pub(in crate::server::daemon) async fn dispatch_xlf_refresh(
     let mut gen_units: Vec<al_analysis::xliff::TranslationUnit> =
         gen_units_map.into_values().collect();
     gen_units.sort_by(|left, right| left.id.cmp(&right.id));
-    let lang_units = al_analysis::xliff::parse_xliff(&lang_content);
+    let lang_units = match parse_xlf(id, &xlf_path, &lang_content) {
+        Ok(units) => units,
+        Err(response) => return *response,
+    };
 
     let (mut updated_units, mut refresh_result) =
         al_analysis::xliff::refresh_xliff(&gen_units, &lang_units);
@@ -392,7 +423,10 @@ pub(in crate::server::daemon) fn dispatch_xlf_untranslated(
             );
         }
     };
-    let units_map = al_analysis::xliff::parse_xliff(&xlf_content);
+    let units_map = match parse_xlf(id, &xlf_path, &xlf_content) {
+        Ok(units) => units,
+        Err(response) => return *response,
+    };
     let all_units: Vec<al_analysis::xliff::TranslationUnit> = units_map.into_values().collect();
     let untranslated = al_analysis::xliff::find_untranslated(&all_units);
     let items: Vec<serde_json::Value> = untranslated
@@ -457,7 +491,10 @@ pub(in crate::server::daemon) async fn dispatch_xlf_suggest(
         }
     };
 
-    let units_map = al_analysis::xliff::parse_xliff(&xlf_content);
+    let units_map = match parse_xlf(id, &xlf_path, &xlf_content) {
+        Ok(units) => units,
+        Err(response) => return *response,
+    };
     let all_units: Vec<al_analysis::xliff::TranslationUnit> = units_map.into_values().collect();
     let untranslated = al_analysis::xliff::find_untranslated(&all_units);
     // Mine this file's translated units as a translation memory so
@@ -725,6 +762,96 @@ mod tests {
         let path = dir.path().join("de-DE.xlf");
         std::fs::write(&path, "<xliff/>").unwrap();
         assert_eq!(read_xlf_capped(&path).unwrap(), "<xliff/>");
+    }
+
+    const COMPACT_LANGUAGE_FILE: &str = concat!(
+        r#"<?xml version="1.0" encoding="utf-8"?><xliff version="1.2" xmlns="urn:oasis:names:tc:xliff:document:1.2">"#,
+        r#"<file datatype="xml" source-language="en-US" target-language="de-DE" original="App"><body><group id="body">"#,
+        r#"<trans-unit id="Table 1 - Property Caption"><source>Open</source><target state="final">Öffnen</target></trans-unit>"#,
+        r#"</group></body></file></xliff>"#,
+    );
+
+    #[tokio::test]
+    async fn refresh_keeps_targets_of_a_compact_language_file() {
+        let ws = empty_ws();
+        let dir = tempfile::tempdir().unwrap();
+        crate::server::daemon::set_test_project_root(&ws, dir.path());
+        let generated = dir.path().join("App.g.xlf");
+        std::fs::write(
+            &generated,
+            xliff_doc(
+                "App",
+                "en-US",
+                &[("Table 1 - Property Caption", "Open", None)],
+            ),
+        )
+        .unwrap();
+        let language = dir.path().join("de-DE.xlf");
+        std::fs::write(&language, COMPACT_LANGUAGE_FILE).unwrap();
+
+        let params = serde_json::json!({
+            "xlf": language.to_str().unwrap(),
+            "generated": generated.to_str().unwrap(),
+        });
+        let response = dispatch_xlf_refresh(&ws, 1, &params).await;
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let refreshed = std::fs::read_to_string(&language).unwrap();
+        assert!(
+            refreshed.contains(r#"<target state="final" xml:space="preserve">Öffnen</target>"#),
+            "{refreshed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_writes_nothing_when_the_language_file_is_malformed() {
+        let ws = empty_ws();
+        let dir = tempfile::tempdir().unwrap();
+        crate::server::daemon::set_test_project_root(&ws, dir.path());
+        let generated = dir.path().join("App.g.xlf");
+        std::fs::write(
+            &generated,
+            xliff_doc("App", "en-US", &[("T1", "Open", None)]),
+        )
+        .unwrap();
+        let language = dir.path().join("de-DE.xlf");
+        let broken = r#"<xliff><file><body><trans-unit id="T1"><source>Open</trans-unit>"#;
+        std::fs::write(&language, broken).unwrap();
+
+        let params = serde_json::json!({
+            "xlf": language.to_str().unwrap(),
+            "generated": generated.to_str().unwrap(),
+        });
+        let error = dispatch_xlf_refresh(&ws, 1, &params)
+            .await
+            .error
+            .expect("a malformed file is refused");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS, "{error:?}");
+        assert!(error.message.contains("Cannot parse"), "{error:?}");
+        assert_eq!(std::fs::read_to_string(&language).unwrap(), broken);
+    }
+
+    /// `open` on a FIFO with no writer blocks. The read must refuse the path
+    /// without opening it.
+    #[cfg(unix)]
+    #[test]
+    fn read_xlf_capped_refuses_a_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("de-DE.xlf");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("mkfifo runs");
+        assert!(status.success(), "mkfifo failed");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let path = fifo.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(read_xlf_capped(&path));
+        });
+        let result = receiver
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("read_xlf_capped blocked on a FIFO");
+        let error = result.unwrap_err();
+        assert!(error.contains("not a regular file"), "{error}");
     }
 
     #[tokio::test]

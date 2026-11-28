@@ -49,8 +49,9 @@ character in error text and in the names `search`, `object`, `by-id`, `packages`
 mode escapes the same characters as JSON does (`\u001b`).
 
 Human and JSON modes also share exit codes. `0` means the requested check passed, `1` means an
-error or blocking findings, and `75` is `doctor`'s answer while the daemon is still loading the
-workspace. Complexity hotspots, any dead-code finding, SQL anti-patterns,
+error or blocking findings, `3` means the tenant guard refused the connection, and `75` is
+`doctor`'s answer while the daemon is still loading the workspace. Complexity hotspots, any
+dead-code finding, SQL anti-patterns,
 duplicate/architecture/native-check/breaking findings, unclassified data, and permission-audit
 failures make the process exit non-zero in both output modes.
 
@@ -73,7 +74,7 @@ TUI renders immediately with a "Loading workspace…" status while symbols load 
 
 ## Zed integration
 
-The language package ships 55 tasks in `languages/al/tasks.json` and inline runnables in
+The language package ships 42 tasks in `languages/al/tasks.json` and inline runnables in
 `languages/al/runnables.scm`, and every one runs `al-explorer`. Stable Zed task JSON cannot address
 the `al-explorer` binary inside the extension's download directory, so the tasks need `al-explorer`
 on `PATH`. See [Language assets](language-assets.md#al-explorer-must-be-on-path) for the install step.

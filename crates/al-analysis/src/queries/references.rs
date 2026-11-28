@@ -496,6 +496,57 @@ mod tests {
     }
 
     #[test]
+    fn event_references_match_a_numeric_publisher() {
+        // A subscriber names its publisher by its bare integer id.
+        const PUB: &str = r#"codeunit 50100 "Pub A"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnAfterPost()
+    begin
+    end;
+}"#;
+        const SUBS: &str = r#"codeunit 50102 "Subs"
+{
+    [EventSubscriber(ObjectType::Codeunit, 50100, 'OnAfterPost', '', false, false)]
+    local procedure HandleBare()
+    begin
+    end;
+    [EventSubscriber(ObjectType::Codeunit, 50102, 'OnAfterPost', '', false, false)]
+    local procedure HandleOtherObject()
+    begin
+    end;
+}"#;
+        let pub_uri = Url::parse("file:///test/pub.al").expect("test");
+        let subs = Url::parse("file:///test/subs.al").expect("test");
+        let ws = Workspace::new();
+        for (uri, text) in [(&pub_uri, PUB), (&subs, SUBS)] {
+            ws.documents.open(uri.clone(), text.to_string()).unwrap();
+            ws.file_index
+                .add_file(uri.to_file_path().unwrap(), text.to_string());
+        }
+
+        let on_pub = references(
+            &ws,
+            &pub_uri,
+            Position {
+                line: 3,
+                character: 14,
+            },
+            true,
+        );
+        let subscriber_lines: Vec<u32> = on_pub
+            .iter()
+            .filter(|loc| loc.uri == subs)
+            .map(|loc| loc.range.start.line)
+            .collect();
+        assert_eq!(
+            subscriber_lines,
+            vec![2],
+            "the bare numeric publisher id must match, and id 50102 must not"
+        );
+    }
+
+    #[test]
     fn references_do_not_match_unrelated_string_literals() {
         // A string literal equal to the symbol name but NOT the event-name
         // argument of an EventSubscriber attribute must not be reported.

@@ -57,9 +57,29 @@ fn single_edit_ws(uri: &Url, edits: Vec<TextEdit>) -> WorkspaceEdit {
 /// Diagnostic-based quick fixes are handled by `quick_fix_for_diagnostic`.
 #[must_use]
 pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<CodeActionEntry> {
+    source_actions_filtered(workspace, uri, range, |_| true)
+}
+
+/// [`source_actions`] with only the producers whose kind `wants` accepts.
+///
+/// A producer that `wants` refuses is not called. Make Local scans every
+/// indexed file, so a `quickfix` only request must not run it just to drop
+/// the result. Add using is the one `QuickFix` producer here. Every other
+/// producer returns `Refactor`.
+pub fn source_actions_filtered(
+    workspace: &Workspace,
+    uri: &Url,
+    range: Range,
+    wants: impl Fn(CodeActionKind) -> bool,
+) -> Vec<CodeActionEntry> {
     // honor the `enableCodeActions` setting (VS Code parity) at
     // the query level so both the LSP and daemon transports respect it.
     if !code_actions_enabled(workspace) {
+        return Vec::new();
+    }
+    let quick_fix = wants(CodeActionKind::QuickFix);
+    let refactor = wants(CodeActionKind::Refactor);
+    if !quick_fix && !refactor {
         return Vec::new();
     }
     let Some(text) = workspace.documents.get_text_arc(uri) else {
@@ -67,19 +87,27 @@ pub fn source_actions(workspace: &Workspace, uri: &Url, range: Range) -> Vec<Cod
     };
     let mut actions = Vec::new();
 
-    if let Some(action) = doc_region::source_action_add_doc_comment(workspace, uri, &text, range) {
-        actions.push(action);
-    }
-
-    if range.start != range.end {
-        if let Some(action) = doc_region::source_action_add_region(uri, &text, range) {
+    if refactor {
+        if let Some(action) =
+            doc_region::source_action_add_doc_comment(workspace, uri, &text, range)
+        {
             actions.push(action);
+        }
+        if range.start != range.end {
+            if let Some(action) = doc_region::source_action_add_region(uri, &text, range) {
+                actions.push(action);
+            }
         }
     }
 
-    actions.extend(namespace::source_action_add_using(
-        workspace, uri, &text, range,
-    ));
+    if quick_fix {
+        actions.extend(namespace::source_action_add_using(
+            workspace, uri, &text, range,
+        ));
+    }
+    if !refactor {
+        return actions;
+    }
 
     if let Some(action) = if_to_case::source_action_if_to_case(workspace, uri, &text, range) {
         actions.push(action);
@@ -221,12 +249,18 @@ pub fn quick_fix_for_diagnostic(
     if !code_actions_enabled(workspace) {
         return None;
     }
+    // The fixes reparse `text`. The owning app's `preprocessorSymbols` keep
+    // the `#if` blocks the document tree has active.
+    let symbols = uri
+        .to_file_path()
+        .map(|path| workspace.file_index.preprocessor_symbols_for(&path))
+        .unwrap_or_default();
 
     if matches!(
         diag.code.as_deref(),
         Some("AL-NL010" | "AL-L005" | "AA0206")
     ) {
-        let (name, edit) = unused_local_removal_edit(text, diag)?;
+        let (name, edit) = unused_local_removal_edit(text, &symbols, diag)?;
         return Some(CodeActionEntry {
             title: format!("Remove unused variable '{name}'"),
             kind: CodeActionKind::QuickFix,
@@ -236,7 +270,7 @@ pub fn quick_fix_for_diagnostic(
     }
 
     if diag.code.as_deref() == Some(al_syntax::ALC_MISSING_SEMICOLON_CODE) {
-        let edit = missing_semicolon_edit(text, diag)?;
+        let edit = missing_semicolon_edit(text, &symbols, diag)?;
         return Some(CodeActionEntry {
             title: "Add missing ';'".to_string(),
             kind: CodeActionKind::QuickFix,
@@ -268,7 +302,11 @@ pub fn quick_fix_for_diagnostic(
 /// AL0111 (no match in the decompiled tooling), so there is nothing to reuse.
 /// The edit is offered only when the native parse tree gives the same shape that
 /// produced the diagnostic, so a stale or foreign AL0111 does not get a guessed edit.
-fn missing_semicolon_edit(text: &str, diag: &DiagnosticInfo) -> Option<TextEdit> {
+fn missing_semicolon_edit(
+    text: &str,
+    symbols: &[String],
+    diag: &DiagnosticInfo,
+) -> Option<TextEdit> {
     let line_start: usize = text
         .split_inclusive('\n')
         .take(diag.range.start.line as usize)
@@ -277,7 +315,7 @@ fn missing_semicolon_edit(text: &str, diag: &DiagnosticInfo) -> Option<TextEdit>
     let line = text[line_start..].split('\n').next()?;
     let error_start =
         line_start + al_syntax::utf16_col_to_byte_offset(line, diag.range.start.character as usize);
-    let parsed = al_syntax::AlParser::parse_quick(text);
+    let parsed = al_syntax::AlParser::parse_quick_with_symbols(text, symbols);
     let insert = al_syntax::missing_semicolon_insert_byte_at(&parsed.tree, error_start)?;
     let before = &text[..insert];
     let insert_line = before.matches('\n').count();
@@ -303,8 +341,12 @@ fn missing_semicolon_edit(text: &str, diag: &DiagnosticInfo) -> Option<TextEdit>
 /// edit is emitted only when the current native AST analysis independently
 /// proves that exact local has no references. This prevents a stale or broad
 /// external diagnostic from deleting a still-used declaration.
-fn unused_local_removal_edit(text: &str, diag: &DiagnosticInfo) -> Option<(String, TextEdit)> {
-    let parsed = al_syntax::AlParser::parse_quick(text);
+fn unused_local_removal_edit(
+    text: &str,
+    symbols: &[String],
+    diag: &DiagnosticInfo,
+) -> Option<(String, TextEdit)> {
+    let parsed = al_syntax::AlParser::parse_quick_with_symbols(text, symbols);
     let syntax_position = al_syntax::types::SyntaxPosition {
         line: diag.range.start.line,
         character: diag.range.start.character,
@@ -746,7 +788,7 @@ mod tests {
     fn missing_semicolon_quick_fix_uses_the_recorded_alc_range() {
         let diag = alc_al0111_diagnostic();
         assert_eq!(diag.code.as_deref(), Some("AL0111"));
-        let edit = missing_semicolon_edit(ALC_AL0111_SOURCE, &diag).expect("edit");
+        let edit = missing_semicolon_edit(ALC_AL0111_SOURCE, &[], &diag).expect("edit");
         assert_eq!(edit.new_text, ";");
         // End of `JourneyItem.Init()` on line 7 (0 based 6), after the `)`.
         assert_eq!(
@@ -766,7 +808,7 @@ mod tests {
     fn missing_semicolon_quick_fix_refuses_a_range_that_is_not_the_error() {
         let mut diag = alc_al0111_diagnostic();
         diag.range.start.line = 2;
-        assert!(missing_semicolon_edit(ALC_AL0111_SOURCE, &diag).is_none());
+        assert!(missing_semicolon_edit(ALC_AL0111_SOURCE, &[], &diag).is_none());
     }
 
     fn apply_edit(source: &str, edit: &TextEdit) -> String {
@@ -1193,5 +1235,43 @@ mod tests {
             // The contract is simply: no panic. Return value may be empty or not.
             let _ = source_actions(&ws, &uri, range);
         }
+    }
+
+    /// A `quickfix` only request ran Make Local, which scans every indexed
+    /// file, and then dropped its `Refactor` result.
+    #[test]
+    fn source_actions_filtered_skips_refactor_producers_for_a_quick_fix_request() {
+        let ws = Workspace::new();
+        let al_code = r#"codeunit 50100 "My Codeunit"
+{
+    procedure UniqueFilteredHelper()
+    begin
+        Message('helper');
+    end;
+}
+"#;
+        let uri = Url::parse("file:///test/FilteredMakeLocal.al").unwrap();
+        open_doc(&ws, &uri, al_code);
+        let at = Position {
+            line: 2,
+            character: 4,
+        };
+        let range = Range { start: at, end: at };
+
+        let all = source_actions(&ws, &uri, range);
+        assert!(
+            all.iter()
+                .any(|a| a.kind == CodeActionKind::Refactor && a.title == "Make procedure local"),
+            "source_actions offers Make Local: {all:?}"
+        );
+
+        let quick_fixes =
+            source_actions_filtered(&ws, &uri, range, |kind| kind == CodeActionKind::QuickFix);
+        assert!(
+            quick_fixes
+                .iter()
+                .all(|a| a.kind != CodeActionKind::Refactor),
+            "{quick_fixes:?}"
+        );
     }
 }

@@ -6,9 +6,12 @@ pub mod browser;
 pub mod cache_root;
 pub mod filename;
 pub mod jsonc;
+#[cfg(unix)]
+pub mod private_dir;
 pub mod procedure;
 pub mod profile_timing;
 pub mod profiler;
+pub mod regular_file;
 pub mod test_result;
 
 pub use app::AppDependency;

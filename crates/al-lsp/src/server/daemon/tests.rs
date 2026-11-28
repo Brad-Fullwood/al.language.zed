@@ -1435,6 +1435,96 @@ mod dispatch_tests {
         );
     }
 
+    /// A4 codex-11, al-lsp part: a daemon parse uses the `preprocessorSymbols`
+    /// of the app that owns the file, so the `#if CLEAN24` block is parsed as
+    /// code in the app that defines it and as skipped text in the one that
+    /// does not.
+    #[test]
+    fn a_parse_uses_the_preprocessor_symbols_of_the_owning_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    var\n        X: Integer;\n    begin\n        X := 1;\n    end;\n#endif\n}\n";
+        let mut node_counts = Vec::new();
+        for (app, symbols) in [("defines", r#"["CLEAN24"]"#), ("plain", "[]")] {
+            let root = dir.path().join(app);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("app.json"),
+                format!(r#"{{"id":"00000000-0000-0000-0000-00000000000{}","name":"{app}","preprocessorSymbols":{symbols}}}"#, app.len()),
+            )
+            .unwrap();
+            let file = root.join("C.Codeunit.al");
+            std::fs::write(&file, source).unwrap();
+            let workspace = al_workspace::Workspace::new();
+            set_test_project_root(&workspace, &root);
+
+            let params = serde_json::json!({ "file": file.to_str().unwrap() });
+            let response = super::build_dispatch::dispatch_parse(&workspace, 4, &params);
+            let result = response.result.expect("parse result");
+            assert_eq!(result["errors"], 0, "{app}: {result}");
+            node_counts.push(result["nodeCount"].as_u64().expect("nodeCount"));
+        }
+        assert!(
+            node_counts[0] > node_counts[1],
+            "the active block adds the procedure's nodes: {node_counts:?}"
+        );
+    }
+
+    /// A documentSymbols answer uses the preprocessor symbols of the app that
+    /// owns the file, on the request path the daemon serves.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn daemon_symbols_use_the_owning_apps_preprocessor_symbols() {
+        fn symbol_names(symbols: &serde_json::Value, names: &mut Vec<String>) {
+            for symbol in symbols.as_array().into_iter().flatten() {
+                if let Some(name) = symbol["name"].as_str() {
+                    names.push(name.to_string());
+                }
+                symbol_names(&symbol["children"], names);
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    var\n        X: Integer;\n    begin\n        X := 1;\n    end;\n#endif\n}\n";
+        for (app, symbols, defines) in [("defines", r#"["CLEAN24"]"#, true), ("plain", "[]", false)]
+        {
+            let root = dir.path().join(app);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("app.json"),
+                format!(
+                    r#"{{"id":"00000000-0000-0000-0000-00000000000{}","name":"{app}","publisher":"Tests","version":"1.0.0.0","preprocessorSymbols":{symbols}}}"#,
+                    app.len()
+                ),
+            )
+            .unwrap();
+            let file = root.join("C.Codeunit.al");
+            std::fs::write(&file, source).unwrap();
+
+            let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+            *ws.config.write().await = al_project::trust::evaluate(&root).unwrap().config;
+            super::initialize_daemon_workspace(&ws, &root)
+                .await
+                .expect("the project loads");
+            let shutdown = Notify::new();
+            let params = serde_json::json!({ "file": file.to_str().unwrap() });
+            let response = dispatch_request(
+                &ws,
+                Request::new(5, "documentSymbols", Some(params)),
+                &shutdown,
+            )
+            .await;
+            assert!(response.error.is_none(), "{app}: {:?}", response.error);
+            let mut names = Vec::new();
+            symbol_names(
+                &response.result.expect("documentSymbols answers"),
+                &mut names,
+            );
+            assert_eq!(
+                names.iter().any(|name| name == "NewApi"),
+                defines,
+                "{app}: {names:?}"
+            );
+        }
+    }
+
     /// Text for a path *inside* the project is refused: the daemon holds that
     /// file itself, and substituting content for it would let a later write
     /// flush a caller's text over the real source.
@@ -2331,6 +2421,65 @@ mod dispatch_tests {
         }
     }
 
+    /// `lint` with `all: true` reaches `cached_project_pass`, which takes the
+    /// `build_lock` shared by every project pass key. Here another pass holds
+    /// that lock. The lint call must wait on the blocking pool, so the runtime
+    /// thread stays free to run the task that releases the lock.
+    #[tokio::test]
+    async fn lint_does_not_block_the_runtime_while_a_project_pass_runs() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        ws.file_index.add_file(
+            PathBuf::from("/proj/src/Hello.al"),
+            "codeunit 50100 \"Hello\"\n{\n}\n".to_string(),
+        );
+
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder_ws = std::sync::Arc::clone(&ws);
+        let holder = std::thread::spawn(move || {
+            holder_ws
+                .cached_project_pass("verify_r2_hold", || {
+                    held_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).ok();
+                    Ok::<u8, ()>(0)
+                })
+                .unwrap();
+        });
+        held_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the held project pass did not start");
+
+        let ran_while_held = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lint_ws = std::sync::Arc::clone(&ws);
+        let lint_flag = std::sync::Arc::clone(&ran_while_held);
+        let lint = tokio::spawn(async move {
+            let shutdown = Notify::new();
+            let req = Request::new(1, "lint", Some(serde_json::json!({ "all": true })));
+            let resp = dispatch_request(&lint_ws, req, &shutdown).await;
+            // Read the flag as the answer arrives. Reading it later in the
+            // test would see the release task's write on the old code too.
+            let flag_at_answer = lint_flag.load(std::sync::atomic::Ordering::SeqCst);
+            (resp, flag_at_answer)
+        });
+
+        tokio::spawn(async move {
+            ran_while_held.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = release_tx.send(());
+        });
+
+        let (resp, flag_at_answer) = tokio::time::timeout(Duration::from_secs(10), lint)
+            .await
+            .expect("lint did not answer within 10 seconds")
+            .expect("lint task panicked");
+        holder.join().unwrap();
+
+        assert!(
+            flag_at_answer,
+            "lint answered before the other task ran, so lint held the runtime thread"
+        );
+        assert!(resp.error.is_none(), "lint failed: {:?}", resp.error);
+    }
+
     /// `object` requires a `kind` param; an unknown kind string must route
     /// through `parse_object_kind` and surface INVALID_PARAMS naming the input.
     #[tokio::test]
@@ -2357,6 +2506,102 @@ mod dispatch_tests {
         assert_eq!(
             resp.error.expect("unknown must error").code,
             error_codes::METHOD_NOT_FOUND
+        );
+    }
+}
+
+/// Tests for the area A2 review fixes in the daemon dispatch (A2-J11).
+mod review_a2_dispatch {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn error_message(response: Response) -> String {
+        response
+            .error
+            .map(|error| error.message)
+            .unwrap_or_default()
+    }
+
+    /// A2-codex-11, A2-neon-11 part 1: supplied text for one URI is held by
+    /// one request at a time, and a request without text never reads it.
+    #[test]
+    fn supplied_text_is_not_shared_between_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let workspace = Workspace::new();
+        set_test_project_root(&workspace, &root);
+        let outside = dir.path().join("Outside.al");
+        let params = serde_json::json!({
+            "file": outside.to_str().unwrap(),
+            "text": "codeunit 50100 Supplied { }",
+        });
+
+        let (uri, guard) = read_document_from_params(&workspace, &params, 1).unwrap();
+        assert!(guard.is_some());
+        let second = read_document_from_params(&workspace, &params, 2)
+            .err()
+            .expect("a second request for the same URI is refused");
+        assert!(
+            error_message(second).contains("another request is using supplied text"),
+            "the refusal names the cause"
+        );
+        let without_text =
+            read_document_from_params(&workspace, &serde_json::json!({ "uri": uri }), 3);
+        assert!(
+            without_text.is_err(),
+            "a request without text does not answer from another request's text"
+        );
+
+        drop(guard);
+        let (_, again) = read_document_from_params(&workspace, &params, 4)
+            .expect("the URI is free once the first request is answered");
+        assert!(again.is_some());
+    }
+
+    /// A2-neon-19 item 2: the document methods are the list the protocol
+    /// crate shares with the client.
+    #[test]
+    fn reads_document_matches_the_protocol_list() {
+        for dispatcher in DISPATCHERS {
+            assert_eq!(
+                reads_document(dispatcher.method),
+                al_protocol::methods::TEXT_CAPABLE_METHODS.contains(&dispatcher.method),
+                "{}",
+                dispatcher.method
+            );
+        }
+    }
+
+    /// A2-codex-15, A2-neon-03: the configuration is in place before the new
+    /// fingerprint is stored, so a request that sees the new fingerprint runs
+    /// with the new configuration.
+    #[tokio::test]
+    async fn trust_refresh_writes_the_config_before_the_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("app.json"), "{}").unwrap();
+        let workspace = Workspace::new();
+        set_test_project_root(&workspace, &root);
+        let fingerprint = al_project::trust::inputs_fingerprint(&root);
+        TRUST_INPUTS.store(fingerprint.wrapping_add(1), Ordering::Release);
+
+        let evaluated = al_project::config::AlConfig {
+            background_code_analysis: false,
+            ..Default::default()
+        };
+        refresh_trust_with(&workspace, move |_| {
+            // A panic here fails the worker, and the refresh then denies
+            // privileged settings instead of writing `evaluated`.
+            assert_ne!(TRUST_INPUTS.load(Ordering::Acquire), fingerprint);
+            Ok::<_, String>(evaluated)
+        })
+        .await;
+
+        assert!(
+            !workspace.config.read().await.background_code_analysis,
+            "the evaluated configuration was written"
         );
     }
 }

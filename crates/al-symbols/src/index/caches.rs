@@ -57,12 +57,54 @@ impl SymbolIndex {
         ))
     }
 
+    /// Get the composed view of one indexed base entry, cached per package.
+    ///
+    /// Two packages can each declare an object with the same kind and name.
+    /// A view keyed by name alone gave both packages the same base and
+    /// extensions. The key here is `<lower name>\u{1}<package key>`, so each
+    /// package keeps its own view. [`SymbolIndex::invalidate_composed`] removes
+    /// every package's view of a name.
+    ///
+    /// `package_key_of` scans all indexed entries, so each call costs O(entries),
+    /// cache hits included. An entry the index does not hold has no package key,
+    /// so it is composed without caching.
+    pub fn get_composed_for_entry(
+        &self,
+        entry: &Arc<SymbolEntry>,
+    ) -> Option<Arc<crate::model::ComposedObject>> {
+        let Some(package_key) = self.package_key_of(entry) else {
+            return crate::composition::get_composed_for_base(self, Arc::clone(entry))
+                .map(Arc::new);
+        };
+        let key = (
+            entry.kind,
+            format!("{}\u{1}{package_key}", entry.name.to_lowercase()),
+        );
+        if let Some(cached) = self.composed_cache.get(&key) {
+            return Some(Arc::clone(cached.value()));
+        }
+        let composed = Arc::new(crate::composition::get_composed_for_base(
+            self,
+            Arc::clone(entry),
+        )?);
+        Some(Arc::clone(
+            self.composed_cache
+                .entry(key)
+                .or_insert_with(|| Arc::clone(&composed))
+                .value(),
+        ))
+    }
+
     /// Invalidate cached composed views for a given object name.
+    ///
+    /// Removes the name's view and every per-package view of that name.
     ///
     /// Call when a workspace file defining or extending this object changes.
     pub fn invalidate_composed(&self, name: &str) {
         let lower = name.to_lowercase();
-        self.composed_cache.retain(|k, _| k.1 != lower);
+        let per_package_prefix = format!("{lower}\u{1}");
+        self.composed_cache
+            .retain(|k, _| k.1 != lower && !k.1.starts_with(per_package_prefix.as_str()));
     }
 
     pub fn invalidate_all_composed(&self) {
@@ -90,8 +132,11 @@ impl SymbolIndex {
             .flatten()
             .collect();
         if !affected.is_empty() {
-            self.composed_cache
-                .retain(|(_, name), _| !affected.contains(name));
+            // A per-package key is `<name>\u{1}<package key>`. Only the name part is compared.
+            self.composed_cache.retain(|(_, key), _| {
+                let name = key.split('\u{1}').next().unwrap_or_default();
+                !affected.contains(name)
+            });
         }
     }
 
@@ -321,5 +366,52 @@ mod tests {
             .unwrap();
         assert!(!Arc::ptr_eq(&before, &after));
         assert_eq!(after.extensions.len(), 1);
+    }
+
+    #[test]
+    fn per_package_composed_views_drop_with_their_name() {
+        let index = SymbolIndex::new();
+        let package = |app_id: &str| crate::model::SymbolPackage {
+            app_id: app_id.to_string(),
+            name: "Base Application".to_string(),
+            publisher: "Microsoft".to_string(),
+            version: "1.0.0.0".to_string(),
+            objects: vec![SymbolEntry {
+                package: "Base Application".to_string(),
+                ..make_entry(ObjectKind::Table, 1, "Setup")
+            }],
+            object_count: 1,
+        };
+        let first = std::path::PathBuf::from("/packages/first.app");
+        let second = std::path::PathBuf::from("/packages/second.app");
+        index.index_loaded_package(
+            package("11111111-1111-1111-1111-111111111111"),
+            Some(&first),
+            false,
+        );
+        index.index_loaded_package(
+            package("22222222-2222-2222-2222-222222222222"),
+            Some(&second),
+            false,
+        );
+
+        for entry in index.get_by_name("Setup") {
+            assert!(index.get_composed_for_entry(&entry).is_some());
+        }
+        assert_eq!(index.composed_cache.len(), 2);
+
+        index.invalidate_composed("SETUP");
+        assert!(index.is_composed_cache_empty());
+
+        for entry in index.get_by_name("Setup") {
+            assert!(index.get_composed_for_entry(&entry).is_some());
+        }
+        index.add_entries(&[make_extension(
+            ObjectKind::TableExtension,
+            50_100,
+            "Setup Ext",
+            "Setup",
+        )]);
+        assert!(index.is_composed_cache_empty());
     }
 }

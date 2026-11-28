@@ -160,8 +160,48 @@ fn spawn_signal_handlers() {
 /// threads, not a deadline on user work.
 const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// The subcommand, read from the first argument only. The extension,
+/// `al-explorer` and the plugin's `.mcp.json` put `mcp` or `daemon` there, and
+/// a later argument such as a `--project` value named `mcp` is not a mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Mcp,
+    Daemon,
+    Other,
+}
+
+fn mode(args: &[String]) -> Mode {
+    match args.get(1).map(String::as_str) {
+        Some("mcp") => Mode::Mcp,
+        Some("daemon") => Mode::Daemon,
+        _ => Mode::Other,
+    }
+}
+
+/// Cap glibc's malloc arenas at two.
+///
+/// glibc gives each thread that allocates under contention its own arena, up
+/// to eight per core, and keeps freed memory in it. The analysis passes
+/// allocate from many Tokio and blocking threads, so freed pass results stayed
+/// resident: with native lint on, a project with 10,224 dependency files
+/// peaked at 1.6-2.3 GB, and at 1.36-1.43 GB with two arenas, with no rise in
+/// CPU per edit. `mallopt` is glibc's own setting for this, the same one the
+/// `MALLOC_ARENA_MAX` environment variable sets, which still wins when given.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn limit_malloc_arenas() {
+    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+        // SAFETY: `mallopt` only changes allocator settings and is called
+        // before any other thread exists.
+        unsafe {
+            libc::mallopt(libc::M_ARENA_MAX, 2);
+        }
+    }
+}
+
 #[cfg(not(windows))]
 fn main() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    limit_malloc_arenas();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -354,7 +394,7 @@ async fn run() {
     }
 
     #[cfg(unix)]
-    let is_daemon_mode = args.iter().any(|a| a == "daemon");
+    let is_daemon_mode = mode(&args) == Mode::Daemon;
     #[cfg(unix)]
     if !is_daemon_mode {
         spawn_parent_monitor();
@@ -390,10 +430,7 @@ async fn run() {
             );
             std::process::exit(1);
         };
-        let forward: Vec<String> = al_lsp::extension_build::without_flag(&args[1..])
-            .into_iter()
-            .filter(|a| a.as_str() != "--official-lsp" && a.as_str() != "--stdio")
-            .collect();
+        let forward = al_lsp::extension_build::official_lsp_forward_args(&args[1..]);
         tracing::info!(
             altool = %altool.display(),
             "delegating LSP session to the official AL language server"
@@ -401,13 +438,17 @@ async fn run() {
         // Zed starts the language server in the worktree, and this process
         // execs `dotnet` before any configuration arrives, so the dotnet host
         // is decided against the working directory here.
-        if let Ok(project_root) = std::env::current_dir() {
-            if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
-                tracing::warn!("{advisory}");
-                eprintln!("al-lsp: {advisory}");
-            }
+        let dotnet = match std::env::current_dir() {
+            Ok(project_root) => al_project::trust::enforce_dotnet_path(&project_root),
+            Err(_) => dotnet_host_without_project(
+                std::env::var_os(al_project::toolchain::DOTNET_PATH_ENV).as_deref(),
+            ),
+        };
+        if let Some(advisory) = &dotnet.advisory {
+            tracing::warn!("{advisory}");
+            eprintln!("al-lsp: {advisory}");
         }
-        let mut cmd = al_lsp::toolchain::official_lsp_command(&altool, &forward);
+        let mut cmd = al_lsp::toolchain::official_lsp_command(&dotnet.program, &altool, &forward);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -576,7 +617,7 @@ async fn run() {
             tracing::error!(error = %e, "DAP server exited with error");
             std::process::exit(1);
         }
-    } else if args.iter().any(|a| a == "mcp") {
+    } else if mode(&args) == Mode::Mcp {
         let project_arg = args
             .iter()
             .position(|a| a == "--project")
@@ -598,7 +639,7 @@ async fn run() {
             tracing::error!(error = %e, "MCP server failed");
             std::process::exit(1);
         }
-    } else if args.iter().any(|a| a == "daemon") {
+    } else if mode(&args) == Mode::Daemon {
         let project_arg = args
             .iter()
             .position(|a| a == "--project")
@@ -646,6 +687,55 @@ async fn run() {
         }
     } else {
         al_lsp::server::run_lsp().await;
+    }
+}
+
+/// The dotnet host when the working directory cannot be read. No project can
+/// be checked, so a configured host is refused and `dotnet` from PATH is used.
+fn dotnet_host_without_project(
+    configured: Option<&std::ffi::OsStr>,
+) -> al_project::trust::DotnetHost {
+    match configured.filter(|value| !value.is_empty()) {
+        Some(value) => al_project::trust::DotnetHost {
+            program: "dotnet".into(),
+            advisory: Some(format!(
+                "Ignoring the dotnet host '{}': the working directory could not be \
+                 read, so the project it belongs to is unknown. Falling back to \
+                 'dotnet' from PATH.",
+                value.to_string_lossy()
+            )),
+        },
+        None => al_project::trust::DotnetHost {
+            program: al_project::toolchain::dotnet_program(),
+            advisory: None,
+        },
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::{mode, Mode};
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn a_project_named_mcp_does_not_start_mcp() {
+        assert_eq!(
+            mode(&args(&["al-lsp", "daemon", "--project", "mcp"])),
+            Mode::Daemon
+        );
+        assert_eq!(
+            mode(&args(&["al-lsp", "mcp", "--project", "daemon"])),
+            Mode::Mcp
+        );
+        assert_eq!(
+            mode(&args(&["al-lsp", "mcp", "--extension-build", "0.5.0"])),
+            Mode::Mcp
+        );
+        assert_eq!(mode(&args(&["al-lsp", "--stdio", "daemon"])), Mode::Other);
+        assert_eq!(mode(&args(&["al-lsp"])), Mode::Other);
     }
 }
 
@@ -708,5 +798,20 @@ mod tests {
             line.ends_with(&format!(" pid={}", std::process::id())),
             "{line}"
         );
+    }
+
+    #[test]
+    fn dotnet_host_without_project_ignores_a_configured_host() {
+        let host =
+            super::dotnet_host_without_project(Some(std::ffi::OsStr::new("/opt/dotnet/dotnet")));
+        assert_eq!(host.program, std::ffi::OsString::from("dotnet"));
+        let advisory = host.advisory.expect("an advisory for the refused host");
+        assert!(advisory.contains("/opt/dotnet/dotnet"), "{advisory}");
+    }
+
+    #[test]
+    fn dotnet_host_without_project_without_a_setting_has_no_advisory() {
+        let host = super::dotnet_host_without_project(None);
+        assert_eq!(host.advisory, None);
     }
 }

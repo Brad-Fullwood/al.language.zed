@@ -572,13 +572,13 @@ impl NativeDebugSession {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl NativeDebugSession {
     /// Test-only: wrap an already-constructed (fake) `BcDebugSession` without
     /// running the real connect / attach / configuration_done network handshake
     /// that [`NativeDebugSession::start`] performs. Uses the identical field
-    /// initialisers `start` does, so it introduces no new runtime behaviour and
-    /// is compiled only under `#[cfg(test)]`.
+    /// initialisers `start` does, so it introduces no new runtime behaviour.
+    /// Compiled under `cfg(test)` and the `test-support` feature.
     fn from_parts(session: BcDebugSession, config: BcDebugConfig) -> Self {
         Self {
             session,
@@ -594,6 +594,19 @@ impl NativeDebugSession {
         }
     }
 
+    /// Test-only: a session with `config` and no live connection, for tests in
+    /// other crates. `start` needs a Business Central connection, so it cannot
+    /// serve as the fixture.
+    pub fn test_with_config(config: BcDebugConfig) -> Self {
+        Self::from_parts(
+            BcDebugSession::test_disconnected_owned("test-connection"),
+            config,
+        )
+    }
+}
+
+#[cfg(test)]
+impl NativeDebugSession {
     /// Test-only: pre-populate the Break-event history so the pure `history()`
     /// filter / ordering logic can be exercised directly. `drain_events`
     /// records hits with empty `variables`, so the variable-name filter branch

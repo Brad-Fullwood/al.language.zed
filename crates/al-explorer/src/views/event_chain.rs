@@ -386,6 +386,7 @@ pub(crate) fn render_event_chain(f: &mut Frame, area: Rect, view: &mut EventChai
                 "origin" => "EVENT",
                 "subscribes_to" => "SUBS",
                 "publishes" => "PUB",
+                "truncated" => "STOP",
                 other => other,
             };
             let line = Line::from(vec![

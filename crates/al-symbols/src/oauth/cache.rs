@@ -1,7 +1,7 @@
 //! Persisting a token between runs: the OS secret store when it is
 //! available, a mode-0600 file otherwise.
 
-use super::{CachedToken, TokenResponse};
+use super::{AuthSettings, CachedToken, TokenResponse};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{debug, info, warn};
@@ -95,7 +95,9 @@ fn keyring_delete(tenant: &str) -> bool {
     .unwrap_or(false)
 }
 
-pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedToken> {
+/// `migrate` moves a file token into the keyring and deletes the file. Status
+/// checks pass `false`, so they do not write.
+fn read_cached_token(path: &PathBuf, tenant: &str, migrate: bool) -> Option<CachedToken> {
     if let Some(json) = keyring_get(tenant) {
         let json = zeroize::Zeroizing::new(json);
         match serde_json::from_str::<CachedToken>(&json) {
@@ -109,6 +111,19 @@ pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedTo
     // - file missing / unreadable: expected on first run, debug-level only
     // - file readable but JSON deserialise fails: corrupt or schema drift,
     //   warn so the user knows why their cached token isn't being honoured
+    #[cfg(unix)]
+    if let Ok(meta) = std::fs::symlink_metadata(path) {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let euid = unsafe { libc::geteuid() };
+        if meta.file_type().is_symlink() || meta.uid() != euid {
+            tracing::warn!(
+                path = %path.display(),
+                "OAuth token cache: the file is a link or another user owns it, ignoring it"
+            );
+            return None;
+        }
+    }
     let content = match std::fs::read_to_string(path) {
         Ok(c) => zeroize::Zeroizing::new(c),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
@@ -145,7 +160,7 @@ pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedTo
     // plaintext file, so a token cached by an earlier version stops lingering on
     // disk after the first load. Best-effort — if the keyring is unavailable the
     // file simply stays as the fallback store.
-    if keyring_set(tenant, &content) {
+    if migrate && keyring_set(tenant, &content) {
         let _ = std::fs::remove_file(path);
         tracing::info!(
             tenant,
@@ -153,6 +168,10 @@ pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedTo
         );
     }
     Some(tok)
+}
+
+pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedToken> {
+    read_cached_token(path, tenant, true)
 }
 
 /// Persist the OAuth token bundle so subsequent al-lsp invocations don't
@@ -167,7 +186,12 @@ pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedTo
 /// default ACL on Windows). The file fallback has the same trust model as
 /// `~/.aws/credentials`; the short-lived access token (≤1h) only matters until
 /// the next refresh.
-pub(super) fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenResponse) {
+pub(super) fn save_cached_token(
+    path: &PathBuf,
+    tenant: &str,
+    tok: &TokenResponse,
+    settings: &AuthSettings,
+) {
     use std::fs::OpenOptions;
     use std::io::Write;
     #[cfg(unix)]
@@ -182,6 +206,9 @@ pub(super) fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenRespons
         // still-valid token.
         expires_at: now_unix().saturating_add(tok.expires_in),
         tenant: tenant.to_string(),
+        client_id: Some(settings.client_id.clone()),
+        scope: Some(settings.scope.clone()),
+        endpoint: Some(settings.endpoint.clone()),
     };
     let json = match serde_json::to_string_pretty(&cached) {
         Ok(j) => zeroize::Zeroizing::new(j),
@@ -216,26 +243,33 @@ pub(super) fn save_cached_token(path: &PathBuf, tenant: &str, tok: &TokenRespons
     // `acquire_token` callers for the same tenant can't observe a half-
     // written file *and* can't race on truncate — last-writer-wins still
     // applies but every observer sees a complete, valid token.
+    let mut random = [0u8; 8];
+    if let Err(e) = getrandom::fill(&mut random) {
+        warn!(error = %e, "No random bytes for the OAuth token tempfile name, token will not be cached");
+        return;
+    }
+    let random: String = random.iter().map(|b| format!("{b:02x}")).collect();
     let pid = std::process::id();
     let mut tmp_path = path.clone();
     let tmp_name = match path.file_name() {
-        Some(n) => format!("{}.{pid}.tmp", n.to_string_lossy()),
-        None => format!("oauth_token.{pid}.tmp"),
+        Some(n) => format!("{}.{pid}.{random}.tmp", n.to_string_lossy()),
+        None => format!("oauth_token.{pid}.{random}.tmp"),
     };
     tmp_path.set_file_name(tmp_name);
 
+    // `create_new` refuses an entry planted at the name, and `O_NOFOLLOW`
+    // refuses a link there.
     #[cfg(unix)]
     let open_result = OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
         .open(&tmp_path);
     #[cfg(not(unix))]
     let open_result = OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .open(&tmp_path);
 
     let mut file = match open_result {
@@ -287,22 +321,19 @@ pub fn invalidate_cached_token(tenant: &str) -> bool {
     keyring_cleared || file_cleared
 }
 
-/// Return the cached token's `expires_at` (unix secs) for `tenant` if one is
-/// cached in either the OS keyring or the legacy file. Read-only, unlike
-/// `load_cached_token`, which migrates and deletes: this is for the auth `status`
-/// command. Keyring-aware so status is correct after a token migrates off disk.
-pub fn cached_token_expiry(tenant: &str) -> Option<u64> {
-    if let Some(json) = keyring_get(tenant) {
-        let json = zeroize::Zeroizing::new(json);
-        if let Ok(tok) = serde_json::from_str::<CachedToken>(&json) {
-            return Some(tok.expires_at);
-        }
-    }
-    let path = token_cache_path(tenant);
-    let content = zeroize::Zeroizing::new(std::fs::read_to_string(&path).ok()?);
-    serde_json::from_str::<CachedToken>(&content)
-        .ok()
-        .map(|t| t.expires_at)
+/// Expiry (unix secs) of the cached token for `tenant`, if the token was issued
+/// for the settings the token flow would use. Read-only, for the auth `status`
+/// command. `None` when no token matches or the configured client id is malformed,
+/// since the token flow refuses that configuration.
+pub fn cached_token_expiry_for(tenant: &str, settings: &AuthSettings) -> Option<u64> {
+    // BC_CLIENT_ID overrides the default client id, as in the token flow.
+    let client_id = super::flows::configured_client_id(&settings.client_id).ok()?;
+    let resolved = AuthSettings {
+        client_id,
+        ..settings.clone()
+    };
+    let cached = read_cached_token(&token_cache_path(tenant), tenant, false)?;
+    cached_token_matches(&cached, &resolved).then_some(cached.expires_at)
 }
 
 pub(super) fn now_unix() -> u64 {
@@ -312,14 +343,42 @@ pub(super) fn now_unix() -> u64 {
         .as_secs()
 }
 
-/// Create a directory with owner-only permissions (0o700 on Unix).
+/// Create a directory with owner-only permissions (0o700 on Unix). An existing
+/// folder that is a link or that another user owns is refused, and the mode of
+/// an existing folder is set to 0o700 again.
 #[cfg(unix)]
 fn create_secure_dir(path: &std::path::Path) -> std::io::Result<()> {
-    use std::os::unix::fs::DirBuilderExt;
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(path)
+        .create(path)?;
+    let meta = std::fs::symlink_metadata(path)?;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let euid = unsafe { libc::geteuid() };
+    if meta.file_type().is_symlink() || !meta.is_dir() || meta.uid() != euid {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} is a link, not a folder, or owned by another user",
+                path.display()
+            ),
+        ));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+/// Whether `cached` was issued for `settings`. A missing field counts as the
+/// default value, so a cache written before the fields existed still matches
+/// the default settings.
+pub(super) fn cached_token_matches(cached: &CachedToken, settings: &AuthSettings) -> bool {
+    let defaults = AuthSettings::default();
+    let same = |stored: &Option<String>, default: &str, current: &str| {
+        stored.as_deref().unwrap_or(default).trim_end_matches('/') == current.trim_end_matches('/')
+    };
+    same(&cached.client_id, &defaults.client_id, &settings.client_id)
+        && same(&cached.scope, &defaults.scope, &settings.scope)
+        && same(&cached.endpoint, &defaults.endpoint, &settings.endpoint)
 }
 
 #[cfg(not(unix))]
@@ -345,7 +404,7 @@ mod cache_io_tests {
         (dir, path)
     }
 
-    fn sample_token() -> TokenResponse {
+    pub(super) fn sample_token() -> TokenResponse {
         TokenResponse {
             access_token: "ACCESS".to_string(),
             refresh_token: Some("REFRESH".to_string()),
@@ -356,7 +415,7 @@ mod cache_io_tests {
     #[test]
     fn save_cached_token_writes_complete_json() {
         let (_dir, path) = temp_cache_path();
-        save_cached_token(&path, "common", &sample_token());
+        save_cached_token(&path, "common", &sample_token(), &AuthSettings::default());
         let content = std::fs::read_to_string(&path).expect("cache file must exist");
         let parsed: CachedToken = serde_json::from_str(&content).expect("must be valid JSON");
         assert_eq!(parsed.tenant, "common");
@@ -367,7 +426,7 @@ mod cache_io_tests {
     #[test]
     fn save_cached_token_cleans_up_tempfile() {
         let (_dir, path) = temp_cache_path();
-        save_cached_token(&path, "common", &sample_token());
+        save_cached_token(&path, "common", &sample_token(), &AuthSettings::default());
         let pid = std::process::id();
         let tmp = path.with_file_name(format!("token.json.{pid}.tmp"));
         assert!(
@@ -389,7 +448,7 @@ mod cache_io_tests {
 
         let (dir, path) = temp_cache_path();
         // Prime with one valid token so the reader sees something to parse.
-        save_cached_token(&path, "common", &sample_token());
+        save_cached_token(&path, "common", &sample_token(), &AuthSettings::default());
 
         let stop = Arc::new(AtomicBool::new(false));
         let writer_stop = stop.clone();
@@ -401,7 +460,7 @@ mod cache_io_tests {
                     refresh_token: Some(format!("R{i}")),
                     expires_in: 3600,
                 };
-                save_cached_token(&writer_path, "common", &tok);
+                save_cached_token(&writer_path, "common", &tok, &AuthSettings::default());
                 if writer_stop.load(Ordering::Acquire) {
                     break;
                 }
@@ -434,7 +493,12 @@ mod cache_io_tests {
     fn invalidate_cached_token_removes_file() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("scratch.json");
-        save_cached_token(&path, "contoso.onmicrosoft.com", &sample_token());
+        save_cached_token(
+            &path,
+            "contoso.onmicrosoft.com",
+            &sample_token(),
+            &AuthSettings::default(),
+        );
         assert!(path.exists());
         std::fs::remove_file(&path).expect("remove ok");
         assert!(!path.exists());
@@ -455,6 +519,147 @@ mod cache_io_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    #[cfg(unix)]
+    #[test]
+    fn create_secure_dir_resets_mode_on_existing_dir() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let oauth = dir.path().join("oauth");
+        std::fs::create_dir(&oauth).unwrap();
+        std::fs::set_permissions(&oauth, std::fs::Permissions::from_mode(0o755)).unwrap();
+        create_secure_dir(&oauth).unwrap();
+        let mode = std::fs::metadata(&oauth).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_does_not_follow_a_link_at_the_target_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let oauth = dir.path().join("oauth");
+        std::os::unix::fs::symlink(&elsewhere, &oauth).unwrap();
+        save_cached_token(
+            &oauth.join("common.json"),
+            "common",
+            &cache_io_tests::sample_token(),
+            &AuthSettings::default(),
+        );
+        assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn cached_token_for_another_client_is_not_used() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("common.json");
+        let client_a = AuthSettings {
+            client_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            ..AuthSettings::default()
+        };
+        let client_b = AuthSettings {
+            client_id: "22222222-2222-2222-2222-222222222222".to_string(),
+            ..AuthSettings::default()
+        };
+        save_cached_token(&path, "common", &cache_io_tests::sample_token(), &client_a);
+        let cached = load_cached_token(&path, "common").expect("saved token");
+        assert!(cached_token_matches(&cached, &client_a));
+        assert!(!cached_token_matches(&cached, &client_b));
+        let other_scope = AuthSettings {
+            scope: "https://example.invalid/.default".to_string(),
+            ..client_a.clone()
+        };
+        assert!(!cached_token_matches(&cached, &other_scope));
+    }
+
+    #[test]
+    fn legacy_cache_entry_matches_default_settings() {
+        let legacy: CachedToken = serde_json::from_str(
+            r#"{"access_token":"a","refresh_token":"r","expires_at":1,"tenant":"common"}"#,
+        )
+        .unwrap();
+        assert!(cached_token_matches(&legacy, &AuthSettings::default()));
+        let custom = AuthSettings {
+            client_id: "33333333-3333-3333-3333-333333333333".to_string(),
+            ..AuthSettings::default()
+        };
+        assert!(!cached_token_matches(&legacy, &custom));
+    }
+
+    /// Unique to the status tests, so no other test shares its cache file.
+    const STATUS_TENANT: &str = "3a3e0005-0000-4000-8000-000000000005";
+
+    /// Unsets `BC_CLIENT_ID` until dropped, then puts the old value back.
+    struct NoClientIdOverride(Option<std::ffi::OsString>);
+
+    impl NoClientIdOverride {
+        fn new() -> Self {
+            let previous = std::env::var_os("BC_CLIENT_ID");
+            std::env::remove_var("BC_CLIENT_ID");
+            Self(previous)
+        }
+    }
+
+    impl Drop for NoClientIdOverride {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("BC_CLIENT_ID", value),
+                None => std::env::remove_var("BC_CLIENT_ID"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn expiry_for_ignores_a_token_for_another_client() {
+        let _env = NoClientIdOverride::new();
+        invalidate_cached_token(STATUS_TENANT);
+        let issued_for = AuthSettings {
+            client_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            ..AuthSettings::default()
+        };
+        save_cached_token(
+            &token_cache_path(STATUS_TENANT),
+            STATUS_TENANT,
+            &cache_io_tests::sample_token(),
+            &issued_for,
+        );
+        assert!(cached_token_expiry_for(STATUS_TENANT, &issued_for).is_some());
+        assert_eq!(
+            cached_token_expiry_for(STATUS_TENANT, &AuthSettings::default()),
+            None
+        );
+        invalidate_cached_token(STATUS_TENANT);
+    }
+
+    #[test]
+    #[serial]
+    fn expiry_for_counts_a_legacy_token_as_default_settings() {
+        let _env = NoClientIdOverride::new();
+        invalidate_cached_token(STATUS_TENANT);
+        let path = token_cache_path(STATUS_TENANT);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let expires_at = now_unix() + 3600;
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"access_token":"a","refresh_token":"r","expires_at":{expires_at},"tenant":"{STATUS_TENANT}"}}"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            cached_token_expiry_for(STATUS_TENANT, &AuthSettings::default()),
+            Some(expires_at)
+        );
+        let custom = AuthSettings {
+            client_id: "33333333-3333-3333-3333-333333333333".to_string(),
+            ..AuthSettings::default()
+        };
+        assert_eq!(cached_token_expiry_for(STATUS_TENANT, &custom), None);
+        invalidate_cached_token(STATUS_TENANT);
+    }
 
     #[cfg(unix)]
     #[test]
@@ -523,7 +728,7 @@ mod tests {
             refresh_token: Some("RRR".into()),
             expires_in: 3600,
         };
-        save_cached_token(&path, "common", &tok);
+        save_cached_token(&path, "common", &tok, &AuthSettings::default());
         let loaded = load_cached_token(&path, "common").expect("must load");
         assert_eq!(loaded.access_token, "AAA");
         assert_eq!(loaded.refresh_token.as_deref(), Some("RRR"));
@@ -546,7 +751,12 @@ mod tests {
             refresh_token: Some("RRR".into()),
             expires_in: 3600,
         };
-        save_cached_token(&path, "contoso.onmicrosoft.com", &tok);
+        save_cached_token(
+            &path,
+            "contoso.onmicrosoft.com",
+            &tok,
+            &AuthSettings::default(),
+        );
         assert!(
             load_cached_token(&path, "contoso_onmicrosoft.com").is_none(),
             "a token issued for another tenant must not be reused"
@@ -569,7 +779,7 @@ mod tests {
             refresh_token: None,
             expires_in: u64::MAX,
         };
-        save_cached_token(&path, "common", &tok);
+        save_cached_token(&path, "common", &tok, &AuthSettings::default());
         let loaded = load_cached_token(&path, "common").expect("must load");
         assert_eq!(loaded.expires_at, u64::MAX);
     }
@@ -588,7 +798,7 @@ mod tests {
             refresh_token: Some("RT".into()),
             expires_in: 3600,
         };
-        save_cached_token(&path, "contoso", &tok);
+        save_cached_token(&path, "contoso", &tok, &AuthSettings::default());
         assert!(
             path.exists(),
             "keyring disabled -> token must be written to the 0o600 file"

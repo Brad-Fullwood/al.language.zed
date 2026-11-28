@@ -722,6 +722,38 @@ fn raise_table_event(
     )
 }
 
+/// Insert on a temporary record. Business Central 29 sets each FlowField to zero
+/// in the buffer and in the stored row (checked on 2026-11-28). A failed insert
+/// leaves the buffer as it was.
+fn insert_temporary(
+    store: &mut RecordStore,
+    view: &mut RecordView,
+    run_trigger: bool,
+) -> Result<(), crate::mock::record::RecordError> {
+    let saved: Vec<(FieldNo, Option<Value>)> = store
+        .flowfields
+        .keys()
+        .map(|&field| (field, store.record.field_get_in(view, field).cloned()))
+        .collect();
+    for &(field, _) in &saved {
+        let zero = store
+            .field_defaults
+            .get(&field)
+            .cloned()
+            .unwrap_or(Value::Empty);
+        store.record.field_set_in(view, field, zero);
+    }
+    let result = store.record.insert_in(view, run_trigger);
+    if result.is_err() {
+        for (field, value) in saved {
+            store
+                .record
+                .field_set_in(view, field, value.unwrap_or(Value::Empty));
+        }
+    }
+    result
+}
+
 /// The record-method body proper, operating on a taken-out view so early
 /// returns cannot lose the view (the caller reinserts it unconditionally).
 fn run_record_method(
@@ -781,6 +813,9 @@ fn run_record_method(
             _ => eval_error("Ascending expects an optional Boolean"),
         },
         "insert" => match optional_boolean("Insert", &values) {
+            Ok(run_trigger) if store.temporary => {
+                mutation_result("Insert", insert_temporary(store, view, run_trigger))
+            }
             Ok(run_trigger) => mutation_result("Insert", store.record.insert_in(view, run_trigger)),
             Err(error) => eval_error(error),
         },
@@ -793,27 +828,35 @@ fn run_record_method(
             Err(error) => eval_error(error),
         },
         "get" => {
-            if values.is_empty() {
-                return eval_error("Get: requires at least one primary-key value");
-            }
-            if values.len() != store.record.primary_key_len() {
+            let key_len = store.record.primary_key_len();
+            if values.len() > key_len {
                 return eval_error(format!(
-                    "Get: local record runtime requires all {} primary-key values (got {}); \
-                     partial composite-key lookup requires live Business Central",
-                    store.record.primary_key_len(),
-                    values.len()
+                    "Get: {} values given for a primary key of {} fields",
+                    values.len(),
+                    key_len
                 ));
             }
-            // Coerce each key part to the declared PK field type so a Text
+            // Coerce each given key part to the declared PK field type so a Text
             // literal matches a Code key and an Integer a Decimal one.
             let pk_fields: Vec<FieldNo> = store.record.primary_key_fields().to_vec();
-            let mut key_values = Vec::with_capacity(values.len());
+            let mut key_values = Vec::with_capacity(key_len);
             for (field, value) in pk_fields.into_iter().zip(values) {
                 match store.coerce_to_field(field, value) {
                     Ok(coerced) => key_values.push(coerced),
                     Err(error) => return eval_error(format!("Get: {error}")),
                 }
             }
+            // Key fields left out take their declared default, as BC fills them.
+            let key_values = match store.record.key_with_defaults(key_values) {
+                Ok(key) => key,
+                Err(field) => {
+                    return eval_error(format!(
+                        "Get: primary-key field {field} of table '{}' has no declared \
+                         default, so Get needs every key value",
+                        store.record.table_name
+                    ));
+                }
+            };
             match store.record.get_in(view, key_values) {
                 Ok(()) => Eval::Normal(Value::Boolean(true)),
                 Err(_) if stmt_position => eval_error(format!(
@@ -901,23 +944,13 @@ fn run_record_method(
             find_result("FindLast", &table, store.record.find_last_in(view))
         }
         "find" => {
-            let direction = match values.as_slice() {
-                [Value::Text(direction)] | [Value::Code(direction)] => direction,
-                _ => {
-                    return eval_error("Find: expects exactly one Text or Code direction argument")
-                }
+            let which = match values.as_slice() {
+                [] => "=",
+                [Value::Text(which)] | [Value::Code(which)] => which.as_str(),
+                _ => return eval_error("Find: expects at most one Text or Code argument"),
             };
-            let mut chars = direction.chars();
-            let Some(direction) = chars.next() else {
-                return eval_error("Find: direction cannot be empty");
-            };
-            if chars.next().is_some() {
-                return eval_error(
-                    "Find: local record runtime supports only the single-character '-' and '+' directions",
-                );
-            }
             let table = store.record.table_name.clone();
-            find_result("Find", &table, store.record.find_in(view, direction))
+            find_result("Find", &table, store.record.find_in(view, which))
         }
         "next" => {
             let steps = match values.as_slice() {
@@ -950,5 +983,928 @@ fn run_record_method(
             Eval::Normal(Value::Boolean(store.record.is_empty_in(view)))
         }
         other => eval_error(format!("unsupported record method: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::interpreter::dispatch::{dispatch_call, DispatchCtx};
+    use crate::interpreter::scope::Eval;
+    use crate::interpreter::value::Value;
+    use crate::test_support::MockSource as Workspace;
+
+    /// Key ("Item No.", "Line No."). `Line No.` is an Integer, so a `Get`
+    /// that gives only "Item No." looks for `Line No.` = 0.
+    const PRICE_LINE_TABLE: &str = r#"table 50110 "Price Line"
+{
+    fields
+    {
+        field(1; "Item No."; Code[20]) { }
+        field(2; "Line No."; Integer) { }
+    }
+    keys
+    {
+        key(PK; "Item No.", "Line No.") { Clustered = true; }
+    }
+}
+"#;
+
+    const PRICE_LINE_TESTS: &str = r#"codeunit 50111 "Price Line Tests"
+{
+    procedure InsertFiveThenGetPartial(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 5;
+        PriceLine.Insert();
+        exit(PriceLine.Get('A'));
+    end;
+
+    procedure InsertFiveThenGetExact(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 5;
+        PriceLine.Insert();
+        exit(PriceLine.Get('A', 5));
+    end;
+
+    procedure InsertZeroThenGetPartial(): Integer
+    var
+        PriceLine: Record "Price Line";
+        Found: Boolean;
+    begin
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 0;
+        PriceLine.Insert();
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 9;
+        Found := PriceLine.Get('A');
+        if not Found then
+            exit(-1);
+        exit(PriceLine."Line No.");
+    end;
+
+    procedure GetTooManyValues(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        exit(PriceLine.Get('A', 5, 1));
+    end;
+}
+"#;
+
+    const INIT_TABLE: &str = r#"table 50100 T
+{
+    fields
+    {
+        field(1; No; Code[20]) { }
+        field(2; Quantity; Integer) { InitValue = 7; }
+    }
+    keys
+    {
+        key(PK; No) { }
+    }
+}
+"#;
+
+    const INIT_TESTS: &str = r#"codeunit 50102 "Init Tests"
+{
+    procedure InitRestoresInitValue(): Integer
+    var
+        R: Record T;
+    begin
+        R.Quantity := 3;
+        R.Init();
+        exit(R.Quantity);
+    end;
+}
+"#;
+
+    const SETUP_TESTS: &str = r#"codeunit 50112 "Setup Tests"
+{
+    procedure GetBlankKeyAfterInsert(): Integer
+    var
+        R: Record T;
+        R2: Record T;
+    begin
+        R.Init();
+        R.Quantity := 3;
+        R.Insert();
+        if not R2.Get() then
+            exit(-1);
+        exit(R2.Quantity);
+    end;
+
+    procedure GetOnEmptyTable(): Boolean
+    var
+        R: Record T;
+    begin
+        exit(R.Get());
+    end;
+
+    procedure GetStatementOnEmptyTable()
+    var
+        R: Record T;
+    begin
+        R.Get();
+    end;
+}
+"#;
+
+    const FIND_TESTS: &str = r#"codeunit 50113 "Find Tests"
+{
+    local procedure Setup(var PriceLine: Record "Price Line")
+    begin
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 1;
+        PriceLine.Insert();
+        PriceLine."Line No." := 2;
+        PriceLine.Insert();
+    end;
+
+    procedure FindWithoutArgument(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 2;
+        exit(PriceLine.Find());
+    end;
+
+    procedure FindEqualMisses(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 3;
+        exit(PriceLine.Find('='));
+    end;
+
+    procedure FindEqualOutsideFilter(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine.SetRange("Line No.", 1);
+        PriceLine."Line No." := 2;
+        exit(PriceLine.Find('='));
+    end;
+
+    procedure FindEqualThenNext(): Integer
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 1;
+        PriceLine.Find('=');
+        if PriceLine.Next() <> 1 then
+            exit(-1);
+        exit(PriceLine."Line No.");
+    end;
+
+    procedure FindNextLarger(): Integer
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 5;
+        if not PriceLine.Find('=><') then
+            exit(-1);
+        exit(PriceLine."Line No.");
+    end;
+
+    procedure FindMissInStatement()
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 3;
+        PriceLine.Find();
+    end;
+
+    procedure FindEmptyString(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        exit(PriceLine.Find(''));
+    end;
+}
+"#;
+
+    const FORM_TABLE: &str = r#"table 50103 Forms
+{
+    fields
+    {
+        field(1; No; Code[20]) { }
+        field(2; Amount; Decimal) { InitValue = 1.5; }
+        field(3; Active; Boolean) { InitValue = true; }
+        field(4; Note; Text[30]) { InitValue = 'abc'; }
+    }
+    keys
+    {
+        key(PK; No) { }
+    }
+}
+"#;
+
+    const FORM_TESTS: &str = r#"codeunit 50104 "Form Tests"
+{
+    procedure InitValueForms(): Boolean
+    var
+        R: Record Forms;
+    begin
+        R.Init();
+        exit((R.Amount = 1.5) and R.Active and (R.Note = 'abc'));
+    end;
+}
+"#;
+
+    fn run_sources(sources: &[(&str, &str)], object: &str, proc: &str) -> Eval {
+        let ws = Arc::new(Workspace::new());
+        for (path, src) in sources {
+            ws.file_index
+                .add_file(std::path::PathBuf::from(path), src.to_string());
+        }
+        let mut ctx = DispatchCtx::new_with_records(ws, Default::default());
+        dispatch_call(Some(object), proc, vec![], &mut ctx)
+    }
+
+    fn run(object: &str, proc: &str) -> Eval {
+        run_sources(
+            &[
+                ("/ws/PriceLine.al", PRICE_LINE_TABLE),
+                ("/ws/PriceLineTests.al", PRICE_LINE_TESTS),
+            ],
+            object,
+            proc,
+        )
+    }
+
+    fn ok(eval: Eval) -> Value {
+        match eval {
+            Eval::Normal(v) | Eval::Exit(v) => v,
+            Eval::Error(e) => panic!("unexpected error: {}", e.message),
+            Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
+        }
+    }
+
+    #[test]
+    fn get_with_omitted_trailing_key_uses_default() {
+        // Only ('A', 5) is stored, so Get('A') looks for ('A', 0) and misses.
+        assert_eq!(
+            ok(run("Price Line Tests", "InsertFiveThenGetPartial")),
+            Value::Boolean(false)
+        );
+        // The exact key finds the row, so the miss above comes from the key.
+        assert_eq!(
+            ok(run("Price Line Tests", "InsertFiveThenGetExact")),
+            Value::Boolean(true)
+        );
+        // ('A', 0) is stored, so Get('A') finds it and loads its Line No.
+        assert_eq!(
+            ok(run("Price Line Tests", "InsertZeroThenGetPartial")),
+            Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn get_with_more_values_than_key_fields_is_an_error() {
+        match run("Price Line Tests", "GetTooManyValues") {
+            Eval::Error(error) => assert!(
+                error
+                    .message
+                    .contains("3 values given for a primary key of 2 fields"),
+                "unexpected message: {}",
+                error.message
+            ),
+            other => panic!("expected an interpreter error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn get_with_no_values_finds_the_blank_key_row() {
+        let sources = [("/ws/T.al", INIT_TABLE), ("/ws/SetupTests.al", SETUP_TESTS)];
+        assert_eq!(
+            ok(run_sources(
+                &sources,
+                "Setup Tests",
+                "GetBlankKeyAfterInsert"
+            )),
+            Value::Integer(3)
+        );
+        assert_eq!(
+            ok(run_sources(&sources, "Setup Tests", "GetOnEmptyTable")),
+            Value::Boolean(false)
+        );
+        match run_sources(&sources, "Setup Tests", "GetStatementOnEmptyTable") {
+            Eval::Error(error) => assert!(
+                error.message.contains("does not exist in table"),
+                "unexpected message: {}",
+                error.message
+            ),
+            other => panic!("expected an interpreter error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_without_argument_and_with_a_string_follow_business_central() {
+        let sources = [
+            ("/ws/PriceLine.al", PRICE_LINE_TABLE),
+            ("/ws/FindTests.al", FIND_TESTS),
+        ];
+        let run = |proc: &str| run_sources(&sources, "Find Tests", proc);
+        assert_eq!(ok(run("FindWithoutArgument")), Value::Boolean(true));
+        assert_eq!(ok(run("FindEqualMisses")), Value::Boolean(false));
+        assert_eq!(ok(run("FindEqualOutsideFilter")), Value::Boolean(false));
+        assert_eq!(ok(run("FindEqualThenNext")), Value::Integer(2));
+        assert_eq!(ok(run("FindNextLarger")), Value::Integer(2));
+        for (proc, text) in [
+            ("FindMissInStatement", "no 'Price Line' record matches"),
+            (
+                "FindEmptyString",
+                "invalid character in the Find expression ''",
+            ),
+        ] {
+            match run(proc) {
+                Eval::Error(error) => assert!(
+                    error.message.contains(text),
+                    "{proc}: unexpected message: {}",
+                    error.message
+                ),
+                other => panic!("{proc}: expected an interpreter error, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn init_applies_init_value() {
+        let sources = [("/ws/T.al", INIT_TABLE), ("/ws/InitTests.al", INIT_TESTS)];
+        // Init writes the InitValue over the caller's Quantity.
+        assert_eq!(
+            ok(run_sources(&sources, "Init Tests", "InitRestoresInitValue")),
+            Value::Integer(7)
+        );
+    }
+
+    #[test]
+    fn init_value_decimal_boolean_and_text_literals_apply() {
+        let sources = [
+            ("/ws/Forms.al", FORM_TABLE),
+            ("/ws/FormTests.al", FORM_TESTS),
+        ];
+        assert_eq!(
+            ok(run_sources(&sources, "Form Tests", "InitValueForms")),
+            Value::Boolean(true)
+        );
+    }
+
+    const FLOW_HDR_TABLE: &str = r#"table 50100 Hdr
+{
+    fields
+    {
+        field(1; No; Code[20]) { }
+        field(2; OpenLines; Integer)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Count(Line WHERE (DocNo = FIELD(No)));
+        }
+    }
+    keys
+    {
+        key(PK; No) { }
+    }
+}
+"#;
+
+    const FLOW_LINE_TABLE: &str = r#"table 50101 Line
+{
+    fields
+    {
+        field(1; DocNo; Code[20]) { }
+        field(2; LineNo; Integer) { }
+    }
+    keys
+    {
+        key(PK; DocNo, LineNo) { }
+    }
+}
+"#;
+
+    const FLOW_TESTS: &str = r#"codeunit 50105 "Flow Tests"
+{
+    procedure OpenLinesBeforeCalc(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        exit(H.OpenLines);
+    end;
+
+    procedure OpenLinesAfterCalc(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        H.CalcFields(OpenLines);
+        exit(H.OpenLines);
+    end;
+
+    procedure OpenLinesAfterCalcThenGet(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        H.CalcFields(OpenLines);
+        H.Get('D1');
+        exit(H.OpenLines);
+    end;
+
+    procedure OpenLinesStoredThenGet(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        H.CalcFields(OpenLines);
+        H.Modify();
+        H.Get('D1');
+        exit(H.OpenLines);
+    end;
+
+    procedure OpenLinesStoredThenFindFirst(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        H.CalcFields(OpenLines);
+        H.Modify();
+        H.FindFirst();
+        exit(H.OpenLines);
+    end;
+
+    procedure TestFieldOnUncalculatedFlowField()
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        L.DocNo := 'X';
+        L.LineNo := 10;
+        L.Insert();
+        H.Init();
+        H.No := 'X';
+        H.Insert();
+        H.CalcFields(OpenLines);
+        H.Modify();
+        H.Get('X');
+        H.TestField(OpenLines);
+    end;
+
+    procedure TestFieldWithValueOnUncalculatedFlowField()
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        L.DocNo := 'X';
+        L.LineNo := 10;
+        L.Insert();
+        H.Init();
+        H.No := 'X';
+        H.Insert();
+        H.CalcFields(OpenLines);
+        H.Modify();
+        H.Get('X');
+        H.TestField(OpenLines, 0);
+    end;
+}
+"#;
+
+    /// The FlowField steps of the Business Central 29 run on the CDX demo
+    /// tenant on 2026-11-28 (review-loop round-02/checks-A5.md, "D3"), with
+    /// `OpenLines` for `Balance` and 2 lines for head A in place of 7. Each
+    /// procedure returns the value after each step, separated by spaces.
+    const FLOW_ASSIGN_TESTS: &str = r#"codeunit 50114 "Flow Assign Tests"
+{
+    procedure HeadA(): Text
+    var
+        H: Record Hdr;
+        L: Record Line;
+        T: Text;
+    begin
+        L.DocNo := 'A';
+        L.LineNo := 1;
+        L.Insert();
+        L.LineNo := 2;
+        L.Insert();
+        H.Init();
+        H.No := 'B';
+        H.Insert();
+        H.Init();
+        H.No := 'A';
+        H.OpenLines := 100;
+        T := Format(H.OpenLines);
+        H.Insert();
+        T += ' ' + Format(H.OpenLines);
+        H.Get('A');
+        T += ' ' + Format(H.OpenLines);
+        H.CalcFields(OpenLines);
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify();
+        T += ' ' + Format(H.OpenLines);
+        H.FindFirst();
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        T += ' ' + Format(H.OpenLines);
+        if H.Next() <> 1 then
+            exit('no next');
+        T += ' ' + H.No + Format(H.OpenLines);
+        if H.Next(-1) <> -1 then
+            exit('no previous');
+        T += ' ' + H.No + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Init();
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
+    procedure HeadC(): Text
+    var
+        H: Record Hdr;
+        T: Text;
+    begin
+        H.Init();
+        H.No := 'C';
+        H.OpenLines := 100;
+        H.Insert();
+        T := Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify();
+        T += ' ' + Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.CalcFields(OpenLines);
+        T += ' ' + Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 55;
+        H.Modify();
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
+    procedure TempHeadA(): Text
+    var
+        H: Record Hdr temporary;
+        L: Record Line;
+        T: Text;
+    begin
+        L.DocNo := 'A';
+        L.LineNo := 1;
+        L.Insert();
+        L.LineNo := 2;
+        L.Insert();
+        H.Init();
+        H.No := 'B';
+        H.Insert();
+        H.Init();
+        H.No := 'A';
+        H.OpenLines := 100;
+        T := Format(H.OpenLines);
+        H.Insert();
+        T += ' ' + Format(H.OpenLines);
+        H.Get('A');
+        T += ' ' + Format(H.OpenLines);
+        H.CalcFields(OpenLines);
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify();
+        T += ' ' + Format(H.OpenLines);
+        H.FindFirst();
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        T += ' ' + Format(H.OpenLines);
+        if H.Next() <> 1 then
+            exit('no next');
+        T += ' ' + H.No + Format(H.OpenLines);
+        if H.Next(-1) <> -1 then
+            exit('no previous');
+        T += ' ' + H.No + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Init();
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
+    procedure TempHeadC(): Text
+    var
+        H: Record Hdr temporary;
+        T: Text;
+    begin
+        H.Init();
+        H.No := 'C';
+        H.OpenLines := 100;
+        H.Insert();
+        T := Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify();
+        T += ' ' + Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.CalcFields(OpenLines);
+        T += ' ' + Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 55;
+        H.Modify();
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
+    procedure HeadD(): Text
+    var
+        H: Record Hdr;
+    begin
+        exit(StepsD(H));
+    end;
+
+    procedure TempHeadD(): Text
+    var
+        H: Record Hdr temporary;
+    begin
+        exit(StepsD(H));
+    end;
+
+    local procedure StepsD(var H: Record Hdr): Text
+    var
+        T: Text;
+    begin
+        H.Init();
+        H.No := 'D';
+        H.OpenLines := 100;
+        T := Format(H.OpenLines);
+        H.Insert(true);
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify(true);
+        T += ' ' + Format(H.OpenLines);
+        H.Get('D');
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
+    procedure ValidateReadsBack(): Integer
+    var
+        H: Record Hdr;
+    begin
+        H.Init();
+        H.No := 'A';
+        H.Validate(OpenLines, 5);
+        exit(H.OpenLines);
+    end;
+
+    local procedure SetupA(var H: Record Hdr)
+    var
+        L: Record Line;
+    begin
+        L.DocNo := 'A';
+        L.LineNo := 1;
+        L.Insert();
+        L.LineNo := 2;
+        L.Insert();
+        H.Init();
+        H.No := 'A';
+        H.Insert();
+    end;
+
+    procedure TestFieldAfterAssign()
+    var
+        H: Record Hdr;
+    begin
+        SetupA(H);
+        H.OpenLines := 100;
+        H.TestField(OpenLines, 100);
+    end;
+
+    procedure TestFieldAssignedAfterCalcFields()
+    var
+        H: Record Hdr;
+    begin
+        SetupA(H);
+        H.OpenLines := 100;
+        H.CalcFields(OpenLines);
+        H.TestField(OpenLines, 100);
+    end;
+
+    procedure TestFieldCalculatedAfterCalcFields()
+    var
+        H: Record Hdr;
+    begin
+        SetupA(H);
+        H.OpenLines := 100;
+        H.CalcFields(OpenLines);
+        H.TestField(OpenLines, 2);
+    end;
+}
+"#;
+
+    #[test]
+    fn assigned_flowfield_reads_back_until_the_next_read() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowAssignTests.al", FLOW_ASSIGN_TESTS),
+        ];
+        let run = |proc: &str| run_sources(&sources, "Flow Assign Tests", proc);
+        // Steps 01 to 10 of the checks table, normal record.
+        assert_eq!(
+            ok(run("HeadA")),
+            Value::Text("100 100 0 2 100 0 100 B0 A0 0".to_string())
+        );
+        // Steps 20 to 26, normal record. Head C has no lines.
+        assert_eq!(
+            ok(run("HeadC")),
+            Value::Text("100 0 100 0 0 0 0".to_string())
+        );
+        // Steps 27 to 30, Insert(true) and Modify(true) on a normal record.
+        assert_eq!(ok(run("HeadD")), Value::Text("100 100 100 0".to_string()));
+        assert_eq!(ok(run("ValidateReadsBack")), Value::Integer(5));
+        // Steps 11 to 13.
+        assert!(matches!(run("TestFieldAfterAssign"), Eval::Normal(_)));
+        match run("TestFieldAssignedAfterCalcFields") {
+            Eval::Error(error) => assert!(
+                error.message.contains("must be equal to '100'")
+                    && error.message.contains("Current value is '2'"),
+                "unexpected message: {}",
+                error.message
+            ),
+            other => panic!("expected a TestField error, got {other:?}"),
+        }
+        assert!(matches!(
+            run("TestFieldCalculatedAfterCalcFields"),
+            Eval::Normal(_)
+        ));
+    }
+
+    /// The temporary record column of the same steps: Insert stores zero, and
+    /// Modify stores the assigned value, which later reads return.
+    #[test]
+    fn temporary_record_stores_an_assigned_flowfield_on_modify_only() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowAssignTests.al", FLOW_ASSIGN_TESTS),
+        ];
+        let run = |proc: &str| run_sources(&sources, "Flow Assign Tests", proc);
+        // Steps 01 to 10.
+        assert_eq!(
+            ok(run("TempHeadA")),
+            Value::Text("100 0 0 2 100 100 100 B0 A100 0".to_string())
+        );
+        // Steps 20 to 26.
+        assert_eq!(
+            ok(run("TempHeadC")),
+            Value::Text("0 0 100 100 0 100 55".to_string())
+        );
+        // Steps 27 to 30.
+        assert_eq!(
+            ok(run("TempHeadD")),
+            Value::Text("100 0 100 100".to_string())
+        );
+    }
+
+    #[test]
+    fn flowfield_is_zero_until_calcfields() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowTests.al", FLOW_TESTS),
+        ];
+        // The line exists, but the FlowField reads zero until CalcFields runs.
+        assert_eq!(
+            ok(run_sources(&sources, "Flow Tests", "OpenLinesBeforeCalc")),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            ok(run_sources(&sources, "Flow Tests", "OpenLinesAfterCalc")),
+            Value::Integer(1)
+        );
+        // Get reloads the row without FlowField values, so the calculation is gone.
+        assert_eq!(
+            ok(run_sources(
+                &sources,
+                "Flow Tests",
+                "OpenLinesAfterCalcThenGet"
+            )),
+            Value::Integer(0)
+        );
+    }
+
+    // TestField reads what a plain read reads: zero for a FlowField that Get
+    // reloaded without a calculation, not the value Modify stored in the row.
+    #[test]
+    fn testfield_reads_an_uncalculated_flowfield_as_zero() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowTests.al", FLOW_TESTS),
+        ];
+        match run_sources(&sources, "Flow Tests", "TestFieldOnUncalculatedFlowField") {
+            Eval::Error(error) => assert!(
+                error.message.contains("must have a value"),
+                "unexpected message: {}",
+                error.message
+            ),
+            other => panic!("expected an interpreter error, got {other:?}"),
+        }
+        match run_sources(
+            &sources,
+            "Flow Tests",
+            "TestFieldWithValueOnUncalculatedFlowField",
+        ) {
+            Eval::Normal(_) => {}
+            other => panic!("expected Eval::Normal, got {other:?}"),
+        }
+    }
+
+    // Modify writes the calculated value into the row. Get must not keep it.
+    #[test]
+    fn flowfield_is_zero_after_get_reloads_a_row_that_stores_a_value() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowTests.al", FLOW_TESTS),
+        ];
+        assert_eq!(
+            ok(run_sources(
+                &sources,
+                "Flow Tests",
+                "OpenLinesStoredThenGet"
+            )),
+            Value::Integer(0)
+        );
+    }
+
+    // FindFirst loads a row the same way, so it must drop the calculation too.
+    #[test]
+    fn flowfield_is_zero_after_find_first_loads_a_row_that_stores_a_value() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowTests.al", FLOW_TESTS),
+        ];
+        assert_eq!(
+            ok(run_sources(
+                &sources,
+                "Flow Tests",
+                "OpenLinesStoredThenFindFirst"
+            )),
+            Value::Integer(0)
+        );
     }
 }

@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::{AlConfig, ConfigLoadError};
+use al_types::regular_file::open_regular_file;
 
 /// The command a user runs to trust a project.
 pub const TRUST_COMMAND: &str = "al-explorer trust";
@@ -1626,26 +1627,6 @@ fn file_hash(path: &Path, limit: u64, read: &mut u64) -> FileHash {
     }
 }
 
-/// `path` opened for reading, when it is a regular file once open.
-///
-/// On Unix the open does not wait. A file swapped for a FIFO after it was
-/// checked opens at once and is refused here, where a plain open blocked
-/// until something wrote to the FIFO.
-pub(crate) fn open_regular_file(path: &Path) -> Option<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    let file = options.open(path).ok()?;
-    file.metadata()
-        .ok()
-        .filter(std::fs::Metadata::is_file)
-        .map(|_| file)
-}
-
 /// One hash over the `shape` tree at `dir`, with the count, or the reason it
 /// cannot be hashed.
 fn tree_sha256(
@@ -1775,7 +1756,7 @@ fn privileged_changes(
             .map(|entry| {
                 with_project_contents(
                     hashes,
-                    entry,
+                    crate::analyzers::without_analyzer_folder(entry),
                     project_root,
                     Beside::Assemblies,
                     Outside::Hashed,
@@ -2281,36 +2262,67 @@ fn executable_path_privileges(
     ask
 }
 
-/// Drop `AL_DOTNET_PATH` when this repository chose it and the project is not
-/// trusted, returning the message for the user.
+/// The `dotnet` host decided for a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DotnetHost {
+    /// The program to spawn: `AL_DOTNET_PATH` when it may run, else `dotnet`.
+    pub program: std::ffi::OsString,
+    /// Why `AL_DOTNET_PATH` was refused, for the user.
+    pub advisory: Option<String>,
+}
+
+impl DotnetHost {
+    fn configured() -> Self {
+        Self {
+            program: crate::toolchain::dotnet_program(),
+            advisory: None,
+        }
+    }
+
+    fn refused(advisory: String) -> Self {
+        Self {
+            program: std::ffi::OsString::from("dotnet"),
+            advisory: Some(advisory),
+        }
+    }
+}
+
+/// The `dotnet` host to run for a project, and the message for the user when
+/// the repository chose `AL_DOTNET_PATH` and the project is not trusted.
 ///
-/// The Zed extension turns `dotnetPath` from the merged editor settings into
-/// this environment entry, and `zed_extension_api` 0.7 gives it no way to tell
-/// a user-level value from a worktree one. al-lsp can tell, because it can read
-/// the repository's files, so the refusal lands here. Removing the variable
-/// makes the whole process fall back to `dotnet` from `PATH`.
+/// The Zed extension turns `dotnetPath` into this environment entry. For the
+/// language server and the debug adapter it first drops a path inside the
+/// worktree, so a path inside the project reaches this decision only from the
+/// `al-tools` context server settings or from an `AL_DOTNET_PATH` in the
+/// environment al-lsp starts with. `zed_extension_api` 0.7 gives the
+/// extension no way to tell a user-level value from a worktree one. al-lsp can
+/// tell, because it can read the repository's files, so the refusal lands here. A refused host gives
+/// `dotnet` from `PATH` as the program. The environment is not changed,
+/// because al-lsp runs this on a multi-threaded runtime where `remove_var` is
+/// undefined behaviour, so every spawn takes the program from this result.
 ///
 /// A settings file that does not parse leaves nothing to decide with, so a
 /// host inside the project is dropped then too. The function used to return
 /// before deciding, and a trusted project whose runtime a later commit replaced
 /// kept its `dotnet` while the daemon denied every other privileged value.
-pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
-    let configured = std::env::var(crate::toolchain::DOTNET_PATH_ENV).ok()?;
+pub fn enforce_dotnet_path(project_root: &Path) -> DotnetHost {
+    let Ok(configured) = std::env::var(crate::toolchain::DOTNET_PATH_ENV) else {
+        return DotnetHost::configured();
+    };
     let configured = configured.trim().to_string();
     if configured.is_empty() {
-        return None;
+        return DotnetHost::configured();
     }
 
     let (ask, decision) = match inspect(project_root) {
         Ok(read) => read,
         Err(error) => {
             if !names_a_project_file(Path::new(&configured), project_root) {
-                return None;
+                return DotnetHost::configured();
             }
-            std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
             // The file is named on its own, relative to the project, because
             // the error's absolute path pushed the reason past the display cap.
-            return Some(format!(
+            return DotnetHost::refused(format!(
                 "Ignoring the dotnet host '{}': it is inside this project, and the project's \
                  settings could not be read to decide whether it is trusted ({} {}). Falling \
                  back to 'dotnet' from PATH. To use it, fix that file, and the user runs this \
@@ -2323,15 +2335,14 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
         }
     };
     if decision.state.is_trusted() {
-        return None;
+        return DotnetHost::configured();
     }
     let from_repository = ask.executable_paths.iter().any(|path| path == &configured)
         || names_a_project_file(Path::new(&configured), project_root);
     if !from_repository {
-        return None;
+        return DotnetHost::configured();
     }
 
-    std::env::remove_var(crate::toolchain::DOTNET_PATH_ENV);
     let reason = match decision.state {
         TrustState::Stale => {
             "this project's privileged settings, or the files they name, changed since it was \
@@ -2339,7 +2350,7 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
         }
         _ => "the project is not trusted",
     };
-    Some(format!(
+    DotnetHost::refused(format!(
         "Ignoring the dotnet host '{}': it comes from this repository and {reason}. Falling \
          back to 'dotnet' from PATH. To use it, the user runs this in a terminal: \
          {TRUST_COMMAND} --show {}",
@@ -2360,14 +2371,16 @@ pub fn enforce_dotnet_path(project_root: &Path) -> Option<String> {
 /// library. Deciding before each spawn hashes the runtime again, as analyzer
 /// resolution decides before each load. A host outside the project costs a
 /// path check and no decision.
-pub fn enforce_dotnet_path_before_spawn(project_root: &Path) -> Option<String> {
-    let configured = std::env::var_os(crate::toolchain::DOTNET_PATH_ENV)?;
+pub fn enforce_dotnet_path_before_spawn(project_root: &Path) -> DotnetHost {
+    let Some(configured) = std::env::var_os(crate::toolchain::DOTNET_PATH_ENV) else {
+        return DotnetHost::configured();
+    };
     let configured = configured.to_string_lossy();
     let configured = configured.trim();
     let path = Path::new(configured);
     let is_path = path.is_absolute() || configured.contains(['/', '\\']);
     if !is_path || !names_a_project_file(path, project_root) {
-        return None;
+        return DotnetHost::configured();
     }
     enforce_dotnet_path(project_root)
 }

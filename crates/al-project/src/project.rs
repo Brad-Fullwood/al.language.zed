@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::errors::DiscoveryError;
+use al_types::regular_file::{open_regular_file, read_text_up_to};
 
 #[derive(Debug, Clone)]
 pub struct AlProject {
@@ -56,6 +57,8 @@ pub struct AppManifest {
     pub runtime: Option<String>,
 }
 
+pub use al_types::regular_file::read_regular_text_file;
+pub(crate) use al_types::regular_file::strip_utf8_bom;
 /// A dependency entry in app.json.
 ///
 /// Canonical type from crate::symbols — unified so no field-for-field conversion is needed.
@@ -405,16 +408,6 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
 /// pathological inputs that would OOM the daemon on `read_to_string`.
 const MAX_APP_JSON_BYTES: u64 = 1_048_576;
 
-/// The text `reader` holds, or `None` when it holds more than `cap` bytes.
-/// Reads at most `cap + 1` bytes, so a source that never ends stops there.
-fn read_text_up_to(reader: impl std::io::Read, cap: u64) -> std::io::Result<Option<String>> {
-    use std::io::Read;
-
-    let mut text = String::new();
-    reader.take(cap + 1).read_to_string(&mut text)?;
-    Ok((text.len() as u64 <= cap).then_some(text))
-}
-
 /// Load the exact `app.json` in `project_root` with the same size and schema
 /// validation used by workspace discovery.
 ///
@@ -442,7 +435,7 @@ pub fn load_app_manifest(project_root: &Path) -> Result<AppManifest, DiscoveryEr
         return Err(too_large(format!("is {} bytes", metadata.len())));
     }
 
-    let file = crate::trust::open_regular_file(&app_json_path)
+    let file = open_regular_file(&app_json_path)
         .ok_or_else(|| invalid("cannot open file as a regular file".to_string()))?;
     let content = read_text_up_to(file, MAX_APP_JSON_BYTES)
         .map_err(|error| invalid(format!("cannot read file: {error}")))?
@@ -463,7 +456,7 @@ pub fn load_id_ranges(project_root: &Path) -> Option<Vec<(u64, u64)>> {
     if !metadata.is_file() || metadata.len() > MAX_APP_JSON_BYTES {
         return None;
     }
-    let file = crate::trust::open_regular_file(&path)?;
+    let file = open_regular_file(&path)?;
     let text = read_text_up_to(file, MAX_APP_JSON_BYTES).ok()??;
     let value: serde_json::Value = serde_json::from_str(&text).ok()?;
     let pair = |range: &serde_json::Value| {
@@ -514,7 +507,7 @@ pub fn project_files_fingerprint(project_root: &Path) -> u64 {
     let [zed_debug, vscode_launch] = al_bc::launch::launch_file_paths(project_root);
     for path in [project_root.join("app.json"), zed_debug, vscode_launch] {
         let mut content = Vec::new();
-        let read = crate::trust::open_regular_file(&path)
+        let read = open_regular_file(&path)
             .map(|file| file.take(MAX_APP_JSON_BYTES + 1).read_to_end(&mut content));
         match read {
             Some(Ok(length)) => {
@@ -1061,20 +1054,6 @@ mod tests {
         assert!(error.contains("refusing to parse"), "{error}");
     }
 
-    /// A source that never ends is read up to one byte past the cap and no
-    /// further, and text of exactly the cap is kept.
-    #[test]
-    fn read_text_up_to_stops_one_byte_past_the_cap() {
-        use std::io::Read;
-
-        let mut endless = std::io::repeat(b'a').take(1 << 20);
-        assert_eq!(read_text_up_to(&mut endless, 1024).unwrap(), None);
-        assert_eq!(endless.limit(), (1 << 20) - 1025, "bytes taken from it");
-
-        let at_the_cap = read_text_up_to(std::io::repeat(b'a').take(1024), 1024).unwrap();
-        assert_eq!(at_the_cap.map(|text| text.len()), Some(1024));
-    }
-
     /// A FIFO at `path`.
     #[cfg(unix)]
     fn make_fifo(path: &Path) {
@@ -1131,6 +1110,17 @@ mod tests {
 
         let manifest = load_app_manifest(&project).expect("a link to a regular file loads");
         assert_eq!(manifest.name, "Linked");
+    }
+
+    #[test]
+    fn app_json_with_a_bom_loads() {
+        let project = tempdir();
+        let manifest = r#"{"id":"00000000-0000-0000-0000-000000000000","name":"Test","publisher":"Test","version":"1.0.0.0","idRange":{"from":50000,"to":50099}}"#;
+        std::fs::write(project.join("app.json"), format!("\u{feff}{manifest}")).unwrap();
+
+        let loaded = load_app_manifest(&project).expect("a BOM-prefixed manifest loads");
+        assert_eq!(loaded.name, "Test");
+        assert_eq!(load_id_ranges(&project), Some(vec![(50000, 50099)]));
     }
 
     #[test]

@@ -1140,3 +1140,59 @@ async fn connect_stops_at_the_deadline_when_the_server_never_answers() {
     let text = error.to_string();
     assert!(text.contains("during metadata"), "{text}");
 }
+
+/// codex-r2-01: the negotiate URL carries the bearer token. A 3xx on negotiate
+/// is an error, and the client follows no redirect, so the token never reaches
+/// the redirect target on another origin.
+#[tokio::test]
+async fn negotiate_redirect_is_refused_without_following() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const TOKEN: &str = "negotiate-redirect-secret-token";
+
+    let bc = MockServer::start().await;
+    let redirect_target = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/login"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&redirect_target)
+        .await;
+    // fixture source: the ServerInfo reply used by connect_sends_the_hub_query_on_both_requests_and_forwards_the_cookie
+    Mock::given(method("GET"))
+        .and(path("/BC/dev/metadata"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "RuntimeVersion": "16.0.0.0",
+            "WebApiVersion": "2.0.0.0",
+            "DebuggerVersion": "9.0.0.0"
+        })))
+        .mount(&bc)
+        .await;
+    let location = format!("{}/login", redirect_target.uri());
+    Mock::given(method("POST"))
+        .and(path("/BC/dev/DebuggerHub/negotiate"))
+        .respond_with(ResponseTemplate::new(302).insert_header("Location", location.as_str()))
+        .mount(&bc)
+        .await;
+
+    let cfg = BcDebugConfig {
+        environment_type: "OnPrem".to_string(),
+        server: Some(format!("http://{}", bc.address().ip())),
+        server_instance: Some("BC".to_string()),
+        port: bc.address().port(),
+        tenant: "default".to_string(),
+        ..BcDebugConfig::default()
+    };
+    let error = BcDebugSession::connect(&cfg, TOKEN, false)
+        .await
+        .err()
+        .expect("a 302 on negotiate is an error");
+    redirect_target.verify().await;
+    let text = match &error {
+        DapError::ConnectionFailed(text) => text.clone(),
+        other => panic!("expected ConnectionFailed, got {other}"),
+    };
+    assert!(text.contains("302"), "{text}");
+    assert!(!text.contains(TOKEN), "{text}");
+}

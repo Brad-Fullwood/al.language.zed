@@ -376,6 +376,7 @@ fn value_to_filter_string(value: &Value) -> String {
         Value::Char(c) => c.to_string(),
         Value::Date(d) => d.to_string(),
         Value::Time(t) => t.to_string(),
+        Value::UndefinedTime => "-1".to_string(),
         Value::DateTime(dt) => dt.to_string(),
         Value::Option { member, .. } => member.clone(),
         _ => String::new(),
@@ -439,6 +440,9 @@ fn cmp_value(value: &Value, ov: &OrderableValue) -> Option<std::cmp::Ordering> {
         // `mock::record::normalize_key_value`.
         (Value::Code(a), OrderableValue::Text(b)) => Some(a.to_uppercase().cmp(&b.to_uppercase())),
         (Value::Text(a), OrderableValue::Text(b)) => Some(a.cmp(b)),
+        // The undefined time compares as -1, before midnight (0), so a filter
+        // on 0T and a filter on 000000T select different rows.
+        (Value::UndefinedTime, OrderableValue::Integer(b)) => Some((-1i64).cmp(b)),
         (Value::Date(a) | Value::Time(a) | Value::DateTime(a), OrderableValue::Integer(b)) => {
             Some(a.cmp(b))
         }
@@ -889,6 +893,14 @@ mod tests {
         let millis = parse("3600000").unwrap();
         assert!(matches(&millis, &Value::Time(3_600_000)));
         assert!(!matches(&millis, &Value::Time(0)));
+
+        // A filter on 0T selects only the undefined time, one on 000000T only midnight.
+        let undefined = parse(&value_to_filter_string(&Value::UndefinedTime)).unwrap();
+        assert!(matches(&undefined, &Value::UndefinedTime));
+        assert!(!matches(&undefined, &Value::Time(0)));
+        let midnight = parse(&value_to_filter_string(&Value::Time(0))).unwrap();
+        assert!(matches(&midnight, &Value::Time(0)));
+        assert!(!matches(&midnight, &Value::UndefinedTime));
         assert!(matches(&millis, &Value::DateTime(3_600_000)));
         assert!(!matches(&millis, &Value::DateTime(1)));
     }

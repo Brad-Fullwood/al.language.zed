@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 use al_symbols::model::{ObjectKind, SymbolEntry};
 use serde::Serialize;
 
-use crate::{EmitObject, ExternalSymbols, SourceFile, SymbolRefMeta};
+use crate::symbol_reference::version_key;
+use crate::{binding::SYSTEM_FIELDS, EmitObject, ExternalSymbols, SourceFile, SymbolRefMeta};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -117,6 +118,16 @@ pub(crate) fn verify_manifest(app_json: &serde_json::Value) -> Vec<VerificationD
                 "app.json",
                 "ALN0103",
                 format!("app.json field `version` must contain four numeric components: {version}"),
+            ));
+        }
+    }
+
+    if let Some(runtime) = app_json.get("runtime").and_then(|value| value.as_str()) {
+        if !is_runtime_version(runtime) {
+            diagnostics.push(VerificationDiagnostic::error(
+                "app.json",
+                "ALN0103",
+                format!("app.json field `runtime` is not a valid version: {runtime}"),
             ));
         }
     }
@@ -248,6 +259,19 @@ fn is_al_version(value: &str) -> bool {
     }) && components.next().is_none()
 }
 
+/// `runtime` names a platform release as two to four numeric parts (`14.0`,
+/// `13.0.1.0`). `is_al_version` requires exactly four, so it does not fit.
+/// Each part must be ASCII digits, because `u32::from_str` also accepts a `+`.
+fn is_runtime_version(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('.').collect();
+    (2..=4).contains(&parts.len())
+        && parts.iter().all(|part| {
+            !part.is_empty()
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+                && part.parse::<u32>().is_ok()
+        })
+}
+
 /// A report layout file that is not in the project, reported on the
 /// report's `LayoutFile` line. It used to surface only when the package was
 /// assembled, as one ALN0000 on `app.json` naming no report.
@@ -293,7 +317,10 @@ pub(crate) fn verify_layout_files(
 }
 
 /// Codes of the heuristic body checks reported as warnings.
-const HEURISTIC_CODES: &[&str] = &["ALN2202", "ALN2203", "ALN2208", "ALN2209"];
+const HEURISTIC_CODES: &[&str] = &[
+    "ALN2201", "ALN2202", "ALN2203", "ALN2204", "ALN2205", "ALN2206", "ALN2207", "ALN2208",
+    "ALN2209", "ALN2210", "ALN2211", "ALN2403",
+];
 
 /// AL keywords that can be followed by a parenthesised expression. They are
 /// operators and statement words, never procedure names.
@@ -421,13 +448,9 @@ fn verify_provable_body_bindings(
         let vars = variable_types(&object.source_text);
         for (name, ty) in &vars {
             if let Some(table) = record_subtype(ty) {
-                let table = table.unquote_identifier().to_ascii_lowercase();
+                let table = raw_subtype_object_name(table);
                 if !tables.contains(&table) {
-                    let offset = object
-                        .source_text
-                        .to_ascii_lowercase()
-                        .find(name)
-                        .unwrap_or(0);
+                    let offset = declaration_offset(&object.source_text, name);
                     out.push(VerificationDiagnostic::error_at_source_offset(
                         object,
                         offset,
@@ -650,14 +673,14 @@ fn verify_local_procedure_semantics(
             else {
                 continue;
             };
-            for site in call_sites(body) {
+            for site in call_sites(&mask_comments_and_strings(body)) {
                 if let Some(receiver) = &site.receiver {
                     // Only a table this build knows can be said to lack a
                     // method; an unknown one is ALN2401's to report.
                     let table = vars
                         .get(&receiver.to_ascii_lowercase())
                         .and_then(|ty| record_subtype(ty))
-                        .map(|table| table.unquote_identifier().to_ascii_lowercase())
+                        .map(raw_subtype_object_name)
                         .filter(|table| known_tables.contains(table));
                     let unknown = table.is_some_and(|table| {
                         !known_record_method(&site.name)
@@ -914,24 +937,43 @@ fn verify_local_event_contracts(objects: &[EmitObject], out: &mut Vec<Verificati
                 if selected.is_empty() {
                     continue;
                 }
-                if selected.len() > 1 || selected[0].1.parameters.len() != method.parameters.len() {
-                    let detail = if selected.len() > 1 {
-                        "is ambiguous between local publishers".to_string()
-                    } else {
-                        format!(
-                            "expects {} parameter(s), but subscriber has {}",
-                            selected[0].1.parameters.len(),
-                            method.parameters.len()
-                        )
-                    };
+                if selected.len() > 1 {
                     out.push(VerificationDiagnostic::error_for_object(
                         object,
                         "ALN2301",
                         format!(
-                            "EventSubscriber procedure '{}' for '{}' {detail}",
+                            "EventSubscriber procedure '{}' for '{}' is ambiguous between local publishers",
                             method.name, event_name
                         ),
                     ));
+                    continue;
+                }
+                // A subscriber may declare fewer parameters than its publisher, so each
+                // subscriber parameter must match a publisher parameter by name.
+                // `Sender` is the publisher instance, not a declared parameter.
+                let publisher = selected[0].1;
+                let publisher_name = &selected[0].0.entry.name;
+                for parameter in &method.parameters {
+                    let name = parameter.name.unquote_identifier();
+                    if name.eq_ignore_ascii_case("sender") {
+                        continue;
+                    }
+                    let declared = publisher.parameters.iter().any(|candidate| {
+                        candidate
+                            .name
+                            .unquote_identifier()
+                            .eq_ignore_ascii_case(&name)
+                    });
+                    if !declared {
+                        out.push(VerificationDiagnostic::error_for_object(
+                            object,
+                            "ALN2301",
+                            format!(
+                                "EventSubscriber procedure '{}' for '{}' has parameter '{}' that publisher '{}' does not declare",
+                                method.name, event_name, parameter.name, publisher_name
+                            ),
+                        ));
+                    }
                 }
             }
         }
@@ -939,10 +981,12 @@ fn verify_local_event_contracts(objects: &[EmitObject], out: &mut Vec<Verificati
 }
 
 fn procedure_body<'a>(source: &'a str, name: &str) -> Option<(usize, &'a str)> {
-    let needle = format!("procedure {name}");
-    let start = source
-        .to_ascii_lowercase()
-        .find(&needle.to_ascii_lowercase())?;
+    // The symbol name is unquoted, so a quoted declaration needs its own needle.
+    let lower = source.to_ascii_lowercase();
+    let start = [format!("procedure {name}"), format!("procedure \"{name}\"")]
+        .iter()
+        .filter_map(|needle| lower.find(&needle.to_ascii_lowercase()))
+        .min()?;
     let rest = &source[start..];
     let begin = rest.to_ascii_lowercase().find("begin")?;
     let body = &rest[begin + 5..];
@@ -959,6 +1003,101 @@ struct CallSite {
     arguments: Vec<String>,
     offset: usize,
     receiver: Option<String>,
+}
+
+/// Blanks the text of comments and single quoted literals, so `call_sites`
+/// does not read `Init (x)` in `// Init (x)` or `'Init (x)'` as a call.
+///
+/// Each masked character becomes one space per UTF-8 byte. The output has the
+/// same byte length as `source`, so offsets found in it point into `source`.
+/// Newlines and the quotes of a literal are kept. Double quoted identifiers
+/// pass through unchanged, so a quote inside one cannot open a literal.
+///
+/// Checked `al_syntax::lint::mask_non_code_keep_quoted_identifiers`. It works
+/// one line at a time and blanks the quote characters of a literal. This
+/// masker covers the whole body and keeps the quotes.
+fn mask_comments_and_strings(source: &str) -> String {
+    enum Mode {
+        Code,
+        LineComment,
+        BlockComment,
+        Literal,
+        QuotedIdentifier,
+    }
+    let mut out = String::with_capacity(source.len());
+    let mut mode = Mode::Code;
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match mode {
+            Mode::Code => match c {
+                '/' if chars.peek() == Some(&'/') => {
+                    chars.next();
+                    out.push_str("  ");
+                    mode = Mode::LineComment;
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    out.push_str("  ");
+                    mode = Mode::BlockComment;
+                }
+                '\'' => {
+                    out.push(c);
+                    mode = Mode::Literal;
+                }
+                '"' => {
+                    out.push(c);
+                    mode = Mode::QuotedIdentifier;
+                }
+                _ => out.push(c),
+            },
+            Mode::LineComment => {
+                if c == '\n' {
+                    out.push(c);
+                    mode = Mode::Code;
+                } else {
+                    push_blank(&mut out, c);
+                }
+            }
+            Mode::BlockComment => {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    out.push_str("  ");
+                    mode = Mode::Code;
+                } else {
+                    push_blank(&mut out, c);
+                }
+            }
+            Mode::Literal => {
+                if c == '\'' {
+                    out.push(c);
+                    // A doubled quote is content, so the literal stays open.
+                    if chars.peek() == Some(&'\'') {
+                        chars.next();
+                        out.push('\'');
+                    } else {
+                        mode = Mode::Code;
+                    }
+                } else {
+                    push_blank(&mut out, c);
+                }
+            }
+            Mode::QuotedIdentifier => {
+                out.push(c);
+                if c == '"' {
+                    mode = Mode::Code;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn push_blank(out: &mut String, c: char) {
+    if c == '\n' || c == '\r' {
+        out.push(c);
+    } else {
+        out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+    }
 }
 
 fn call_sites(source: &str) -> Vec<CallSite> {
@@ -1200,6 +1339,42 @@ fn record_subtype(type_name: &str) -> Option<&str> {
     )
 }
 
+// Reads source text, where `symbol_reference::subtype_object_name` reads extractor output.
+fn raw_subtype_object_name(subtype: &str) -> String {
+    let mut last_start = 0;
+    let mut in_quotes = false;
+    for (index, ch) in subtype.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '.' if !in_quotes => last_start = index + 1,
+            _ => {}
+        }
+    }
+    subtype[last_start..]
+        .trim()
+        .unquote_identifier()
+        .to_ascii_lowercase()
+}
+
+/// Byte offset of the first declaration of `name`: the name as a whole identifier,
+/// then `:` and not `:=`. Returns 0 when there is none.
+fn declaration_offset(source: &str, name: &str) -> usize {
+    let source = source.to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
+    let bytes = source.as_bytes();
+    let is_identifier = |byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_';
+    source
+        .match_indices(&name)
+        .find(|&(at, _)| {
+            let before_ok = at == 0 || !is_identifier(&bytes[at - 1]);
+            let after = at + name.len();
+            let after_ok = bytes.get(after).is_none_or(|byte| !is_identifier(byte));
+            let rest = source[after..].trim_start();
+            before_ok && after_ok && rest.starts_with(':') && !rest.starts_with(":=")
+        })
+        .map_or(0, |(at, _)| at)
+}
+
 fn exit_expressions(source: &str) -> Vec<&str> {
     let mut exits = Vec::new();
     let lower = source.to_ascii_lowercase();
@@ -1386,7 +1561,11 @@ fn verify_permissions(
 
     for object in objects {
         for permission in &object.permissions {
-            let Some(kind) = permission_object_kind(&permission.object_type) else {
+            // `system` names no object, so there is no object to look up. Its flags
+            // are still checked below.
+            let system = permission.object_type.trim().eq_ignore_ascii_case("system");
+            let kind = permission_object_kind(&permission.object_type);
+            if kind.is_none() && !system {
                 out.push(VerificationDiagnostic::error_for_object(
                     object,
                     "ALN2101",
@@ -1396,7 +1575,7 @@ fn verify_permissions(
                     ),
                 ));
                 continue;
-            };
+            }
             let flags = permission.permission.to_ascii_uppercase();
             let valid_flags = !flags.is_empty()
                 && flags
@@ -1417,21 +1596,23 @@ fn verify_permissions(
                     ),
                 ));
             }
-            require_object(
-                &available,
-                kind,
-                &permission.object_name.unquote_identifier(),
-                object,
-                "ALN2103",
-                format!(
-                    "{} '{}' grants permission to unknown {} '{}'",
-                    object.entry.kind,
-                    object.entry.name,
-                    permission.object_type,
-                    permission.object_name
-                ),
-                out,
-            );
+            if let Some(kind) = kind {
+                require_object(
+                    &available,
+                    kind,
+                    &permission.object_name.unquote_identifier(),
+                    object,
+                    "ALN2103",
+                    format!(
+                        "{} '{}' grants permission to unknown {} '{}'",
+                        object.entry.kind,
+                        object.entry.name,
+                        permission.object_type,
+                        permission.object_name
+                    ),
+                    out,
+                );
+            }
         }
     }
 }
@@ -1503,11 +1684,11 @@ fn verify_dependencies(
             continue;
         };
         let normalized = id.trim_matches(['{', '}']).to_lowercase();
+        let name = dependency
+            .get("name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unnamed dependency");
         if !external.package_ids.contains(&normalized) {
-            let name = dependency
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unnamed dependency");
             out.push(VerificationDiagnostic::error(
                 "app.json",
                 "ALN1007",
@@ -1515,6 +1696,28 @@ fn verify_dependencies(
                     "Dependency '{name}' ({id}) is declared but no matching package was loaded from .alpackages"
                 ),
             ));
+        }
+        // alc reports a loaded dependency below the required version as AL1022.
+        // Both versions must parse, so an unknown version keeps this check silent.
+        let required = dependency
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let loaded = external
+            .package_versions
+            .get(&normalized)
+            .map_or("", String::as_str);
+        if let (Some(required_key), Some(loaded_key)) = (version_key(required), version_key(loaded))
+        {
+            if loaded_key < required_key {
+                out.push(VerificationDiagnostic::error(
+                    "app.json",
+                    "ALN1007",
+                    format!(
+                        "Dependency '{name}' ({id}) requires version {required} but the highest loaded package is {loaded}"
+                    ),
+                ));
+            }
         }
     }
 }
@@ -1747,7 +1950,9 @@ fn verify_members(objects: &[EmitObject], out: &mut Vec<VerificationDiagnostic>)
                 .collect();
             for key in entry.keys.iter().chain(object.field_groups.iter()) {
                 for field in &key.field_names {
-                    if !fields.contains(&field.to_lowercase()) {
+                    // SYSTEM_FIELDS (binding.rs) lists the system fields every table has.
+                    let system = SYSTEM_FIELDS.contains(&field.to_ascii_lowercase().as_str());
+                    if !fields.contains(&field.to_lowercase()) && !system {
                         out.push(VerificationDiagnostic::error_for_object(
                             object,
                             "ALN1107",
@@ -1890,6 +2095,7 @@ fn verify_type(
     };
     let base = &trimmed[..space];
     let subtype = trimmed[space..].unquote_identifier();
+    let subtype = crate::symbol_reference::subtype_object_name(&subtype).to_string();
     if subtype.is_empty() {
         return;
     }
@@ -2142,5 +2348,62 @@ mod builtin_call_contract_tests {
         assert!(known_record_method("Truncate"));
         assert!(!known_record_method("Error"));
         assert!(!known_record_method("NoSuchMethodHere"));
+    }
+}
+
+#[cfg(test)]
+mod source_name_tests {
+    use super::{declaration_offset, raw_subtype_object_name};
+
+    #[test]
+    fn raw_subtype_object_name_keeps_the_last_part_outside_quotes() {
+        assert_eq!(raw_subtype_object_name("Sales.Tools.Widget"), "widget");
+        assert_eq!(
+            raw_subtype_object_name("\"Sales\".\"Tools\".\"Widget\""),
+            "widget"
+        );
+        assert_eq!(raw_subtype_object_name("\"No. Series\""), "no. series");
+        assert_eq!(raw_subtype_object_name("Customer"), "customer");
+    }
+
+    #[test]
+    fn declaration_offset_skips_keyword_matches_and_assignments() {
+        let source = "codeunit 50100 X\n{\n    procedure P()\n    var\n        c: Integer;\n    begin\n        c := 1;\n    end;\n}\n";
+        let declaration = source.find("c: Integer").unwrap();
+        assert_eq!(declaration_offset(source, "c"), declaration);
+
+        let assignment_only = "codeunit 1 X\n{\n    begin\n        c := 1;\n    end;\n}\n";
+        assert_eq!(declaration_offset(assignment_only, "c"), 0);
+    }
+}
+
+#[cfg(test)]
+mod call_site_mask_tests {
+    use super::{call_sites, mask_comments_and_strings};
+
+    #[test]
+    fn masking_keeps_length_and_only_comments_and_literals_go_blank() {
+        let source = "a(1); // b(2)\nc('d(3)'); /* e(4) */ f(5)";
+        let masked = mask_comments_and_strings(source);
+        assert_eq!(masked.len(), source.len());
+        let names: Vec<String> = call_sites(&masked)
+            .into_iter()
+            .map(|site| site.name)
+            .collect();
+        assert_eq!(names, ["a", "c", "f"]);
+    }
+
+    #[test]
+    fn doubled_quote_stays_masked_and_non_ascii_keeps_the_byte_length() {
+        let source = "x('it''s Init (x)'); // é Init(1)\ny(2)";
+        let masked = mask_comments_and_strings(source);
+        assert_eq!(masked.len(), source.len());
+        assert!(std::str::from_utf8(masked.as_bytes()).is_ok());
+        assert!(!masked.contains("Init"));
+        let names: Vec<String> = call_sites(&masked)
+            .into_iter()
+            .map(|site| site.name)
+            .collect();
+        assert_eq!(names, ["x", "y"]);
     }
 }

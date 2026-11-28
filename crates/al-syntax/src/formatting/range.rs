@@ -1,9 +1,10 @@
 //! Range formatting: format the whole document for context, then emit edits
-//! covering only the requested lines. The passes that change the line count
-//! are off for this, so every edit stays inside the requested lines.
+//! covering only the requested lines. The passes that move or split lines are
+//! off for this, so every edit stays inside the requested lines. Blank runs
+//! between procedures still follow the blank line policy.
 
 use super::indent::format_al_keeping_line_count;
-use super::options::{BlankLinesBetweenProcedures, FormatOptions};
+use super::options::FormatOptions;
 
 /// Transport-agnostic text edit emitted by [`format_range`].
 ///
@@ -44,123 +45,126 @@ pub fn format_range(
         return None;
     }
 
-    let collapse_blank_runs = !matches!(
-        options.blank_lines_between_procedures,
-        BlankLinesBetweenProcedures::Preserve
-    );
-    let formatted_region =
-        extract_formatted_region(&orig_lines, &fmt_lines, start, end, collapse_blank_runs);
+    let eol = if text.contains("\r\n") { "\r\n" } else { "\n" };
+    let formatted_region = extract_formatted_region(&orig_lines, &fmt_lines, start, end);
     let original_region: Vec<&str> = orig_lines[start..=end].to_vec();
 
     if formatted_region == original_region {
         return Some(Vec::new());
     }
 
-    // When the requested range *starts* inside a blank run whose leading
-    // line(s) the collapser removes, the edit must actually delete those
-    // lines. The usual replacement span `(start, 0)..(end, len)` excludes the
-    // end line's terminating newline, so a removed-only region would emit a
-    // no-op (or even insert a newline). Extend the span through the end
-    // line's newline — `(end + 1, 0)` — so the removed line count is real.
-    // LSP clients clamp an end position past the last line to the document
-    // end, which is exactly the terminating newline when one exists.
-    let starts_in_collapsed_blank = collapse_blank_runs
-        && start > 0
-        && orig_lines[start].trim().is_empty()
-        && orig_lines[start - 1].trim().is_empty();
-    if starts_in_collapsed_blank {
-        let mut new_text = formatted_region.join("\n");
-        if !formatted_region.is_empty() {
-            new_text.push('\n');
-        }
+    // The edit replaces the selected lines with their line breaks, so a
+    // collapsed blank line inside the selection is deleted and no line break
+    // is added. On the document's last line with no trailing newline there is
+    // no line break to replace, and the new text gets none. `.lines()` drops
+    // that distinction, so `text` is consulted directly.
+    let end_is_last_line = end == orig_lines.len().saturating_sub(1);
+    if end_is_last_line && !text.ends_with('\n') {
+        let end_char = crate::byte_col_to_utf16_col(orig_lines[end], orig_lines[end].len());
         return Some(vec![FormatTextEdit {
             start_line,
             start_character: 0,
-            end_line: end as u32 + 1,
-            end_character: 0,
-            new_text,
+            end_line: end as u32,
+            end_character: end_char,
+            new_text: formatted_region.join(eol),
         }]);
     }
 
-    let mut new_text = formatted_region.join("\n");
-    // Append a trailing newline so the replacement bridges into the line that
-    // follows the selection. The one exception is the document's final line
-    // when the original text has no trailing newline: appending `\n` there
-    // would inject a newline the document never had. `.lines()` discards the
-    // trailing-newline distinction, so consult `text` directly.
-    let end_is_last_line = end == orig_lines.len().saturating_sub(1);
-    if !end_is_last_line || text.ends_with('\n') {
-        new_text.push('\n');
+    let mut new_text = formatted_region.join(eol);
+    if !formatted_region.is_empty() {
+        new_text.push_str(eol);
     }
-
-    let end_char = orig_lines
-        .get(end)
-        .map(|l| crate::byte_col_to_utf16_col(l, l.len()))
-        .unwrap_or(0);
-
     // `end`, not `end_line`: the caller may have named a line past the end of
-    // the document, and `end_char` is measured on the clamped line.
+    // the document. LSP clients clamp `(end + 1, 0)` past the last line to
+    // the document end, which is the trailing newline.
     Some(vec![FormatTextEdit {
         start_line,
         start_character: 0,
-        end_line: end as u32,
-        end_character: end_char,
+        end_line: end as u32 + 1,
+        end_character: 0,
         new_text,
     }])
 }
 
-/// Extract lines from the formatted output corresponding to orig lines [start..=end].
+/// Extract the formatted lines for the original lines `start..=end`.
 ///
-/// When a blank-line policy is active (`collapse_blanks`), the formatter
-/// collapses consecutive blank lines (two → one). We walk orig and fmt in
-/// lockstep, skipping orig-only collapsed blanks without advancing the fmt
-/// cursor. Under the default `Preserve` policy blank runs survive verbatim and
-/// the two walks advance together.
-///
-/// Collapsed double-blanks are the only supported line-count difference.
+/// Keep-line-count formatting leaves the non-blank lines in order and in
+/// number. Only the length of a blank run can change. Both texts are split
+/// into blank runs and non-blank lines, and the non-blank lines are paired by
+/// position. A blank run that lies wholly in the selection takes its formatted
+/// length. A run that straddles the selection edge keeps the lines outside the
+/// selection, so only the formatted lines left over for the selection are
+/// emitted.
 fn extract_formatted_region<'a>(
-    orig_lines: &[&str],
+    orig_lines: &[&'a str],
     fmt_lines: &[&'a str],
     start: usize,
     end: usize,
-    collapse_blanks: bool,
 ) -> Vec<&'a str> {
-    let mut orig_idx = 0usize;
-    let mut fmt_idx = 0usize;
-    let mut result: Vec<&'a str> = Vec::new();
-    let mut prev_orig_blank = false;
-    let mut visited_non_collapsed = 0usize;
-
-    while orig_idx <= end && fmt_idx < fmt_lines.len() {
-        let orig_is_blank = orig_lines[orig_idx].trim().is_empty();
-
-        if collapse_blanks && orig_is_blank && prev_orig_blank {
-            orig_idx += 1;
-            continue;
-        }
-
-        prev_orig_blank = orig_is_blank;
-
-        if orig_idx >= start {
-            result.push(fmt_lines[fmt_idx]);
-        }
-
-        orig_idx += 1;
-        fmt_idx += 1;
-        visited_non_collapsed += 1;
+    let selected = start..=end;
+    let orig_content = non_blank_indexes(orig_lines);
+    let fmt_content = non_blank_indexes(fmt_lines);
+    debug_assert_eq!(
+        orig_content.len(),
+        fmt_content.len(),
+        "extract_formatted_region: formatter changed the number of non-blank lines"
+    );
+    if orig_content.len() != fmt_content.len() {
+        // No safe line mapping exists, so the selected lines stay as they are.
+        return orig_lines[start..=end].to_vec();
     }
 
-    // Invariant: we advanced fmt_idx exactly as often as we advanced
-    // through orig rows that weren't collapsed blanks. Any other formatter
-    // asymmetry (drop, duplicate, reorder) would manifest as fmt_idx
-    // diverging from visited_non_collapsed.
-    debug_assert_eq!(
-        fmt_idx, visited_non_collapsed,
-        "extract_formatted_region: fmt cursor diverged from orig walk — \
-         formatter introduced a line-count asymmetry beyond blank collapse"
-    );
+    let non_blank = orig_content.len();
+    let mut result = Vec::new();
+    for j in 0..=non_blank {
+        let orig_run = blank_run(&orig_content, orig_lines.len(), j);
+        let fmt_run = blank_run(&fmt_content, fmt_lines.len(), j);
+        let formatted_len = fmt_run.len();
+        let emitted = if orig_run.is_empty() {
+            // An empty run lies in the selection when both lines around it do.
+            let around_selected = j > 0
+                && j < non_blank
+                && selected.contains(&orig_content[j - 1])
+                && selected.contains(&orig_content[j]);
+            if around_selected {
+                formatted_len
+            } else {
+                0
+            }
+        } else {
+            let inside = orig_run.clone().filter(|i| selected.contains(i)).count();
+            let outside = orig_run.len() - inside;
+            match (inside, outside) {
+                (0, _) => 0,
+                (_, 0) => formatted_len,
+                _ => formatted_len.saturating_sub(outside),
+            }
+        };
+        result.extend_from_slice(&fmt_lines[fmt_run.start..fmt_run.start + emitted]);
 
+        if j < non_blank && selected.contains(&orig_content[j]) {
+            result.push(fmt_lines[fmt_content[j]]);
+        }
+    }
     result
+}
+
+/// Indexes of the lines that are not blank after `trim`.
+fn non_blank_indexes(lines: &[&str]) -> Vec<usize> {
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Index range of blank run `j`: the lines after non-blank line `j - 1` up to
+/// non-blank line `j`. Run 0 starts at the top, and the last run ends at `len`.
+fn blank_run(non_blank: &[usize], len: usize, j: usize) -> std::ops::Range<usize> {
+    let from = if j == 0 { 0 } else { non_blank[j - 1] + 1 };
+    let to = non_blank.get(j).copied().unwrap_or(len);
+    from..to
 }
 
 #[cfg(test)]
@@ -176,8 +180,8 @@ mod tests {
             "codeunit 50100 Test {\n    procedure A()\n    begin\n    x :=  1;\n    end;\n}\n";
         let edits = format_range(input, 3, 3, &FormatOptions::default()).unwrap();
         assert_eq!(edits.len(), 1);
-        assert_eq!((edits[0].start_line, edits[0].end_line), (3, 3));
-        assert_eq!(edits[0].new_text.trim_end(), "        x :=  1;");
+        assert_eq!((edits[0].start_line, edits[0].end_line), (3, 4));
+        assert_eq!(edits[0].new_text, "        x :=  1;\n");
     }
 
     /// `One` inserts a blank line between procedures in a full format, and
@@ -197,8 +201,8 @@ mod tests {
         ] {
             let edits = format_range(input, 7, 7, &opts).unwrap();
             assert_eq!(edits.len(), 1);
-            assert_eq!((edits[0].start_line, edits[0].end_line), (7, 7));
-            assert_eq!(edits[0].new_text.trim_end(), "        x := 1;");
+            assert_eq!((edits[0].start_line, edits[0].end_line), (7, 8));
+            assert_eq!(edits[0].new_text, "        x := 1;\n");
         }
     }
 
@@ -222,7 +226,7 @@ mod tests {
         assert!(!edits.is_empty());
         let edit = &edits[0];
         assert_eq!(edit.start_line, 2);
-        assert_eq!(edit.end_line, 5);
+        assert_eq!(edit.end_line, 6);
         assert!(edit.new_text.contains("    procedure DoSomething()"));
         assert!(edit.new_text.contains("    begin"));
         assert!(edit.new_text.contains("        Message(\'Hello\');"));
@@ -245,7 +249,8 @@ mod tests {
         let opts = FormatOptions::default();
         let edits = format_range(input, 0, 9999, &opts).unwrap();
         assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].end_line, last as u32);
+        assert_eq!(edits[0].end_line, last as u32 + 1);
+        assert_eq!(edits[0].end_character, 0);
     }
 
     #[test]
@@ -282,7 +287,10 @@ mod tests {
         let opts = FormatOptions::default();
         let edits = format_range(input, 5, 5, &opts).unwrap();
         assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].new_text, "}\n");
+        assert_eq!(
+            apply_format_edit(input, &edits[0]),
+            "codeunit 50100 Test\n{\n    procedure X()\n    begin\n    end;\n}\n"
+        );
     }
 
     #[test]
@@ -293,7 +301,10 @@ mod tests {
         let opts = FormatOptions::default();
         let edits = format_range(input, 2, 4, &opts).unwrap();
         assert_eq!(edits.len(), 1);
-        assert!(edits[0].new_text.ends_with('\n'));
+        assert_eq!(
+            apply_format_edit(input, &edits[0]),
+            "codeunit 50100 Test\n{\n    procedure X()\n    begin\n    end;\n}"
+        );
     }
 
     /// Apply a `FormatTextEdit` to `text` the way an LSP client would:
@@ -317,6 +328,38 @@ mod tests {
         out.push_str(&text[..start]);
         out.push_str(&edit.new_text);
         out.push_str(&text[end..]);
+        out
+    }
+
+    /// Applies edits in LSP coordinates: 0-based lines and UTF-16 columns. An
+    /// end line past the last line means the end of the text.
+    fn apply_edits(text: &str, edits: &[FormatTextEdit]) -> String {
+        fn offset(text: &str, line: u32, character: u32) -> usize {
+            let mut line_start = 0usize;
+            for _ in 0..line {
+                match text[line_start..].find('\n') {
+                    Some(n) => line_start += n + 1,
+                    None => return text.len(),
+                }
+            }
+            let mut utf16 = 0u32;
+            for (i, ch) in text[line_start..].char_indices() {
+                if utf16 >= character || ch == '\n' || ch == '\r' {
+                    return line_start + i;
+                }
+                utf16 += ch.len_utf16() as u32;
+            }
+            text.len()
+        }
+        // Apply the last edit first, so the offsets of earlier edits stay valid.
+        let mut sorted: Vec<&FormatTextEdit> = edits.iter().collect();
+        sorted.sort_by_key(|e| std::cmp::Reverse((e.start_line, e.start_character)));
+        let mut out = text.to_string();
+        for edit in sorted {
+            let start = offset(&out, edit.start_line, edit.start_character);
+            let end = offset(&out, edit.end_line, edit.end_character);
+            out.replace_range(start..end, &edit.new_text);
+        }
         out
     }
 
@@ -417,10 +460,7 @@ mod tests {
 
     /// A single isolated blank line (its neighbour above has real content) is
     /// not the second line of a collapsed run of two blank lines. Selecting a
-    /// range that starts on it, and needs a real edit for an unrelated reason
-    /// further in the range, must take the normal replacement path: the edit
-    /// ends on `end`. An edit that ends on `end + 1` came through the path
-    /// that deletes a collapsed blank line, which this line must not trigger.
+    /// range that starts on it must keep it.
     #[test]
     fn test_format_range_starting_on_an_isolated_blank_line_is_not_a_collapsed_run() {
         let input = "codeunit 50100 Test\n\
@@ -445,13 +485,12 @@ mod tests {
         // for a collapsed blank line instead of returning early.
         let edits = format_range(input, 5, 7, &opts).unwrap();
         assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].end_line, 8);
+        assert_eq!(edits[0].new_text, "\n    procedure B()\n    begin\n");
         assert_eq!(
-            edits[0].end_line, 7,
-            "a single blank line must not extend the edit to end + 1: {:?}",
-            edits[0]
+            apply_format_edit(input, &edits[0]),
+            "codeunit 50100 Test\n{\n    procedure A()\n    begin\n    end;\n\n    procedure B()\n    begin\nend;\n}\n"
         );
-        assert!(edits[0].new_text.contains("    procedure B()"));
-        assert!(edits[0].new_text.contains("    begin"));
     }
 
     /// A first line of the document that holds only whitespace (`start == 0`)
@@ -467,7 +506,139 @@ mod tests {
         };
         let edits = format_range(input, 0, 0, &opts).unwrap();
         assert_eq!(edits.len(), 1);
-        assert_eq!(edits[0].end_line, 0);
+        assert_eq!(edits[0].end_line, 1);
         assert_eq!(edits[0].new_text, "\n");
+        assert_eq!(
+            apply_format_edit(input, &edits[0]),
+            "\ncodeunit 50100 Test\n{\n}\n"
+        );
+    }
+
+    /// Applying a range edit added an empty line after the selection, because
+    /// the edit kept the end line's line break and the new text added one.
+    #[test]
+    fn applied_range_format_adds_no_blank_line() {
+        let cases: [(&str, u32, u32); 4] = [
+            (
+                "codeunit 50100 Test {\n    procedure A()\n    begin\n    x :=  1;\n    end;\n}\n",
+                3,
+                3,
+            ),
+            (
+                "codeunit 50100 Test\n{\nprocedure DoSomething()\nbegin\nMessage('Hello');\nend;\n}",
+                2,
+                5,
+            ),
+            ("codeunit 50100 Test\n{\nprocedure X()\nbegin\nend;\n}\n", 0, 9999),
+            (
+                "codeunit 50100 Test\n{\nprocedure Outer()\nbegin\nif x > 0 then\nMessage('yes');\nend;\n}",
+                4,
+                5,
+            ),
+        ];
+        for (input, start, end) in cases {
+            let edits = format_range(input, start, end, &FormatOptions::default()).unwrap();
+            assert_eq!(edits.len(), 1, "{input:?}");
+            let applied = apply_format_edit(input, &edits[0]);
+            assert_eq!(
+                applied.lines().count(),
+                input.lines().count(),
+                "{applied:?}"
+            );
+            assert_eq!(
+                applied.ends_with('\n'),
+                input.ends_with('\n'),
+                "{applied:?}"
+            );
+        }
+    }
+
+    /// A header ending in `{` is the case where a full format splits the
+    /// brace onto its own line. The selected statement must stay on its line.
+    #[test]
+    fn range_format_after_split_header_brace_keeps_the_statement() {
+        let input =
+            "codeunit 50100 X {\n    procedure P()\n    begin\n    Message('hello');\n    end;\n}\n";
+        let edits = format_range(input, 3, 3, &FormatOptions::default()).unwrap();
+        assert_eq!(edits.len(), 1);
+        let applied = apply_format_edit(input, &edits[0]);
+        let lines: Vec<&str> = applied.lines().collect();
+        let input_lines: Vec<&str> = input.lines().collect();
+        assert_eq!(
+            applied.matches("Message('hello');").count(),
+            1,
+            "{applied:?}"
+        );
+        assert_eq!(lines[3], "        Message('hello');");
+        assert_eq!(lines[..3], input_lines[..3]);
+        assert_eq!(lines[4..], input_lines[4..]);
+    }
+
+    /// `SameLine` merges a stand-alone `{` into the header in a full format.
+    /// A range edit after the brace keeps its line and touches no other.
+    #[test]
+    fn range_format_same_line_brace_merge() {
+        let input = "codeunit 50100 X\n{\n    procedure P()\n    {\n    begin\n    Message('hello');\n    end;\n}\n";
+        let opts = FormatOptions {
+            brace_style: crate::formatting::BraceStyle::SameLine,
+            ..FormatOptions::default()
+        };
+        let edits = format_range(input, 5, 5, &opts).unwrap();
+        assert_eq!(edits.len(), 1);
+        let applied = apply_format_edit(input, &edits[0]);
+        let lines: Vec<&str> = applied.lines().collect();
+        let input_lines: Vec<&str> = input.lines().collect();
+        assert_eq!(lines.len(), input_lines.len(), "{applied:?}");
+        assert_eq!(lines[5].trim(), "Message('hello');");
+        for (i, (got, want)) in lines.iter().zip(&input_lines).enumerate() {
+            if i != 5 {
+                assert_eq!(got, want, "line {i} changed");
+            }
+        }
+    }
+
+    #[test]
+    fn range_format_with_sorted_properties_keeps_lines_outside_the_selection() {
+        let input = "table 50100 T\n{\n    Caption = 'X';\n    Access = Public;\n    fields\n    {\n    }\n}\n";
+        let opts = FormatOptions {
+            sort_properties: true,
+            ..FormatOptions::default()
+        };
+        let edits = format_range(input, 2, 2, &opts).unwrap();
+        let applied = apply_edits(input, &edits);
+        assert_eq!(applied.matches("Caption = 'X';").count(), 1, "{applied}");
+        assert_eq!(applied.matches("Access = Public;").count(), 1, "{applied}");
+        assert_eq!(applied.lines().nth(3), input.lines().nth(3), "{applied}");
+    }
+
+    #[test]
+    fn range_format_two_blank_lines_between_procedures_matches_full_format() {
+        let opts = FormatOptions {
+            blank_lines_between_procedures: BlankLinesBetweenProcedures::Two,
+            ..FormatOptions::default()
+        };
+        let input = "codeunit 50100 Test\n{\n    procedure A()\n    begin\n    end;\n\n\n\n    procedure B()\n    begin\n    end;\n}\n";
+        let edits = format_range(input, 4, 8, &opts).unwrap();
+        let applied = apply_edits(input, &edits);
+        assert_eq!(applied, crate::formatting::format_al(input, &opts));
+
+        let gap_of_two = "codeunit 50100 Test\n{\n    procedure A()\n    begin\n    end;\n\n\n    procedure B()\n    begin\n    end;\n}\n";
+        assert_eq!(format_range(gap_of_two, 4, 8, &opts), Some(vec![]));
+    }
+
+    #[test]
+    fn range_format_keeps_crlf() {
+        let input = "codeunit 50100 Test {\r\n    procedure A()\r\n    begin\r\n    x :=  1;\r\n    end;\r\n}\r\n";
+        let edits = format_range(input, 3, 3, &FormatOptions::default()).unwrap();
+        let applied = apply_edits(input, &edits);
+        let bare_lf = applied
+            .match_indices('\n')
+            .any(|(i, _)| i == 0 || applied.as_bytes()[i - 1] != b'\r');
+        assert!(!bare_lf, "bare LF in {applied:?}");
+        assert_eq!(
+            applied.lines().nth(3),
+            Some("        x :=  1;"),
+            "{applied:?}"
+        );
     }
 }

@@ -8,7 +8,10 @@
 use serde_json::Value;
 
 use super::symbol_extract::extract_objects;
-use super::symbol_reference::{build_symbol_reference, ExternalSymbols, ObjectRef, SymbolRefMeta};
+use super::symbol_reference::{
+    build_symbol_reference, build_symbol_reference_with_internals, ExternalSymbols, ObjectRef,
+    SymbolRefMeta,
+};
 use al_symbols::model::ObjectKind;
 
 /// A subtype defined in a referenced app resolves to its `ModuleId` + `Id`, and
@@ -518,4 +521,130 @@ fn an_object_without_globals_has_no_variables_key() {
         "{}",
         document["Codeunits"][0]
     );
+}
+
+/// A quoted procedure name is stored unquoted, as alc writes it, so the method
+/// `Name` in SymbolReference.json is `Post Order`, not `"Post Order"`.
+#[test]
+fn quoted_procedure_name_is_unquoted() {
+    let objects = extract_objects(
+        "codeunit 50100 Orders { procedure \"Post Order\"() begin exit(true); end; }",
+        "src/Orders.al",
+    );
+    let document = build_symbol_reference(&objects, &min_app_meta(), &Default::default());
+    assert_eq!(document["Codeunits"][0]["Methods"][0]["Name"], "Post Order");
+}
+
+#[test]
+fn profile_extension_of_dependency_profile_is_module_qualified() {
+    // alc 18.1 writes TargetObject as `#<module id, no dashes>#<name>` for a
+    // profile extension of a profile in a referenced app, in both the main
+    // SymbolReference.json and the per-profile symbol file.
+    let mut external = ExternalSymbols::default();
+    external.resolver.insert(
+        (ObjectKind::Profile, "business manager".to_string()),
+        ObjectRef {
+            id: 0,
+            module_id: Some("437dbf0e-84ff-417a-965d-ed2bb9650972".to_string()),
+        },
+    );
+    let src = "profileextension 50100 \"My Profile Ext\" extends \"BUSINESS MANAGER\" { }";
+    let objects = extract_objects(src, "src/ProfileExt.al");
+    let expected = "#437dbf0e84ff417a965ded2bb9650972#BUSINESS MANAGER";
+
+    let main = build_symbol_reference(&objects, &min_app_meta(), &external);
+    assert_eq!(main["ProfileExtensions"][0]["TargetObject"], expected);
+
+    let per_profile = super::symbol_reference::build_profile_symbol_references(
+        &objects,
+        &min_app_meta(),
+        &external,
+    );
+    let (_, bytes) = &per_profile[0];
+    let doc: Value = serde_json::from_slice(&bytes[3..]).unwrap();
+    assert_eq!(doc["ProfileExtensions"][0]["TargetObject"], expected);
+}
+
+/// The text from `<tag>` through `</tag>`, inclusive.
+fn element<'a>(xml: &'a str, tag: &str) -> &'a str {
+    let start = xml.find(&format!("<{tag}>")).expect("open tag");
+    let end = xml.find(&format!("</{tag}>")).expect("close tag") + tag.len() + 3;
+    &xml[start..end]
+}
+
+#[test]
+fn internals_visible_to_matches_alc() {
+    use super::manifest::AppManifest;
+
+    // Fixtures are alc 18.1 output for the app.json next to them.
+    let app: Value = serde_json::from_str(include_str!(
+        "../tests/fixtures/internals_visible_to/app.json"
+    ))
+    .unwrap();
+    let manifest =
+        AppManifest::from_app_json(&app, "18.1.43.24897", "2026-11-27T10:17:47.5001240Z");
+
+    let alc_navx = include_str!("../tests/fixtures/internals_visible_to/NavxManifest.xml");
+    assert_eq!(
+        element(&manifest.to_navx_xml(), "InternalsVisibleTo"),
+        element(alc_navx, "InternalsVisibleTo"),
+    );
+
+    let alc_json = include_str!("../tests/fixtures/internals_visible_to/SymbolReference.json")
+        .trim_start_matches('\u{feff}');
+    let alc: Value = serde_json::from_str(alc_json).unwrap();
+    let meta = SymbolRefMeta {
+        runtime_version: "16.0".to_string(),
+        app_id: manifest.id.clone(),
+        name: manifest.name.clone(),
+        publisher: manifest.publisher.clone(),
+        version: manifest.version.clone(),
+    };
+    let ours = build_symbol_reference_with_internals(
+        &[],
+        &meta,
+        &ExternalSymbols::default(),
+        &manifest.internals_visible_to,
+    );
+    assert_eq!(
+        ours["InternalsVisibleToModules"],
+        alc["InternalsVisibleToModules"]
+    );
+}
+
+/// alc accepts a project codeunit with the same name as a dependency codeunit
+/// in another namespace. A reference by full name resolves to the object in
+/// that namespace, and an unqualified name resolves to the file's own
+/// namespace first (checks-A5.md, codex-06 cross app).
+#[test]
+fn qualified_reference_resolves_the_dependency_object_of_the_same_name() {
+    let mut external = ExternalSymbols::default();
+    let library = ObjectRef {
+        id: 50150,
+        module_id: Some("0c1a0001-0000-4000-8000-000000000018".to_string()),
+    };
+    external.resolver.insert(
+        (ObjectKind::Codeunit, "finder".to_string()),
+        library.clone(),
+    );
+    external.resolver.insert(
+        (ObjectKind::Codeunit, "sales.tools.finder".to_string()),
+        library,
+    );
+    let src = "namespace Purchases.Tools;\nusing Sales.Tools;\ncodeunit 50100 Finder { \
+               procedure Both(Own: Codeunit Purchases.Tools.Finder; \
+               Other: Codeunit Sales.Tools.Finder; Plain: Codeunit Finder) begin end; }";
+    let objects = extract_objects(src, "src/F.Codeunit.al");
+    let doc = build_symbol_reference(&objects, &min_app_meta(), &external);
+    let codeunit = &doc["Namespaces"][0]["Namespaces"][0]["Codeunits"][0];
+    let parameters = &codeunit["Methods"][0]["Parameters"];
+    let subtype = |index: usize| parameters[index]["TypeDefinition"]["Subtype"].clone();
+    assert_eq!(subtype(0)["Id"], 50100, "{parameters:#}");
+    assert!(subtype(0).get("ModuleId").is_none(), "{parameters:#}");
+    assert_eq!(subtype(1)["Id"], 50150, "{parameters:#}");
+    assert_eq!(
+        subtype(1)["ModuleId"],
+        "0c1a0001-0000-4000-8000-000000000018"
+    );
+    assert_eq!(subtype(2)["Id"], 50100, "{parameters:#}");
 }

@@ -1,21 +1,21 @@
-# Zed AL Extension — Build System
+# Zed AL Extension: build system
 #
 # Usage:
-#   make install   — build the optimised al-lsp and al-explorer, the WASM extension and bridges, copy al-lsp to the extension's work dir (dev/), verify, print status
-#   make build     — rebuild everything (all Rust crates + WASM extension + .NET bridges)
-#   make rust      — rebuild all Rust crates (native, excludes zed-al)
-#   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip2)
-#   make bridges   — rebuild just .NET bridges
-#   make grammar   — regenerate the tree-sitter-al parser sources before a
+#   make install: build the optimised al-lsp and al-explorer, the WASM extension, copy al-lsp to the extension's work dir (dev/), verify, print status
+#   make build    : rebuild everything (all Rust crates + WASM extension + .NET bridges)
+#   make rust     : rebuild all Rust crates (native, excludes zed-al)
+#   make wasm     : rebuild only the WASM extension (zed-al, wasm32-wasip2)
+#   make bridges  : rebuild just .NET bridges
+#   make grammar  : regenerate the tree-sitter-al parser sources before a
 #                    fresh `tree-sitter build`
-#   make language  — regenerate only the Zed-facing languages/al package files
-#   make record-methods — regenerate the Microsoft-derived Record method catalog
-#   make check-record-methods — prove the catalog matches the pinned Microsoft DLL
-#   make repro-artifacts — regenerate generated artifacts; fail on any diff (CI drift guard)
-#   make live-bc-contracts — strict tenant-backed publish/DAP/snapshot/profiling/symbols profile (live test run is SKIP)
-#   make release-dryrun  — read-only release-readiness gate (never publishes)
-#   make plugin-validate — check the Claude Code plugin under plugin/
-#   make clean     — clean all build artifacts
+#   make language : regenerate only the Zed-facing languages/al package files
+#   make record-methods: regenerate the Microsoft-derived Record method catalog
+#   make check-record-methods: prove the catalog matches the pinned Microsoft DLL
+#   make repro-artifacts: regenerate generated artifacts; fail on any diff (CI drift guard)
+#   make live-bc-contracts: strict tenant-backed publish/DAP/snapshot/profiling/symbols profile (live test run is SKIP)
+#   make release-dryrun : release-readiness gate, never publishes (regenerates languages/al in the checkout)
+#   make plugin-validate: check the Claude Code plugin under plugin/
+#   make clean    : clean all build artifacts
 
 SHELL := /bin/bash
 ROOT := $(shell pwd)
@@ -36,17 +36,17 @@ ifeq ($(UNAME_S),Darwin)
 ZED_EXT_DIR ?= $(HOME)/Library/Application Support/Zed/extensions/installed
 ZED_WORK_DIR ?= $(HOME)/Library/Application Support/Zed/extensions/work/al
 else
-ZED_EXT_DIR ?= $(HOME)/.local/share/zed/extensions/installed
+ZED_EXT_DIR ?= $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/zed/extensions/installed
 # The extension's work directory: the extension resolves al-lsp from
 # $(ZED_WORK_DIR)/dev first (see Docs/features/language-server.md).
-ZED_WORK_DIR ?= $(HOME)/.local/share/zed/extensions/work/al
+ZED_WORK_DIR ?= $(or $(XDG_DATA_HOME),$(HOME)/.local/share)/zed/extensions/work/al
 endif
 
 # .NET bridge projects (quoted for paths with spaces)
 ALSEMANTIC_PROJ := "$(ROOT)/crates/al-semantic/bridge/AlBridge.csproj"
 WASM_BIN := $(TARGET_DIR)/wasm32-wasip2/release/zed_al.wasm
 
-.PHONY: build install install-build install-lsp install-files install-status dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate plugin-evals clean
+.PHONY: build install install-build install-lsp install-files install-status print-zed-work-dir dev-setup watch rust wasm bridges grammar language record-methods check-record-methods repro-artifacts shellcheck deny microsoft-contracts live-bc-contracts release-dryrun crates-publish-dryrun plugin-validate plugin-evals clean
 
 # Crates that are NOT published to crates.io (publish = false): the root wasm
 # extension plus the binary/harness crates. Everything else under crates/* is a
@@ -59,24 +59,29 @@ build: rust wasm bridges
 	@echo "Build complete. Restart the LSP in Zed to pick up changes."
 
 # ── Install ──────────────────────────────────────────────────────
-# `install` builds the optimised al-lsp and al-explorer, the WASM extension and
-# the bridges, copies al-lsp into the extension's managed directory
+# `install` builds the optimised al-lsp and al-explorer and the WASM extension,
+# copies al-lsp into the extension's managed directory
 # ($(ZED_WORK_DIR)/dev, the one place the extension looks), checks what it
 # copied against `al-lsp --version`, links the dev extension into Zed and
 # prints a status. It is idempotent. It does not build the debug workspace:
-# run `make build` for that.
-install: install-build wasm bridges install-files install-status
+# run `make build` for that. The copy and the status run in the recipe, so
+# under `make -j` they start only after every build has finished.
+install: install-build wasm
+	@$(MAKE) --no-print-directory install-files
+	@$(MAKE) --no-print-directory install-status
 
 # The optimised binaries `install` copies.
 install-build:
+	@case "$(UNAME_S)" in MINGW*|MSYS*|CYGWIN*) echo "ERROR: make install supports Linux and macOS. On Windows, install the dev extension from the clone in Zed and let it download the release (README, Installation)."; exit 1;; esac
 	@echo "=== Building al-lsp (semantic) and al-explorer, profile $(INSTALL_PROFILE) ==="
 	cargo build --profile $(INSTALL_PROFILE) -p al-lsp --bin al-lsp --features semantic
 	cargo build --profile $(INSTALL_PROFILE) -p al-explorer --bin al-explorer
 
-# Fast refresh of just the semantic al-lsp: rebuild, copy, verify.
+# Fast refresh of the semantic al-lsp and al-explorer: rebuild, copy, verify.
 install-lsp:
-	@echo "=== Rebuild + reinstall semantic al-lsp ==="
+	@echo "=== Rebuild + reinstall semantic al-lsp and al-explorer ==="
 	cargo build --profile $(INSTALL_PROFILE) -p al-lsp --bin al-lsp --features semantic
+	cargo build --profile $(INSTALL_PROFILE) -p al-explorer --bin al-explorer
 	@$(MAKE) --no-print-directory install-files
 	@echo "Restart the AL language server in Zed (or reopen the .al file) to load it."
 
@@ -86,39 +91,67 @@ install-lsp:
 # default and the semantic build, so a later workspace build can replace a
 # linked binary with the stub build. The bridge directory goes next to each
 # copy, and al-explorer next to the managed al-lsp, which looks for it there.
+#
+# Each destination gets a staging directory beside it. The copies go there,
+# the staged al-lsp must answer `--version`, and only then is each file moved
+# into place, the bridge first. The recipe runs under `set -e`, so a failed
+# copy stops it and leaves the old install. `dev/BUILD` is written last.
+#
+# The `al` back-compat alias is a copy of al-explorer. It is claimed only when
+# the name is free, is a copy of the al-explorer being replaced, or is a
+# symlink to $(INSTALL_DIR)/al-explorer or into $(ROOT)/target/ from an older
+# install. The check runs before al-explorer is replaced. On machines with
+# Microsoft's AL dotnet tool, `al` is Microsoft's altool wrapper and is left
+# alone. Use `al-explorer` in scripts.
 install-files:
+	@case "$(UNAME_S)" in MINGW*|MSYS*|CYGWIN*) echo "ERROR: make install supports Linux and macOS. On Windows, install the dev extension from the clone in Zed and let it download the release (README, Installation)."; exit 1;; esac
 	@test -x "$(LSP_BIN)" || { echo "ERROR: $(LSP_BIN) missing, run 'make install-build' first."; exit 1; }
-	@mkdir -p "$(INSTALL_DIR)" "$(ZED_WORK_DIR)/dev"
-	@bdir=$$(ls -dt "$(TARGET_DIR)"/$(INSTALL_PROFILE)/build/al-semantic-*/out/bridge 2>/dev/null | head -1); \
+	@test -x "$(EXPLORER_BIN)" || { echo "ERROR: $(EXPLORER_BIN) missing, run 'make install-build' first."; exit 1; }
+	@set -e; \
+	 mkdir -p "$(INSTALL_DIR)" "$(ZED_WORK_DIR)/dev"; \
+	 a="$(INSTALL_DIR)/al"; claim_alias=0; \
+	 if [ -L "$$a" ]; then \
+	   case "$$(readlink "$$a")" in \
+	     "$(INSTALL_DIR)/al-explorer"|"$(ROOT)/target/"*) claim_alias=1;; \
+	   esac; \
+	 elif [ ! -e "$$a" ]; then claim_alias=1; \
+	 elif cmp -s "$$a" "$(INSTALL_DIR)/al-explorer"; then claim_alias=1; \
+	 fi; \
+	 bdir=$$(ls -dt "$(TARGET_DIR)"/$(INSTALL_PROFILE)/build/al-semantic-*/out/bridge 2>/dev/null | head -1); \
 	 for dest in "$(INSTALL_DIR)" "$(ZED_WORK_DIR)/dev"; do \
-	   rm -f "$$dest/al-lsp" "$$dest/al-explorer"; \
-	   cp -p "$(LSP_BIN)" "$$dest/al-lsp"; \
-	   if [ -x "$(EXPLORER_BIN)" ]; then cp -p "$(EXPLORER_BIN)" "$$dest/al-explorer"; fi; \
-	   if [ -n "$$bdir" ]; then rm -rf "$$dest/bridge"; cp -rp "$$bdir" "$$dest/bridge"; fi; \
-	 done
-	@# `al` back-compat alias, a copy of al-explorer. It is claimed only when the
-	@# name is free, is a symlink from an older install, or is already our
-	@# binary. On machines with Microsoft's AL dotnet tool, `al` is Microsoft's
-	@# altool wrapper and is left alone. Use `al-explorer` in scripts.
-	@a="$(INSTALL_DIR)/al"; \
-	 if [ ! -e "$$a" ] || [ -L "$$a" ] || cmp -s "$$a" "$(INSTALL_DIR)/al-explorer"; then \
+	   stage="$$dest/.al-install.tmp"; \
+	   rm -rf "$$stage"; mkdir -p "$$stage"; \
+	   cp -p "$(LSP_BIN)" "$$stage/al-lsp"; \
+	   cp -p "$(EXPLORER_BIN)" "$$stage/al-explorer"; \
+	   if [ -n "$$bdir" ]; then cp -rp "$$bdir" "$$stage/bridge"; fi; \
+	   "$$stage/al-lsp" --version >/dev/null || { echo "ERROR: staged $$stage/al-lsp does not run"; exit 1; }; \
+	   if [ -n "$$bdir" ]; then rm -rf "$$dest/bridge"; mv "$$stage/bridge" "$$dest/bridge"; fi; \
+	   mv -f "$$stage/al-lsp" "$$dest/al-lsp"; \
+	   mv -f "$$stage/al-explorer" "$$dest/al-explorer"; \
+	   rmdir "$$stage"; \
+	 done; \
+	 if [ "$$claim_alias" = 1 ]; then \
 	   rm -f "$$a"; cp -p "$(INSTALL_DIR)/al-explorer" "$$a"; \
 	 else \
 	   echo "NOTE: $$a is not our alias (likely Microsoft's AL dotnet tool), left untouched."; \
-	 fi
-	@# Stamp = what the installed binary prints, then check both copies say it.
-	@stamp=$$("$(INSTALL_DIR)/al-lsp" --version) && [ -n "$$stamp" ] || { echo "ERROR: $(INSTALL_DIR)/al-lsp --version failed"; exit 1; }; \
-	 printf '%s\n' "$$stamp" > "$(ZED_WORK_DIR)/dev/BUILD"; \
+	 fi; \
+	 mkdir -p "$(ZED_EXT_DIR)"; \
+	 if [ ! -L "$(ZED_EXT_DIR)/al" ] && [ ! -d "$(ZED_EXT_DIR)/al" ]; then \
+	   ln -sf "$(ROOT)" "$(ZED_EXT_DIR)/al"; \
+	 fi; \
+	 stamp=$$("$(INSTALL_DIR)/al-lsp" --version); \
+	 [ -n "$$stamp" ] || { echo "ERROR: $(INSTALL_DIR)/al-lsp --version failed"; exit 1; }; \
 	 managed=$$("$(ZED_WORK_DIR)/dev/al-lsp" --version); \
 	 built=$$("$(LSP_BIN)" --version); \
-	 if [ "$$managed" != "$$stamp" ] || [ "$$(cat "$(ZED_WORK_DIR)/dev/BUILD")" != "$$managed" ]; then \
+	 if [ "$$managed" != "$$stamp" ]; then \
 	   echo "ERROR: installed al-lsp reports '$$managed', expected '$$stamp'"; exit 1; fi; \
 	 if [ "$$built" != "$$stamp" ]; then \
-	   echo "ERROR: $(LSP_BIN) reports '$$built' but the copy reports '$$stamp'"; exit 1; fi
-	@mkdir -p "$(ZED_EXT_DIR)"
-	@if [ ! -L "$(ZED_EXT_DIR)/al" ] && [ ! -d "$(ZED_EXT_DIR)/al" ]; then \
-		ln -sf "$(ROOT)" "$(ZED_EXT_DIR)/al"; \
-	fi
+	   echo "ERROR: $(LSP_BIN) reports '$$built' but the copy reports '$$stamp'"; exit 1; fi; \
+	 printf '%s\n' "$$stamp" > "$(ZED_WORK_DIR)/dev/BUILD"
+
+# The extension work directory, for the banner of scripts/dev-watch.sh.
+print-zed-work-dir:
+	@echo "$(ZED_WORK_DIR)"
 
 # The short status `install` ends with. The dotnet check uses the rule the
 # toolchain itself applies (crates/al-project/src/toolchain.rs dotnet_program):
@@ -134,10 +167,10 @@ install-status:
 	@echo "grammar:      $$([ -f "$(ROOT)/grammars/al.wasm" ] && echo built || echo 'not built yet, Zed builds it when the dev extension installs')"
 	@echo "dev ext link: $$([ -e "$(ZED_EXT_DIR)/al" ] && echo present || echo missing)"
 	@echo ""
-	@echo "Left to do in Zed: run 'zed: install dev extension' (first time) or 'zed: reload extensions'."
+	@echo "Left to do in Zed: run 'zed: install dev extension' and choose this clone, the first time and after each pull, so Zed loads the extension built from the same commit as al-lsp."
 
 # ── One-shot dev environment setup ───────────────────────────────
-# Installs prerequisites then builds + symlinks everything. Run once
+# Installs prerequisites, then builds and copies everything. Run once
 # on a fresh machine, then use `make watch` while developing.
 dev-setup:
 	@echo "=== Ensuring prerequisites ==="
@@ -150,9 +183,11 @@ dev-setup:
 
 # ── Auto-rebuild on change (always-latest binaries for testing) ──
 # Keeps al-lsp, al-explorer and the WASM extension rebuilt as you edit.
-# Binaries are symlinked, so rebuilds are picked up with no reinstall.
-#   make watch              debug native build (fast rebuilds)
-#   make watch ARGS=--release   release native build
+# Each rebuild runs `make install-lsp`, which copies the new build into
+# $(ZED_WORK_DIR)/dev and $(INSTALL_DIR). Restart the language server in Zed
+# to use it.
+#   make watch              rebuild al-lsp, al-explorer and the WASM extension
+#   make watch ARGS=--bridges   also rebuild the .NET bridges
 watch:
 	@bash scripts/dev-watch.sh $(ARGS)
 
@@ -262,6 +297,11 @@ check-record-methods:
 # checked for determinism; the committed-artifact diff target is languages/al.
 repro-artifacts:
 	@echo "=== Reproducible-artifact check ==="
+	@if [ -n "$$(git status --porcelain -- languages/)" ]; then \
+		echo "ERROR: commit or stash languages/ first, this target regenerates it in place"; \
+		git status --short -- languages/; \
+		exit 1; \
+	fi
 	@echo "--- regenerate languages/al + diff (make language) ---"
 	@$(MAKE) --no-print-directory language
 	@if git diff --quiet -- languages/; then \
@@ -292,6 +332,7 @@ shellcheck:
 		shellcheck \
 			scripts/*.sh \
 			plugin/scripts/*.sh \
+			plugin/tests/*.sh \
 			plugin/evals/*.sh \
 			crates/al-test-harness/editor-e2e/*.sh \
 			crates/al-test-harness/editor-e2e/container/*.sh \
@@ -341,6 +382,7 @@ microsoft-contracts:
 	cargo test -p al-test-harness --test pack_native_validate -- --ignored --nocapture
 	cargo test -p al-test-harness --test emit_differential -- --ignored --nocapture
 	cargo test -p al-test-harness --test zed_simulation builtin -- --include-ignored --nocapture --test-threads=1
+	cargo test -p al-test-harness --test scaffold_templates_alc -- --ignored --nocapture
 	@echo "Microsoft AL toolchain contract profile passed."
 
 # ── Live Business Central contract profile ───────────────────────
@@ -351,62 +393,84 @@ microsoft-contracts:
 live-bc-contracts:
 	@bash scripts/live-bc-contracts.sh
 
-# ── Release readiness dry-run (READ-ONLY, never publishes) ────────
-# Runs every self-contained gate a release would, without uploading anything:
+# ── Release readiness dry-run (never publishes) ───────────────────
+# Runs the self-contained gates a release would, without uploading anything:
 # grammar/generator/corpus/package checks, repository and generated-artifact
-# invariants, ShellCheck, formatting and clippy, the cargo-deny dependency
-# policy, native and WASM builds, host/WASM-extension tests, the full native
-# workspace test suite, the semantic-feature clippy and tests, and local
-# package-manifest audits. A tag push additionally waits for the whole CI
-# workflow to conclude successfully (check-release-hygiene.sh --require-ci),
-# so every gate that workflow runs is mirrored here.
-# ShellCheck and cargo-deny are skipped with a printed note when the tool is
-# not installed locally; CI installs both, so a skip here is not a pass there.
+# invariants, ShellCheck, the release and dev-install script tests, formatting
+# and clippy, the benchmark harness and the perf bench, the cargo-deny and
+# cargo-machete dependency policy, native and WASM builds, host/WASM-extension
+# tests, the full native workspace test suite, the semantic-feature clippy and
+# tests, local package-manifest audits, the plugin validation and rustdoc with
+# warnings denied. Step 11 runs `make language`, which regenerates languages/al
+# in the checkout, so start from a clean languages/ directory.
+#
+# A tag push also waits for the whole CI workflow to conclude successfully
+# (check-release-hygiene.sh --require-ci). This target does not run these parts
+# of CI or release.yml:
+#   - the glibc floor cross build (CI job `linux-glibc-floor`, which needs `cross`
+#     and a container engine)
+#   - the macOS leg of the `ci` job and the `windows-native` job
+#   - the semantic builds on macOS and Windows (CI job `semantic-other-os`)
+#   - the release packaging steps in release.yml
+# ShellCheck, cargo-deny and cargo-machete are skipped with a printed note when
+# the tool is not installed locally. CI installs them, so a skip here is not a pass there.
 # Profiles needing a proprietary Microsoft extension, `alc`, or live Business
 # Central remain explicit environment-gated checks in Docs/testing-guide.md.
 # The separate `crates-publish-dryrun` target is the strict registry-resolution
 # gate and never converts a blocked dependency into success.
 release-dryrun:
-	@echo "=== Release dry-run (read-only; nothing is published) ==="
-	@echo "--- 1/16 grammar crate tests ---"
+	@echo "=== Release dry-run (nothing is published, step 11 regenerates languages/al) ==="
+	@echo "--- 1/22 grammar crate tests ---"
 	cd tree-sitter-al && cargo test --all-targets
-	@echo "--- 2/16 grammar generator tests ---"
+	@echo "--- 2/22 grammar generator tests ---"
 	cd tree-sitter-al && cargo test --manifest-path generator/Cargo.toml --all-targets
-	@echo "--- 3/16 focused grammar fixtures + pinned repository corpus ---"
+	@echo "--- 3/22 focused grammar fixtures + pinned repository corpus ---"
 	tree-sitter-al/tests/run_repo_tests.sh
-	@echo "--- 4/16 grammar package manifest ---"
+	@echo "--- 4/22 grammar package manifest ---"
 	cd tree-sitter-al && cargo package --list
-	@echo "--- 5/16 repo-slug consistency ---"
+	@echo "--- 5/22 repo-slug consistency ---"
 	@bash scripts/check-repo-consistency.sh
 	@bash scripts/test-use-api.sh
-	@echo "--- 6/16 ShellCheck over the shipped shell scripts ---"
+	@echo "--- 6/22 ShellCheck over the shipped shell scripts ---"
 	@$(MAKE) --no-print-directory shellcheck
-	@echo "--- 7/16 stale crates/<name> doc references ---"
+	@echo "--- 7/22 stale crates/<name> doc references ---"
 	@bash scripts/check-doc-paths.sh
-	@echo "--- 8/16 release hygiene (versions / submodule / grammar rev / generated assets) ---"
+	@echo "--- 8/22 release hygiene (versions / submodule / grammar rev / generated assets) ---"
 	@bash scripts/check-release-hygiene.sh
-	@echo "--- 9/16 reproducible generated artifacts ---"
+	@echo "--- 9/22 release script tests ---"
+	@bash scripts/test-release-scripts.sh
+	@echo "--- 10/22 dev-install script tests ---"
+	@bash scripts/test-dev-install.sh
+	@echo "--- 11/22 reproducible generated artifacts ---"
 	@$(MAKE) --no-print-directory repro-artifacts
-	@echo "--- 10/16 formatting + clippy + benchmark harness contracts ---"
+	@echo "--- 12/22 formatting + clippy + benchmark harness contracts ---"
 	cargo fmt --all -- --check
 	cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
 	cargo clippy -p zed-al --all-targets -- -D warnings
 	python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'
-	@echo "--- 11/16 dependency policy (cargo-deny) ---"
+	@echo "--- 13/22 dependency policy (cargo-deny) ---"
 	@$(MAKE) --no-print-directory deny
-	@echo "--- 12/16 build workspace (excl zed-al) + real semantic al-lsp ---"
+	@echo "--- 14/22 unused dependencies (cargo-machete) ---"
+	@if command -v cargo-machete >/dev/null 2>&1; then \
+		cargo machete; \
+	else \
+		echo "  SKIPPED: cargo-machete is not installed. CI still runs it (see ci.yml). Install it with 'cargo install cargo-machete --version 0.9.2 --locked'."; \
+	fi
+	@echo "--- 15/22 build workspace (excl zed-al) + real semantic al-lsp ---"
 	cargo build --workspace --exclude zed-al
 	cargo build -p al-lsp --bin al-lsp --features semantic
-	@echo "--- 13/16 test workspace (excl zed-al) ---"
+	@echo "--- 16/22 test workspace (excl zed-al) ---"
 	cargo test --workspace --exclude zed-al
-	@echo "--- 14/16 semantic-feature clippy + tests (the unsafe CLR FFI) ---"
+	@echo "--- 17/22 semantic-feature clippy + tests (the unsafe CLR FFI) ---"
 	cargo clippy -p al-semantic -p al-lsp --features semantic --all-targets -- -D warnings
 	cargo test -p al-semantic --features semantic
-	@echo "--- 15/16 test + build the actual Zed extension ---"
+	@echo "--- 18/22 test + build the actual Zed extension ---"
 	cargo test -p zed-al
 	cargo build -p zed-al --target wasm32-wasip2 --release
 	@bash scripts/check-zed-wasm-component.sh "$(WASM_BIN)"
-	@echo "--- 16/16 local package-manifest audit for publishable crates ---"
+	@echo "--- 19/22 perf bench (CI timing arguments) ---"
+	cargo bench -p al-lsp --bench perf -- --warm-up-time 0.1 --measurement-time 0.2 --sample-size 10
+	@echo "--- 20/22 local package-manifest audit for publishable crates ---"
 	@fail=0; \
 	for dir in crates/*/; do \
 		f="$$dir/Cargo.toml"; \
@@ -422,8 +486,12 @@ release-dryrun:
 		fi; \
 	done; \
 	[ $$fail -eq 0 ] || { echo "release-dryrun: a crate package manifest is invalid"; exit 1; }
+	@echo "--- 21/22 Claude Code plugin validation ---"
+	@$(MAKE) --no-print-directory plugin-validate
+	@echo "--- 22/22 rustdoc with warnings denied ---"
+	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude zed-al --no-deps
 	@echo ""
-	@echo "Release dry-run complete (read-only — nothing published)."
+	@echo "Release dry-run complete (nothing published)."
 
 # Strict crates.io resolution gate. This is deliberately separate from the Zed
 # extension release: before the first dependency-ordered library publication,

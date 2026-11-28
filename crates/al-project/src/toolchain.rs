@@ -14,7 +14,10 @@ use crate::project::home_dir;
 /// Overrides the `dotnet` host used to run Microsoft's AL tools.
 pub const DOTNET_PATH_ENV: &str = "AL_DOTNET_PATH";
 
-fn dotnet_program() -> OsString {
+/// The `dotnet` host `AL_DOTNET_PATH` names, or `dotnet` from `PATH`. A caller
+/// that spawns for a project takes the program from
+/// [`crate::trust::enforce_dotnet_path_before_spawn`] instead.
+pub fn dotnet_program() -> OsString {
     std::env::var_os(DOTNET_PATH_ENV)
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| OsString::from("dotnet"))
@@ -32,12 +35,14 @@ fn dotnet_program() -> OsString {
 /// net8.0 tool runs on .NET 10+. (Same fix as the bridge's csproj RollForward,
 /// but applied to Microsoft's binaries we cannot edit — via the environment.)
 ///
-/// `dotnet_command()` returns a `std::process::Command`; `dotnet_command_async`
-/// the tokio equivalent. Both seed the first arg with the `alc` dll path. The
-/// `dotnet` host program is resolved via `dotnet_program` (overridable with
-/// `$AL_DOTNET_PATH`, see [`DOTNET_PATH_ENV`]).
-pub fn dotnet_command(alc: &Path) -> std::process::Command {
-    let mut cmd = std::process::Command::new(dotnet_program());
+/// `dotnet_command()` returns a `std::process::Command`. `dotnet_command_async`
+/// is the tokio equivalent. Both seed the first arg with the `alc` dll path and
+/// spawn the `program` the caller passes. Callers get that program from
+/// [`crate::trust::enforce_dotnet_path_before_spawn`] (`DotnetHost::program`),
+/// which uses `$AL_DOTNET_PATH` (see [`DOTNET_PATH_ENV`]) only when the trust
+/// check allows it.
+pub fn dotnet_command(program: &std::ffi::OsStr, alc: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
     cmd.arg(alc);
     cmd.env("DOTNET_ROLL_FORWARD", "Major");
     cmd
@@ -61,8 +66,12 @@ pub fn find_altool(toolchain: &AlToolchain) -> Option<std::path::PathBuf> {
 /// `altool` is an ASP.NET Core app and additionally requires the
 /// Microsoft.AspNetCore.App shared framework at runtime (the dotnet host
 /// reports a precise error if it's missing).
-pub fn official_lsp_command(altool: &Path, extra_args: &[String]) -> std::process::Command {
-    let mut cmd = std::process::Command::new(dotnet_program());
+pub fn official_lsp_command(
+    program: &std::ffi::OsStr,
+    altool: &Path,
+    extra_args: &[String],
+) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
     cmd.env("DOTNET_ROLL_FORWARD", "Major");
     cmd.arg(altool);
     cmd.arg("launchlspserver");
@@ -70,9 +79,9 @@ pub fn official_lsp_command(altool: &Path, extra_args: &[String]) -> std::proces
     cmd
 }
 
-/// Async counterpart of [`dotnet_command`].
-pub fn dotnet_command_async(alc: &Path) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(dotnet_program());
+/// Async counterpart of [`dotnet_command`], spawning `program`.
+pub fn dotnet_command_async(program: &std::ffi::OsStr, alc: &Path) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
     cmd.arg(alc);
     cmd.env("DOTNET_ROLL_FORWARD", "Major");
     cmd
@@ -622,11 +631,8 @@ mod tests {
 
     #[test]
     fn dotnet_command_sets_roll_forward_and_alc_arg() {
-        // Pin AL_DOTNET_PATH unset so the program assertion is deterministic
-        // regardless of the developer's ambient environment.
-        let _g = DotnetEnvGuard::set(None);
         let alc = std::path::Path::new("/some/tools/net8.0/any/alc.dll");
-        let cmd = dotnet_command(alc);
+        let cmd = dotnet_command(std::ffi::OsStr::new("dotnet"), alc);
         assert_eq!(cmd.get_program(), "dotnet");
         let args: Vec<_> = cmd
             .get_args()
@@ -655,7 +661,7 @@ mod tests {
         std::fs::write(dir.path().join("altool.dll"), b"").unwrap();
         let altool = find_altool(&tc).expect("altool.dll sibling discovered");
         let extra = vec!["/x/proj".to_string()];
-        let cmd = official_lsp_command(&altool, &extra);
+        let cmd = official_lsp_command(std::ffi::OsStr::new("dotnet"), &altool, &extra);
         assert_eq!(cmd.get_program(), std::ffi::OsStr::new("dotnet"));
         let args: Vec<String> = cmd
             .get_args()
@@ -676,7 +682,7 @@ mod tests {
     fn dotnet_command_async_sets_roll_forward() {
         let _g = DotnetEnvGuard::set(None);
         let alc = std::path::Path::new("/x/alc.dll");
-        let cmd = dotnet_command_async(alc);
+        let cmd = dotnet_command_async(std::ffi::OsStr::new("dotnet"), alc);
         let std_cmd = cmd.as_std();
         let rf = std_cmd
             .get_envs()
@@ -1127,13 +1133,14 @@ mod tests {
     }
 
     #[test]
-    fn dotnet_command_uses_custom_program_override() {
+    fn dotnet_command_uses_the_given_program() {
         let tmp = tempfile::tempdir().unwrap();
         let exe = write_executable(tmp.path(), "custom-dotnet");
-        let _g = DotnetEnvGuard::set(Some(exe.as_os_str()));
-        let cmd = dotnet_command(std::path::Path::new("/x/alc.dll"));
+        // AL_DOTNET_PATH names another host. dotnet_command must not read it.
+        let _g = DotnetEnvGuard::set(Some(std::ffi::OsStr::new("/env/override/dotnet")));
+        let cmd = dotnet_command(exe.as_os_str(), std::path::Path::new("/x/alc.dll"));
         assert_eq!(cmd.get_program(), exe.as_os_str());
-        // The override must not disturb the roll-forward env or the alc arg.
+        // The program must not disturb the roll-forward env or the alc arg.
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())

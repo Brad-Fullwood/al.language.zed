@@ -293,7 +293,7 @@ fn read_source_file_rejects_symlinks_and_directories() {
 }
 
 #[test]
-fn scan_rejects_oversized_al_file_without_publishing_partial_index() {
+fn scan_skips_oversized_al_file_and_indexes_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("ok.al"), "codeunit 1 Ok {}").unwrap();
     let big = dir.path().join("big.al");
@@ -302,21 +302,19 @@ fn scan_rejects_oversized_al_file_without_publishing_partial_index() {
     drop(f);
 
     let index = FileIndex::new();
-    let error = index
-        .scan(dir.path())
-        .expect_err("oversized source must fail the complete scan");
-    assert!(matches!(error, ScanError::FileTooLarge { .. }));
-    assert_eq!(
-        index.len(),
-        0,
-        "a failed scan must publish no partial index"
-    );
-    assert!(index.get_content(&dir.path().join("ok.al")).is_none());
+    let (found, skipped) = index
+        .scan_reporting(dir.path())
+        .expect("an oversized source is skipped, not fatal");
+    assert_eq!(found, 2, "the skipped file is still one of the files found");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].0, big);
+    assert!(index.get_content(&dir.path().join("ok.al")).is_some());
     assert!(index.get_content(&big).is_none());
+    assert_eq!(index.len(), 1);
 }
 
 #[test]
-fn scan_rejects_invalid_utf8_without_replacing_previous_generation() {
+fn scan_skips_invalid_utf8_and_keeps_the_other_files() {
     let dir = tempfile::tempdir().unwrap();
     let existing = dir.path().join("Existing.al");
     fs::write(&existing, "codeunit 1 Existing {}").unwrap();
@@ -325,12 +323,33 @@ fn scan_rejects_invalid_utf8_without_replacing_previous_generation() {
 
     let invalid = dir.path().join("Invalid.al");
     fs::write(&invalid, [0xff, 0xfe]).unwrap();
-    let error = index
-        .scan(dir.path())
-        .expect_err("non-UTF-8 AL source must fail the complete scan");
-    assert!(matches!(error, ScanError::ReadFile { .. }));
-    assert_eq!(index.len(), 1);
+    let (_, skipped) = index
+        .scan_reporting(dir.path())
+        .expect("non-UTF-8 AL source is skipped, not fatal");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].0, invalid);
     assert!(index.get_content(&existing).is_some());
+    assert!(index.get_content(&invalid).is_none());
+    assert_eq!(index.len(), 1);
+}
+
+#[test]
+fn scan_skips_unreadable_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let valid = dir.path().join("Valid.al");
+    fs::write(&valid, "codeunit 1 Valid {}").unwrap();
+    let invalid = dir.path().join("Invalid.al");
+    fs::write(&invalid, [0xff, 0xfe]).unwrap();
+
+    let index = FileIndex::new();
+    let (found, skipped) = index
+        .scan_reporting(dir.path())
+        .expect("an unreadable file is skipped, not fatal");
+    assert_eq!(found, 2);
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].0, invalid);
+    assert!(!skipped[0].1.is_empty(), "the skip carries a reason");
+    assert!(index.get_content(&valid).is_some());
     assert!(index.get_content(&invalid).is_none());
 }
 
@@ -389,7 +408,7 @@ fn discovery_preserves_an_aliased_project_root() {
 }
 
 #[test]
-fn incremental_scan_rejects_file_that_grew_oversized_atomically() {
+fn incremental_scan_skips_file_that_grew_oversized_and_drops_its_entries() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Grower.al");
     fs::write(&path, "codeunit 50100 \"Grower\" { }").unwrap();
@@ -407,12 +426,53 @@ fn incremental_scan_rejects_file_that_grew_oversized_atomically() {
 
     let second = index
         .incremental_scan(dir.path())
-        .expect_err("oversized changed file must fail the refresh");
-    assert!(matches!(second, ScanError::FileTooLarge { .. }));
+        .expect("an oversized changed file is skipped, not fatal");
+    assert_eq!(second.skipped.len(), 1);
+    assert_eq!(second.skipped[0].0, path);
     assert!(
-        index.get_content(&path).is_some(),
-        "failed refresh must retain the complete previous generation"
+        second.changed.contains(&path),
+        "the dropped entries are reported as changed"
     );
+    assert!(
+        second.topology_changed,
+        "the dropped object leaves the topology"
+    );
+    assert!(index.get_content(&path).is_none());
+    assert_eq!(index.len(), 0);
+
+    // Shrink the file back under the cap. The next refresh retries it.
+    fs::write(&path, "codeunit 50100 \"Grower\" { }").unwrap();
+    let third = index.incremental_scan(dir.path()).unwrap();
+    assert!(third.skipped.is_empty());
+    assert!(third.changed.contains(&path));
+    assert!(index.get_content(&path).is_some());
+}
+
+#[test]
+fn incremental_scan_skips_invalid_utf8_and_indexes_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let valid = dir.path().join("a.al");
+    fs::write(&valid, "codeunit 1 Old {}").unwrap();
+    let index = FileIndex::new();
+    index.incremental_scan(dir.path()).unwrap();
+
+    // In one refresh: a.al changes and b.al is not valid UTF-8.
+    fs::write(&valid, "codeunit 1 New {}").unwrap();
+    let invalid = dir.path().join("b.al");
+    fs::write(&invalid, [0xff, 0xfe]).unwrap();
+    let delta = index
+        .incremental_scan(dir.path())
+        .expect("a non-UTF-8 file is skipped, not fatal");
+
+    assert_eq!(delta.skipped.len(), 1);
+    assert_eq!(delta.skipped[0].0, invalid);
+    assert!(!delta.skipped[0].1.is_empty(), "the skip carries a reason");
+    assert!(delta.changed.contains(&valid));
+    assert_eq!(
+        index.get_content(&valid).as_deref(),
+        Some("codeunit 1 New {}")
+    );
+    assert!(index.get_content(&invalid).is_none());
     assert_eq!(index.len(), 1);
 }
 
@@ -1410,4 +1470,148 @@ fn incremental_scan_reparses_files_when_app_symbols_change() {
         .map(|procedure| procedure.file)
         .collect();
     assert_eq!(owners, vec![file]);
+}
+
+/// An `app.json` added in a subfolder after the first scan takes the files
+/// under it. Their preprocessor symbols change, so the next incremental scan
+/// reparses them and lists them as changed.
+#[test]
+fn nested_app_added_after_the_first_scan_takes_its_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let sub = root.join("sub");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(
+        root.join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"outer","preprocessorSymbols":[]}"#,
+    )
+    .unwrap();
+    let file = sub.join("C.Codeunit.al");
+    fs::write(
+        &file,
+        "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    begin\n    end;\n#endif\n}\n",
+    )
+    .unwrap();
+    // Older than the racy window, so only the owner change can reparse the file.
+    let old = SystemTime::now() - std::time::Duration::from_secs(60);
+    fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(old)
+        .unwrap();
+
+    let index = FileIndex::new();
+    index.scan(root).unwrap();
+    assert!(index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .is_empty());
+
+    fs::write(
+        sub.join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000002","name":"inner","preprocessorSymbols":["CLEAN24"]}"#,
+    )
+    .unwrap();
+    let delta = index.incremental_scan(root).unwrap();
+
+    assert_eq!(delta.changed, vec![file.clone()]);
+    let owners: Vec<PathBuf> = index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|procedure| procedure.file)
+        .collect();
+    assert_eq!(owners, vec![file]);
+}
+
+/// An `app.json` over the size cap is refused. The refresh keeps the identity
+/// the app already had, so the oversized manifest does not change how its
+/// files parse.
+#[test]
+fn oversized_app_json_keeps_the_last_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":[]}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("src").join("C.Codeunit.al"),
+        "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    begin\n    end;\n#endif\n}\n",
+    )
+    .unwrap();
+    let index = FileIndex::new();
+    index.scan(root).unwrap();
+
+    // Valid JSON that declares CLEAN24, padded past the cap.
+    let padding = "x".repeat(usize::try_from(MAX_APP_JSON_BYTES).unwrap());
+    fs::write(
+        root.join("app.json"),
+        format!(
+            r#"{{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":["CLEAN24"],"padding":"{padding}"}}"#
+        ),
+    )
+    .unwrap();
+    index.incremental_scan(root).unwrap();
+
+    let symbols_kept = index
+        .apps
+        .get(root)
+        .expect("the app keeps its identity")
+        .preprocessor_symbols
+        .is_empty();
+    assert!(symbols_kept, "the refused manifest changed the identity");
+    assert!(index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .is_empty());
+}
+
+/// A FIFO named `app.json` must not block the refresh. Opening it for a read
+/// waits for a writer, so the refresh runs on a thread the test can give up on.
+#[cfg(unix)]
+#[test]
+fn fifo_app_json_does_not_block_the_refresh() {
+    fn make_fifo(path: &std::path::Path) {
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // Safety: `name` is a NUL terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let app_json = root.join("app.json");
+    fs::write(
+        &app_json,
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":[]}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("src").join("C.Codeunit.al"),
+        "codeunit 50100 C\n{\n}\n",
+    )
+    .unwrap();
+    let index = std::sync::Arc::new(FileIndex::new());
+    index.scan(&root).unwrap();
+
+    fs::remove_file(&app_json).unwrap();
+    make_fifo(&app_json);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::sync::Arc::clone(&index);
+    let worker_root = root.clone();
+    std::thread::spawn(move || {
+        let refused = AppIdentity::read(&worker_root.join("app.json")).is_err();
+        let scanned = worker.incremental_scan(&worker_root).is_ok();
+        tx.send((refused, scanned)).unwrap();
+    });
+    let (refused, scanned) = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the refresh blocked on the FIFO app.json");
+    assert!(refused, "a FIFO app.json is refused, not read");
+    assert!(scanned, "the scan completes past the FIFO app.json");
 }

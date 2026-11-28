@@ -207,6 +207,8 @@ pub(super) fn render_filter_value(v: &Value) -> Result<String, String> {
         Value::Text(s) | Value::Code(s) => Ok(s.clone()),
         Value::Boolean(b) => Ok(b.to_string()),
         Value::Date(d) | Value::Time(d) | Value::DateTime(d) => Ok(d.to_string()),
+        // -1 keeps the undefined time apart from midnight (0) in a filter.
+        Value::UndefinedTime => Ok("-1".to_string()),
         Value::Option { ordinal, .. } => Ok(ordinal.to_string()),
         Value::Char(c) => Ok(c.to_string()),
         value => Err(format!(

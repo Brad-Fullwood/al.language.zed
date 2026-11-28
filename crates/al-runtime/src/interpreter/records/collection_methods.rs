@@ -3,11 +3,12 @@
 //! dispatch path as the record methods.
 
 use crate::interpreter::dispatch::{thread_cancelled, DispatchCtx};
-use crate::interpreter::eval_error;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{
-    check_collection_len, check_text_size, element_bytes, entry_bytes, Collection, Value,
+    check_collection_len, check_text_size, element_bytes, entry_bytes, Collection, ErrorInfo,
+    Value, ERROR_TYPE_CANCELLED,
 };
+use crate::interpreter::{error_info, eval_error};
 
 /// True if `method` is a `List of [T]` method implemented by the local runtime.
 pub fn supports_list_method(method: &str) -> bool {
@@ -242,7 +243,11 @@ fn search_list(list: &Collection<Vec<Value>>, method: &str, needle: &Value) -> E
         find(&list.lock())
     };
     if thread_cancelled() {
-        return eval_error(format!("interpreter cancelled in List.{method}"));
+        // Tagged so `asserterror` does not catch the cancel.
+        return Eval::Error(ErrorInfo {
+            error_type: Some(ERROR_TYPE_CANCELLED.to_string()),
+            ..error_info(format!("interpreter cancelled in List.{method}"))
+        });
     }
     match (method, position) {
         ("contains", position) => Eval::Normal(Value::Boolean(position.is_some())),
@@ -844,6 +849,8 @@ fn dict_key(value: &Value) -> Result<String, String> {
         Value::Boolean(b) => b.to_string(),
         Value::Date(d) => format!("D{d}"),
         Value::Time(t) => format!("T{t}"),
+        // No digits follow the T, so the undefined time cannot share the key of midnight (T0).
+        Value::UndefinedTime => "T".to_string(),
         Value::DateTime(dt) => format!("DT{dt}"),
         Value::Guid(g) => g.to_uppercase(),
         Value::Char(c) => format!("C{c}"),

@@ -374,11 +374,11 @@ impl AlExtension {
         status_id: Option<&zed::LanguageServerId>,
         user_configured_path: Option<&str>,
     ) -> Result<String> {
-        // Deliberately NOT cached into `self.cached_binary_path`: this path is
-        // scoped to whichever surface (LSP/DAP/MCP) is calling right now, and
-        // each surface resolves its own `binary.path`/`debugAdapterPath`
-        // setting independently. Caching it here would leak one surface's
-        // explicit override into the others' resolution on the very next call.
+        // `user_configured_path` is always `None` today, because
+        // `settings::resolve_server_launch` returns `program: None` for every input. The
+        // parameter is kept as the one place a program could enter, which
+        // `settings_test::settings_cannot_choose_the_language_server_program_or_its_arguments`
+        // checks.
         if let Some(path) = user_configured_path {
             return Ok(path.to_string());
         }
@@ -578,8 +578,7 @@ impl zed::Extension for AlExtension {
         );
 
         let worktree_root = worktree.root_path();
-        let dotnet_path = settings::resolve_dotnet_path(settings.settings.as_ref())
-            .filter(|path| !settings::is_worktree_resident_program(path, &worktree_root));
+        let dotnet_path = settings::child_dotnet_path(settings.settings.as_ref(), &worktree_root);
         self.cached_dotnet_path = dotnet_path.clone().map(|path| (worktree.id(), path));
 
         let binary_path =
@@ -709,9 +708,8 @@ impl zed::Extension for AlExtension {
         // Resolve al-lsp via the same chain used for LSP: managed dev/ copy →
         // in-memory session cache → on-disk cached download (offline) → GitHub
         // release download. No LanguageServerId exists on the DAP path (and the
-        // released API has no way to construct one), so download progress is
-        // not surfaced in the status UI — see find_or_download_binary's
-        // status_id doc.
+        // released API has no way to construct one), so the `status_id`
+        // argument is `None` here and no download status is shown.
         //
         // The adapter path comes from the debug scenario, which a repository's
         // `.zed/debug.json` writes, and it names the program to run. Same rule

@@ -49,7 +49,7 @@ Each feature below names the query module that implements the (transport-agnosti
 | **Semantic tokens** | `queries/semantic_tokens.rs` (+ `syntax/tokens.rs`) | Full-document, delta-encoded. `spawn_blocking`. |
 | **Inlay hints** | `queries/inlay_hints.rs` | Parameter-name hints at call sites (default on) and return-type hints on procedures (default off), with type-aware overload resolution. Uses cached doc symbols where available. |
 | **CodeLens** | `queries/code_lens/` | Reference-count lenses on procedures/triggers/events. Profiler lenses (`⏱ Xms · N calls`) when an `.alcpuprofile` is loaded. Test status lenses (NotRun/Running/Pass/Fail/Skip) on `[Test]` procedures, carrying a `TestTarget`. |
-| **Signature help** | `queries/signature.rs` | Parameter list with active-parameter highlight. Overload picked by parameter count, widest as fallback. Bridge-backed `signature_help_full`. |
+| **Signature help** | `queries/signature.rs` | Parameter list with active-parameter highlight. Overload picked by parameter count, widest as fallback. |
 | **Formatting / range formatting** | `server/formatting.rs` (+ `al-syntax/src/formatting/`) | Takes indentation from the request's `tabSize`/`insertSpaces` and the rest from the `al.formatting.*` settings. Range formatting uses whole-document indent context. `al-explorer format` reads `.alformat.json` through `queries/format.rs` instead. |
 | **Folding** | `queries/folding.rs` (+ `syntax/folding.rs`) | Blocks, procedures, comment runs. |
 | **Diagnostics** | `queries/diagnostics.rs` + `server/diagnostics.rs` | Two-phase (below). |
@@ -101,7 +101,8 @@ changed, and a manifest that no longer parses leaves the one read before in use.
 `app.json` or debug configuration of an app in a subfolder of the project is ignored. A folder that had no `app.json` at startup is loaded as a
 project on `al.reindex`. The symbol package folders are listed again on `al.reindex`, after a symbol
 download and when a package setting changes, so a package copied into `.alpackages` by hand is
-loaded by `al.reindex`.
+loaded by `al.reindex`. A symbol package that cannot be read is skipped with a warning at
+startup and on `al.reindex`, and the other packages load.
 
 ## LSP execute commands
 
@@ -119,11 +120,15 @@ Handled in `server/commands.rs`:
 | `al.compile` | Build the project (`alc` when the toolchain is found, else the native emitter, `al.useOfficialCompiler` forces either) |
 | `al.applyRecommendedSettings` | Apply recommended Zed workspace settings for AL |
 
+On the first open of an AL project with no AL settings in Zed, the server asks once whether to apply the recommended settings. Project diagnostics start while the question is open. When symbol packages are missing, the server asks whether to download them and starts project diagnostics after the answer.
+
 ### CodeLens command IDs
 
-CodeLens entries invoke `al.findReferences`, `al.showProfiler`, and `al.runTest`. All three are
-registered execute commands and reuse the same reference, profiler, and test services as the other
-entry points.
+CodeLens entries invoke `al.findReferences`, `al.showProfiler`, `al.runTest`, `al.showSubscribers`
+and `al.showEventSource`. All five are registered execute commands and reuse the same reference,
+profiler, test and event services as the other entry points. `al.runTest` runs the test through the
+daemon's `tests.run_batch`: a local test runs and its result is stored, a test that needs Business
+Central is reported as skipped.
 
 ## Microsoft comparison
 

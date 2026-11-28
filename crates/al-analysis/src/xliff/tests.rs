@@ -102,7 +102,7 @@ fn test_generate_xliff_roundtrip() {
     assert!(xml.contains("Gibt den Namen an"));
     assert!(xml.contains("state=\"translated\""));
 
-    let parsed = parse_xliff(&xml);
+    let parsed = parse_xliff(&xml).expect("valid xliff");
     assert_eq!(parsed.len(), 2);
     assert!(parsed.contains_key("Table 50100 MyTable - Caption"));
     assert_eq!(parsed["Table 50100 MyTable - Caption"].source, "My Table");
@@ -139,7 +139,7 @@ fn test_generate_xliff_roundtrip_escaped_chars() {
         }];
 
         let xml = generate_xliff("MyApp", "en-US", "de-DE", &units);
-        let parsed = parse_xliff(&xml);
+        let parsed = parse_xliff(&xml).expect("valid xliff");
         let id = format!("Table 50100 MyTable - Caption {i}");
         let unit = parsed.get(&id).expect("unit present after roundtrip");
         assert_eq!(
@@ -164,8 +164,8 @@ fn test_generate_xliff_roundtrip_quoted_id_attribute() {
     // AL object names can legitimately contain double quotes (quoted
     // identifiers), so a translation-unit id may too. On generation the
     // quote is escaped to `&quot;` inside the `id="..."` attribute; on
-    // parse, `extract_xml_attr` must find the real closing quote (not the
-    // escaped one) and unescape the value back to the exact original id.
+    // parse, the XML reader must unescape the value back to the exact
+    // original id.
     let id = r#"Table 50100 "My Table" - Property Caption"#;
     let units = vec![TranslationUnit {
         id: id.to_string(),
@@ -186,7 +186,7 @@ fn test_generate_xliff_roundtrip_quoted_id_attribute() {
         "quote in id should be XML-escaped in the attribute value"
     );
 
-    let parsed = parse_xliff(&xml);
+    let parsed = parse_xliff(&xml).expect("valid xliff");
     let unit = parsed
         .get(id)
         .expect("unit with quoted id present after roundtrip");
@@ -567,6 +567,42 @@ var
     .is_empty());
 }
 
+/// A property split over lines is one statement, so `Locked` on the next
+/// line still locks the caption.
+#[test]
+fn locked_caption_on_the_next_line_is_not_extracted() {
+    let units = extract(
+        r#"table 50100 "T"
+{
+    fields
+    {
+        field(1; Code; Code[20])
+        {
+            Caption = 'Internal Code',
+                Locked = true;
+        }
+    }
+}"#,
+    );
+    assert!(units.is_empty(), "{units:#?}");
+}
+
+/// A label Comment on the next line becomes the developer note.
+#[test]
+fn label_comment_on_the_next_line_becomes_the_developer_note() {
+    let units = extract(
+        r#"codeunit 50100 "C"
+{
+    var
+        MyLbl: Label 'Order %1',
+            Comment = '%1 = Order No.';
+}"#,
+    );
+    assert_eq!(units.len(), 1, "{units:#?}");
+    assert_eq!(units[0].source, "Order %1");
+    assert_eq!(units[0].developer_note.as_deref(), Some("%1 = Order No."));
+}
+
 #[test]
 fn label_ids_are_stable_across_extraction_order() {
     let al = r#"codeunit 50100 "My Codeunit"
@@ -625,7 +661,7 @@ fn parse_xliff_preserves_empty_single_line_source() {
 </body>
   </file>
 </xliff>"#;
-    let parsed = parse_xliff(xml);
+    let parsed = parse_xliff(xml).expect("valid xliff");
     let unit = parsed
         .get("Table 1 T - Caption")
         .expect("trans-unit with empty source must survive parsing");
@@ -814,7 +850,7 @@ Line three</source>
 </body>
   </file>
 </xliff>"#;
-    let parsed = parse_xliff(xml);
+    let parsed = parse_xliff(xml).expect("valid xliff");
     let unit = parsed.get("multiline.1").expect("unit should parse");
     assert_eq!(unit.source, "Line one\nLine two\nLine three");
 }
@@ -835,7 +871,7 @@ le monde</target>
 </body>
   </file>
 </xliff>"#;
-    let parsed = parse_xliff(xml);
+    let parsed = parse_xliff(xml).expect("valid xliff");
     let unit = parsed.get("multiline.2").expect("unit should parse");
     assert_eq!(unit.target.as_deref(), Some("Bonjour\nle monde"));
     assert_eq!(unit.state, TranslationState::Translated);
@@ -880,7 +916,7 @@ fn parse_xliff_single_line_body_still_works() {
 </body>
   </file>
 </xliff>"#;
-    let parsed = parse_xliff(xml);
+    let parsed = parse_xliff(xml).expect("valid xliff");
     let unit = parsed.get("single").expect("unit should parse");
     assert_eq!(unit.source, "Hello");
     assert_eq!(unit.target.as_deref(), Some("Bonjour"));
@@ -906,7 +942,7 @@ fn parse_xliff_preserves_ms_format_note_with_attributes() {
 </body>
   </file>
 </xliff>"#;
-    let parsed = parse_xliff(xml);
+    let parsed = parse_xliff(xml).expect("valid xliff");
     let attr = parsed.get("attr").expect("attributed unit should parse");
     assert_eq!(
         attr.note.as_deref(),
@@ -1200,7 +1236,7 @@ fn a_parsed_unit_carries_its_object_type_and_name() {
 </body>
   </file>
 </xliff>"#;
-    let units = parse_xliff(xlf);
+    let units = parse_xliff(xlf).expect("valid xliff");
     let unit = units.values().next().expect("one unit");
     assert_eq!(unit.object_type, "Table");
     assert_eq!(unit.object_name, "Shipment Header");
@@ -1257,7 +1293,7 @@ fn parse_xliff_keeps_the_first_of_two_duplicate_trans_unit_ids() {
 </body>
   </file>
 </xliff>"#;
-    let parsed = parse_xliff(xml);
+    let parsed = parse_xliff(xml).expect("valid xliff");
     assert_eq!(parsed.len(), 1);
     let unit = parsed.get("Table 1 - Property 2").unwrap();
     assert_eq!(
@@ -1352,7 +1388,7 @@ fn a_label_comment_becomes_the_developer_note() {
     assert!(xml.contains(r#"<note from="Xliff Generator""#), "{xml}");
     assert!(!xml.contains("<target"), "{xml}");
 
-    let parsed = parse_xliff(&xml);
+    let parsed = parse_xliff(&xml).expect("valid xliff");
     let unit = parsed.values().next().unwrap();
     assert_eq!(
         unit.developer_note.as_deref(),
@@ -1398,7 +1434,7 @@ fn a_multi_line_developer_note_is_not_taken_for_the_generator_note() {
 on run</note>
           <note from="Xliff Generator" annotates="general" priority="3">Codeunit Hello - NamedType GreetingMsg</note>
         </trans-unit>"#;
-    let units = parse_xliff(xml);
+    let units = parse_xliff(xml).expect("valid xliff");
     let unit = &units["Codeunit 1 - NamedType GreetingMsg"];
     assert_eq!(unit.developer_note.as_deref(), Some("Shown\non run"));
     assert_eq!(
@@ -1478,7 +1514,7 @@ fn refresh_keeps_the_al_object_target_of_the_generated_unit() {
     assert_eq!(units[0].object_target.as_deref(), Some("Table 1234"));
     let xml = generate_xliff("App", "en-US", "de-DE", &units);
     assert!(xml.contains("al-object-target=\"Table 1234\""));
-    let reread = parse_xliff(&xml);
+    let reread = parse_xliff(&xml).expect("valid xliff");
     assert_eq!(
         reread["test-id"].object_target.as_deref(),
         Some("Table 1234")

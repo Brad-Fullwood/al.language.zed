@@ -21,3 +21,4 @@ url = { workspace = true }
 al-syntax = { path = "../al-syntax", version = "0.1.0" }
 proptest = "1"
 tempfile = { workspace = true }
+libc = { workspace = true }

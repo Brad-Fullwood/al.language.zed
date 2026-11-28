@@ -39,7 +39,7 @@ use crate::interpreter::eval_expr::eval_expr;
 use crate::interpreter::indexing;
 use crate::interpreter::records;
 use crate::interpreter::scope::{Eval, ScopeStack};
-use crate::interpreter::value::{ErrorInfo, Value};
+use crate::interpreter::value::{ErrorInfo, Value, ERROR_TYPE_CANCELLED, ERROR_TYPE_TIMEOUT};
 
 /// Evaluate a single tree-sitter statement node.
 ///
@@ -223,10 +223,16 @@ fn eval_while(
 
     loop {
         if ctx.is_cancelled() {
-            return Eval::Error(error_info("interpreter cancelled in while loop"));
+            return Eval::Error(ErrorInfo {
+                error_type: Some(ERROR_TYPE_CANCELLED.to_string()),
+                ..error_info("interpreter cancelled in while loop")
+            });
         }
         if ctx.deadline_exceeded() {
-            return Eval::Error(error_info("interpreter deadline exceeded in while loop"));
+            return Eval::Error(ErrorInfo {
+                error_type: Some(ERROR_TYPE_TIMEOUT.to_string()),
+                ..error_info("interpreter deadline exceeded in while loop")
+            });
         }
         let cond = match eval_decision_condition(cond_node, node, source, stack, ctx) {
             Eval::Normal(v) => v,
@@ -336,10 +342,16 @@ fn eval_for(node: Node<'_>, source: &[u8], stack: &mut ScopeStack, ctx: &mut Dis
     let mut i = start_i;
     loop {
         if ctx.is_cancelled() {
-            return Eval::Error(error_info("interpreter cancelled in for loop"));
+            return Eval::Error(ErrorInfo {
+                error_type: Some(ERROR_TYPE_CANCELLED.to_string()),
+                ..error_info("interpreter cancelled in for loop")
+            });
         }
         if ctx.deadline_exceeded() {
-            return Eval::Error(error_info("interpreter deadline exceeded in for loop"));
+            return Eval::Error(ErrorInfo {
+                error_type: Some(ERROR_TYPE_TIMEOUT.to_string()),
+                ..error_info("interpreter deadline exceeded in for loop")
+            });
         }
         let in_range = if is_downto { i >= end_i } else { i <= end_i };
         ctx.cov_record_decision(node, in_range);
@@ -429,10 +441,16 @@ fn eval_foreach(
     for item in items {
         ctx.cov_record_decision(node, true);
         if ctx.is_cancelled() {
-            return Eval::Error(error_info("interpreter cancelled in foreach loop"));
+            return Eval::Error(ErrorInfo {
+                error_type: Some(ERROR_TYPE_CANCELLED.to_string()),
+                ..error_info("interpreter cancelled in foreach loop")
+            });
         }
         if ctx.deadline_exceeded() {
-            return Eval::Error(error_info("interpreter deadline exceeded in foreach loop"));
+            return Eval::Error(ErrorInfo {
+                error_type: Some(ERROR_TYPE_TIMEOUT.to_string()),
+                ..error_info("interpreter deadline exceeded in foreach loop")
+            });
         }
         if let Some(mut slot) = stack.lookup_slot_mut(&var_name) {
             if let Err(message) = slot.store(&format!("The foreach variable '{var_name}'"), item) {
@@ -479,10 +497,16 @@ fn eval_repeat(
 
     loop {
         if ctx.is_cancelled() {
-            return Eval::Error(error_info("interpreter cancelled in repeat loop"));
+            return Eval::Error(ErrorInfo {
+                error_type: Some(ERROR_TYPE_CANCELLED.to_string()),
+                ..error_info("interpreter cancelled in repeat loop")
+            });
         }
         if ctx.deadline_exceeded() {
-            return Eval::Error(error_info("interpreter deadline exceeded in repeat loop"));
+            return Eval::Error(ErrorInfo {
+                error_type: Some(ERROR_TYPE_TIMEOUT.to_string()),
+                ..error_info("interpreter deadline exceeded in repeat loop")
+            });
         }
         if let Some(body) = body_node {
             match eval_stmt(body, source, stack, ctx) {
@@ -655,8 +679,23 @@ fn eval_asserterror(
         None => return Eval::Error(error_info("asserterror: missing body statement")),
     };
 
-    match eval_stmt(body_node, source, stack, ctx) {
+    let result = eval_stmt(body_node, source, stack, ctx);
+
+    match result {
+        // Deadline and cancel errors end the run. They are not AL errors, so
+        // asserterror must not catch them.
+        Eval::Error(caught)
+            if matches!(
+                caught.error_type.as_deref(),
+                Some(ERROR_TYPE_TIMEOUT | ERROR_TYPE_CANCELLED)
+            ) =>
+        {
+            Eval::Error(caught)
+        }
         Eval::Error(caught) => {
+            // A caught error undoes the non-temporary record writes since the test
+            // start, as BC rolls back to the last Commit and Commit runs only on LiveBc.
+            ctx.rollback_records();
             // Retain the caught error so the standard pattern
             // `asserterror X; Assert.ExpectedError(GetLastErrorText())` works.
             ctx.last_error = Some(caught);

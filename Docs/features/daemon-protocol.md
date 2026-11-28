@@ -93,9 +93,12 @@ path uses LSP handlers directly and does not go through the daemon. See
   the number that decides whether a daemon is worth restarting. The per-structure totals beside
   them count only allocations the workspace owns. Current resident size comes from `/proc/self/status`
   on Linux and is null elsewhere. The peak comes from `getrusage` on every Unix.
-- **Startup:** a workspace file the document store rejects (over `maxDocumentSizeBytes`,
-  unreadable, or without a file URI) is skipped with a warning, and daemon and MCP startup
-  continue.
+- **Startup and refresh:** a workspace `.al` file that cannot be read, is not valid UTF-8 or is
+  over the per-file size cap is left out of the index with a warning naming it, and the other
+  files are indexed. A file the document store rejects (over `maxDocumentSizeBytes`, or without a
+  file URI) is skipped the same way. Daemon and MCP startup continue, and a skipped file is read
+  again on the next request. A file that changes while it is read keeps its previous indexed text
+  and is read again on the next request.
 - **Changes on disk:** before each request the daemon reads what changed in the project since
   the last one. A metadata walk reads each `.al` file that is new or whose size or mtime moved,
   and drops deleted ones. `app.json`, `.zed/debug.json` and `.vscode/launch.json` are hashed by
@@ -118,6 +121,11 @@ path uses LSP handlers directly and does not go through the daemon. See
   caller that wants two requests running at once through it opens a second connection. Up to 64
   connections are served at once. There is no per-request cancellation, so a request already
   dispatched runs to completion even if its client gives up waiting.
+- **Files changed on disk:** `format`, `fix`, `fix.applicationArea`, `fix.tooltips`,
+  `fix.dataClassification` and `sortMembers` compare the file on disk with the text they read
+  before they write. When the file changed, they write nothing and answer an error that names the
+  file and says to run the command again. The client sends the same request again, and it then
+  works on the new text.
 
 ## Dispatch
 

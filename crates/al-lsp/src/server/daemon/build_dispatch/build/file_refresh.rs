@@ -31,6 +31,11 @@ pub(crate) enum FileRefreshError {
         operation_error: String,
         rollback_error: String,
     },
+    #[error(
+        "'{}': the file changed on disk after the daemon read it, run the command again",
+        .0.display()
+    )]
+    ChangedOnDisk(PathBuf),
 }
 
 fn io_error(operation: &'static str, path: &Path, source: std::io::Error) -> FileRefreshError {
@@ -130,10 +135,15 @@ fn remove_created_source(path: &Path) -> Result<(), FileRefreshError> {
 /// without requiring a restart. Updates the document store, the file
 /// index, and invalidates the lazy insight graph. Centralised so every
 /// daemon write dispatcher can use one consistent refresh sequence.
+///
+/// `expected` is the text the caller read and based `content` on. When it is
+/// `Some` and the file on disk no longer holds it, nothing is written and the
+/// call returns `ChangedOnDisk`, so a newer save is not overwritten.
 pub(crate) fn write_al_file_and_refresh(
     workspace: &Workspace,
     path: &Path,
     content: String,
+    expected: Option<&str>,
 ) -> Result<(), FileRefreshError> {
     if content.len() as u64 > al_source::file_index::MAX_AL_FILE_BYTES {
         return Err(al_source::file_index::ScanError::FileTooLarge {
@@ -147,6 +157,11 @@ pub(crate) fn write_al_file_and_refresh(
         .map_err(|()| FileRefreshError::InvalidFilePath(path.to_path_buf()))?;
     workspace.documents.validate_document_text(&uri, &content)?;
     let previous = read_existing_source(path)?;
+    if let Some(expected) = expected {
+        if previous.as_ref().map(|source| source.content.as_str()) != Some(expected) {
+            return Err(FileRefreshError::ChangedOnDisk(path.to_path_buf()));
+        }
+    }
     atomic_write_source(
         path,
         &content,
@@ -170,6 +185,9 @@ pub(crate) fn write_al_file_and_refresh(
     }
 
     workspace.file_index.add_file(path.to_path_buf(), content);
+    // add_file records the new metadata, so the next refresh sees no change
+    // and would not drop composed views built from the old text.
+    workspace.symbols.invalidate_all_composed();
     workspace.invalidate_insight_graph();
     workspace.mark_generation_changed();
     Ok(())
@@ -274,6 +292,7 @@ pub(crate) fn rename_al_file_and_refresh(
     workspace
         .file_index
         .add_file(new.to_path_buf(), source.content);
+    workspace.symbols.invalidate_all_composed();
     workspace.invalidate_insight_graph();
     workspace.mark_generation_changed();
     Ok(())
@@ -287,6 +306,54 @@ mod tests {
         Workspace::new()
     }
 
+    /// A2-codex-02: a write whose input text no longer matches the file on
+    /// disk changes nothing.
+    #[test]
+    fn write_refuses_when_disk_changed() {
+        let ws = empty_ws();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("Changed.al");
+        std::fs::write(&path, "v1").unwrap();
+        let error = write_al_file_and_refresh(&ws, &path, "v2".to_string(), Some("v0"))
+            .expect_err("the disk text differs from the input");
+        assert!(
+            matches!(error, FileRefreshError::ChangedOnDisk(_)),
+            "{error}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+        write_al_file_and_refresh(&ws, &path, "v2".to_string(), Some("v1"))
+            .expect("matching input text is written");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
+    }
+
+    /// A2-neon-05 part 2: a daemon write drops composed views built from the
+    /// old text.
+    #[test]
+    fn write_invalidates_composed_cache() {
+        let ws = empty_ws();
+        ws.symbols.add_entries(&[al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: 50_100,
+            name: "Customer".to_string(),
+            package: "Test".to_string(),
+            ..Default::default()
+        }]);
+        let _ = ws
+            .symbols
+            .get_composed_cached(al_symbols::ObjectKind::Table, "Customer");
+        assert!(!ws.symbols.is_composed_cache_empty());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("Ext.al");
+        write_al_file_and_refresh(
+            &ws,
+            &path,
+            r#"tableextension 50100 "Customer Ext" extends Customer { }"#.to_string(),
+            None,
+        )
+        .unwrap();
+        assert!(ws.symbols.is_composed_cache_empty());
+    }
+
     /// positive: write_al_file_and_refresh writes to disk AND
     /// updates documents + file_index + invalidates insight graph.
     #[test]
@@ -295,7 +362,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("Foo.al");
         let content = r#"codeunit 50100 "Foo" { }"#.to_string();
-        write_al_file_and_refresh(&ws, &path, content.clone()).expect("helper succeeds");
+        write_al_file_and_refresh(&ws, &path, content.clone(), None).expect("helper succeeds");
         let on_disk = std::fs::read_to_string(&path).expect("file written");
         assert_eq!(on_disk, content);
         let uri = url::Url::from_file_path(&path).unwrap();
@@ -379,7 +446,8 @@ mod tests {
     fn write_helper_returns_io_error_for_unwritable_path() {
         let ws = empty_ws();
         let bogus = std::path::PathBuf::from("/nonexistent/parent/dir/Foo.al");
-        let err = write_al_file_and_refresh(&ws, &bogus, "x".to_string()).expect_err("must error");
+        let err =
+            write_al_file_and_refresh(&ws, &bogus, "x".to_string(), None).expect_err("must error");
         assert!(matches!(
             err,
             FileRefreshError::Io {
@@ -442,7 +510,7 @@ mod tests {
             .unwrap();
         let v_before = ws.documents.get_version(&uri).unwrap();
 
-        write_al_file_and_refresh(&ws, &path, "codeunit 50100 A { v2 }".to_string()).unwrap();
+        write_al_file_and_refresh(&ws, &path, "codeunit 50100 A { v2 }".to_string(), None).unwrap();
 
         let v_after = ws.documents.get_version(&uri).unwrap();
         assert!(
@@ -478,7 +546,7 @@ mod tests {
         std::fs::write(&path, old).unwrap();
         ws.file_index.add_file(path.clone(), old.to_string());
 
-        let error = write_al_file_and_refresh(&ws, &path, "this is too long".to_string())
+        let error = write_al_file_and_refresh(&ws, &path, "this is too long".to_string(), None)
             .expect_err("content above the document cap must be rejected");
 
         assert!(matches!(
@@ -505,7 +573,7 @@ mod tests {
         std::fs::write(&target, "original").unwrap();
         symlink(&target, &link).unwrap();
 
-        let error = write_al_file_and_refresh(&ws, &link, "replacement".to_string())
+        let error = write_al_file_and_refresh(&ws, &link, "replacement".to_string(), None)
             .expect_err("symlinked sources must not be replaced");
 
         assert!(matches!(

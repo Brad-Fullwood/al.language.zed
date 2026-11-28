@@ -102,6 +102,7 @@ pub(crate) fn dispatch_call_scoped(
                         Ok(message) => message,
                         Err(error) => return eval_error(error),
                     };
+                    ctx.handlers_called.insert(handler.to_ascii_lowercase());
                     let result = dispatch_workspace_procedure(
                         Some(&object),
                         &handler,
@@ -121,14 +122,18 @@ pub(crate) fn dispatch_call_scoped(
                     if args.is_empty() {
                         return eval_error("Confirm requires a question argument");
                     }
-                    let question = match formatted_dialog_text(&args) {
-                        Ok(question) => question,
-                        Err(error) => return eval_error(error),
+                    // BC passes the question unformatted and starts Reply at the
+                    // Default argument.
+                    let question = render_value(&args[0]);
+                    let default_reply = match args.get(1) {
+                        Some(Value::Boolean(reply)) => *reply,
+                        _ => false,
                     };
+                    ctx.handlers_called.insert(handler.to_ascii_lowercase());
                     let result = dispatch_workspace_procedure(
                         Some(&object),
                         &handler,
-                        vec![Value::Text(question), Value::Boolean(false)],
+                        vec![Value::Text(question), Value::Boolean(default_reply)],
                         stack,
                         ctx,
                     );
@@ -143,7 +148,7 @@ pub(crate) fn dispatch_call_scoped(
                             Value::Boolean(reply) => Some(*reply),
                             _ => None,
                         })
-                        .unwrap_or(false);
+                        .unwrap_or(default_reply);
                     ctx.var_writebacks.clear();
                     return Eval::Normal(Value::Boolean(reply));
                 }
@@ -165,6 +170,7 @@ pub(crate) fn dispatch_call_scoped(
                 if let Some((object, handler)) = ctx.test_handlers.str_menu.clone() {
                     let options = args.first().map(render_value).unwrap_or_default();
                     let instruction = args.get(2).map(render_value).unwrap_or_default();
+                    ctx.handlers_called.insert(handler.to_ascii_lowercase());
                     let result = dispatch_workspace_procedure(
                         Some(&object),
                         &handler,
@@ -201,6 +207,7 @@ pub(crate) fn dispatch_call_scoped(
                         return eval_error("Hyperlink requires a link argument");
                     }
                     let link = args.first().map(render_value).unwrap_or_default();
+                    ctx.handlers_called.insert(handler.to_ascii_lowercase());
                     let result = dispatch_workspace_procedure(
                         Some(&object),
                         &handler,
@@ -339,7 +346,7 @@ fn cleared(value: &Value, ctx: &mut DispatchCtx) -> Result<Value, String> {
         Value::Code(_) => Value::Code(String::new()),
         Value::TextBuilder(_) => Value::text_builder(String::new()),
         Value::Date(_) => Value::Date(0),
-        Value::Time(_) => Value::Time(0),
+        Value::Time(_) | Value::UndefinedTime => Value::UndefinedTime,
         Value::DateTime(_) => Value::DateTime(0),
         Value::Duration(_) => Value::Duration(0),
         Value::Guid(_) => Value::default_for("guid").unwrap_or(Value::Null),
@@ -396,6 +403,20 @@ fn dispatch_stub_with_context(
 ) -> Eval {
     if procedure.eq_ignore_ascii_case("ExpectedError") {
         return crate::stubs::library_assert::expected_error(args, ctx.last_error.as_ref());
+    }
+    // `Dequeue(var Value)` and `Peek(var Value, Index)` store the value in the
+    // variable argument. The stub returns it and this call writes it to
+    // argument 0. The one-argument `Peek(Index)` form returns it as a value.
+    let var_form = procedure.eq_ignore_ascii_case("Dequeue")
+        || (procedure.eq_ignore_ascii_case("Peek") && args.len() == 2);
+    if let Some(stub_fn) = crate::stubs::resolve(receiver, procedure) {
+        return match stub_fn(args) {
+            Eval::Normal(value) if var_form => {
+                ctx.var_writebacks.push((0, value));
+                Eval::Normal(Value::Empty)
+            }
+            other => other,
+        };
     }
     eval_error(format!(
         "stub member '{receiver}.{procedure}' is listed as context-aware but has no implementation"

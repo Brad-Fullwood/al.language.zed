@@ -64,6 +64,7 @@ dependencies = [
  "al-types",
  "al-workspace",
  "petgraph",
+ "quick-xml",
  "regex",
  "serde",
  "serde_json",
@@ -187,6 +188,7 @@ dependencies = [
  "al-source",
  "al-symbols",
  "al-syntax",
+ "compact_str",
  "petgraph",
  "serde",
  "serde_json",
@@ -264,6 +266,7 @@ dependencies = [
 name = "al-protocol"
 version = "0.2.2"
 dependencies = [
+ "al-types",
  "getrandom 0.4.2",
  "interprocess",
  "libc",
@@ -338,6 +341,7 @@ dependencies = [
  "al-syntax",
  "al-types",
  "dashmap 6.2.1",
+ "libc",
  "proptest",
  "ropey",
  "serde",
@@ -454,8 +458,10 @@ name = "al-types"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
  "tree-sitter",
 ]
@@ -1137,6 +1143,7 @@ dependencies = [
  "itoa",
  "rustversion",
  "ryu",
+ "serde",
  "static_assertions",
 ]
 

@@ -5,6 +5,7 @@
 //! Auto-downloads missing BC symbol packages via BC server (launch.json) or NuGet.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use al_workspace::Workspace;
@@ -14,6 +15,18 @@ use tracing::{info, warn};
 
 use super::lsp::LspSessionState;
 use super::{diagnostics, AlServer, WorkspaceInitState};
+
+/// True while a settings prompt is open. One prompt at a time per process.
+static SETTINGS_PROMPT_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// Clears `SETTINGS_PROMPT_OPEN` when dropped, so an aborted or panicking prompt task frees the flag.
+struct SettingsPromptGuard;
+
+impl Drop for SettingsPromptGuard {
+    fn drop(&mut self) {
+        SETTINGS_PROMPT_OPEN.store(false, Ordering::Release);
+    }
+}
 
 /// Where to download symbol packages from.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -196,35 +209,30 @@ pub(crate) async fn initialize_workspace(
             // doesn't strand the editor — but warm starts no longer race
             // package symbol load against the first hover/completion.
             let package_paths = project.packages.clone();
-            let (staged_symbols, loaded_packages) = match tokio::task::spawn_blocking(move || {
-                let staged = al_symbols::SymbolIndex::new();
-                let cache = al_symbols::cache::SymbolCache::default_location();
-                let loaded = staged.load_packages_cached(&package_paths, &cache)?;
-                staged.load_runtime_enums();
-                Ok::<_, al_symbols::PackageLoadError>((staged, loaded))
-            })
-            .await
-            {
-                Ok(Ok(staged)) => staged,
-                Ok(Err(error)) => {
-                    tracing::error!(%error, "configured AL symbol package load failed");
-                    let message = format!(
-                        "AL workspace initialization failed; no partial package batch was indexed: {error}"
-                    );
-                    client
-                        .show_message(MessageType::ERROR, message.clone())
-                        .await;
-                    return Err(WorkspaceInitError(message));
-                }
-                Err(error) => {
-                    let message = format!("AL workspace package-index worker failed: {error}");
-                    tracing::error!(%error, "AL workspace package-index worker failed");
-                    client
-                        .show_message(MessageType::ERROR, message.clone())
-                        .await;
-                    return Err(WorkspaceInitError(message));
-                }
-            };
+            // One unreadable `.app` (an interrupted download) skips that
+            // package only, as the daemon's start does in al-workspace.
+            let (staged_symbols, loaded_packages, failures) =
+                match tokio::task::spawn_blocking(move || {
+                    let staged = al_symbols::SymbolIndex::new();
+                    let cache = al_symbols::cache::SymbolCache::default_location();
+                    let (loaded, failures) =
+                        staged.load_packages_cached_lenient(&package_paths, &cache);
+                    staged.load_runtime_enums();
+                    (staged, loaded, failures)
+                })
+                .await
+                {
+                    Ok(staged) => staged,
+                    Err(error) => {
+                        let message = format!("AL workspace package-index worker failed: {error}");
+                        tracing::error!(%error, "AL workspace package-index worker failed");
+                        client
+                            .show_message(MessageType::ERROR, message.clone())
+                            .await;
+                        return Err(WorkspaceInitError(message));
+                    }
+                };
+            show_package_load_failures(&client, &failures).await;
             if session_cancelled(&session) {
                 return Ok(());
             }
@@ -300,7 +308,8 @@ pub(crate) async fn initialize_workspace(
                     }
                     if !downloaded.is_empty() {
                         match refresh_current_symbol_generation(&workspace).await {
-                            Ok((loaded, total_symbols)) => {
+                            Ok((loaded, total_symbols, failures)) => {
+                                show_package_load_failures(&client, &failures).await;
                                 info!(
                                     loaded,
                                     total_symbols, "Published symbol packages (post-download)"
@@ -393,77 +402,89 @@ pub(crate) async fn initialize_workspace(
         .log_message(MessageType::INFO, "AL workspace: ready")
         .await;
 
-    // Offer recommended settings on first open of an AL project.
-    // Runs after workspace init but before diagnostics — same timing window
-    // as the symbol download prompt, which Zed reliably displays.
-    let should_prompt =
-        tokio::task::spawn_blocking(|| !settings_prompt_shown() && !zed_has_al_settings())
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("settings prompt check panicked: {e}");
-                false
-            });
+    // The prompt is sent from its own task, so project diagnostics do not wait
+    // for the answer. `SETTINGS_PROMPT_OPEN` keeps one prompt open per process.
+    let should_prompt = tokio::task::spawn_blocking(settings_prompt_needed)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("settings prompt check panicked: {e}");
+            false
+        });
     if session_cancelled(&session) {
         return Ok(());
     }
-    if should_prompt {
-        if let Ok(response) = client
-            .show_message_request(
-                MessageType::INFO,
-                "Apply recommended AL development settings? (Updates Zed settings.json)"
-                    .to_string(),
-                Some(vec![
-                    MessageActionItem {
-                        title: "Yes".to_string(),
-                        properties: Default::default(),
-                    },
-                    MessageActionItem {
-                        title: "No".to_string(),
-                        properties: Default::default(),
-                    },
-                ]),
-            )
-            .await
-        {
-            if response.is_some_and(|action| action.title == "Yes") {
-                match tokio::task::spawn_blocking(apply_recommended_settings).await {
-                    Ok(Ok(())) => {
-                        client
-                            .show_message(
-                                MessageType::INFO,
-                                "Applied recommended AL settings. Reload Zed to activate.",
-                            )
-                            .await;
+    if should_prompt && !SETTINGS_PROMPT_OPEN.swap(true, Ordering::AcqRel) {
+        // Built before the spawn. A task dropped before its first poll never
+        // runs its body, but the captured guard still drops and clears the flag.
+        let guard = SettingsPromptGuard;
+        let client = client.clone();
+        let session = session.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            if session_cancelled(&session) {
+                return;
+            }
+            if let Ok(response) = client
+                .show_message_request(
+                    MessageType::INFO,
+                    "Apply recommended AL development settings? (Updates Zed settings.json)"
+                        .to_string(),
+                    Some(vec![
+                        MessageActionItem {
+                            title: "Yes".to_string(),
+                            properties: Default::default(),
+                        },
+                        MessageActionItem {
+                            title: "No".to_string(),
+                            properties: Default::default(),
+                        },
+                    ]),
+                )
+                .await
+            {
+                if response.is_some_and(|action| action.title == "Yes") {
+                    if session_cancelled(&session) {
+                        return;
                     }
-                    Ok(Err(e)) => {
-                        client
-                            .show_message(
-                                MessageType::WARNING,
-                                format!("Failed to apply settings: {e}"),
-                            )
-                            .await;
+                    match tokio::task::spawn_blocking(apply_recommended_settings).await {
+                        Ok(Ok(backup)) => {
+                            client
+                                .show_message(
+                                    MessageType::INFO,
+                                    applied_settings_message(backup.as_deref()),
+                                )
+                                .await;
+                        }
+                        Ok(Err(e)) => {
+                            client
+                                .show_message(
+                                    MessageType::WARNING,
+                                    format!("Failed to apply settings: {e}"),
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Settings task panicked: {e}");
+                        }
                     }
+                }
+                // Mark as shown once the user answered Yes or No or dismissed the
+                // notification, which also declines it.
+                // Run the sentinel write on the blocking pool so the async
+                // executor thread is not stalled on disk I/O. Await the join
+                // handle so a runtime shutdown mid-write surfaces in the log
+                // instead of silently leaving the sentinel unwritten. The user
+                // would otherwise see the prompt again on next launch.
+                match tokio::task::spawn_blocking(record_settings_prompt_shown).await {
+                    Ok(()) => {}
                     Err(e) => {
-                        tracing::warn!("Settings task panicked: {e}");
+                        tracing::warn!("settings prompt sentinel write task did not complete: {e}");
                     }
                 }
             }
-            // Mark as shown once the user answered Yes or No or dismissed the
-            // notification, which also declines it.
-            // Run the sentinel write on the blocking pool so the async
-            // executor thread is not stalled on disk I/O. Await the join
-            // handle so a runtime shutdown mid-write surfaces in the log
-            // instead of silently leaving the sentinel unwritten — the
-            // user would otherwise see the prompt again on next launch.
-            match tokio::task::spawn_blocking(mark_settings_prompt_shown).await {
-                Ok(()) => {}
-                Err(e) => {
-                    tracing::warn!("settings prompt sentinel write task did not complete: {e}");
-                }
-            }
-        }
-        // An Err means the request did not reach the user, so the prompt
-        // comes back next time.
+            // An Err means the request did not reach the user, so the prompt
+            // comes back next time.
+        });
     }
 
     if let Some(diagnostic_state) = diagnostic_state {
@@ -568,9 +589,35 @@ async fn publish_complete_generation(
         .fetch_add(1, std::sync::atomic::Ordering::Release);
 }
 
-async fn refresh_current_symbol_generation(
+/// Show one warning per symbol package the lenient loader skipped.
+pub(crate) async fn show_package_load_failures(
+    client: &Client,
+    failures: &[al_symbols::PackageLoadFailure],
+) {
+    for failure in failures {
+        tracing::warn!(
+            path = %failure.path.display(),
+            message = %failure.message,
+            "skipping unreadable symbol package"
+        );
+        client
+            .show_message(
+                MessageType::WARNING,
+                format!(
+                    "AL symbol package {} was skipped: {}",
+                    failure.path.display(),
+                    failure.message
+                ),
+            )
+            .await;
+    }
+}
+
+/// Stage and publish the project's packages. Returns the loaded package
+/// count, the symbol count and the packages that could not be read.
+pub(crate) async fn refresh_current_symbol_generation(
     workspace: &Workspace,
-) -> Result<(usize, usize), String> {
+) -> Result<(usize, usize, Vec<al_symbols::PackageLoadFailure>), String> {
     loop {
         let generation = workspace.generation_lock.read().await;
         // Keyed on the package revision, not the source revision: staging
@@ -594,15 +641,14 @@ async fn refresh_current_symbol_generation(
                 .map_err(|error| error.to_string())?;
             let symbols = al_symbols::SymbolIndex::new();
             let cache = al_symbols::cache::SymbolCache::default_location();
-            let loaded = symbols
-                .load_packages_cached(&project.packages, &cache)
-                .map_err(|error| error.to_string())?;
+            let (loaded, failures) =
+                symbols.load_packages_cached_lenient(&project.packages, &cache);
             symbols.load_runtime_enums();
-            Ok::<_, String>((project, symbols, loaded))
+            Ok::<_, String>((project, symbols, loaded, failures))
         })
         .await;
 
-        let (mut project, symbols, loaded) = match staged {
+        let (mut project, symbols, loaded, failures) = match staged {
             Ok(Ok(staged)) => staged,
             Ok(Err(error)) => return Err(error),
             Err(error) => return Err(format!("package-index worker failed: {error}")),
@@ -625,7 +671,7 @@ async fn refresh_current_symbol_generation(
         workspace
             .generation_revision
             .fetch_add(1, std::sync::atomic::Ordering::Release);
-        let counts = (loaded.len(), workspace.symbols.len());
+        let counts = (loaded.len(), workspace.symbols.len(), failures);
         drop(publication);
         return Ok(counts);
     }
@@ -1348,7 +1394,10 @@ pub(crate) async fn download_symbols_command(
     let (loaded_count, symbol_count) = match refresh_current_symbol_generation(&server.workspace)
         .await
     {
-        Ok(counts) => counts,
+        Ok((loaded, symbols, failures)) => {
+            show_package_load_failures(&server.client, &failures).await;
+            (loaded, symbols)
+        }
         Err(error) => {
             tracing::error!(%error, "downloaded symbol generation rejected");
             server
@@ -1497,10 +1546,49 @@ fn mark_settings_prompt_shown() {
     }
 }
 
+/// Whether `initialize_workspace` offers the settings prompt. Unit tests read
+/// their own sentinel, so the answer does not depend on the machine.
+#[cfg(not(test))]
+fn settings_prompt_needed() -> bool {
+    !settings_prompt_shown() && !zed_has_al_settings()
+}
+
+#[cfg(test)]
+fn settings_prompt_needed() -> bool {
+    !unit_test_sentinel().exists()
+}
+
+/// Record that the settings prompt was answered or dismissed.
+#[cfg(not(test))]
+fn record_settings_prompt_shown() {
+    mark_settings_prompt_shown();
+}
+
+#[cfg(test)]
+fn record_settings_prompt_shown() {
+    let path = unit_test_sentinel();
+    if let Err(e) = ensure_parent_dir(&path).and_then(|()| std::fs::write(&path, b"")) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "failed to write unit test settings sentinel"
+        );
+    }
+}
+
 /// Path to the sentinel file that records the popup was shown.
 fn sentinel_path() -> Option<PathBuf> {
     let data_dir = al_project::project::user_data_dir()?;
     Some(data_dir.join("al-lsp").join(".settings-prompt-shown"))
+}
+
+/// The sentinel the unit tests use in place of the one under the user data
+/// directory.
+#[cfg(test)]
+fn unit_test_sentinel() -> PathBuf {
+    crate::server::daemon::unit_test_data_dir()
+        .join("al-lsp")
+        .join(".settings-prompt-shown")
 }
 
 /// Check whether Zed's settings.json already has correct AL settings.
@@ -1509,6 +1597,9 @@ fn sentinel_path() -> Option<PathBuf> {
 /// `languages.AL.language_servers` contains "al-lsp". This prevents the
 /// prompt from being skipped when settings are present but broken (e.g.
 /// empty `language_servers: []`).
+// In a test build the only callers are tests that run on Linux, because the
+// test build of `settings_prompt_needed` reads its own sentinel.
+#[cfg_attr(all(test, not(target_os = "linux")), allow(dead_code))]
 fn zed_has_al_settings() -> bool {
     let Some(path) = zed_settings_path() else {
         return false;
@@ -1537,12 +1628,29 @@ fn zed_has_al_settings() -> bool {
 ///
 /// Reads the current settings, merges recommended AL-specific settings,
 /// and writes back. Creates the file (and parent directories) if needed.
-pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// Returns the path of the backup copy when the old file had comments or
+/// trailing commas, which the rewritten file does not keep.
+pub(crate) fn apply_recommended_settings(
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
     let settings_path = zed_settings_path().ok_or("Cannot determine Zed settings path")?;
+    apply_recommended_settings_at(&settings_path)
+}
 
+pub(crate) fn apply_recommended_settings_at(
+    settings_path: &Path,
+) -> Result<Option<PathBuf>, Box<dyn std::error::Error + Send + Sync>> {
+    let mut backup = None;
     let current: serde_json::Value = if settings_path.exists() {
-        let content = std::fs::read_to_string(&settings_path)?;
-        strip_jsonc_comments_and_parse(&content)?
+        let content = std::fs::read_to_string(settings_path)?;
+        let stripped = al_types::jsonc::strip_json_comments(&content);
+        if stripped != content {
+            let mut name = settings_path.as_os_str().to_owned();
+            name.push(".bak");
+            let backup_path = PathBuf::from(name);
+            std::fs::write(&backup_path, content.as_bytes())?;
+            backup = Some(backup_path);
+        }
+        serde_json::from_str(&stripped)?
     } else {
         serde_json::json!({})
     };
@@ -1550,11 +1658,29 @@ pub(crate) fn apply_recommended_settings() -> Result<(), Box<dyn std::error::Err
     let recommended = recommended_al_settings();
     let merged = deep_merge(&current, &recommended);
 
-    ensure_parent_dir(&settings_path)?;
+    ensure_parent_dir(settings_path)?;
     let output = serde_json::to_string_pretty(&merged)?;
-    std::fs::write(&settings_path, output)?;
+    let mut temp_name = settings_path.as_os_str().to_owned();
+    temp_name.push(format!(".al-lsp-{}.tmp", std::process::id()));
+    let temp_path = PathBuf::from(temp_name);
+    std::fs::write(&temp_path, output)?;
+    if let Err(error) = std::fs::rename(&temp_path, settings_path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error.into());
+    }
 
-    Ok(())
+    Ok(backup)
+}
+
+/// The message shown after the settings were written.
+pub(crate) fn applied_settings_message(backup: Option<&Path>) -> String {
+    match backup {
+        Some(path) => format!(
+            "Applied recommended AL settings. Reload Zed to activate. The new settings.json has no comments, the old file with its comments is in {}.",
+            path.display()
+        ),
+        None => "Applied recommended AL settings. Reload Zed to activate.".to_string(),
+    }
 }
 
 fn zed_settings_path() -> Option<PathBuf> {
@@ -1575,7 +1701,12 @@ fn zed_settings_path() -> Option<PathBuf> {
         let home = std::env::var("HOME").ok()?;
         Some(PathBuf::from(home).join("Library/Application Support/Zed/settings.json"))
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        let app_data = std::env::var_os("APPDATA")?;
+        Some(PathBuf::from(app_data).join("Zed").join("settings.json"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         None
     }
@@ -1647,3 +1778,44 @@ fn recommended_al_settings() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    /// A2-neon-14: comments in settings.json survive in a byte exact backup.
+    #[test]
+    fn settings_with_comments_leave_a_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        let original = "// note\n{\"a\":1}";
+        std::fs::write(&path, original).unwrap();
+
+        let backup = apply_recommended_settings_at(&path).unwrap();
+
+        let backup = backup.expect("a file with comments gets a backup");
+        assert_eq!(backup, dir.path().join("settings.json.bak"));
+        assert_eq!(std::fs::read(&backup).unwrap(), original.as_bytes());
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(written["a"], 1);
+        assert_eq!(written["languages"]["AL"]["language_servers"][0], "al-lsp");
+        assert!(applied_settings_message(Some(&backup)).contains("settings.json.bak"));
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "the temporary file is renamed away");
+    }
+
+    #[test]
+    fn settings_without_comments_get_no_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "{\"a\":1}").unwrap();
+
+        assert!(apply_recommended_settings_at(&path).unwrap().is_none());
+        assert!(!dir.path().join("settings.json.bak").exists());
+    }
+}

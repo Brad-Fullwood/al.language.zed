@@ -2,16 +2,18 @@
 //! and field-annotation fixers.
 
 use super::super::{
-    ensure_document, file_not_found, file_uri_from_params, invalid_params, optional_bool_param,
-    read_document_from_params, require_document_text, require_project_root, rpc_error,
+    ensure_document, file_not_found, file_uri_from_params, invalid_params, offload,
+    optional_bool_param, read_document_from_params, require_document_text, require_project_root,
+    rpc_error,
 };
 use super::build::write_al_file_and_refresh;
 use super::serialized_response;
 use al_protocol::jsonrpc::{error_codes, Response};
 use al_workspace::Workspace;
+use std::sync::Arc;
 
 pub(in crate::server::daemon) async fn dispatch_lint(
-    workspace: &Workspace,
+    workspace: &Arc<Workspace>,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
@@ -24,7 +26,6 @@ pub(in crate::server::daemon) async fn dispatch_lint(
         // Run the same syntax + file-local + symbol-aware workspace rules used
         // by editor diagnostics. Clean files remain present so "scanned all,
         // clean" is distinguishable from "scanned nothing".
-        let mut results: Vec<serde_json::Value> = Vec::new();
         let config = workspace.config.read().await.clone();
         let project_root = workspace
             .project
@@ -32,35 +33,44 @@ pub(in crate::server::daemon) async fn dispatch_lint(
             .await
             .as_ref()
             .map(|project| project.root.clone());
-        let diagnostics =
-            match al_analysis::queries::diagnostics::workspace_syntax_diagnostics_at_root(
-                workspace,
-                &config,
-                project_root.as_deref(),
-            ) {
-                Ok(diagnostics) => diagnostics,
-                Err(error) => {
-                    return rpc_error(
-                        id,
-                        error_codes::INTERNAL_ERROR,
-                        &format!("workspace lint could not analyze every indexed source: {error}"),
-                    );
-                }
-            };
-        for (path, diagnostics) in diagnostics {
-            let diags: Vec<serde_json::Value> =
-                diagnostics.iter().map(syntax_diag_to_json).collect();
-            results.push(serde_json::json!({
-                "file": path.display().to_string(),
-                "diagnostics": diags,
-            }));
-        }
-        return Response {
-            id,
-            result: Some(serde_json::json!(results)),
-            error: None,
-            ..Default::default()
-        };
+        // A project-wide pass can wait on a cache lock shared with other
+        // callers, so it runs on the blocking pool.
+        let ws = Arc::clone(workspace);
+        return offload(id, "lint", move || {
+            let diagnostics =
+                match al_analysis::queries::diagnostics::workspace_syntax_diagnostics_at_root(
+                    &ws,
+                    &config,
+                    project_root.as_deref(),
+                ) {
+                    Ok(diagnostics) => diagnostics,
+                    Err(error) => {
+                        return rpc_error(
+                            id,
+                            error_codes::INTERNAL_ERROR,
+                            &format!(
+                                "workspace lint could not analyze every indexed source: {error}"
+                            ),
+                        );
+                    }
+                };
+            let mut results: Vec<serde_json::Value> = Vec::new();
+            for (path, diagnostics) in diagnostics {
+                let diags: Vec<serde_json::Value> =
+                    diagnostics.iter().map(syntax_diag_to_json).collect();
+                results.push(serde_json::json!({
+                    "file": path.display().to_string(),
+                    "diagnostics": diags,
+                }));
+            }
+            Response {
+                id,
+                result: Some(serde_json::json!(results)),
+                error: None,
+                ..Default::default()
+            }
+        })
+        .await;
     }
 
     let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
@@ -79,19 +89,25 @@ pub(in crate::server::daemon) async fn dispatch_lint(
         .await
         .as_ref()
         .map(|project| project.root.clone());
-    let diagnostics = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
-        workspace,
-        &uri,
-        &config,
-        project_root.as_deref(),
-    );
-    let diags: Vec<serde_json::Value> = diagnostics.iter().map(syntax_diag_to_json).collect();
-    Response {
-        id,
-        result: Some(serde_json::json!(diags)),
-        error: None,
-        ..Default::default()
-    }
+    let ws = Arc::clone(workspace);
+    // `_supplied` is still bound here, so the supplied document stays in the
+    // store until the blocking pass returns.
+    offload(id, "lint", move || {
+        let diagnostics = al_analysis::queries::diagnostics::syntax_diagnostics_at_root(
+            &ws,
+            &uri,
+            &config,
+            project_root.as_deref(),
+        );
+        let diags: Vec<serde_json::Value> = diagnostics.iter().map(syntax_diag_to_json).collect();
+        Response {
+            id,
+            result: Some(serde_json::json!(diags)),
+            error: None,
+            ..Default::default()
+        }
+    })
+    .await
 }
 pub(in crate::server::daemon) async fn dispatch_format(
     workspace: &Workspace,
@@ -188,7 +204,7 @@ pub(in crate::server::daemon) async fn dispatch_format(
             };
             if changed {
                 if let Err(e) = crate::server::daemon::blocking(|| {
-                    write_al_file_and_refresh(workspace, &path, formatted.clone())
+                    write_al_file_and_refresh(workspace, &path, formatted.clone(), Some(&content))
                 }) {
                     return rpc_error(
                         id,
@@ -280,7 +296,7 @@ pub(in crate::server::daemon) fn dispatch_fix(
     let mut diagnostics_count = 0usize;
     let mut fixable_count = 0usize;
     let mut edits_json = Vec::new();
-    let mut pending_writes = Vec::new();
+    let mut pending_writes: Vec<(std::path::PathBuf, String, String)> = Vec::new();
     for (path, uri) in &targets {
         if let Err(response) = ensure_document(workspace, uri, id) {
             return response;
@@ -288,7 +304,7 @@ pub(in crate::server::daemon) fn dispatch_fix(
         let Some(text) = workspace.documents.get_text(uri) else {
             return file_not_found(id);
         };
-        let result = al_syntax::AlParser::parse_quick(&text);
+        let result = super::parse_for_file(workspace, Some(path), &text);
         let diagnostics = al_syntax::lint(&result.tree, &text);
         let mut file_edits = Vec::new();
         for diagnostic in diagnostics.iter().filter(|diagnostic| {
@@ -342,14 +358,16 @@ pub(in crate::server::daemon) fn dispatch_fix(
                 }
             };
             if updated != text {
-                pending_writes.push((path.clone(), updated));
+                pending_writes.push((path.clone(), text.clone(), updated));
             }
         }
     }
 
     if !dry_run {
-        for (path, updated) in &pending_writes {
-            if let Err(error) = write_al_file_and_refresh(workspace, path, updated.clone()) {
+        for (path, original, updated) in &pending_writes {
+            if let Err(error) =
+                write_al_file_and_refresh(workspace, path, updated.clone(), Some(original))
+            {
                 return rpc_error(
                     id,
                     error_codes::INTERNAL_ERROR,
@@ -566,7 +584,7 @@ pub(in crate::server::daemon) fn dispatch_parse(
     };
 
     let start = std::time::Instant::now();
-    let result = al_syntax::AlParser::parse_quick(&text);
+    let result = super::parse_for_uri(workspace, &uri, &text);
     let elapsed = start.elapsed();
 
     let node_count = al_source::parsing::count_nodes(&result.tree);
@@ -782,15 +800,18 @@ fn apply_bulk_fix_plan(
         }
     }
 
-    let mut applied: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut applied: Vec<(std::path::PathBuf, String, String)> = Vec::new();
     for change in &plan.changes {
-        if let Err(error) =
-            write_al_file_and_refresh(workspace, &change.path, change.updated.clone())
-        {
+        if let Err(error) = write_al_file_and_refresh(
+            workspace,
+            &change.path,
+            change.updated.clone(),
+            Some(&change.original),
+        ) {
             let mut rollback_errors = Vec::new();
-            for (path, original) in applied.iter().rev() {
+            for (path, original, written) in applied.iter().rev() {
                 if let Err(rollback_error) =
-                    write_al_file_and_refresh(workspace, path, original.clone())
+                    write_al_file_and_refresh(workspace, path, original.clone(), Some(written))
                 {
                     rollback_errors.push(format!("{}: {rollback_error}", path.display()));
                 }
@@ -809,7 +830,11 @@ fn apply_bulk_fix_plan(
                 ),
             );
         }
-        applied.push((change.path.clone(), change.original.clone()));
+        applied.push((
+            change.path.clone(),
+            change.original.clone(),
+            change.updated.clone(),
+        ));
     }
     serialized_response(id, &result, &format!("{label} fix result"))
 }
@@ -966,7 +991,7 @@ mod tests {
 
     #[tokio::test]
     async fn lint_missing_file_param_is_invalid_params() {
-        let ws = empty_ws();
+        let ws = Arc::new(empty_ws());
         let resp = dispatch_lint(&ws, 1, &serde_json::json!({})).await;
         let err = resp.error.expect("missing file/uri must be invalid params");
         assert_eq!(err.code, error_codes::INVALID_PARAMS);
@@ -975,7 +1000,7 @@ mod tests {
     #[tokio::test]
     async fn lint_single_file_reports_parse_errors() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let ws = ws_at(&tmp);
+        let ws = Arc::new(ws_at(&tmp));
         // Deliberately malformed AL — unterminated object.
         let file = write_al(&tmp, "Bad.al", "codeunit 50100 \"Bad\" { procedure X( ");
         let resp = dispatch_lint(&ws, 2, &serde_json::json!({ "file": file })).await;
@@ -999,7 +1024,7 @@ mod tests {
 
     #[tokio::test]
     async fn lint_all_mode_returns_array_for_empty_workspace() {
-        let ws = empty_ws();
+        let ws = Arc::new(empty_ws());
         let resp = dispatch_lint(&ws, 3, &serde_json::json!({ "all": true })).await;
         assert!(resp.error.is_none());
         let arr = resp
@@ -1011,7 +1036,7 @@ mod tests {
 
     #[tokio::test]
     async fn lint_all_rejects_an_indexed_file_without_a_cached_parse() {
-        let ws = empty_ws();
+        let ws = Arc::new(empty_ws());
         ws.file_index.files.insert(
             std::path::PathBuf::from("/proj/MissingCache.al"),
             r#"codeunit 50100 "Missing Cache" { }"#.to_string(),
@@ -1103,7 +1128,7 @@ mod tests {
 
     #[tokio::test]
     async fn format_and_lint_reject_wrong_typed_boolean_params() {
-        let ws = empty_ws();
+        let ws = Arc::new(empty_ws());
         let format = dispatch_format(
             &ws,
             10,

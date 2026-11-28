@@ -14,7 +14,6 @@ use super::store::{
     ensure_store, fork_record_for_by_value, record_binding, records_disabled_error,
     records_enabled, RecordStore, TableRef,
 };
-use super::validate::eval_flowfield;
 
 /// Read one buffer field of the view identified by `handle`, falling back to
 /// the field's typed default (BC zero-initialisation) when never assigned.
@@ -28,11 +27,36 @@ pub(super) fn read_buffer_field(store: &RecordStore, handle: u64, field: FieldNo
         .unwrap_or(Value::Empty)
 }
 
+/// The value field `field` of view `handle` shows to a read: the typed zero for
+/// a FlowField that `CalcFields` has not calculated or code has not assigned on
+/// this view, otherwise the buffer value.
+///
+/// The row can hold a FlowField value (an Insert after CalcFields stores the
+/// buffer), so an uncalculated FlowField ignores the stored value and reads zero.
+/// A temporary record reads the stored value back, as Business Central does.
+pub(super) fn visible_field_value(store: &RecordStore, handle: u64, field: FieldNo) -> Value {
+    let uncalculated_flowfield = !store.temporary
+        && store.flowfields.contains_key(&field)
+        && !store
+            .views
+            .get(&handle)
+            .is_some_and(|view| view.is_calculated(field));
+    if uncalculated_flowfield {
+        return store
+            .field_defaults
+            .get(&field)
+            .cloned()
+            .unwrap_or(Value::Empty);
+    }
+    read_buffer_field(store, handle, field)
+}
+
 /// Read a record field by name: `x := Rec."Field"`.
 ///
-/// A FlowField with a parseable `CalcFormula` is computed on read (auto-calc);
-/// any other field returns its buffer value, or the field's typed zero value
-/// when it was never assigned (BC zero-initialises every field).
+/// A read never computes a FlowField. A FlowField reads as its typed zero value
+/// until `CalcFields` calculates it on this view. Other fields return their
+/// buffer value, or the typed zero value when it was never assigned, since BC
+/// zero-initialises every field.
 pub(crate) fn field_get(
     table: &TableRef,
     handle: u64,
@@ -46,19 +70,15 @@ pub(crate) fn field_get(
         Ok(k) => k,
         Err(e) => return eval_error(e),
     };
-    let (f, formula) = {
+    let f = {
         let store = ctx.records.get_mut(&key).expect("store just ensured");
-        let f = match store.resolve_field(field_name) {
+        match store.resolve_field(field_name) {
             Ok(field_no) => field_no,
             Err(error) => return eval_error(error),
-        };
-        (f, store.flowfields.get(&f).cloned())
+        }
     };
-    if let Some(formula) = formula {
-        return eval_flowfield(ctx, &key, handle, &formula);
-    }
     let store = ctx.records.get(&key).expect("store just ensured");
-    Eval::Normal(read_buffer_field(store, handle, f))
+    Eval::Normal(visible_field_value(store, handle, f))
 }
 
 /// Whether workspace table `table` declares a field named `field`.
@@ -154,6 +174,10 @@ fn set_record_field(
     };
     let mut view = store.take_view(handle);
     store.record.field_set_in(&mut view, f, coerced);
+    // An assigned FlowField holds its value in the buffer until the next read, as after CalcFields.
+    if store.flowfields.contains_key(&f) {
+        view.mark_calculated(f);
+    }
     store.put_view(handle, view);
     Some(Eval::Normal(Value::Empty))
 }

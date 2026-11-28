@@ -96,7 +96,7 @@ pub(crate) fn render_value_xml(v: &Value) -> String {
         Value::Integer(n) | Value::BigInteger(n) => n.to_string(),
         Value::Decimal(n) => n.normalize().to_string(),
         Value::Boolean(b) => b.to_string(),
-        Value::Date(0) | Value::Time(0) | Value::DateTime(0) => String::new(),
+        Value::Date(0) | Value::UndefinedTime | Value::DateTime(0) => String::new(),
         Value::Date(d) => {
             let (y, m, day) = crate::interpreter::value::ymd_from_al_days(*d);
             format!("{y:04}-{m:02}-{day:02}")
@@ -160,7 +160,7 @@ pub(crate) fn render_value(v: &Value) -> String {
         Value::Boolean(false) => "No".to_string(),
         Value::Text(s) | Value::Code(s) => s.clone(),
         Value::TextBuilder(s) => s.snapshot(),
-        Value::Date(0) | Value::Time(0) | Value::DateTime(0) => String::new(),
+        Value::Date(0) | Value::UndefinedTime | Value::DateTime(0) => String::new(),
         Value::Date(d) => {
             let (y, m, day) = crate::interpreter::value::ymd_from_al_days(*d);
             format!("{m:02}/{day:02}/{y:04}")
