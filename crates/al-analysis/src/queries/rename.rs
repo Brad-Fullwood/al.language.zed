@@ -73,7 +73,12 @@ pub fn rename(
     let source_bytes = text.as_bytes();
 
     // Procedure-local bindings must not enter the workspace-wide rename path.
-    if let Some(proc) = al_syntax::find_procedure_at(&tree, &text, position.into()) {
+    // A member after `.` or `::` is a field or procedure, never a local, even
+    // when its spelling matches one.
+    let member_access = is_member_access(node);
+    if let Some(proc) =
+        al_syntax::find_procedure_at(&tree, &text, position.into()).filter(|_| !member_access)
+    {
         let is_local_binding = proc
             .parameters
             .iter()
@@ -122,19 +127,35 @@ pub fn rename(
             }
             let proc_start = proc.range.start_byte;
             let proc_end = proc.range.end_byte;
+            // Keep only the occurrences that bind to the local under the cursor.
+            // A `Name` after `Customer.` is a record member, and a same-named
+            // local must not rewrite it.
+            let cursor_decl = node_decl_loc(workspace, uri, node, source_bytes)?;
+            let mut binder = binding::DeclLocCache::new();
             let refs = al_syntax::find_variable_references(&tree, &text, clean_name);
-            let edits: Vec<TextEdit> = refs
+            let mut edits: Vec<TextEdit> = Vec::new();
+            for r in refs
                 .iter()
                 .filter(|r| r.start_byte >= proc_start && r.end_byte <= proc_end)
-                .filter_map(|r| {
-                    let matched_text = text.get(r.start_byte..r.end_byte)?;
-                    let replacement = new_name.spelled_over(matched_text);
-                    Some(TextEdit {
-                        range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
-                        new_text: replacement,
-                    })
-                })
-                .collect();
+            {
+                let is_member = tree
+                    .root_node()
+                    .descendant_for_byte_range(r.start_byte, r.end_byte)
+                    .is_some_and(is_member_access);
+                if is_member
+                    || binder.decl_loc_for_reference(workspace, uri, &text, &tree, r)?
+                        != cursor_decl
+                {
+                    continue;
+                }
+                let Some(matched_text) = text.get(r.start_byte..r.end_byte) else {
+                    continue;
+                };
+                edits.push(TextEdit {
+                    range: al_syntax::ts_range_to_syntax(r, source_bytes).into(),
+                    new_text: new_name.spelled_over(matched_text),
+                });
+            }
             if edits.is_empty() {
                 return Ok(None);
             }
@@ -244,6 +265,22 @@ fn node_decl_loc(
 ) -> Result<BindKey, WorkspaceStateError> {
     let range: Range = al_syntax::ts_range_to_syntax(&node.range(), source).into();
     decl_loc(workspace, uri, range.start)
+}
+
+/// True when `node` is the member name after `.` or `::`, as in `Customer.Name`.
+/// `count_call_references` in al-syntax navigation.rs matches the same node
+/// kinds. An identifier can sit inside a `name` node, so check that parent too.
+fn is_member_access(node: tree_sitter::Node) -> bool {
+    let name = match node.parent() {
+        Some(parent) if parent.kind() == "name" => parent,
+        _ => node,
+    };
+    name.parent().is_some_and(|parent| {
+        matches!(
+            parent.kind(),
+            "member_suffix" | "member_call_suffix" | "scope_suffix" | "scope_call_suffix"
+        ) && parent.child_by_field_name("member") == Some(name)
+    })
 }
 
 /// Which `[EventSubscriber]` argument a rename has to rewrite, and the
@@ -1676,5 +1713,129 @@ mod tests {
 }
 "#
         );
+    }
+}
+
+#[cfg(test)]
+mod local_member_tests {
+    use super::*;
+    use al_workspace::Workspace;
+
+    const CODEUNIT: &str = r#"codeunit 50100 "Name Test"
+{
+    procedure P()
+    var
+        Name: Text;
+        Customer: Record Customer;
+    begin
+        Name := Customer.Name;
+    end;
+}
+"#;
+
+    const CUSTOMER_TABLE: &str = r#"table 50100 Customer
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+        field(2; Name; Text[100]) { }
+    }
+}
+"#;
+
+    fn codeunit_uri() -> Url {
+        Url::parse("file:///test/src/Cod50100.al").unwrap()
+    }
+
+    fn table_uri() -> Url {
+        Url::parse("file:///test/src/Tab50100.al").unwrap()
+    }
+
+    // Helpers copied from the rename tests in this file (`mod tests`).
+    fn open_doc(ws: &Workspace, uri: &Url, al_code: &str) {
+        ws.documents.open(uri.clone(), al_code.to_string()).unwrap();
+    }
+
+    /// Index `al_code` as well as opening it, so the cross-file loop sees it.
+    fn open_and_index(ws: &Workspace, uri: &Url, al_code: &str) {
+        open_doc(ws, uri, al_code);
+        ws.file_index
+            .add_file(uri.to_file_path().unwrap(), al_code.to_string());
+    }
+
+    /// Position of the first `needle` in `source`, moved `offset` bytes on.
+    fn position_of(source: &str, needle: &str, offset: usize) -> Position {
+        let byte = source
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not in source"))
+            + offset;
+        let before = &source[..byte];
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        Position {
+            line: before.matches('\n').count() as u32,
+            character: (byte - line_start) as u32,
+        }
+    }
+
+    /// True when the single-line `range` contains `at`.
+    fn covers(range: Range, at: Position) -> bool {
+        range.start.line == at.line
+            && range.start.character <= at.character
+            && at.character < range.end.character
+    }
+
+    #[test]
+    fn local_rename_leaves_record_member() {
+        let ws = Workspace::new();
+        let codeunit = codeunit_uri();
+        open_and_index(&ws, &table_uri(), CUSTOMER_TABLE);
+        open_and_index(&ws, &codeunit, CODEUNIT);
+
+        let left = position_of(CODEUNIT, "Name := Customer", 0);
+        let edit = rename(&ws, &codeunit, left, "DisplayName")
+            .expect("rename does not fail")
+            .expect("rename returns an edit");
+
+        assert_eq!(edit.changes.len(), 1, "only the codeunit changes: {edit:?}");
+        let (changed, edits) = &edit.changes[0];
+        assert_eq!(changed, &codeunit);
+        assert_eq!(edits.len(), 2, "declaration and left side only: {edits:?}");
+        assert_eq!(edits[0].range.start, position_of(CODEUNIT, "Name: Text", 0));
+        assert_eq!(edits[1].range.start, left);
+        assert!(edits.iter().all(|e| e.new_text == "DisplayName"));
+
+        let member = position_of(CODEUNIT, "Customer.Name", "Customer.".len());
+        assert!(
+            edits.iter().all(|e| !covers(e.range, member)),
+            "an edit rewrote Customer.Name: {edits:?}"
+        );
+    }
+
+    #[test]
+    fn rename_on_record_member_does_not_touch_local() {
+        let ws = Workspace::new();
+        let codeunit = codeunit_uri();
+        open_and_index(&ws, &table_uri(), CUSTOMER_TABLE);
+        open_and_index(&ws, &codeunit, CODEUNIT);
+
+        let member = position_of(CODEUNIT, "Customer.Name", "Customer.".len());
+        let edit = rename(&ws, &codeunit, member, "DisplayName")
+            .expect("rename does not fail")
+            .expect("rename returns edits for the record field");
+
+        let local_line = position_of(CODEUNIT, "Name: Text", 0).line;
+        for (changed, edits) in &edit.changes {
+            if changed != &codeunit {
+                continue;
+            }
+            assert!(
+                edits.iter().all(|e| e.range.start.line != local_line),
+                "an edit lies on the local declaration: {edits:?}"
+            );
+            assert!(
+                edits.iter().any(|e| covers(e.range, member)),
+                "Customer.Name is not renamed: {edits:?}"
+            );
+        }
     }
 }
