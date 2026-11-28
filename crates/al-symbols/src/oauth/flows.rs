@@ -2,7 +2,9 @@
 //! refresh, plus the polling rules the token endpoint drives.
 
 use super::al_cache::al_refresh_token;
-use super::cache::{load_cached_token, now_unix, save_cached_token, token_cache_path};
+use super::cache::{
+    cached_token_matches, load_cached_token, now_unix, save_cached_token, token_cache_path,
+};
 use super::encoding::percent_encode;
 use super::pkce::{generate_code_verifier, generate_random_string, pkce_challenge};
 use super::redirect::{open_browser, wait_for_auth_callback};
@@ -137,7 +139,11 @@ pub async fn acquire_token_with_settings(
     // the refresh error, so the caller sees why the sign-in stopped working.
     let mut refresh_error = None;
 
-    if let Some(cached) = load_cached_token(&cache_path, tenant) {
+    // A token issued for another client id, scope or endpoint is a miss, and
+    // its refresh token is not sent with the current client id.
+    if let Some(cached) =
+        load_cached_token(&cache_path, tenant).filter(|cached| cached_token_matches(cached, &auth))
+    {
         let now = now_unix();
         if cached.expires_at > now + 60 {
             debug!(tenant, "Using cached BC access token");
@@ -150,7 +156,7 @@ pub async fn acquire_token_with_settings(
             debug!(tenant, "Access token expired, refreshing");
             match refresh_token_flow(client, tenant, &auth, refresh).await {
                 Ok(tok) => {
-                    save_cached_token(&cache_path, tenant, &tok);
+                    save_cached_token(&cache_path, tenant, &tok, &auth);
                     info!(tenant, "Refreshed BC access token");
                     // Clone so `tok` drops intact (Drop scrubs the secrets).
                     return Ok(tok.access_token.clone());
@@ -168,7 +174,7 @@ pub async fn acquire_token_with_settings(
     if let Some(al_refresh) = al_refresh_token(tenant, &auth.client_id) {
         match refresh_token_flow(client, tenant, &auth, &al_refresh).await {
             Ok(tok) => {
-                save_cached_token(&cache_path, tenant, &tok);
+                save_cached_token(&cache_path, tenant, &tok, &auth);
                 info!(
                     tenant,
                     "Signed in with the AL extension's cached refresh token"
@@ -187,7 +193,7 @@ pub async fn acquire_token_with_settings(
     }
 
     let tok = interactive_sign_in(client, tenant, &auth, mode, &on_message).await?;
-    save_cached_token(&cache_path, tenant, &tok);
+    save_cached_token(&cache_path, tenant, &tok, &auth);
     info!(tenant, "Acquired BC access token");
     // Clone so `tok` drops intact (Drop scrubs the secrets).
     Ok(tok.access_token.clone())
