@@ -834,6 +834,50 @@ mod tests {
         tmp.into_temp_path()
     }
 
+    /// `write_app` with the uncompressed size of the entry `name` set to
+    /// `declared` in its local file header and its central directory header.
+    /// The deflated data and its CRC stay as written.
+    fn write_app_with_declared_size(
+        files: &[(&str, &str)],
+        name: &str,
+        declared: u32,
+    ) -> tempfile::TempPath {
+        // (signature, uncompressed size offset, name length offset, name offset)
+        const HEADERS: [(&[u8], usize, usize, usize); 2] =
+            [(b"PK\x03\x04", 22, 26, 30), (b"PK\x01\x02", 24, 28, 46)];
+        let path = write_app(files);
+        let mut bytes = std::fs::read(&path).unwrap();
+        let mut patched = 0;
+        for (signature, size_at, name_len_at, name_at) in HEADERS {
+            for header in 0..bytes.len().saturating_sub(name_at) {
+                if &bytes[header..header + 4] != signature {
+                    continue;
+                }
+                let name_len = u16::from_le_bytes([
+                    bytes[header + name_len_at],
+                    bytes[header + name_len_at + 1],
+                ]) as usize;
+                let start = header + name_at;
+                if bytes.get(start..start + name_len) == Some(name.as_bytes()) {
+                    let at = header + size_at;
+                    bytes[at..at + 4].copy_from_slice(&declared.to_le_bytes());
+                    patched += 1;
+                }
+            }
+        }
+        assert_eq!(
+            patched, 2,
+            "expected one local and one central header for '{name}'"
+        );
+        std::fs::write(&path, &bytes).unwrap();
+        path
+    }
+
+    /// `write_app_with_declared_size` with a declared size of 1 byte.
+    fn write_app_understated(files: &[(&str, &str)], name: &str) -> tempfile::TempPath {
+        write_app_with_declared_size(files, name, 1)
+    }
+
     #[test]
     fn parse_object_header_basic_unquoted() {
         let got = parse_object_header(b"codeunit 50100 MyCodeunit\n{\n}").unwrap();
@@ -1525,6 +1569,49 @@ mod tests {
         let error = read_indexed_sources(&mut archive, &idx.source_paths, total - 1).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("package extraction limit"));
+    }
+
+    #[test]
+    fn understated_header_is_charged_by_bytes_read() {
+        // The header of src/A.al says 1 byte, its deflated data holds 21.
+        let files = [
+            ("src/A.al", "codeunit 50120 A\n{\n}\n"),
+            ("src/B.al", "codeunit 50121 B\n{\n}\n"),
+        ];
+        let total: u64 = files.iter().map(|(_, body)| body.len() as u64).sum();
+        let path = write_app_understated(&files, "src/A.al");
+        let paths = ["src/A.al".to_string(), "src/B.al".to_string()];
+        let mut archive = ZipArchive::new(File::open(&path).unwrap()).unwrap();
+
+        // An understated header cannot reach the cap because the zip crate
+        // refuses the entry on read, before its bytes are charged to the total.
+        let error = read_indexed_sources(&mut archive, &paths, total - 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("declared uncompressed size"));
+    }
+
+    #[test]
+    fn overstated_header_is_charged_by_bytes_read() {
+        // The header of src/A.al says 1021 bytes, its deflated data holds 21.
+        let files = [
+            ("src/A.al", "codeunit 50120 A\n{\n}\n"),
+            ("src/B.al", "codeunit 50121 B\n{\n}\n"),
+        ];
+        let total: u64 = files.iter().map(|(_, body)| body.len() as u64).sum();
+        let path = write_app_with_declared_size(&files, "src/A.al", 1021);
+        let paths = ["src/A.al".to_string(), "src/B.al".to_string()];
+        let mut archive = ZipArchive::new(File::open(&path).unwrap()).unwrap();
+
+        // The budget is the real total. Charging the header size for src/A.al
+        // (1021) would leave no budget for src/B.al.
+        let sources = read_indexed_sources(&mut archive, &paths, total).unwrap();
+        assert_eq!(
+            sources,
+            vec![
+                ("src/A.al".to_string(), files[0].1.to_string()),
+                ("src/B.al".to_string(), files[1].1.to_string()),
+            ]
+        );
     }
 
     #[test]
