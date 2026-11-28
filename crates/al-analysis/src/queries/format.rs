@@ -53,6 +53,9 @@ pub struct AlFormatConfig {
     pub sort_properties: Option<bool>,
 }
 
+/// Largest `.alformat.json` accepted. A real one holds a few short keys.
+const MAX_ALFORMAT_BYTES: u64 = 65_536;
+
 impl AlFormatConfig {
     pub fn from_json(json: &str) -> Result<Self, String> {
         serde_json::from_str(json).map_err(|e| e.to_string())
@@ -60,12 +63,11 @@ impl AlFormatConfig {
 
     pub fn load(workspace_root: &Path) -> Option<Result<Self, String>> {
         let path = workspace_root.join(".alformat.json");
-        let text = match std::fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
-            Err(error) => return Some(Err(error.to_string())),
-        };
-        Some(Self::from_json(&text))
+        match al_project::project::read_regular_text_file(&path, MAX_ALFORMAT_BYTES) {
+            Ok(Some(text)) => Some(Self::from_json(&text)),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
+        }
     }
 
     /// Map the parsed `.alformat.json` onto [`FormatOptions`]. Every field is
@@ -308,6 +310,25 @@ mod tests {
                 .expect("a missing file is not an error");
         assert_eq!(opts.tab_size, 4);
         assert!(opts.insert_spaces);
+    }
+
+    /// A link to `/dev/zero` made the read never end.
+    #[cfg(unix)]
+    #[test]
+    fn alformat_symlink_to_dev_zero_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/dev/zero", dir.path().join(".alformat.json")).unwrap();
+        let error = AlFormatConfig::load_options_strict(dir.path()).unwrap_err();
+        assert!(error.contains("regular file"), "{error}");
+    }
+
+    #[test]
+    fn alformat_over_cap_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let text = format!("{}{{}}", " ".repeat(70_000));
+        std::fs::write(dir.path().join(".alformat.json"), text).unwrap();
+        let error = AlFormatConfig::load_options_strict(dir.path()).unwrap_err();
+        assert!(error.contains("larger than 65536 bytes"), "{error}");
     }
 
     #[test]

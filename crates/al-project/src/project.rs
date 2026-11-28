@@ -415,6 +415,31 @@ fn read_text_up_to(reader: impl std::io::Read, cap: u64) -> std::io::Result<Opti
     Ok((text.len() as u64 <= cap).then_some(text))
 }
 
+/// The text of the regular file at `path`, read up to `cap` bytes.
+///
+/// `Ok(None)` when nothing exists at `path`. A path that is not a regular
+/// file, such as a link to `/dev/zero` or to a FIFO, is refused without a
+/// read that waits or never ends. So is a file larger than `cap`.
+pub fn read_regular_text_file(path: &Path, cap: u64) -> Result<Option<String>, String> {
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot inspect file: {error}")),
+    };
+    let too_large = || format!("larger than {cap} bytes");
+    if !metadata.is_file() {
+        return Err("not a regular file".to_string());
+    }
+    if metadata.len() > cap {
+        return Err(too_large());
+    }
+    let file = crate::trust::open_regular_file(path).ok_or("not a regular file")?;
+    read_text_up_to(file, cap)
+        .map_err(|error| format!("cannot read file: {error}"))?
+        .ok_or_else(too_large)
+        .map(Some)
+}
+
 /// Load the exact `app.json` in `project_root` with the same size and schema
 /// validation used by workspace discovery.
 ///
