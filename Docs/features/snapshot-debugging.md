@@ -72,7 +72,16 @@ Output events:
   set against (see below).
 
 Disconnect to finish. The adapter downloads the snapshot, saves the zip under `snapshotOutputPath`
-and prints `Snapshot saved to <path>`. If the finish fails, the session record stays on this machine and `al-explorer snapshot finish` retries it. If saving the zip to the output folder fails, `finish` keeps it at `<store dir>/<context>.zip`, where the store dir is `<local data dir>/al-lsp/snapshot-sessions` and the context name is lower case. The error message names that path. When the adapter creates the output folder it also writes
+and prints `Snapshot saved to <path>`. The adapter saves the scenario `label` in the session record, so `al-explorer snapshot status` and `finish` find the configuration of a Zed capture by that label. If the finish fails before the server has finished the capture, the session record stays on this machine and `al-explorer snapshot finish` retries it. After the server has finished, a second finish returns nothing, and the message says so.
+
+Before it asks the server to finish, `finish` creates a staging file `.<context>.zip.partial` in the store dir (`<local data dir>/al-lsp/snapshot-sessions`, context in lower case), and it does not finish when that fails. The zip is then written to these places, in order:
+
+1. The staging file in the store dir.
+2. The output folder. On success the staging file is removed.
+3. When the output folder fails, the staging file is renamed to `<store dir>/<context>.zip`.
+4. When the staging write failed as well (for example a full disk that holds both the store and the project), a private folder on the runtime filesystem: `$XDG_RUNTIME_DIR/al-lsp/snapshot-recovery`, or a new `al-lsp-snapshot-<pid>-<n>` folder under the temp dir when there is no runtime dir.
+
+The message names the path where the zip was kept. The zip is lost only when the store, the output folder and the recovery folder all cannot be written. The message then names the three places and gives the byte count. When the adapter creates the output folder it also writes
 a `.gitignore` with `*` into it. An existing folder is left alone. `al-explorer snapshot finish` does the same from a
 terminal.
 
@@ -154,7 +163,7 @@ All commands run through the daemon and use a launch configuration from `.zed/de
 al-explorer --tenant <GUID> snapshot start --config "Sandbox" --break-on-next WebClient \
   --user user@contoso.com --snap page:42:2530 --snap page:42:2531
 
-# status: the latest session, or --context <guid>
+# status: the newest unfinished session of this project, or --context <guid>
 al-explorer --tenant <GUID> snapshot status
 
 # finish: download and save the zip, default folder .snapshots
@@ -171,9 +180,8 @@ A customer tenant also needs `--purpose <TEXT>`. A refusal by the tenant guard e
 
 `start` requires `--break-on-next` and takes `--config` (default: the first configuration), `--snap` (repeatable, optional),
 `--user`, `--session-id`, `--verbosity snappoint|full` (default `snappoint`) and `--allow-production`.
-`status` and `finish` take `--context`, `finish` also `--out` (a folder inside the project, relative or absolute). `show` takes `--vars`, `--fields`,
-`--stop` and `--json`. The session record is kept on this machine, so `status` and `finish` find the
-latest session without arguments.
+`status` and `finish` take `--context` and `--allow-production` (required for a Production environment), `finish` also `--out` (a folder inside the project, relative or absolute). `show` takes `--vars`, `--fields`,
+`--stop` and `--json`. `--vars` applies to the text and the JSON output. `--fields` shapes the text output only, because JSON carries the whole record. The session record is kept on this machine, so `status` and `finish` use the newest unfinished session started in this project when `--context` is left out.
 
 ## MCP
 

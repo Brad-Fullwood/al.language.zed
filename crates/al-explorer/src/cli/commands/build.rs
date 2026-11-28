@@ -403,10 +403,39 @@ fn implicit_output_dir(dir: &std::path::Path) -> Result<std::path::PathBuf, Stri
 }
 
 /// Recursively copy a directory tree (used to validate in a throwaway copy so
-/// alc's own `.app`/temp output never lands in the user's project). Symlinks
-/// are skipped, as native discovery skips them, so the copy never reads a file
-/// or folder outside the project.
-fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+/// alc's own `.app`/temp output never lands in the user's project).
+///
+/// On Unix a symbolic link is recreated in the copy, pointing at the link's
+/// canonical target, and is not read through. alc then reads the same linked
+/// tree it reads in the project, nothing outside the project is copied, and a
+/// link cycle cannot recurse. A dangling link is skipped with a note on stderr.
+///
+/// Elsewhere linked folders are followed. `ancestors` holds the canonical paths
+/// of the folders on the current descent, and a folder that resolves to one of
+/// them is refused as a link cycle.
+fn copy_dir(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    ancestors: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
+    let canonical = std::fs::canonicalize(src)?;
+    if ancestors.contains(&canonical) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("link cycle at {}", src.display()),
+        ));
+    }
+    ancestors.push(canonical);
+    let result = copy_entries(src, dst, ancestors);
+    ancestors.pop();
+    result
+}
+
+fn copy_entries(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    ancestors: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -414,15 +443,36 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
         if name == ".git" {
             continue;
         }
-        let from = entry.path();
-        let to = dst.join(&name);
-        if entry_is_dir(&entry)? {
-            copy_dir(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)?;
-        }
+        copy_entry(&entry, &dst.join(&name), ancestors)?;
     }
     Ok(())
+}
+
+/// Copy one entry of a folder being copied. See [`copy_dir`] for links.
+fn copy_entry(
+    entry: &std::fs::DirEntry,
+    to: &std::path::Path,
+    ancestors: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
+    let from = entry.path();
+    #[cfg(unix)]
+    if entry.file_type()?.is_symlink() {
+        return match std::fs::canonicalize(&from) {
+            Ok(target) => std::os::unix::fs::symlink(target, to),
+            Err(_) => {
+                eprintln!(
+                    "skipped dangling link {}",
+                    terminal_text(&from.display().to_string())
+                );
+                Ok(())
+            }
+        };
+    }
+    if entry_is_dir(entry)? {
+        copy_dir(&from, to, ancestors)
+    } else {
+        std::fs::copy(&from, to).map(|_| ())
+    }
 }
 
 /// Whether `entry` is a directory, following a symbolic link to one. The
@@ -558,6 +608,7 @@ fn validate_with_alc(
     let tmp_path = tmp.path();
     // Copy app.json + every source/.alpackages dir alc needs.
     if let Err(e) = (|| -> std::io::Result<()> {
+        let mut ancestors = vec![std::fs::canonicalize(dir)?];
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -568,13 +619,7 @@ fn validate_with_alc(
             {
                 continue;
             }
-            let from = entry.path();
-            let to = tmp_path.join(&name);
-            if entry_is_dir(&entry)? {
-                copy_dir(&from, &to)?;
-            } else {
-                std::fs::copy(&from, &to)?;
-            }
+            copy_entry(&entry, &tmp_path.join(&name), &mut ancestors)?;
         }
         Ok(())
     })() {
@@ -967,7 +1012,7 @@ mod validation_trust_tests {
         al_project::trust::grant(project.path()).unwrap();
         let settings = al_project::trust::evaluate(project.path()).unwrap();
         let copy = tempfile::tempdir().unwrap();
-        copy_dir(project.path(), copy.path()).unwrap();
+        copy_dir(project.path(), copy.path(), &mut Vec::new()).unwrap();
 
         let entries = validation_analyzer_entries(
             project.path(),
@@ -1008,8 +1053,9 @@ mod validation_trust_tests {
     }
 
     #[cfg(unix)]
+    #[cfg(unix)]
     #[test]
-    fn copy_dir_follows_directory_symlink() {
+    fn copy_dir_recreates_a_directory_link() {
         let tmp = tempfile::tempdir().unwrap();
         let real = tmp.path().join("real");
         std::fs::create_dir_all(&real).unwrap();
@@ -1017,12 +1063,99 @@ mod validation_trust_tests {
         let src = tmp.path().join("src");
         std::fs::create_dir_all(src.join(".git")).unwrap();
         std::os::unix::fs::symlink(&real, src.join("pkgs")).unwrap();
-        let dst = tmp.path().join("dst");
+        let out = tempfile::tempdir().unwrap();
+        let dst = out.path().join("dst");
 
-        copy_dir(&src, &dst).unwrap();
+        copy_dir(&src, &dst, &mut Vec::new()).unwrap();
 
-        assert!(dst.join("pkgs").join("a.app").is_file());
+        let link = dst.join("pkgs");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            real.canonicalize().unwrap()
+        );
+        assert_eq!(std::fs::read(link.join("a.app")).unwrap(), b"app");
         assert!(!dst.join(".git").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_does_not_descend_into_a_link_to_the_parent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.al"), b"codeunit 1 A {}").unwrap();
+        std::os::unix::fs::symlink("..", src.join("loop")).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let dst = out.path().join("dst");
+
+        copy_dir(&src, &dst, &mut Vec::new()).unwrap();
+
+        let link = dst.join("loop");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            tmp.path().canonicalize().unwrap()
+        );
+        // Only the two entries of `src` were written. Nothing was copied
+        // through the link, so no real `loop/loop` folder exists.
+        assert_eq!(std::fs::read_dir(&dst).unwrap().count(), 2);
+        assert!(!tmp.path().join("loop").exists());
+        assert_eq!(std::fs::read(dst.join("a.al")).unwrap(), b"codeunit 1 A {}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_recreates_a_file_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real.json");
+        std::fs::write(&real, b"{}").unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::os::unix::fs::symlink(&real, src.join("app.json")).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let dst = out.path().join("dst");
+
+        copy_dir(&src, &dst, &mut Vec::new()).unwrap();
+
+        let link = dst.join("app.json");
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            real.canonicalize().unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_link_is_skipped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::os::unix::fs::symlink(tmp.path().join("missing"), src.join("gone")).unwrap();
+        std::fs::write(src.join("a.al"), b"x").unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let dst = out.path().join("dst");
+
+        copy_dir(&src, &dst, &mut Vec::new()).unwrap();
+
+        assert!(std::fs::symlink_metadata(dst.join("gone")).is_err());
+        assert!(dst.join("a.al").is_file());
     }
 }
 

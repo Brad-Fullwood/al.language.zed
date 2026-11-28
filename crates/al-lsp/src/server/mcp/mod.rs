@@ -708,8 +708,8 @@ fn tools() -> &'static [ToolDef] {
                         },
                         "sessionId": {
                             "type": "integer",
-                            "minimum": 0,
-                            "description": "For start: attach to a specific existing BC session instead of breakOnNext."
+                            "minimum": -1,
+                            "description": "For start: attach to a specific existing BC session instead of breakOnNext. -1 means no specific session."
                         },
                         "startupObjectType": {
                             "type": "string",
@@ -839,8 +839,8 @@ fn tools() -> &'static [ToolDef] {
                         },
                         "sessionId": {
                             "type": "integer",
-                            "minimum": 0,
-                            "description": "For start: capture one existing session by its id."
+                            "minimum": -1,
+                            "description": "For start: capture one existing session by its id. -1 means no specific session."
                         },
                         "verbosity": {
                             "type": "string",
@@ -849,7 +849,7 @@ fn tools() -> &'static [ToolDef] {
                         },
                         "allowProduction": {
                             "type": "boolean",
-                            "description": "For start: required to attach to a Production environment. Default false."
+                            "description": "For start, status and finish: required for a Production environment. Default false."
                         },
                         "accessToken": {
                             "type": "string",

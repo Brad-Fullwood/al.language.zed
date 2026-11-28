@@ -130,7 +130,7 @@ pub(super) async fn lookup(
     )
     .await
     .map_err(|(_, message)| message)?;
-    let http = reqwest::Client::new();
+    let http = lookup_http_client(&config)?;
     let version =
         al_dap::dap::bc_debug::automation::base_application_version(&http, &config, &token)
             .await
@@ -139,6 +139,24 @@ pub(super) async fn lookup(
         version,
         config: picked.name.clone(),
     })
+}
+
+/// The client for the BaseApp version lookup. It carries the bearer token,
+/// so it follows no redirect, and a stalled server fails the lookup instead
+/// of holding the request open.
+fn lookup_http_client(
+    config: &al_dap::dap::bc_debug::BcDebugConfig,
+) -> Result<reqwest::Client, String> {
+    if config.accept_invalid_certs {
+        al_bc::http_auth::warn_insecure_tls("environment version lookup");
+    }
+    reqwest::Client::builder()
+        .danger_accept_invalid_certs(config.accept_invalid_certs)
+        .connect_timeout(std::time::Duration::from_secs(30))
+        .timeout(std::time::Duration::from_secs(60))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|error| format!("Cannot create the HTTP client: {error}"))
 }
 
 /// Daemon request `environmentVersion`: the BaseApp version of the tenant the
@@ -272,5 +290,30 @@ mod tests {
         assert_eq!(release_line(CDX_BASE_APP), "29.0.0.0");
         let deps = on_release_line(&core_deps("28.0.0.0"), CDX_BASE_APP);
         assert!(deps.iter().all(|d| d.version == "29.0.0.0"));
+    }
+
+    #[tokio::test]
+    async fn lookup_client_refuses_redirects() {
+        use wiremock::matchers::method;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let target = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&target)
+            .await;
+        Mock::given(method("GET"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("Location", format!("{}/login", target.uri())),
+            )
+            .mount(&server)
+            .await;
+        let client =
+            super::lookup_http_client(&al_dap::dap::bc_debug::BcDebugConfig::default()).unwrap();
+        let response = client.get(server.uri()).send().await.unwrap();
+        assert_eq!(response.status().as_u16(), 302);
+        target.verify().await;
     }
 }

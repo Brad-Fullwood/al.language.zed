@@ -19,6 +19,19 @@ fn parse_debug_task_config(raw: &str) -> zed::Result<Value> {
     Ok(config_json)
 }
 
+/// Add `label` to a debug task configuration that has no `label` key. The
+/// adapter takes the scenario name from `label`, and Zed keeps the task label
+/// outside `config.config`, so it must be copied in here. An existing `label`
+/// is kept as written.
+fn with_label(mut config_json: Value, label: &str) -> Value {
+    if let Some(object) = config_json.as_object_mut() {
+        object
+            .entry("label")
+            .or_insert_with(|| Value::String(label.to_string()));
+    }
+    config_json
+}
+
 /// Build the DAP binary configuration for the AL debug adapter.
 ///
 /// `al_lsp_path` is the resolved binary path from the resolution chain
@@ -51,7 +64,9 @@ pub fn build_dap_binary(
     user_settings: Option<&Value>,
 ) -> zed::Result<zed::DebugAdapterBinary> {
     let config_json = parse_debug_task_config(&config.config)?;
-    let request = dap_request_kind(config_json)?;
+    let request = dap_request_kind(config_json.clone())?;
+    let configuration = serde_json::to_string(&with_label(config_json, &config.label))
+        .map_err(|error| format!("AL DAP: cannot serialize debug task configuration: {error}"))?;
 
     let workspace_path = worktree.root_path();
 
@@ -98,7 +113,7 @@ pub fn build_dap_binary(
         cwd: Some(workspace_path.to_string()),
         connection: None,
         request_args: zed::StartDebuggingRequestArguments {
-            configuration: config.config,
+            configuration,
             request,
         },
     })
@@ -417,5 +432,17 @@ mod tests {
         let error =
             dap_request_kind(json!({ "request": "snapshot", "snapshot": "capture" })).unwrap_err();
         assert!(error.contains("unsupported request type"), "{error}");
+    }
+
+    #[test]
+    fn build_args_carry_the_label() {
+        let labelled = with_label(json!({ "request": "attach" }), "Capture sandbox");
+        assert_eq!(labelled["label"], json!("Capture sandbox"));
+
+        let kept = with_label(
+            json!({ "request": "attach", "label": "Written label" }),
+            "Task label",
+        );
+        assert_eq!(kept["label"], json!("Written label"));
     }
 }

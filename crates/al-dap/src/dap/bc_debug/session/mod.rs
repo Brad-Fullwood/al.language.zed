@@ -202,9 +202,13 @@ impl BcDebugSession {
             .collect::<Vec<_>>()
             .join("&");
         let negotiate_url = format!("{hub_url}/negotiate?{query}&negotiateVersion=1");
+        // The negotiate URL carries the token in its query. Redirects and the
+        // Referer header would send it to any origin a 3xx names.
         let http = reqwest::Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .connect_timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
+            .referer(false)
             .build()
             .map_err(|e| DapError::ConnectionFailed(format!("HTTP client error: {e}")))?;
 

@@ -11,3 +11,10 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 dirs = { workspace = true }
 tree-sitter = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+# geteuid, for the owner checks in private_dir.
+libc = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

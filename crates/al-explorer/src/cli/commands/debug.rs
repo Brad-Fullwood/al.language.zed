@@ -519,6 +519,33 @@ fn snapshot_request(subcmd: &SnapshotCommands) -> Result<Value, String> {
     })
 }
 
+/// Snapshot and profile requests that call Business Central. Each HTTP call may
+/// take 300 s in the daemon, which finishes the request after the client has
+/// left, so the 30 s default would report a timeout for a start or finish that
+/// still happens.
+const BC_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The default timeout for a snapshot subcommand. `None` keeps the client
+/// default. `--timeout-ms` still overrides it.
+fn snapshot_timeout(subcmd: &SnapshotCommands) -> Option<std::time::Duration> {
+    match subcmd {
+        SnapshotCommands::Start { .. }
+        | SnapshotCommands::Status { .. }
+        | SnapshotCommands::Finish { .. } => Some(BC_REQUEST_TIMEOUT),
+        _ => None,
+    }
+}
+
+/// The default timeout for a profile subcommand, as [`snapshot_timeout`].
+fn profile_timeout(subcmd: &ProfileCommands) -> Option<std::time::Duration> {
+    match subcmd {
+        ProfileCommands::Start { .. }
+        | ProfileCommands::Status { .. }
+        | ProfileCommands::Stop { .. } => Some(BC_REQUEST_TIMEOUT),
+        _ => None,
+    }
+}
+
 pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
     let mut params = match snapshot_request(subcmd) {
         Ok(params) => params,
@@ -533,6 +560,9 @@ pub fn cmd_snapshot(subcmd: &SnapshotCommands, json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
+    if let Some(timeout) = snapshot_timeout(subcmd) {
+        set_command_timeout(&mut client, timeout);
+    }
     match request_checked(&mut client, "snapshot", Some(params)) {
         Ok(result) => {
             let exit = match subcmd {
@@ -641,6 +671,9 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
+            if let Some(timeout) = profile_timeout(subcmd) {
+                set_command_timeout(&mut client, timeout);
+            }
             let params = snapshot_params(
                 "start",
                 vec![
@@ -683,6 +716,9 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
+            if let Some(timeout) = profile_timeout(subcmd) {
+                set_command_timeout(&mut client, timeout);
+            }
             let params = snapshot_params(
                 "status",
                 vec![
@@ -716,6 +752,9 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
+            if let Some(timeout) = profile_timeout(subcmd) {
+                set_command_timeout(&mut client, timeout);
+            }
             let out_dir = match out {
                 Some(dir) => match absolutize_path(dir) {
                     Ok(dir) => Some(serde_json::json!(dir)),
@@ -752,6 +791,9 @@ pub fn cmd_profile(subcmd: &ProfileCommands, json: bool) -> ExitCode {
                 Ok(c) => c,
                 Err(e) => return report_error(&e, json),
             };
+            if let Some(timeout) = profile_timeout(subcmd) {
+                set_command_timeout(&mut client, timeout);
+            }
             let path = match absolutize_path(path) {
                 Ok(path) => path,
                 Err(error) => return report_error(&error, json),
@@ -934,5 +976,32 @@ mod terminal_text_tests {
             text.contains(r"Sec7 Tests\u{1b}[2J (Bad\u{1b}[31m Name\u{1b}[0m)"),
             "got: {text}"
         );
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::{BC_REQUEST_TIMEOUT, profile_timeout, snapshot_timeout};
+    use crate::cli::{ProfileCommands, SnapshotCommands};
+
+    #[test]
+    fn snapshot_and_profile_commands_use_the_long_timeout() {
+        let status = SnapshotCommands::Status {
+            context: None,
+            allow_production: false,
+        };
+        assert_eq!(snapshot_timeout(&status), Some(BC_REQUEST_TIMEOUT));
+        assert_eq!(snapshot_timeout(&SnapshotCommands::List), None);
+        let profile_status = ProfileCommands::Status {
+            context: None,
+            allow_production: false,
+        };
+        assert_eq!(profile_timeout(&profile_status), Some(BC_REQUEST_TIMEOUT));
+        let analyze = ProfileCommands::Analyze {
+            path: "p.json".to_string(),
+            top: 5,
+        };
+        assert_eq!(profile_timeout(&analyze), None);
+        assert_eq!(BC_REQUEST_TIMEOUT.as_secs(), 600);
     }
 }

@@ -313,8 +313,9 @@ fn announce_once(info: &TenantInfo) {
 /// The guard every cloud connection calls before its first request.
 ///
 /// Inside [`scope_declaration`] (a CLI or MCP request) the typed tenant must be
-/// present and equal `config_tenant`. Outside it (the editor) `config_tenant`
-/// alone is used and `config_purpose` stands in for `--purpose`.
+/// present and equal `config_tenant`, and only the typed purpose counts for a
+/// customer tenant. Outside it (the editor) `config_tenant` alone is used and
+/// `config_purpose` stands in for `--purpose`.
 pub fn guard_cloud_connection(
     config_tenant: Option<&str>,
     config_purpose: Option<&str>,
@@ -323,7 +324,7 @@ pub fn guard_cloud_connection(
     let info = match DECLARED.try_with(Clone::clone) {
         Ok(declared) => require(
             declared.tenant.as_deref(),
-            declared.purpose.as_deref().or(config_purpose),
+            declared.purpose.as_deref(),
             config_tenant,
             &registry,
         )?,
@@ -512,6 +513,22 @@ mod tests {
         };
         let ok = scope_declaration(typed, async { guard_cloud_connection(Some(CDX), None) }).await;
         assert!(ok.is_ok());
+        // CLI mode, customer tenant: the configuration's tenantPurpose does
+        // not stand in for --purpose (codex-r2-08).
+        let customer = |purpose: Option<&str>| Declaration {
+            tenant: Some(DMS.to_string()),
+            purpose: purpose.map(str::to_string),
+        };
+        let untyped = scope_declaration(customer(None), async {
+            guard_cloud_connection(Some(DMS), Some("ticket 1"))
+        })
+        .await;
+        assert!(untyped.unwrap_err().0.contains("customer tenant"));
+        let typed = scope_declaration(customer(Some("ticket 1")), async {
+            guard_cloud_connection(Some(DMS), None)
+        })
+        .await;
+        assert!(typed.is_ok());
         std::mem::forget(dir);
     }
 }

@@ -5,8 +5,13 @@ use std::path::{Path, PathBuf};
 
 use al_bc::snapshot::archive::{ObjectType, SnapshotArchive};
 
-/// Folder name for a snapshot: the zip's file stem reduced to plain characters.
-pub(super) fn folder_name(zip: &Path) -> String {
+/// Folder name for a snapshot: the zip's file stem reduced to plain
+/// characters, then `-` and a 64 bit hash of the zip's bytes in hex. Two zips
+/// with the same stem get different folders, and the same zip reuses its
+/// folder. `DefaultHasher` is stable within one build, which is all this
+/// cache key needs.
+pub(super) fn folder_name(zip: &Path, bytes: &[u8]) -> String {
+    use std::hash::{Hash, Hasher};
     let stem = zip
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -22,11 +27,14 @@ pub(super) fn folder_name(zip: &Path) -> String {
         })
         .take(80)
         .collect();
-    if clean.is_empty() {
+    let clean = if clean.is_empty() {
         "snapshot".to_string()
     } else {
         clean
-    }
+    };
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    format!("{clean}-{:016x}", hasher.finish())
 }
 
 /// The file name of an object's source, `Page%42.al`.

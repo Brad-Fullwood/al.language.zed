@@ -18,6 +18,8 @@ tracing = { workspace = true }
 # any process on the endpoint can echo back.
 sha2 = "0.10"
 getrandom = { workspace = true }
+# The private folder checks, shared with the cache fallback.
+al-types = { path = "../al-types" }
 
 [target.'cfg(unix)'.dependencies]
 # SO_PEERCRED / getpeereid: who is answering on the endpoint, read from the

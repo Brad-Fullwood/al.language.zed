@@ -1093,3 +1093,16 @@ async fn a_tool_error_carries_repository_controls_as_escapes() {
     }
     assert_eq!(text, structured);
 }
+
+#[test]
+fn session_id_minus_one_passes_schema_validation() {
+    for (name, verb) in [("al_debug", "cmd"), ("al_snapshot", "action")] {
+        let tool = tools()
+            .iter()
+            .find(|tool| tool.name == name)
+            .expect("ToolDef");
+        let args = |session: i64| serde_json::json!({ verb: "start", "sessionId": session });
+        assert_eq!(validate_tool_arguments(tool, &args(-1)), Ok(()), "{name}");
+        assert!(validate_tool_arguments(tool, &args(-2)).is_err(), "{name}");
+    }
+}
