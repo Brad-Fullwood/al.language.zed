@@ -468,8 +468,6 @@ fn pick_record(
     }
 }
 
-/// The configuration of a record that has no configuration name (a Zed
-/// capture). It is the one whose target matches the record.
 /// `stop` for the JSON output, with `locals` and `globals` cut to the names in
 /// `vars` (case insensitive, as the text output does). Children are kept.
 /// `fields` has no JSON meaning, because JSON carries the whole record.
@@ -487,6 +485,9 @@ fn json_stop(
     stop
 }
 
+/// The configuration of a record that has no configuration name (a Zed
+/// capture). It is the one whose target matches the record. Also used for a
+/// named record whose name is no longer in the configuration file.
 fn nameless_config(root: &Path, record: &SessionRecord) -> Result<BcDebugConfig, Failure> {
     let file = launch_file(root)?;
     let matching: Vec<_> = file
@@ -530,7 +531,19 @@ fn config_for_record(
         )));
     }
     let config = match record.configuration_name.as_deref() {
-        Some(name) => load_config(&root, Some(name))?.0,
+        Some(name) => {
+            // The same exact name test that `pick_named_config` applies.
+            let in_file = launch_file(&root)?.configs.iter().any(|c| c.name == name);
+            if in_file {
+                load_config(&root, Some(name))?.0
+            } else {
+                nameless_config(&root, record).map_err(|(_, message)| {
+                    invalid(format!(
+                        "configuration `{name}` is not in the configuration file, and {message}"
+                    ))
+                })?
+            }
+        }
         None => nameless_config(&root, record)?,
     };
     let differs = !same_target(&config, record) || config.snapshot_port != record.snapshot_port;

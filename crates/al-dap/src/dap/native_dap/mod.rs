@@ -691,6 +691,30 @@ mod tests {
             "serialised body must follow the header: {text:?}"
         );
     }
+
+    #[tokio::test]
+    async fn disconnect_reports_a_failed_stop_on_stderr() {
+        use super::test_support::{run_request_on, test_state};
+        let state = test_state();
+        // The connection is gone, so StopDebugging cannot be confirmed.
+        *state.session.lock().await = Some(BcDebugSession::test_disconnected("conn-1"));
+        let (terminate, frames) = run_request_on(&state, "disconnect", serde_json::json!({})).await;
+        assert!(terminate, "{frames:?}");
+        let output = frames
+            .iter()
+            .find(|frame| frame["event"] == "output")
+            .unwrap_or_else(|| panic!("no output event: {frames:?}"));
+        assert_eq!(output["body"]["category"], "stderr", "{frames:?}");
+        let text = output["body"]["output"].as_str().unwrap_or_default();
+        assert!(
+            text.contains("Business Central did not confirm StopDebugging"),
+            "{text}"
+        );
+        assert!(
+            frames.iter().any(|frame| frame["event"] == "terminated"),
+            "{frames:?}"
+        );
+    }
 }
 
 #[cfg(test)]

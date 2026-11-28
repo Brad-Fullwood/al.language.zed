@@ -1253,6 +1253,87 @@ async fn nameless_record_resolves_by_snapshot_port() {
 }
 
 #[tokio::test]
+async fn renamed_label_resolves_by_target() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    // The record names "Local", which the file no longer has. The one
+    // configuration left has the same target.
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    write_configs(&env, &[("Renamed", "BC")]);
+    mock_op(
+        &env,
+        "status",
+        ResponseTemplate::new(200).set_body_string("Started"),
+    )
+    .await;
+
+    let status = ok(
+        &env,
+        json!({ "cmd": "status", "context": first, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(status["status"], "Started");
+}
+
+#[tokio::test]
+async fn renamed_label_with_two_matches_is_refused() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    write_configs(&env, &[("Renamed", "BC"), ("Copy", "BC")]);
+
+    let (code, message) = err(
+        &env,
+        json!({ "cmd": "status", "context": first, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+    assert!(
+        message.contains("configuration `Local` is not in the configuration file"),
+        "{message}"
+    );
+    assert!(
+        message.contains("several debug configurations"),
+        "{message}"
+    );
+    assert!(message.contains("Renamed, Copy"), "{message}");
+    assert_eq!(requests(&env).await.len(), 1, "only the attach was sent");
+}
+
+#[tokio::test]
+async fn renamed_label_with_no_match_is_refused() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    write_configs(&env, &[("Renamed", "OTHER")]);
+
+    let (code, message) = err(
+        &env,
+        json!({ "cmd": "status", "context": first, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+    assert!(
+        message.contains("configuration `Local` is not in the configuration file"),
+        "{message}"
+    );
+    assert!(
+        message.contains("no debug configuration matches"),
+        "{message}"
+    );
+    assert_eq!(requests(&env).await.len(), 1, "only the attach was sent");
+}
+
+#[tokio::test]
 async fn json_show_applies_the_vars_filter() {
     let env = env().await;
     let zip = project_zip(&env);

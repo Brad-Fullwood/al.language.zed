@@ -72,7 +72,7 @@ Output events:
   set against (see below).
 
 Disconnect to finish. The adapter downloads the snapshot, saves the zip under `snapshotOutputPath`
-and prints `Snapshot saved to <path>`. The adapter saves the scenario `label` in the session record, so `al-explorer snapshot status` and `finish` find the configuration of a Zed capture by that label. If the finish fails before the server has finished the capture, the session record stays on this machine and `al-explorer snapshot finish` retries it. After the server has finished, a second finish returns nothing, and the message says so.
+and prints `Snapshot saved to <path>`. The adapter saves the scenario `label` in the session record, so `al-explorer snapshot status` and `finish` find the configuration of a Zed capture by that label. When the label is no longer in the configuration file, the configuration with the same tenant, environment, server and snapshot port is used when exactly one matches. If the finish fails before the server has finished the capture, the session record stays on this machine and `al-explorer snapshot finish` retries it. After the server has finished, a second finish returns nothing, and the message says so.
 
 Before it asks the server to finish, `finish` creates a staging file `.<context>.zip.partial` in the store dir (`<local data dir>/al-lsp/snapshot-sessions`, context in lower case), and it does not finish when that fails. The zip is then written to these places, in order:
 
@@ -80,6 +80,8 @@ Before it asks the server to finish, `finish` creates a staging file `.<context>
 2. The output folder. On success the staging file is removed.
 3. When the output folder fails, the staging file is renamed to `<store dir>/<context>.zip`.
 4. When the staging write failed as well (for example a full disk that holds both the store and the project), a private folder on the runtime filesystem: `$XDG_RUNTIME_DIR/al-lsp/snapshot-recovery`, or a new `al-lsp-snapshot-<pid>-<n>` folder under the temp dir when there is no runtime dir.
+
+If a staging file from an earlier finish already holds a complete zip, finish moves it to `<store dir>/<context>.zip`, stops without asking the server, and names that path.
 
 The message names the path where the zip was kept. The zip is lost only when the store, the output folder and the recovery folder all cannot be written. The message then names the three places and gives the byte count. When the adapter creates the output folder it also writes
 a `.gitignore` with `*` into it. An existing folder is left alone. `al-explorer snapshot finish` does the same from a
