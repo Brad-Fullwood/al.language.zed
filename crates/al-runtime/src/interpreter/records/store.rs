@@ -14,12 +14,13 @@ use al_syntax::IdentifierText;
 
 use crate::interpreter::dispatch::{DispatchCtx, DispatchMode};
 use crate::interpreter::eval_error;
+use crate::interpreter::indexing;
 use crate::interpreter::scope::{Eval, ScopeStack};
 use crate::interpreter::value::{RecordValue, Value};
 use crate::mock::calcformula_parser::CalcFormula;
 use crate::mock::record::{FieldNo, MockRecord, RecordView};
 
-use super::table_meta::load_table_meta;
+use super::table_meta::{load_table_meta, TableMeta};
 
 /// A live record-table backing store: the `MockRecord` data plus the
 /// field-name→number map recovered from the workspace table definition.
@@ -137,9 +138,11 @@ pub(super) fn ensure_store(ctx: &mut DispatchCtx, table: &TableRef) -> Result<St
     }
     let source = Arc::clone(&ctx.source);
     let meta = load_table_meta(&*source, &table.name)?;
+    let init_values = evaluate_init_values(ctx, &meta)?;
     let store = RecordStore {
         record: MockRecord::new(meta.table_id, meta.table_name, meta.pk_fields)
-            .with_field_defaults(meta.field_defaults.clone()),
+            .with_field_defaults(meta.field_defaults.clone())
+            .with_field_init_values(init_values),
         field_by_name: meta.field_by_name,
         flowfields: meta.flowfields,
         field_defaults: meta.field_defaults,
@@ -148,6 +151,46 @@ pub(super) fn ensure_store(ctx: &mut DispatchCtx, table: &TableRef) -> Result<St
     };
     ctx.records.insert(key.clone(), store);
     Ok(key)
+}
+
+/// Evaluate each field's `InitValue` text and coerce it to the field's type.
+/// The text goes through the standalone expression evaluator, the same route
+/// a constant initializer takes, so literals and constant-free expressions
+/// both work. The test router sends anything else to LiveBc first.
+fn evaluate_init_values(
+    ctx: &mut DispatchCtx,
+    meta: &TableMeta,
+) -> Result<HashMap<FieldNo, Value>, String> {
+    let mut values = HashMap::new();
+    for (&no, (name, text)) in &meta.init_values {
+        let raw = match indexing::eval_standalone_expression(text, &mut ScopeStack::new(), ctx) {
+            Ok(value) => value,
+            Err(Eval::Error(info)) => {
+                return Err(format!(
+                    "InitValue of field '{name}' on table '{}': {}",
+                    meta.table_name, info.message
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "InitValue of field '{name}' on table '{}' did not evaluate",
+                    meta.table_name
+                ));
+            }
+        };
+        let value = match meta.field_defaults.get(&no) {
+            Some(slot) => Value::coerce_into_slot(slot, raw, meta.field_lengths.get(&no).copied())
+                .map_err(|message| {
+                    format!(
+                        "InitValue of field '{name}' on table '{}': {message}",
+                        meta.table_name
+                    )
+                })?,
+            None => raw,
+        };
+        values.insert(no, value);
+    }
+    Ok(values)
 }
 
 /// Resolve the record variable named `recv` to its `(TableRef, handle)` pair,

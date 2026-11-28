@@ -1399,3 +1399,75 @@ fn get_cached_parse_never_returns_torn_pair_under_concurrency() {
         h.join().unwrap();
     }
 }
+
+/// A scan parses each file with the `preprocessorSymbols` of its own app, so a
+/// procedure under `#if` on a symbol the app defines is indexed.
+#[test]
+fn scan_uses_the_preprocessor_symbols_of_the_owning_app() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    begin\n    end;\n#endif\n}\n";
+    for (app, symbols) in [("defines", r#"["CLEAN24"]"#), ("plain", "[]")] {
+        let root = dir.path().join(app);
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(
+            root.join("app.json"),
+            format!(r#"{{"id":"00000000-0000-0000-0000-00000000000{}","name":"{app}","preprocessorSymbols":{symbols}}}"#, app.len()),
+        )
+        .unwrap();
+        fs::write(root.join("src").join("C.Codeunit.al"), source).unwrap();
+    }
+
+    let index = FileIndex::new();
+    index.scan(dir.path()).unwrap();
+    let owners: Vec<PathBuf> = index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|procedure| procedure.file)
+        .collect();
+    assert_eq!(
+        owners,
+        vec![dir.path().join("defines").join("src").join("C.Codeunit.al")],
+        "only the app that defines CLEAN24 has NewApi"
+    );
+}
+
+/// Editing `preprocessorSymbols` in `app.json` reparses the app's files on the
+/// next incremental scan, even though the `.al` files did not change.
+#[test]
+fn incremental_scan_reparses_files_when_app_symbols_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let app_json = |symbols: &str| {
+        format!(
+            r#"{{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":{symbols}}}"#
+        )
+    };
+    fs::write(root.join("app.json"), app_json("[]")).unwrap();
+    let file = root.join("src").join("C.Codeunit.al");
+    fs::write(
+        &file,
+        "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    begin\n    end;\n#endif\n}\n",
+    )
+    .unwrap();
+
+    let index = FileIndex::new();
+    index.scan(root).unwrap();
+    assert!(index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .is_empty());
+
+    fs::write(root.join("app.json"), app_json(r#"["CLEAN24"]"#)).unwrap();
+    let delta = index.incremental_scan(root).unwrap();
+
+    assert_eq!(delta.changed, vec![file.clone()]);
+    let owners: Vec<PathBuf> = index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|procedure| procedure.file)
+        .collect();
+    assert_eq!(owners, vec![file]);
+}

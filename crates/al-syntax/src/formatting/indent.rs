@@ -12,6 +12,18 @@ use super::text::{contains_char_outside_strings, strip_comments};
 
 /// See module-level docs for the complete set of rules.
 pub fn format_al(text: &str, options: &FormatOptions) -> String {
+    format_al_inner(text, options, false)
+}
+
+/// `format_al` without the passes that add or remove lines: brace style,
+/// the gap between procedures and long property wrapping. Range formatting
+/// maps old lines to new lines one to one, so it needs the line count kept.
+/// Blank run collapse still applies, and `format_range` accounts for it.
+pub(super) fn format_al_keeping_line_count(text: &str, options: &FormatOptions) -> String {
+    format_al_inner(text, options, true)
+}
+
+fn format_al_inner(text: &str, options: &FormatOptions, keep_line_count: bool) -> String {
     // `str::lines` intentionally strips both LF and CRLF terminators. Keep
     // track of the source convention so a no-op format check stays a no-op on
     // Windows checkouts instead of rewriting every line ending to LF.
@@ -30,7 +42,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // run). The next format run then derives the indentation from the new order,
     // and the lines keep trading indents. Sorting first lets the indentation
     // pass compute the indentation for the final line order.
-    let reordered = sort_object_properties(apply_brace_style(text, options), options);
+    let braced = if keep_line_count {
+        text.to_string()
+    } else {
+        apply_brace_style(text, options)
+    };
+    let reordered = sort_object_properties(braced, options);
     let text: &str = &reordered;
 
     let mut result = String::with_capacity(text.len());
@@ -669,8 +686,12 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     // The pass order is significant for idempotence: normalize procedure gaps,
     // then wrap long properties. The brace merge and the property sort already
     // ran ahead of the indentation pass.
-    let result = normalize_blank_lines_between_procedures(result, options);
-    let result = wrap_long_property_lines(result, options);
+    let result = if keep_line_count {
+        result
+    } else {
+        let result = normalize_blank_lines_between_procedures(result, options);
+        wrap_long_property_lines(result, options)
+    };
     // Casing runs last, on the final layout, so the parse sees the real tokens.
     let result = apply_keyword_casing(result, &options.keyword_casing);
 
@@ -755,7 +776,7 @@ fn contains_word_outside_strings(code_lower: &str, word: &str) -> bool {
             b'\'' if !in_quoted_name => in_string = !in_string,
             b'"' if !in_string => in_quoted_name = !in_quoted_name,
             _ if in_string || in_quoted_name => {}
-            _ if code_lower[i..].starts_with(word) => {
+            _ if bytes[i..].starts_with(word.as_bytes()) => {
                 let before_ok = i == 0 || !is_word_byte(bytes[i - 1]);
                 let after = i + word.len();
                 let after_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
@@ -888,6 +909,24 @@ mod tests {
 
     fn fmt(text: &str) -> String {
         format_al(text, &FormatOptions::default())
+    }
+
+    /// `Größe` puts a two byte character on an `if` line. The scan for
+    /// `then` used to slice the line at every byte index and panicked inside
+    /// the `ö`.
+    #[test]
+    fn wrapped_opener_handles_non_ascii_identifier() {
+        let text = "codeunit 50100 T\n{\n    procedure P()\n    var\n        Größe: Integer;\n    begin\n        if Größe > 0 then\n            exit;\n    end;\n}\n";
+        let formatted = fmt(text);
+        assert_eq!(indent_of(&formatted, "if Größe > 0 then"), "        ");
+        assert_eq!(indent_of(&formatted, "exit;"), "            ");
+    }
+
+    #[test]
+    fn wrapped_opener_handles_nbsp() {
+        let text = "codeunit 50100 T\n{\n    procedure P()\n    begin\n        if X >\u{a0}0 then\n            exit;\n    end;\n}\n";
+        let formatted = fmt(text);
+        assert_eq!(indent_of(&formatted, "exit;"), "            ");
     }
 
     /// The leading whitespace of the first line of `formatted` that reads

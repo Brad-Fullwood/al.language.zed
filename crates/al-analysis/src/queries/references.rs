@@ -27,17 +27,18 @@ pub fn references(
     // reference we keep must bind to this same declaration — otherwise "find
     // references" on `A::Post` would also list the unrelated `B::Post` and its
     // callers. This applies the same binding awareness used by rename.
-    // Event-subscriber string-literal references are already specific to the
-    // named event, so they are kept without the binding filter.
+    // Event-subscriber string-literal references are kept when they name this
+    // event's publisher (see `event_publisher`).
     let cursor_decl = super::binding::decl_loc(workspace, uri, position)?;
+    let publisher = super::rename::event_publisher(workspace, &cursor_decl, clean_name);
 
     let mut locations = Vec::new();
     // Memoize binder lookups: without it every occurrence in every workspace
     // file runs a full go-to-definition query.
     let mut binder = super::binding::DeclLocCache::new();
 
-    // Collect binding-filtered identifier refs + unfiltered event-subscriber
-    // refs from one parsed file into `locations`.
+    // Collect binding-filtered identifier refs and publisher-matched event
+    // subscriber refs from one parsed file into `locations`.
     let mut collect_from = |file_uri: &Url,
                             ftext: &str,
                             ftree: &tree_sitter::Tree|
@@ -56,12 +57,27 @@ pub fn references(
         // Event subscribers name the event via a string literal inside
         // `[EventSubscriber(...)]`, which the identifier walk cannot see (audit
         // 2026-06-20); surface them so `references` on an event lists its
-        // subscribers, not just its declaration and raise sites.
-        for r in al_syntax::find_event_subscriber_references(ftree, ftext, clean_name) {
-            locations.push(Location {
-                uri: file_uri.clone(),
-                range: al_syntax::ts_range_to_syntax(&r, bytes).into(),
-            });
+        // subscribers, not just its declaration and raise sites. Only the
+        // subscribers that name this event's publisher count.
+        if let Some(publisher) = &publisher {
+            for attribute in al_syntax::find_event_subscriber_attributes(ftree, ftext) {
+                if !super::rename::subscriber_matches_publisher(&attribute, publisher) {
+                    continue;
+                }
+                let Some(event) = attribute.event else {
+                    continue;
+                };
+                // On a subscriber's literal the cursor name keeps its quotes.
+                if event
+                    .name
+                    .eq_ignore_ascii_case(clean_name.trim_matches('\''))
+                {
+                    locations.push(Location {
+                        uri: file_uri.clone(),
+                        range: al_syntax::ts_range_to_syntax(&event.range, bytes).into(),
+                    });
+                }
+            }
         }
         Ok(())
     };
@@ -377,6 +393,105 @@ mod tests {
             locs.iter().any(|l| l.range.start.line == 7),
             "subscriber string-literal reference on the EventSubscriber line must be found; got {:?}",
             locs.iter().map(|l| l.range.start.line).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn event_references_filter_by_publisher() {
+        // Two publishers declare an event with the same name. References on one
+        // publisher's event must not list the subscriber to the other.
+        const PUB_A: &str = r#"codeunit 50100 "Pub A"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnAfterPost()
+    begin
+    end;
+}"#;
+        const PUB_B: &str = r#"codeunit 50101 "Pub B"
+{
+    [IntegrationEvent(false, false)]
+    procedure OnAfterPost()
+    begin
+    end;
+}"#;
+        const SUBS: &str = r#"codeunit 50102 "Subs"
+{
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Pub A", 'OnAfterPost', '', false, false)]
+    local procedure HandleA()
+    begin
+    end;
+    [EventSubscriber(ObjectType::Codeunit, Codeunit::"Pub B", 'OnAfterPost', '', false, false)]
+    local procedure HandleB()
+    begin
+    end;
+}"#;
+        let pub_a = Url::parse("file:///test/pub_a.al").expect("test");
+        let pub_b = Url::parse("file:///test/pub_b.al").expect("test");
+        let subs = Url::parse("file:///test/subs.al").expect("test");
+        let ws = Workspace::new();
+        for (uri, text) in [(&pub_a, PUB_A), (&pub_b, PUB_B), (&subs, SUBS)] {
+            ws.documents.open(uri.clone(), text.to_string()).unwrap();
+            ws.file_index
+                .add_file(uri.to_file_path().unwrap(), text.to_string());
+        }
+        // The lines of the subscriber file that the result lists.
+        let subscriber_lines = |locs: &[Location]| -> Vec<u32> {
+            locs.iter()
+                .filter(|loc| loc.uri == subs)
+                .map(|loc| loc.range.start.line)
+                .collect()
+        };
+        // Column of `OnAfterPost` inside the first subscriber's string literal.
+        let literal_character =
+            SUBS.lines().nth(2).unwrap().find("'OnAfterPost'").unwrap() as u32 + 1;
+
+        // Cursor on Pub A's declaration: only Pub A's subscriber (line 2).
+        let on_pub_a = references(
+            &ws,
+            &pub_a,
+            Position {
+                line: 3,
+                character: 14,
+            },
+            true,
+        );
+        assert_eq!(
+            subscriber_lines(&on_pub_a),
+            vec![2],
+            "Pub A's event must list only its own subscriber"
+        );
+
+        // Cursor on Pub B's declaration: only Pub B's subscriber (line 6).
+        let on_pub_b = references(
+            &ws,
+            &pub_b,
+            Position {
+                line: 3,
+                character: 14,
+            },
+            true,
+        );
+        assert_eq!(
+            subscriber_lines(&on_pub_b),
+            vec![6],
+            "Pub B's event must list only its own subscriber"
+        );
+
+        // Cursor on the event literal of the Pub A subscriber: the publisher is
+        // the object that subscriber names.
+        let on_literal = references(
+            &ws,
+            &subs,
+            Position {
+                line: 2,
+                character: literal_character,
+            },
+            true,
+        );
+        assert_eq!(
+            subscriber_lines(&on_literal),
+            vec![2],
+            "a subscriber's event literal must list the subscribers of its publisher"
         );
     }
 

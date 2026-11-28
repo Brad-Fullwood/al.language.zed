@@ -564,6 +564,12 @@ pub struct Workspace {
     /// on every document open. The entry is reusable only while both its
     /// generation and its document match.
     pub code_lens_reference_counts: std::sync::RwLock<Option<CodeLensReferenceCounts>>,
+    /// Results of the workspace-wide native diagnostic passes, read and
+    /// written by `al-analysis` (its `queries::diagnostics` module), which
+    /// keys them to the generation. Type erased because `al-analysis` depends
+    /// on this crate.
+    pub native_diagnostics_cache:
+        std::sync::Mutex<Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
 /// The stamps of the project files a long running process keeps in memory,
@@ -637,6 +643,7 @@ impl Workspace {
             test_results: std::sync::RwLock::new(None),
             last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
             code_lens_reference_counts: std::sync::RwLock::new(None),
+            native_diagnostics_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -1627,7 +1634,14 @@ fn file_object_identities(
 /// If `uri` is not a `file://` URI, the full composed symbol cache is invalidated
 /// as a safe fallback.
 pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
-    let result = al_syntax::AlParser::parse_quick(text);
+    let symbols = uri
+        .to_file_path()
+        .map(|path| workspace.file_index.preprocessor_symbols_for(&path))
+        .unwrap_or_default();
+    workspace
+        .documents
+        .set_preprocessor_symbols(uri, symbols.clone());
+    let result = al_syntax::AlParser::parse_quick_with_symbols(text, &symbols);
 
     let version = workspace.documents.get_version(uri).unwrap_or(0);
     workspace

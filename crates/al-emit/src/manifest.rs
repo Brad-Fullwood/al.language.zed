@@ -15,6 +15,14 @@ pub struct Dependency {
     pub version: String,
 }
 
+/// A module allowed to use this app's internals (`app.json` `internalsVisibleTo`).
+#[derive(Debug, Clone)]
+pub struct InternalsVisibleTo {
+    pub id: String,
+    pub name: String,
+    pub publisher: String,
+}
+
 /// The IP-protection policy recorded in the manifest. Server-enforced — the
 /// source still ships in the `.app`; the server refuses to serve it.
 ///
@@ -82,6 +90,8 @@ pub struct AppManifest {
     pub show_my_code: bool,
     pub id_ranges: Vec<(i64, i64)>,
     pub dependencies: Vec<Dependency>,
+    /// `<InternalsVisibleTo>` entries from `app.json`, in declared order.
+    pub internals_visible_to: Vec<InternalsVisibleTo>,
     /// `<Features>` entries: upper-case names from `COMPILER_FEATURES`, in alc's order.
     pub features: Vec<String>,
     pub resource_exposure_policy: ResourceExposurePolicy,
@@ -149,6 +159,22 @@ impl AppManifest {
                     .collect()
             })
             .unwrap_or_default();
+        let internals_visible_to = app
+            .get("internalsVisibleTo")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                let text = |m: &serde_json::Value, k: &str| {
+                    m.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string()
+                };
+                arr.iter()
+                    .map(|m| InternalsVisibleTo {
+                        id: text(m, "id"),
+                        name: text(m, "name"),
+                        publisher: text(m, "publisher"),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let declared_features: Vec<String> = app
             .get("features")
             .and_then(|v| v.as_array())
@@ -199,6 +225,7 @@ impl AppManifest {
                 .unwrap_or(false),
             id_ranges,
             dependencies,
+            internals_visible_to,
             features,
             resource_exposure_policy: ResourceExposurePolicy {
                 declared: rep.is_some(),
@@ -281,7 +308,21 @@ impl AppManifest {
             x.push_str("  </Dependencies>\n");
         }
 
-        x.push_str("  <InternalsVisibleTo />\n  <ScreenShots />\n  <SupportedLocales />\n");
+        if self.internals_visible_to.is_empty() {
+            x.push_str("  <InternalsVisibleTo />\n");
+        } else {
+            x.push_str("  <InternalsVisibleTo>\n");
+            for m in &self.internals_visible_to {
+                x.push_str(&format!(
+                    "    <Module Id=\"{}\" Name=\"{}\" Publisher=\"{}\" />\n",
+                    e(&m.id),
+                    e(&m.name),
+                    e(&m.publisher),
+                ));
+            }
+            x.push_str("  </InternalsVisibleTo>\n");
+        }
+        x.push_str("  <ScreenShots />\n  <SupportedLocales />\n");
         if self.features.is_empty() {
             x.push_str("  <Features />\n");
         } else {

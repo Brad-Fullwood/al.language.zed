@@ -401,6 +401,7 @@ pub(super) fn dispatch_calcfields(
                 let store = ctx.records.get_mut(&key).expect("store just ensured");
                 let mut view = store.take_view(handle);
                 store.record.field_set_in(&mut view, field_no, v);
+                view.mark_calculated(field_no);
                 store.put_view(handle, view);
             }
             other => return other,

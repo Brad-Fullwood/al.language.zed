@@ -386,7 +386,7 @@ pub(super) fn table_platform_capability(
     workspace: &Workspace,
     path: &std::path::Path,
     table: &str,
-) -> Option<&'static str> {
+) -> Option<String> {
     let (text, tree) = workspace.file_index.get_cached_parse(path)?;
     let bytes = text.as_bytes();
     let mut stack = vec![object_scope(workspace, path, &tree, table)];
@@ -394,19 +394,100 @@ pub(super) fn table_platform_capability(
         if node.kind() == "property_assignment" {
             let property = node.utf8_text(bytes).unwrap_or("").to_ascii_lowercase();
             if property.contains("fieldclass") && property.contains("flowfilter") {
-                return Some("declares FlowFilter fields that require BC execution");
+                return Some("declares FlowFilter fields that require BC execution".into());
             }
             if property.contains("calcformula") && property.contains("linked(") {
-                return Some("uses a Linked CalcFormula that requires BC execution");
+                return Some("uses a Linked CalcFormula that requires BC execution".into());
             }
             if property.trim_start().starts_with("permissions") {
-                return Some("declares permission behavior that requires BC execution");
+                return Some("declares permission behavior that requires BC execution".into());
+            }
+            let name = node
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(bytes).ok())
+                .unwrap_or("");
+            if name.eq_ignore_ascii_case("AutoIncrement") {
+                let value = property_value_text(node, bytes).unwrap_or_default();
+                if !value.eq_ignore_ascii_case("false") {
+                    let field = enclosing_field_name(node, bytes).unwrap_or_default();
+                    return Some(format!(
+                        "field '{field}' uses AutoIncrement, which the local runtime does not model"
+                    ));
+                }
+            }
+            if name.eq_ignore_ascii_case("InitValue") {
+                let value = property_value_text(node, bytes).unwrap_or_default();
+                if !is_literal_init_value(&value) {
+                    let field = enclosing_field_name(node, bytes).unwrap_or_default();
+                    return Some(format!(
+                        "field '{field}' has an InitValue the local runtime cannot read"
+                    ));
+                }
             }
         }
         let mut cursor = node.walk();
         stack.extend(node.named_children(&mut cursor));
     }
     None
+}
+
+/// The trimmed source text of a property value, from its first value node to
+/// its last. A value can span several nodes.
+fn property_value_text(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
+    let mut cursor = node.walk();
+    let values: Vec<_> = node.children_by_field_name("value", &mut cursor).collect();
+    let first = values.first()?;
+    let last = values.last()?;
+    let raw = std::str::from_utf8(bytes.get(first.start_byte()..last.end_byte())?).ok()?;
+    Some(raw.trim().to_string())
+}
+
+/// The name of the field whose definition holds `node`: the second part of the
+/// field's header.
+fn enclosing_field_name(node: tree_sitter::Node<'_>, bytes: &[u8]) -> Option<String> {
+    let mut section = node.parent();
+    while let Some(current) = section {
+        if current.kind() == "object_section" {
+            break;
+        }
+        section = current.parent();
+    }
+    let section = section?;
+    let mut cursor = section.walk();
+    let header = section
+        .named_children(&mut cursor)
+        .find(|child| child.kind() == "parenthesized_block")?;
+    let mut cursor = header.walk();
+    let semicolons: Vec<_> = header
+        .children(&mut cursor)
+        .filter(|child| child.kind() == "semicolon")
+        .collect();
+    let start = semicolons.first()?.end_byte();
+    let end = semicolons.get(1)?.start_byte();
+    let raw = std::str::from_utf8(bytes.get(start..end)?).ok()?;
+    Some(raw.trim().unquote_identifier().to_string())
+}
+
+/// True for the InitValue forms the local runtime reads: an integer, a
+/// decimal, `true`, `false`, or text with no inner quote.
+fn is_literal_init_value(value: &str) -> bool {
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let all_digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    if all_digits(unsigned) {
+        return true;
+    }
+    if let Some((whole, fraction)) = unsigned.split_once('.') {
+        if all_digits(whole) && all_digits(fraction) {
+            return true;
+        }
+    }
+    if value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("false") {
+        return true;
+    }
+    value
+        .strip_prefix('\'')
+        .and_then(|rest| rest.strip_suffix('\''))
+        .is_some_and(|inner| !inner.contains('\''))
 }
 
 /// Where a method call on a record variable takes the test. A procedure the

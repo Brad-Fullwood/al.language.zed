@@ -1,7 +1,7 @@
 //! Removing packages and entries, and the cache invalidation each removal
 //! forces.
 
-use super::{fold_name, SymbolIndex};
+use super::{fold_name, package_identity_key, SymbolIndex};
 use super::{read_derived_cache, write_derived_cache};
 use crate::model::SymbolEntry;
 use std::sync::Arc;
@@ -19,6 +19,20 @@ impl SymbolIndex {
     /// `Self::retain_arcs_not_in(&self.new_index, &ptrs);` line below.
     pub fn remove_package_entries(&self, package_name: &str) {
         self.remove_packages_named(&std::collections::HashSet::from([fold_name(package_name)]));
+    }
+
+    /// Remove the workspace's own entries, matched by identity key
+    /// (`name:workspace` and `name:(workspace)`). Unlike
+    /// `remove_package_entries`, this does not match display names, so a
+    /// dependency named `Workspace` with an app id survives.
+    pub fn remove_workspace_entries(&self) {
+        let identities: std::collections::HashSet<String> = [
+            package_identity_key("", "workspace"),
+            package_identity_key("", "(workspace)"),
+        ]
+        .into_iter()
+        .collect();
+        self.remove_package_identities(&identities);
     }
 
     /// Remove the entries of `package_name` that `keep` rejects.
@@ -297,5 +311,30 @@ mod tests {
             .get_cached_source_path("Drop", ObjectKind::Table, 50_000)
             .is_none());
         assert!(index.is_composed_cache_empty());
+    }
+
+    /// Workspace removal matches identity keys, not display names: a
+    /// dependency whose display name is `Workspace` and that has an app id
+    /// keeps its entries.
+    #[test]
+    fn dependency_named_workspace_is_kept() {
+        let index = SymbolIndex::new();
+        let mut dependency = make_entry(ObjectKind::Table, 50100, "Dependency Table");
+        dependency.package = "Workspace".to_string();
+        index.add_entries_owned_with_key(
+            vec![dependency],
+            Some(package_identity_key(
+                "11111111-2222-3333-4444-555555555555",
+                "Workspace",
+            )),
+        );
+        let mut workspace = make_entry(ObjectKind::Codeunit, 50101, "Workspace Codeunit");
+        workspace.package = "workspace".to_string();
+        index.add_entries_owned(vec![workspace]);
+
+        index.remove_workspace_entries();
+
+        assert!(index.get_by_name("Workspace Codeunit").is_empty());
+        assert_eq!(index.get_by_name("Dependency Table").len(), 1);
     }
 }

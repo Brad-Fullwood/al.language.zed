@@ -26,7 +26,9 @@ pub mod oauth;
 #[cfg(feature = "nuget")]
 mod retry;
 
-pub use index::{PackageLoadError, PackageLoadFailure, SymbolIndex, SymbolIndexMemoryStats};
+pub use index::{
+    PackageLoadError, PackageLoadFailure, SearchResults, SymbolIndex, SymbolIndexMemoryStats,
+};
 pub use model::{
     AttributeSymbol, ComposedObject, ControlSymbol, DeclarationIdError, EnumValueSymbol,
     FieldSymbol, KeySymbol, MethodSymbol, ObjectKind, ParameterSymbol, PermissionSymbol,

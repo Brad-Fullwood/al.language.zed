@@ -2554,3 +2554,192 @@ end;
         }
     }
 }
+
+/// `InitValue` is applied locally only when the literal reader can read it.
+/// A literal such as `7` stays local. Any other expression sends the test to
+/// live BC, and the reason names the field.
+#[test]
+fn init_value_the_local_runtime_cannot_read_routes_to_live_bc() {
+    let classify = |init_value: &str| {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/InitValueRouter.Table.al"),
+            format!(
+                r#"table 50100 T
+{{
+    fields
+    {{
+        field(1; No; Code[20]) {{ }}
+        field(2; Quantity; Integer) {{ InitValue = {init_value}; }}
+    }}
+    keys
+    {{
+        key(PK; No) {{ }}
+    }}
+}}"#
+            ),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/InitValueRouter.Codeunit.al"),
+            r#"codeunit 50180 "InitValue Router Tests"
+{
+Subtype = Test;
+[Test]
+procedure InitsRow()
+var R: Record T;
+begin
+    R.Init();
+end;
+}"#
+            .to_string(),
+        );
+        classify_all(&workspace).unwrap()
+    };
+
+    let literal = classify("7");
+    let inits = literal
+        .iter()
+        .find(|result| result.method_name == "InitsRow")
+        .expect("InitsRow classification");
+    assert_eq!(
+        inits.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        inits.reasons
+    );
+
+    let computed = classify("1 + 1");
+    let inits = computed
+        .iter()
+        .find(|result| result.method_name == "InitsRow")
+        .expect("InitsRow classification");
+    assert_eq!(
+        inits.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        inits.reasons
+    );
+    assert!(
+        inits.reasons.iter().any(|reason| reason
+            .message
+            .contains("field 'Quantity' has an InitValue the local runtime cannot read")),
+        "{:?}",
+        inits.reasons
+    );
+}
+
+/// `AutoIncrement` numbers rows on insert, which the local runtime does not
+/// model, so a test that inserts into the table goes to live BC. The reason
+/// names the field. `AutoIncrement = false` changes nothing and stays local.
+#[test]
+fn auto_increment_field_routes_to_live_bc() {
+    let classify = |auto_increment: &str| {
+        let workspace = Workspace::new();
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/AutoIncRouter.Table.al"),
+            format!(
+                r#"table 50101 E
+{{
+    fields
+    {{
+        field(1; EntryNo; Integer) {{ AutoIncrement = {auto_increment}; }}
+    }}
+    keys
+    {{
+        key(PK; EntryNo) {{ }}
+    }}
+}}"#
+            ),
+        );
+        workspace.file_index.add_file(
+            std::path::PathBuf::from("/tmp/AutoIncRouter.Codeunit.al"),
+            r#"codeunit 50181 "AutoIncrement Router Tests"
+{
+Subtype = Test;
+[Test]
+procedure InsertsRow()
+var R: Record E;
+begin
+    R.Insert();
+end;
+}"#
+            .to_string(),
+        );
+        classify_all(&workspace).unwrap()
+    };
+
+    let numbered = classify("true");
+    let inserts = numbered
+        .iter()
+        .find(|result| result.method_name == "InsertsRow")
+        .expect("InsertsRow classification");
+    assert_eq!(
+        inserts.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        inserts.reasons
+    );
+    assert!(
+        inserts.reasons.iter().any(|reason| reason.message.contains(
+            "field 'EntryNo' uses AutoIncrement, which the local runtime does not model"
+        )),
+        "{:?}",
+        inserts.reasons
+    );
+
+    let plain = classify("false");
+    let inserts = plain
+        .iter()
+        .find(|result| result.method_name == "InsertsRow")
+        .expect("InsertsRow classification");
+    assert_eq!(
+        inserts.decision,
+        RoutingDecision::InterpRecord,
+        "{:?}",
+        inserts.reasons
+    );
+}
+
+/// A codeunit's object-level `var` section is visible to every procedure, so a
+/// test that reads a global routes the codeunit's record use to LiveBc.
+#[test]
+fn object_global_record_routes_to_live_bc() {
+    let workspace = Workspace::new();
+    workspace.file_index.add_file(
+        std::path::PathBuf::from("/tmp/GlobalTests.Codeunit.al"),
+        r#"codeunit 50150 T
+{
+Subtype = Test;
+var
+    Cust: Record Customer;
+
+[Test]
+procedure UsesGlobal()
+begin
+    Cust.Init();
+end;
+}
+"#
+        .to_string(),
+    );
+
+    let classified = classify_all(&workspace).unwrap();
+    let uses_global = classified
+        .iter()
+        .find(|result| result.method_name == "UsesGlobal")
+        .expect("UsesGlobal classification");
+    assert_eq!(
+        uses_global.decision,
+        RoutingDecision::LiveBc,
+        "{:?}",
+        uses_global.reasons
+    );
+    assert!(
+        uses_global
+            .reasons
+            .iter()
+            .any(|reason| reason.message.contains("Customer")),
+        "{:?}",
+        uses_global.reasons
+    );
+}

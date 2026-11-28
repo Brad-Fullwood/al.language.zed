@@ -324,6 +324,13 @@ pub fn set_default_seed(args: &[Value]) -> Eval {
     ok(Value::Empty)
 }
 
+/// Put the seed back to its resting value between tests, so a `SetSeed` in one
+/// test does not show in `GetSeed` or the draws of the next.
+pub fn reset_seed() {
+    SEED.with(|cell| cell.set(1));
+    super::library_random::set_lcg_seed(1);
+}
+
 /// Resolve a procedure name (case-insensitive) to its Rust implementation.
 pub fn resolve(procedure: &str) -> Option<fn(&[Value]) -> Eval> {
     match procedure.to_ascii_lowercase().as_str() {
@@ -766,5 +773,19 @@ mod tests {
     fn resolve_unknown_returns_none() {
         assert!(resolve("DoesNotExist").is_none());
         assert!(resolve("").is_none());
+    }
+
+    #[test]
+    fn reset_seed_repeats_any_values() {
+        // The draws already restart through the LCG reset. The stale value
+        // shows in GetSeed, so that is checked too.
+        ok_val(set_seed(&[Value::Integer(999)]));
+        super::super::reset_thread_local_state();
+        assert_eq!(ok_val(get_seed(&[])), Value::Integer(1));
+
+        let first = ok_val(integer_in_range(&[Value::Integer(1), Value::Integer(1000)]));
+        super::super::reset_thread_local_state();
+        let second = ok_val(integer_in_range(&[Value::Integer(1), Value::Integer(1000)]));
+        assert_eq!(first, second);
     }
 }

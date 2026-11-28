@@ -14,7 +14,6 @@ use super::store::{
     ensure_store, fork_record_for_by_value, record_binding, records_disabled_error,
     records_enabled, RecordStore, TableRef,
 };
-use super::validate::eval_flowfield;
 
 /// Read one buffer field of the view identified by `handle`, falling back to
 /// the field's typed default (BC zero-initialisation) when never assigned.
@@ -30,9 +29,10 @@ pub(super) fn read_buffer_field(store: &RecordStore, handle: u64, field: FieldNo
 
 /// Read a record field by name: `x := Rec."Field"`.
 ///
-/// A FlowField with a parseable `CalcFormula` is computed on read (auto-calc);
-/// any other field returns its buffer value, or the field's typed zero value
-/// when it was never assigned (BC zero-initialises every field).
+/// A read never computes a FlowField. A FlowField reads as its typed zero value
+/// until `CalcFields` calculates it on this view. Other fields return their
+/// buffer value, or the typed zero value when it was never assigned, since BC
+/// zero-initialises every field.
 pub(crate) fn field_get(
     table: &TableRef,
     handle: u64,
@@ -46,18 +46,31 @@ pub(crate) fn field_get(
         Ok(k) => k,
         Err(e) => return eval_error(e),
     };
-    let (f, formula) = {
+    let (f, is_flowfield) = {
         let store = ctx.records.get_mut(&key).expect("store just ensured");
         let f = match store.resolve_field(field_name) {
             Ok(field_no) => field_no,
             Err(error) => return eval_error(error),
         };
-        (f, store.flowfields.get(&f).cloned())
+        (f, store.flowfields.contains_key(&f))
     };
-    if let Some(formula) = formula {
-        return eval_flowfield(ctx, &key, handle, &formula);
-    }
     let store = ctx.records.get(&key).expect("store just ensured");
+    // The row can hold a FlowField value (an Insert after CalcFields stores the
+    // buffer), so an uncalculated FlowField ignores the stored value and reads zero.
+    if is_flowfield
+        && !store
+            .views
+            .get(&handle)
+            .is_some_and(|view| view.is_calculated(f))
+    {
+        return Eval::Normal(
+            store
+                .field_defaults
+                .get(&f)
+                .cloned()
+                .unwrap_or(Value::Empty),
+        );
+    }
     Eval::Normal(read_buffer_field(store, handle, f))
 }
 

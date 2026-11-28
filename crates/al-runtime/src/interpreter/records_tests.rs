@@ -548,6 +548,98 @@ fn asserterror_catches_duplicate_insert() {
     assert_eq!(ok(r), Value::Integer(42));
 }
 
+/// A table with one text key, for the asserterror rollback tests.
+const PROBE_TABLE: &str = r#"table 50500 "Probe Row"
+{
+    fields
+    {
+        field(1; "Code"; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; "Code") { Clustered = true; }
+    }
+}
+"#;
+
+#[test]
+fn asserterror_rolls_back_record_writes() {
+    let cu = r#"codeunit 50501 "Rollback Tests"
+{
+    procedure RolledBack(): Integer
+    var
+        R: Record "Probe Row";
+    begin
+        R.DeleteAll();
+        R."Code" := 'BEFORE';
+        R.Insert();
+        asserterror InsertAndFail();
+        if R.Count() <> 0 then
+            exit(1);
+        if R.Get('BEFORE') then
+            exit(2);
+        if GetLastErrorText() <> 'x' then
+            exit(3);
+        exit(0);
+    end;
+
+    local procedure InsertAndFail()
+    var
+        R2: Record "Probe Row";
+    begin
+        R2."Code" := 'INSIDE';
+        R2.Insert();
+        Error('x');
+    end;
+}
+"#;
+    let r = run(
+        &[("/ws/Probe.al", PROBE_TABLE), ("/ws/RollbackTests.al", cu)],
+        "Rollback Tests",
+        "RolledBack",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(0));
+}
+
+#[test]
+fn asserterror_keeps_temporary_record_rows() {
+    let cu = r#"codeunit 50502 "Temp Rollback Tests"
+{
+    procedure TempKept(): Integer
+    var
+        R: Record "Probe Row" temporary;
+    begin
+        R."Code" := 'BEFORE';
+        R.Insert();
+        asserterror InsertAndFail(R);
+        if R.Count() = 0 then
+            exit(1);
+        if not R.Get('BEFORE') then
+            exit(2);
+        exit(0);
+    end;
+
+    local procedure InsertAndFail(var R2: Record "Probe Row" temporary)
+    begin
+        R2."Code" := 'INSIDE';
+        R2.Insert();
+        Error('x');
+    end;
+}
+"#;
+    let r = run(
+        &[
+            ("/ws/Probe.al", PROBE_TABLE),
+            ("/ws/TempRollbackTests.al", cu),
+        ],
+        "Temp Rollback Tests",
+        "TempKept",
+        vec![],
+    );
+    assert_eq!(ok(r), Value::Integer(0));
+}
+
 #[test]
 fn setrange_then_count() {
     let cu = r#"codeunit 50103 "Num Tests"
@@ -1038,6 +1130,7 @@ const FLOW_TESTS: &str = r#"codeunit 50122 "Flow Tests"
     begin
         Seed();
         Hdr.Get('ORD1');
+        Hdr.CalcFields("Line Count");
         exit(Hdr."Line Count");
     end;
 
@@ -1047,6 +1140,7 @@ const FLOW_TESTS: &str = r#"codeunit 50122 "Flow Tests"
     begin
         Seed();
         Hdr.Get('ORD1');
+        Hdr.CalcFields("Item Total");
         exit(Hdr."Item Total");
     end;
 
@@ -1056,6 +1150,7 @@ const FLOW_TESTS: &str = r#"codeunit 50122 "Flow Tests"
     begin
         Seed();
         Hdr.Get('ORD1');
+        Hdr.CalcFields("Big Total");
         exit(Hdr."Big Total");
     end;
 
@@ -1065,6 +1160,7 @@ const FLOW_TESTS: &str = r#"codeunit 50122 "Flow Tests"
     begin
         Seed();
         Hdr.Get('ORD1');
+        Hdr.CalcFields("Max Amount");
         exit(Hdr."Max Amount");
     end;
 
@@ -1074,6 +1170,7 @@ const FLOW_TESTS: &str = r#"codeunit 50122 "Flow Tests"
     begin
         Seed();
         Hdr.Get('ORD1');
+        Hdr.CalcFields("Avg Amount");
         exit(Hdr."Avg Amount");
     end;
 
@@ -1083,6 +1180,7 @@ const FLOW_TESTS: &str = r#"codeunit 50122 "Flow Tests"
     begin
         Seed();
         Hdr.Get('ORD1');
+        Hdr.CalcFields("Has Lines");
         exit(Hdr."Has Lines");
     end;
 
@@ -1092,6 +1190,7 @@ const FLOW_TESTS: &str = r#"codeunit 50122 "Flow Tests"
     begin
         Seed();
         Hdr.Get('EMPTY');
+        Hdr.CalcFields(Balance);
         exit(Hdr.Balance);
     end;
 
@@ -1101,6 +1200,7 @@ const FLOW_TESTS: &str = r#"codeunit 50122 "Flow Tests"
     begin
         Seed();
         Hdr.Get('EMPTY');
+        Hdr.CalcFields("Has Lines");
         exit(Hdr."Has Lines");
     end;
 }
@@ -2351,6 +2451,7 @@ fn flowfield_boolean_const_matches_boolean_cells() {
         Row.Init(); Row."Id" := 1; Row.Flag := true; Row.Insert();
         Row.Init(); Row."Id" := 2; Row.Flag := false; Row.Insert();
         Row.Init(); Row."Id" := 3; Row.Flag := true; Row.Insert();
+        Hdr.CalcFields(FlagCount);
         exit(Hdr.FlagCount);
     end;
 }
@@ -2739,6 +2840,7 @@ fn flowfield_min_counts_rows_that_never_assigned_the_field() {
     begin
         Line.Init(); Line."Id" := 1; Line.Amount := 5; Line.Insert();
         Line.Init(); Line."Id" := 2; Line.Insert();
+        Hdr.CalcFields(MinAmount);
         exit(Hdr.MinAmount);
     end;
 }

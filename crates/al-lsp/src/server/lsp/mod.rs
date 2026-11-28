@@ -826,7 +826,7 @@ impl SessionGate {
             };
         };
         let fingerprint = al_project::trust::inputs_fingerprint(&root);
-        let dotnet_advisory = al_project::trust::enforce_dotnet_path(&root);
+        let dotnet_advisory = al_project::trust::enforce_dotnet_path(&root).advisory;
         let outcome = match al_project::trust::read_gate(&root) {
             Ok(reading) => SessionGateOutcome::Read {
                 reading: Box::new(reading),

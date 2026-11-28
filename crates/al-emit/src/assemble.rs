@@ -424,12 +424,20 @@ pub fn xliff_xml(objects: &[EmitObject], runtime_major: u32) -> Option<Vec<u8>> 
 pub fn navigation_xml(
     objects: &[EmitObject],
     app_name: &str,
+    external: &super::symbol_reference::ExternalSymbols,
 ) -> Result<Option<Vec<u8>>, EmitError> {
-    let ids: std::collections::HashMap<String, i32> = objects
+    // The kind is part of the key, so a table and a page with one name stay
+    // apart. Workspace objects come first, then the referenced apps.
+    let ids: std::collections::HashMap<(ObjectKind, String), i32> = objects
         .iter()
-        .map(|o| (o.entry.name.to_lowercase(), o.entry.id))
+        .map(|o| ((o.entry.kind, o.entry.name.to_lowercase()), o.entry.id))
         .collect();
-    let resolve = |name: &str| ids.get(&name.unquote_identifier().to_lowercase()).copied();
+    let resolve = |kind: ObjectKind, name: &str| {
+        let key = name.unquote_identifier().to_lowercase();
+        ids.get(&(kind, key.clone()))
+            .copied()
+            .or_else(|| external.resolver.get(&(kind, key)).map(|r| r.id))
+    };
     let cap_hash = name_hash("Caption");
     let terms_hash = name_hash("AdditionalSearchTerms");
     let e = super::manifest::xml_escape_attr;
@@ -460,12 +468,12 @@ pub fn navigation_xml(
                 .properties
                 .iter()
                 .find(|p| p.name.eq_ignore_ascii_case("SourceTable"))
-                .and_then(|p| resolve(&p.value)),
+                .and_then(|p| resolve(ObjectKind::Table, &p.value)),
             _ => o
                 .query_elements
                 .first()
                 .and_then(|el| el.related_table.as_deref())
-                .and_then(resolve),
+                .and_then(|t| resolve(ObjectKind::Table, t)),
         }
         .unwrap_or(0);
         let department = if usage.eq_ignore_ascii_case("ReportsAndAnalysis") {
@@ -519,7 +527,12 @@ pub fn navigation_xml(
         if o.entry.kind != ObjectKind::PageExtension {
             continue;
         }
-        let Some(tid) = o.entry.extends.as_deref().and_then(resolve) else {
+        let Some(tid) = o
+            .entry
+            .extends
+            .as_deref()
+            .and_then(|name| resolve(ObjectKind::Page, name))
+        else {
             continue;
         };
         let mut attrs = format!(" TargetID=\"{tid}\" TargetType=\"Page\"");
@@ -979,6 +992,8 @@ fn report_layout_files(
         }
     }
     out.sort_by(|left, right| left.0.cmp(&right.0));
+    // Two reports can name one layout file. The archive holds it once.
+    out.dedup_by(|later, earlier| later.0 == earlier.0);
     Ok(out)
 }
 
@@ -1004,6 +1019,7 @@ pub fn assemble_app(
     manifest: &AppManifest,
     sources: &[SourceFile],
     objects: &[EmitObject],
+    external: &super::symbol_reference::ExternalSymbols,
     symbol_reference_json: &[u8],
     package_guid: [u8; 16],
     project_root: Option<&std::path::Path>,
@@ -1067,11 +1083,8 @@ pub fn assemble_app(
         publisher: manifest.publisher.clone(),
         version: manifest.version.clone(),
     };
-    // Profiles reference no cross-app object ids, so an empty external resolver
-    // suffices for their per-profile symbol files.
-    let empty_external = super::symbol_reference::ExternalSymbols::default();
     for (path, bytes) in
-        super::symbol_reference::build_profile_symbol_references(objects, &meta, &empty_external)
+        super::symbol_reference::build_profile_symbol_references(objects, &meta, external)
     {
         entries.push((path, bytes));
     }
@@ -1092,7 +1105,7 @@ pub fn assemble_app(
     for entry in report_layout_files(objects, project_root)? {
         entries.push(entry);
     }
-    if let Some(nav) = navigation_xml(objects, &manifest.name)? {
+    if let Some(nav) = navigation_xml(objects, &manifest.name, external)? {
         entries.push(("navigation.xml".to_string(), nav));
     }
     if let Some(xliff) = xliff_xml(objects, runtime_major) {
@@ -1163,6 +1176,7 @@ mod tests {
             &manifest(),
             &sources,
             &[],
+            &Default::default(),
             br#"{"RuntimeVersion":"14.0","Codeunits":[]}"#,
             [9u8; 16],
             None,
@@ -1200,7 +1214,7 @@ mod tests {
         let src = "page 50100 \"Card\" { PageType = Card; }\n\
                    pageextension 50101 \"Card Ext\" extends \"Card\" { }";
         let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
-        let nav = navigation_xml(&objects, "App")
+        let nav = navigation_xml(&objects, "App", &Default::default())
             .unwrap()
             .expect("navigation.xml expected");
         assert_eq!(&nav[..3], &[0xEF, 0xBB, 0xBF], "BOM");
@@ -1210,10 +1224,63 @@ mod tests {
     }
 
     #[test]
+    fn navigation_uses_table_id_when_page_shares_its_name() {
+        // The table comes first. Keyed by name alone, the page would overwrite
+        // the table and the run object would report page 50101 as its source.
+        let src = "table 50100 \"Rec\" { fields { field(1; F; Integer) { } } }\n\
+                   page 50101 \"Rec\" { PageType = List; SourceTable = \"Rec\"; \
+                   UsageCategory = Lists; ApplicationArea = All; }";
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
+        let nav = navigation_xml(&objects, "Nav App", &Default::default())
+            .unwrap()
+            .expect("navigation.xml");
+        let s = String::from_utf8_lossy(&nav);
+        assert!(s.contains(
+            "TargetID=\"50101\" DepartmentCategory=\"Lists\" RunObjectSrcTable=\"50100\""
+        ));
+    }
+
+    #[test]
+    fn navigation_resolves_dependency_source_table() {
+        // alc 18.1 against Base Application writes RunObjectSrcTable="18" for
+        // SourceTable = Customer. The ids here stand in for the referenced app.
+        let mut external = super::super::symbol_reference::ExternalSymbols::default();
+        external.resolver.insert(
+            (al_symbols::model::ObjectKind::Table, "customer".to_string()),
+            super::super::symbol_reference::ObjectRef {
+                id: 18,
+                module_id: None,
+            },
+        );
+        external.resolver.insert(
+            (
+                al_symbols::model::ObjectKind::Page,
+                "customer card".to_string(),
+            ),
+            super::super::symbol_reference::ObjectRef {
+                id: 21,
+                module_id: None,
+            },
+        );
+        let src = "page 50100 \"My Customers\" { PageType = List; SourceTable = Customer; \
+                   UsageCategory = Lists; ApplicationArea = All; }\n\
+                   pageextension 50101 \"Card Ext\" extends \"Customer Card\" { }";
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
+        let nav = navigation_xml(&objects, "Nav App", &external)
+            .unwrap()
+            .expect("navigation.xml");
+        let s = String::from_utf8_lossy(&nav);
+        assert!(s.contains("DepartmentCategory=\"Lists\" RunObjectSrcTable=\"18\""));
+        assert!(s.contains("<ActionChange TargetID=\"21\" TargetType=\"Page\" />"));
+    }
+
+    #[test]
     fn navigation_xml_none_without_extensions_or_usage_category() {
         let src = "page 50100 \"Card\" { PageType = Card; }";
         let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
-        assert!(navigation_xml(&objects, "App").unwrap().is_none());
+        assert!(navigation_xml(&objects, "App", &Default::default())
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1223,7 +1290,7 @@ mod tests {
                    Caption = 'My List'; UsageCategory = Lists; ApplicationArea = All; \
                    AdditionalSearchTerms = 'foo,bar'; }";
         let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
-        let nav = navigation_xml(&objects, "Nav App")
+        let nav = navigation_xml(&objects, "Nav App", &Default::default())
             .unwrap()
             .expect("navigation.xml");
         let s = String::from_utf8_lossy(&nav);
@@ -1252,7 +1319,7 @@ mod tests {
                    page 50100 \"Default Caption\" { PageType = List; SourceTable = \"Rec\"; \
                    UsageCategory = Lists; ApplicationArea = All; }";
         let objects = super::super::symbol_extract::extract_objects(src, "src/Lib.al");
-        let nav = navigation_xml(&objects, "Nav App")
+        let nav = navigation_xml(&objects, "Nav App", &Default::default())
             .unwrap()
             .expect("navigation.xml");
         let text = String::from_utf8_lossy(&nav);
@@ -1439,6 +1506,41 @@ pageextension 50101 "Customer Card Ext" extends "Customer Card"
             !xml.contains("Customer printable layout"),
             "alc does not extract report-layout captions into XLIFF"
         );
+    }
+
+    #[test]
+    fn two_reports_sharing_a_layout_file_build() {
+        // Two reports naming one LayoutFile put the same archive path in the
+        // package twice, and assemble_app refused the build.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("layout")).unwrap();
+        std::fs::write(dir.path().join("layout/Customer.rdl"), "<Report />").unwrap();
+        let src = "report 50100 \"Customer List\" { rendering { layout(CustomerLayout) \
+                   { Type = RDLC; LayoutFile = 'layout/Customer.rdl'; } } } \
+                   report 50101 \"Customer Summary\" { rendering { layout(CustomerLayout) \
+                   { Type = RDLC; LayoutFile = 'layout/Customer.rdl'; } } }";
+        let objects = super::super::symbol_extract::extract_objects(src, "src/Reports.al");
+        assert_eq!(objects.len(), 2, "both reports must parse");
+
+        let app = assemble_app(
+            &manifest(),
+            &[],
+            &objects,
+            &Default::default(),
+            b"{}",
+            [7u8; 16],
+            Some(dir.path()),
+        )
+        .unwrap();
+
+        let contents = list_app_entries(&app).unwrap();
+        let layouts: Vec<&str> = contents
+            .entries
+            .iter()
+            .map(|e| e.name.as_str())
+            .filter(|name| name.starts_with("layout/"))
+            .collect();
+        assert_eq!(layouts, ["layout/layout/Customer.rdl"]);
     }
 
     #[test]
@@ -1631,7 +1733,16 @@ pageextension 50101 "Customer Card Ext" extends "Customer Card"
 
     #[test]
     fn embedded_manifest_parses() {
-        let app = assemble_app(&manifest(), &[], &[], b"{}", [1u8; 16], None).unwrap();
+        let app = assemble_app(
+            &manifest(),
+            &[],
+            &[],
+            &Default::default(),
+            b"{}",
+            [1u8; 16],
+            None,
+        )
+        .unwrap();
         let dir = tempfile::tempdir().unwrap();
         al_symbols::app_inspect::extract_app(&app, dir.path()).unwrap();
         let xml = std::fs::read(dir.path().join("NavxManifest.xml")).unwrap();

@@ -63,7 +63,7 @@ impl SymbolIndex {
     /// Add a batch of entries under one canonical package identity. When
     /// `package_key` is `None` (direct `add_entries*` callers such as
     /// workspace registration), each entry falls back to a name-derived key.
-    pub(super) fn add_entries_owned_with_key(
+    pub(crate) fn add_entries_owned_with_key(
         &self,
         entries: Vec<SymbolEntry>,
         package_key: Option<String>,

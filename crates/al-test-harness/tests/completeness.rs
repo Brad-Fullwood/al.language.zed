@@ -92,6 +92,10 @@ async fn test_completeness_a01_diagnostic_ranges_are_valid() {
 
     let diags = client.drain_diagnostics();
     let uri = client.file_uri("src/diag_range.al");
+    assert!(
+        diags.get(&uri).is_some_and(|d| !d.is_empty()),
+        "fixture with a TODO comment must publish diagnostics for {uri}, got none"
+    );
     if let Some(file_diags) = diags.get(&uri) {
         for diag in file_diags {
             let range = diag.get("range").expect("diagnostic must have range");
@@ -158,17 +162,18 @@ async fn test_completeness_a02_diagnostic_codes_are_strings() {
     let uri = client.file_uri("src/diag_code.al");
 
     // The server must publish a diagnostics notification for the opened file.
-    // This fixture has no construct covered by the native rule catalog, so the
-    // array may be empty, but the notification itself must still arrive.
     assert!(
         diags.contains_key(&uri),
         "server must publish diagnostics notification for opened file (even if empty): keys={:?}",
         diags.keys().collect::<Vec<_>>()
     );
 
-    // If any diagnostics are present (for example from the .NET bridge),
-    // every code field must be a string starting with "AL-".
+    // Every code field must be a string starting with "AL-".
     let file_diags = diags.get(&uri).map(Vec::as_slice).unwrap_or_default();
+    assert!(
+        !file_diags.is_empty(),
+        "expected diagnostics for {uri}, got none"
+    );
     for diag in file_diags {
         if let Some(code) = diag.get("code") {
             // Zed displays diagnostic codes — they should be strings
@@ -247,6 +252,10 @@ async fn test_completeness_b02_completion_items_have_detail() {
     let helper = items
         .iter()
         .find(|i| i.get("label").and_then(|l| l.as_str()) == Some("MyHelper"));
+    assert!(
+        helper.is_some(),
+        "completion inside Caller must offer MyHelper, got labels: {items:?}"
+    );
     if let Some(h) = helper {
         let detail = h.get("detail").and_then(|d| d.as_str());
         assert!(
@@ -434,6 +443,7 @@ async fn test_completeness_e01_signature_help_at_open_paren() {
     // Line 8: "        ThreeParams(1, 'hello', true);"
     // The '(' is at approximately col 19
     let sig = client.signature_help("src/sig_trigger.al", 8, 20).await;
+    assert!(sig.is_some(), "signature help at ( must return a result");
     if let Some(result) = &sig {
         let sigs = result.get("signatures").and_then(|s| s.as_array());
         assert!(
@@ -462,6 +472,10 @@ async fn test_completeness_e02_signature_help_at_comma() {
     // Signature help at comma position: ThreeParams(1, 'hello', true)
     // After the first comma, activeParameter should be 1
     let sig = client.signature_help("src/sig_comma.al", 8, 22).await;
+    assert!(
+        sig.is_some(),
+        "signature help at the comma must return a result"
+    );
     if let Some(result) = &sig {
         let active = result.get("activeParameter").and_then(|a| a.as_u64());
         if let Some(idx) = active {

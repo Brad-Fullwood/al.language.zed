@@ -1207,16 +1207,38 @@ async fn run_single_variant(
     // single-flight user actions; concurrent readers may briefly observe the
     // mutated text, which is acceptable for this tool (the daemon serialises
     // mutation requests; editors aren't expected to query mid-run).
-    let path_buf = std::path::PathBuf::from(&variant.file);
+    // The guard puts the original back when this future is dropped too, as on
+    // a request cancel or timeout.
+    let restore = RestoreOnDrop {
+        workspace,
+        path: std::path::PathBuf::from(&variant.file),
+        original: Some(original_text),
+    };
     workspace
         .file_index
-        .add_file(path_buf.clone(), mutated_source);
+        .add_file(restore.path.clone(), mutated_source);
 
     let outcome = run_interp_tests_against_mutant(workspace, variant, opts.timeout_ms).await;
 
-    workspace.file_index.add_file(path_buf, original_text);
-
+    drop(restore);
     outcome
+}
+
+/// Puts a file's original text back into the index when dropped.
+struct RestoreOnDrop<'a> {
+    workspace: &'a Workspace,
+    path: std::path::PathBuf,
+    original: Option<String>,
+}
+
+impl Drop for RestoreOnDrop<'_> {
+    fn drop(&mut self) {
+        if let Some(original) = self.original.take() {
+            self.workspace
+                .file_index
+                .add_file(self.path.clone(), original);
+        }
+    }
 }
 
 /// Run the affected interpreter-routed tests against the currently-applied
@@ -1501,6 +1523,52 @@ mod tests {
             text, source,
             "original source must be restored after the run"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn dropped_variant_run_restores_source() {
+        let workspace = std::sync::Arc::new(al_workspace::Workspace::new());
+        let path = "/proj/Spins.al";
+        let source = r#"codeunit 50112 Spins
+{
+    Subtype = Test;
+    [Test]
+    procedure Loops()
+    var
+        X: Integer;
+    begin
+        X := 1;
+        while true do;
+    end;
+}"#;
+        workspace
+            .file_index
+            .add_file(std::path::PathBuf::from(path), source.to_string());
+        let start = source.find("X := 1").unwrap() + "X := ".len();
+        let variant = MutationVariant {
+            id: "test:spins".to_string(),
+            file: path.to_string(),
+            line: 9,
+            original: "1".to_string(),
+            mutated: "2".to_string(),
+            description: "1 -> 2".to_string(),
+            byte_start: start,
+            byte_end: start + 1,
+        };
+        let opts = MutationOptions {
+            timeout_ms: Some(500),
+            ..test_codeunit_only(path)
+        };
+
+        let run = run_single_variant(&workspace, &variant, &opts);
+        let dropped = tokio::time::timeout(std::time::Duration::from_millis(10), run).await;
+        assert!(dropped.is_err(), "the run must still be going after 10 ms");
+
+        let (text, _) = workspace
+            .file_index
+            .get_cached_parse(std::path::Path::new(path))
+            .expect("file still indexed");
+        assert_eq!(text, source, "the original text must be back after a drop");
     }
 
     #[tokio::test]

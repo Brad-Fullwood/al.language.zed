@@ -380,6 +380,7 @@ microsoft-contracts:
 	cargo test -p al-test-harness --test pack_native_validate -- --ignored --nocapture
 	cargo test -p al-test-harness --test emit_differential -- --ignored --nocapture
 	cargo test -p al-test-harness --test zed_simulation builtin -- --include-ignored --nocapture --test-threads=1
+	cargo test -p al-test-harness --test scaffold_templates_alc -- --ignored --nocapture
 	@echo "Microsoft AL toolchain contract profile passed."
 
 # ── Live Business Central contract profile ───────────────────────

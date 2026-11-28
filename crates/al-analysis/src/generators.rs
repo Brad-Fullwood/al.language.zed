@@ -235,10 +235,11 @@ fn generate_field_controls(fields: &[&FieldSymbol]) -> String {
     if fields.is_empty() {
         return String::new();
     }
+    let mut taken = Vec::with_capacity(fields.len());
     fields
         .iter()
         .map(|f| {
-            let var_name = al_identifier(&f.name);
+            let var_name = unique_identifier(al_identifier(&f.name), &mut taken);
             // Escape the field name before interpolating into the quoted
             // `Rec."..."` reference — an embedded `"` would otherwise break
             // the generated control.
@@ -257,10 +258,11 @@ fn generate_report_columns(fields: &[&FieldSymbol]) -> String {
     if fields.is_empty() {
         return String::new();
     }
+    let mut taken = Vec::with_capacity(fields.len());
     fields
         .iter()
         .map(|f| {
-            let var_name = al_identifier(&f.name);
+            let var_name = unique_identifier(al_identifier(&f.name), &mut taken);
             // Escape the field name before interpolating into the quoted
             // column identifier — an embedded `"` would otherwise break the
             // generated column.
@@ -290,14 +292,7 @@ fn generate_test_stubs(subject: &SymbolEntry) -> String {
         .iter()
         .map(|m| {
             let method_name = m.name.replace('\'', "''");
-            let base = sanitize_identifier(&m.name);
-            let mut stub_name = base.clone();
-            let mut suffix = 1u32;
-            while taken.contains(&stub_name.to_ascii_lowercase()) {
-                suffix += 1;
-                stub_name = format!("{base}{suffix}");
-            }
-            taken.push(stub_name.to_ascii_lowercase());
+            let stub_name = unique_identifier(sanitize_identifier(&m.name), &mut taken);
             format!(
                 "    [Test]\n    procedure Test{stub_name}()\n    begin\n        Error('TODO: implement test for {method_name}');\n    end;\n",
             )
@@ -349,6 +344,24 @@ fn sanitize_identifier(name: &str) -> String {
     name.chars()
         .filter(|c| c.is_alphanumeric() || *c == '_')
         .collect()
+}
+
+/// Makes `base` unique among `taken`, ignoring ASCII case, and records the
+/// result in `taken`. The first use keeps `base`. A repeat gets the first free
+/// number from 2 appended, so `Item No.` and `ItemNo` become `itemNo` and
+/// `itemNo2` in one page or report.
+fn unique_identifier(base: String, taken: &mut Vec<String>) -> String {
+    let mut candidate = base.clone();
+    let mut suffix = 2u32;
+    while taken
+        .iter()
+        .any(|name| name.eq_ignore_ascii_case(&candidate))
+    {
+        candidate = format!("{base}{suffix}");
+        suffix += 1;
+    }
+    taken.push(candidate.clone());
+    candidate
 }
 
 #[cfg(test)]
@@ -680,6 +693,43 @@ mod tests {
         assert!(src.contains("procedure TestPostSale()"), "{src}");
         assert!(src.contains("procedure TestPostSale2()"), "{src}");
         assert!(src.contains("procedure TestPostSale3()"), "{src}");
+    }
+
+    #[test]
+    fn page_controls_get_unique_names() {
+        let table = make_table(
+            "Item",
+            vec![
+                make_field(1, "Item No.", "Code[20]"),
+                make_field(2, "ItemNo", "Code[20]"),
+            ],
+        );
+        let out = generate_page(&GeneratePageConfig {
+            object_id: 50100,
+            page_name: "Item List".to_string(),
+            page_type: PageType::List,
+            source_table: table,
+        });
+        assert!(out.contains(r#"field(itemNo; Rec."Item No.")"#), "{out}");
+        assert!(out.contains(r#"field(itemNo2; Rec."ItemNo")"#), "{out}");
+    }
+
+    #[test]
+    fn report_columns_get_unique_names() {
+        let table = make_table(
+            "Item",
+            vec![
+                make_field(1, "Item No.", "Code[20]"),
+                make_field(2, "ItemNo", "Code[20]"),
+            ],
+        );
+        let out = generate_report(&GenerateReportConfig {
+            object_id: 50200,
+            report_name: "Item Report".to_string(),
+            source_table: table,
+        });
+        assert!(out.contains(r#"column(itemNo; "Item No.")"#), "{out}");
+        assert!(out.contains(r#"column(itemNo2; "ItemNo")"#), "{out}");
     }
 
     /// The whole point of the sanitisation: a page over a table with such a

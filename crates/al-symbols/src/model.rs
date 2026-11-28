@@ -395,6 +395,11 @@ pub struct SymbolEntry {
     pub synthetic: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extends: Option<String>,
+    /// App id of the extension target, lowercase hex without dashes, when the
+    /// package names it (`#<app id>#Name`). Two apps can each declare a table
+    /// `Setup`, and the id says which one an extension belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extends_app_id: Option<String>,
     /// For codeunits: list of interface names from `implements` clause. Used by go-to-implementation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub implements: Vec<String>,
@@ -1073,6 +1078,15 @@ fn synthesize_option_enums(
     entries
 }
 
+/// The app id of `#<app id without dashes>#Name`, lowercase.
+fn target_app_id(target: &str) -> Option<String> {
+    target
+        .strip_prefix('#')
+        .and_then(|rest| rest.split_once('#'))
+        .filter(|(app_id, _)| app_id.len() == 32 && app_id.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(|(app_id, _)| app_id.to_ascii_lowercase())
+}
+
 /// `#<app id without dashes>#Name` → `Name`: the form a package gives an
 /// extension target that lives in another app.
 fn strip_target_app_id(target: String) -> String {
@@ -1091,6 +1105,7 @@ impl ObjectJson {
             id: self.id,
             synthetic: false,
             name: self.name,
+            extends_app_id: self.extends.as_deref().and_then(target_app_id),
             extends: self.extends.map(strip_target_app_id),
             package: package.to_string(),
             methods: self.methods.into_iter().map(|m| m.into_method()).collect(),
@@ -1446,6 +1461,7 @@ mod tests {
             id: 1,
             name: "Test".to_string(),
             extends: None,
+            extends_app_id: None,
             implements: Vec::new(),
             namespace: String::new(),
             package: "pkg".to_string(),
@@ -1762,6 +1778,7 @@ mod tests {
             id: 50100,
             name: "MyEnum".to_string(),
             extends: None,
+            extends_app_id: None,
             implements: Vec::new(),
             namespace: String::new(),
             package: "test".to_string(),
@@ -1824,6 +1841,17 @@ mod tests {
             extends("Feature To Update - BaseApp").as_deref(),
             Some("Feature To Update")
         );
+        let target_app = |name: &str| {
+            entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .and_then(|entry| entry.extends_app_id.clone())
+        };
+        assert_eq!(
+            target_app("Feature To Update - BaseApp").as_deref(),
+            Some("63ca2fa44f034f2ba480172fef340d3f")
+        );
+        assert_eq!(target_app("Mfg. Item"), None);
         assert_eq!(
             extends("Asm. Get Demand To Reserve").as_deref(),
             Some("Get Demand To Reserve")

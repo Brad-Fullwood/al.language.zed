@@ -586,7 +586,7 @@ async fn load_project(workspace: &Arc<Workspace>, project_root: &Path) -> Result
     if let Some(advisory) = evaluated.decision.advisory() {
         tracing::warn!("daemon: {advisory}");
     }
-    if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root) {
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root).advisory {
         tracing::warn!("daemon: {advisory}");
     }
     let _ = workspace.trust_advisory.set(evaluated.decision.advisory());
@@ -960,7 +960,7 @@ async fn refresh_trust(workspace: &Workspace) {
         // A `dotnet` host in the tree is part of the record, so a replaced
         // one makes the project stale and is dropped here, not only at
         // startup.
-        if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root) {
+        if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root).advisory {
             tracing::warn!("daemon: {advisory}");
         }
         Ok::<_, al_project::config::ConfigLoadError>(evaluated.config)

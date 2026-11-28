@@ -113,7 +113,7 @@ The shipped verifier performs:
 | Declarations | duplicate object IDs/names. Duplicate field IDs/names. Duplicate enum ordinals/names. Duplicate procedure signatures/parameter names. Unknown key/field-group fields | `ALN1xxx` diagnostics point at the complete object declaration range and block emission. |
 | Declared bindings and contracts | extension targets, implemented interfaces, declared object subtypes (`Record`, `Page`, `Codeunit`, `Report`, `XmlPort`, `Query`, `Enum`, `Interface`) and `SourceTable` references resolve against project plus dependency symbols. Locally declared interface methods must be implemented | `ALN2xxx` diagnostics block emission. |
 | Permissions | permission object kinds/flags are validated and permission targets resolve against project plus dependency symbols | `ALN21xx` diagnostics block emission. |
-| Local procedure/event semantics | local call overload arity and ambiguity. Value/no-value returns and scalar literal return types. `Break`/`Continue` without a loop. Locally sourced publisher/subscriber parameter contracts | `ALN22xx`/`ALN23xx` diagnostics block emission. Publisher bodies/contracts absent from source-free dependency packages are an explicit Microsoft compatibility boundary. |
+| Local procedure/event semantics | local call overload arity and ambiguity. Value/no-value returns and scalar literal return types. `Break`/`Continue` without a loop. Locally sourced publisher/subscriber parameter contracts `ALN2201`, `ALN2211` and `ALN2301` block emission. `ALN2202` to `ALN2210` are warnings. Publisher bodies/contracts absent from source-free dependency packages are an explicit Microsoft compatibility boundary. |
 | Artifact integrity | reopen NAVX/ZIP. Reject duplicate/empty required entries. Compare the exact embedded AL source-path set with the verified snapshot. Parse the generated manifest and `SymbolReference.json`. Compare package id/name/publisher/version with `app.json` | `ALN3xxx` failures discard the staged artifact. |
 
 ### Native diagnostic codes
@@ -133,10 +133,10 @@ remain `null`. Native diagnostics preserve both endpoints.
 | `ALN2001`–`ALN2004` | Unresolved extension target, interface, declared object subtype, or `SourceTable`. |
 | `ALN2101`–`ALN2106` | Unsupported permission object type, invalid permission flags, unresolved permission target, a missing local interface member, forbidden page-customization ToolTip, or a duplicate locally added page control. |
 | `ALN2201`–`ALN2211` | Local procedure contracts: no overload or more than one for the argument count, a Record passed to an Integer parameter, `Exit` with or without a value against the declared return, an incompatible literal return, a conditional `Exit(value)` with no unconditional return, `Break`/`Continue` outside a loop, an unknown local or Record method. |
-| `ALN2301` | An `[EventSubscriber]` whose parameters do not match a locally declared publisher. |
+| `ALN2301` | An `[EventSubscriber]` with a parameter that the locally declared publisher does not declare. Parameters match by name, so a subscriber may declare fewer. |
 | `ALN2401`, `ALN2403`, `ALN2405` | Body binding: unknown Record subtype, incompatible assignment, an unknown field property. |
 | `AL0118`, `AL0132` | Tree-based name and member binding (`crates/al-emit/src/binding.rs`), with the code and message text `alc` prints. `AL0118`: a bare name or bare call that no local, parameter, global, procedure, implicit variable, builtin or table field resolves. `AL0132`: a member of a `Record` variable (or `Rec`/`xRec`) that the table and its table extensions do not declare, quoted or not. Both are errors: the build fails and no `.app` is written. The editor publishes the same pass as native diagnostics without the bridge. |
-| `ALN2501` | A report layout that names a file outside the project. |
+| `ALN2501` | A report layout whose `LayoutFile` is not found in the project. |
 | `ALN3001`–`ALN3006` | Unreadable/corrupt artifact, missing/empty or duplicate entries, source-snapshot mismatch, generated metadata parse failure, or package identity mismatch. |
 
 `build_verified_app_from_project` preserves all structured diagnostics.
@@ -187,7 +187,7 @@ only total wall-clock time, so its total is never presented as a phase-equivalen
 
 ## Publish (`al-publish`, `al-bc/src/launch.rs`, `al-bc/src/bc_client.rs`)
 
-`al-publish` resolves a `launch.json`/`.zed/debug.json` config, compiles (native by default), and
+`al-publish` resolves a `launch.json`/`.zed/debug.json` config, compiles (with `alc` when found, native otherwise), and
 uploads the `.app` to the BC dev API, optionally through **RAD** incremental deploy when `app.json` has
 an id, which must be a GUID. Each phase (`PublishPhase::Compile`/`Upload`/`Rad`) is tracked.
 `launch.rs` parses the debug configs and builds dev-endpoint URLs for on-prem vs cloud with tenant
@@ -242,8 +242,8 @@ package-semantic-equivalence check.
 > `emitter-02-native-app-differs-from-alc-on-dms`.
 >
 > **The verifier warns, it does not prove.** The text checks for local procedure calls, return
-> values, overloads, `Continue` and identifiers in field triggers (ALN2202, ALN2203, ALN2208,
-> ALN2209) cannot be exact without a binder. They are reported as warnings and do not stop the
+> values, overloads, `Exit`, `Break`, `Continue` and identifiers in field triggers (ALN2202 to
+> ALN2210) cannot be exact without a binder. They are reported as warnings and do not stop the
 > build (finding `emitter-01-native-verifier-rejects-valid-dms-project`). A clean native build does
 > not mean `alc` would accept the project.
 >

@@ -16,10 +16,15 @@ use super::DispatchCtx;
 /// `days * MS_PER_DAY + time_ms`.
 pub(super) fn builtin_createdatetime(args: &[Value]) -> Eval {
     match args {
-        [Value::Date(d), Value::Time(t)] => {
+        [Value::Date(d), time @ (Value::Time(_) | Value::UndefinedTime)] => {
+            // 0T adds no milliseconds, so the result is midnight of the date, as before.
+            let t = match time {
+                Value::Time(t) => *t,
+                _ => 0,
+            };
             match d
                 .checked_mul(crate::interpreter::value::MS_PER_DAY)
-                .and_then(|ms| ms.checked_add(*t))
+                .and_then(|ms| ms.checked_add(t))
             {
                 Some(dt) => Eval::Normal(Value::DateTime(dt)),
                 None => eval_error("CreateDateTime: datetime overflow"),
@@ -125,6 +130,8 @@ pub(super) fn builtin_dt2date(args: &[Value]) -> Eval {
 /// `DT2Time(datetime)` — the time part of a DateTime.
 pub(super) fn builtin_dt2time(args: &[Value]) -> Eval {
     match args {
+        // 0DT has no time part. Its time is the undefined time, not midnight.
+        [Value::DateTime(0)] => Eval::Normal(Value::UndefinedTime),
         [Value::DateTime(dt)] => Eval::Normal(Value::Time(
             dt.rem_euclid(crate::interpreter::value::MS_PER_DAY),
         )),
@@ -419,6 +426,16 @@ mod tests {
                 &mut ctx
             )),
             Value::Time(3_600_000)
+        );
+        // 0DT has no time part, so DT2Time gives 0T rather than midnight.
+        assert_eq!(
+            ok(dispatch_call(
+                None,
+                "DT2Time",
+                vec![Value::DateTime(0)],
+                &mut ctx
+            )),
+            Value::UndefinedTime
         );
     }
 

@@ -22,8 +22,9 @@ use super::model::SymbolPackage;
 /// can't repair — old caches are then rejected and the .app re-parsed.
 /// Version 1 added the `synthetic` flag. Older caches contain
 /// fabricated Option-enums that would deserialize as `synthetic: false`
-/// and reappear in search results.
-const CACHE_SCHEMA_VERSION: u32 = 1;
+/// and reappear in search results. Version 2 added `extends_app_id`, which
+/// older caches would load as `None`.
+const CACHE_SCHEMA_VERSION: u32 = 2;
 /// A cache serializes the already-capped (200 MB) SymbolReference payload plus
 /// a small header. Refuse pathological/corrupt files before allocating them.
 const MAX_CACHE_FILE_BYTES: u64 = 256 * 1024 * 1024;
@@ -160,8 +161,20 @@ impl SymbolCache {
     }
 
     pub fn save(&self, app_path: &Path, pkg: &SymbolPackage) -> Result<(), std::io::Error> {
-        let cache_path = self.cache_path_for(app_path);
         let meta = fs::metadata(app_path)?;
+        self.save_with_fingerprint(app_path, &meta, pkg)
+    }
+
+    /// [`save`](Self::save) with the size and mtime from `meta`, taken before
+    /// the `.app` was read. A file replaced while it was being parsed then
+    /// misses the cache on the next load instead of serving the old symbols.
+    pub fn save_with_fingerprint(
+        &self,
+        app_path: &Path,
+        meta: &fs::Metadata,
+        pkg: &SymbolPackage,
+    ) -> Result<(), std::io::Error> {
+        let cache_path = self.cache_path_for(app_path);
         let mtime = meta
             .modified()?
             .duration_since(SystemTime::UNIX_EPOCH)
@@ -480,6 +493,24 @@ mod tests {
         let cache = SymbolCache::at(dir.path().join("cache"));
         let app_path = dir.path().join("nonexistent.app");
 
+        assert!(cache.load(&app_path).is_none());
+    }
+
+    #[test]
+    fn save_uses_supplied_fingerprint() {
+        let dir = TempDir::new().unwrap();
+        let cache = SymbolCache::at(dir.path().join("cache"));
+        let (app_path, pkg) = make_test_app(dir.path(), "TestPkg");
+        let before = fs::metadata(&app_path).unwrap();
+
+        // The file grows while it is parsed.
+        let mut file = fs::OpenOptions::new().append(true).open(&app_path).unwrap();
+        file.write_all(b"newer").unwrap();
+        drop(file);
+
+        cache
+            .save_with_fingerprint(&app_path, &before, &pkg)
+            .unwrap();
         assert!(cache.load(&app_path).is_none());
     }
 

@@ -49,6 +49,7 @@ use std::sync::Arc;
 use crate::interpreter::records::RecordStore;
 use crate::interpreter::scope::CallFrame;
 use crate::interpreter::value::{ErrorInfo, Value};
+use crate::mock::record::MockRecord;
 
 thread_local! {
     /// The cancel flag of the test running on this thread, for the steps
@@ -125,6 +126,9 @@ pub struct DispatchCtx {
     /// variables of the same table share one backing store (shared physical
     /// table semantics — see `records.rs`).
     pub records: HashMap<String, RecordStore>,
+    /// Rows of each non-temporary record table at the last commit. Empty at test
+    /// start, so a rollback clears every table. See [`DispatchCtx::rollback_records`].
+    pub committed_records: HashMap<String, MockRecord>,
     pub mode: DispatchMode,
     /// Current call depth — incremented on each workspace-procedure call and
     /// decremented on return. Capped at `MAX_RECURSION_DEPTH`.
@@ -173,6 +177,9 @@ pub struct DispatchCtx {
     /// non-workspace calls leave it empty.
     pub var_writebacks: Vec<(usize, Value)>,
     pub test_handlers: TestHandlers,
+    /// Lowercased names of the handler procedures that ran during the test.
+    /// The test runner compares this with the `[HandlerFunctions]` list.
+    pub handlers_called: std::collections::HashSet<String>,
     /// Allocator for per-record-variable view handles. Each record variable
     /// gets its own filter/cursor/buffer view over the shared table store
     /// (BC semantics); the handle is stored on the variable's `RecordValue`.
@@ -250,6 +257,7 @@ impl DispatchCtx {
         Self {
             source,
             records: HashMap::new(),
+            committed_records: HashMap::new(),
             mode: DispatchMode::PureLogic,
             recursion_depth: 0,
             ast_depth: 0,
@@ -259,6 +267,7 @@ impl DispatchCtx {
             condition_trace_stack: Vec::new(),
             var_writebacks: Vec::new(),
             test_handlers: TestHandlers::default(),
+            handlers_called: std::collections::HashSet::new(),
             next_record_handle: 0,
             stmt_position: false,
             last_error: None,
@@ -287,6 +296,32 @@ impl DispatchCtx {
             records,
             mode: DispatchMode::WithRecords,
             ..Self::new_pure(source)
+        }
+    }
+
+    /// Make the current non-temporary record rows the committed state that
+    /// `rollback_records` restores. Temporary tables are keyed by owner and are
+    /// not rolled back.
+    pub fn commit_records(&mut self) {
+        self.committed_records = self
+            .records
+            .iter()
+            .filter(|(key, _)| !key.contains(" temporary#"))
+            .map(|(key, store)| (key.clone(), store.record.clone()))
+            .collect();
+    }
+
+    /// Restore each non-temporary record table to its committed rows. A table
+    /// with no snapshot was created after the commit, so its rows are cleared.
+    pub fn rollback_records(&mut self) {
+        for (key, store) in self.records.iter_mut() {
+            if key.contains(" temporary#") {
+                continue;
+            }
+            match self.committed_records.get(key) {
+                Some(saved) => store.record.restore_rows_from(saved),
+                None => store.record.clear_rows(),
+            }
         }
     }
 
