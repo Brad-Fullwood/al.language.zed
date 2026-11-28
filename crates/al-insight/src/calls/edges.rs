@@ -137,15 +137,15 @@ pub struct ProcedureCalls {
     /// The calls the body makes, in the order the walk finds them.
     pub call_sites: Box<[CallSite]>,
     /// Lowercase variable or parameter name to table, for `Record` types.
-    pub record_vars: SortedMap<String, String>,
+    pub record_vars: SortedMap<CompactString, CompactString>,
     /// Lowercase variable or parameter name to object, for codeunit, page,
     /// report, xmlport, query and interface types.
-    pub object_vars: SortedMap<String, String>,
+    pub object_vars: SortedMap<CompactString, CompactString>,
     /// Lowercase variable or parameter name to the declared kind of its
     /// object, for the entries of `object_vars`. A codeunit variable
     /// `Sales` calls the codeunit `Sales`, not a page of the same name.
     #[serde(default)]
-    pub object_var_kinds: SortedMap<String, ObjectKind>,
+    pub object_var_kinds: SortedMap<CompactString, ObjectKind>,
 }
 
 impl ProcedureCalls {
@@ -158,9 +158,18 @@ impl ProcedureCalls {
         }
         Self {
             call_sites: head_call_sites(object_node, source).into_boxed_slice(),
-            record_vars: record_vars.into_iter().collect(),
-            object_vars: object_vars.into_iter().collect(),
-            object_var_kinds: object_var_kinds.into_iter().collect(),
+            record_vars: record_vars
+                .into_iter()
+                .map(|(name, ty)| (name.into(), ty.into()))
+                .collect(),
+            object_vars: object_vars
+                .into_iter()
+                .map(|(name, ty)| (name.into(), ty.into()))
+                .collect(),
+            object_var_kinds: object_var_kinds
+                .into_iter()
+                .map(|(name, kind)| (name.into(), kind))
+                .collect(),
         }
     }
 
@@ -186,9 +195,18 @@ impl ProcedureCalls {
         object_vars.extend(procedure_object_var_types_in_node(proc_node, source));
         Self {
             call_sites: call_sites_in_node(proc_node, source).into_boxed_slice(),
-            record_vars: record_vars.into_iter().collect(),
-            object_vars: object_vars.into_iter().collect(),
-            object_var_kinds: object_var_kinds.into_iter().collect(),
+            record_vars: record_vars
+                .into_iter()
+                .map(|(name, ty)| (name.into(), ty.into()))
+                .collect(),
+            object_vars: object_vars
+                .into_iter()
+                .map(|(name, ty)| (name.into(), ty.into()))
+                .collect(),
+            object_var_kinds: object_var_kinds
+                .into_iter()
+                .map(|(name, kind)| (name.into(), kind))
+                .collect(),
         }
     }
 }
@@ -322,7 +340,7 @@ fn resolve_calls_from(
     for site in &calls.call_sites {
         match site {
             CallSite::BareCall { name } => {
-                let name_lower = name.to_lowercase();
+                let name_lower = name.as_str().to_lowercase();
                 let obj_lower = object_name.to_lowercase();
                 let callee_key =
                     NodeKey::Procedure(object_kind, obj_lower.clone(), name_lower.clone());
@@ -352,18 +370,25 @@ fn resolve_calls_from(
                 let targets =
                     self_targets(object, object_kind, object_name, symbols).or_else(|| {
                         var_types
-                            .get(&object.to_lowercase())
+                            .get(&object.as_str().to_lowercase())
                             .map(|table| record_targets(table, symbols))
                     });
                 if let Some(targets) = targets {
-                    let method_lower = method.to_lowercase();
+                    let method_lower = method.as_str().to_lowercase();
                     for (kind, name) in targets {
-                        let callee =
-                            NodeKey::Procedure(kind, name.to_lowercase(), method_lower.clone());
+                        let callee = NodeKey::Procedure(
+                            kind,
+                            name.as_str().to_lowercase(),
+                            method_lower.clone(),
+                        );
                         if let Some(callee_id) = CallGraph::node_id_for(insight, &callee) {
                             call_graph.add_direct_call(caller_id, callee_id);
                         }
-                        let event = NodeKey::Event(kind, name.to_lowercase(), method_lower.clone());
+                        let event = NodeKey::Event(
+                            kind,
+                            name.as_str().to_lowercase(),
+                            method_lower.clone(),
+                        );
                         if let Some(event_id) = CallGraph::node_id_for(insight, &event) {
                             call_graph.add_direct_call(caller_id, event_id);
                             link_event_subscribers(caller_id, event_id, call_graph);
@@ -378,11 +403,11 @@ fn resolve_calls_from(
                 // for the (common) case where the call's left side is itself
                 // an object reference like `Customer.Get()`.
                 let resolved_object = object_var_types
-                    .get(&object.to_lowercase())
-                    .map(String::as_str)
+                    .get(&object.as_str().to_lowercase())
+                    .map(CompactString::as_str)
                     .unwrap_or(object.as_str());
-                let declared_kind = calls.object_var_kinds.get(&object.to_lowercase());
-                let method_lower = method.to_lowercase();
+                let declared_kind = calls.object_var_kinds.get(&object.as_str().to_lowercase());
+                let method_lower = method.as_str().to_lowercase();
                 let entries = symbols.get_by_name(resolved_object);
                 let mut saw_interface = false;
                 for entry in entries
@@ -394,7 +419,7 @@ fn resolve_calls_from(
                     }
                     let callee_key = NodeKey::Procedure(
                         entry.kind,
-                        entry.name.to_lowercase(),
+                        entry.name.as_str().to_lowercase(),
                         method_lower.clone(),
                     );
                     if let Some(callee_id) = CallGraph::node_id_for(insight, &callee_key) {
@@ -403,8 +428,11 @@ fn resolve_calls_from(
                     // A member call may target an event publisher on
                     // another object (e.g. `PublisherVar.OnSomeEvent()`).
                     // Firing it reaches the event node and every subscriber.
-                    let event_key =
-                        NodeKey::Event(entry.kind, entry.name.to_lowercase(), method_lower.clone());
+                    let event_key = NodeKey::Event(
+                        entry.kind,
+                        entry.name.as_str().to_lowercase(),
+                        method_lower.clone(),
+                    );
                     if let Some(event_id) = CallGraph::node_id_for(insight, &event_key) {
                         call_graph.add_direct_call(caller_id, event_id);
                         link_event_subscribers(caller_id, event_id, call_graph);
@@ -417,7 +445,7 @@ fn resolve_calls_from(
                     for impl_entry in find_interface_implementors(symbols, resolved_object) {
                         let impl_key = NodeKey::Procedure(
                             impl_entry.kind,
-                            impl_entry.name.to_lowercase(),
+                            impl_entry.name.as_str().to_lowercase(),
                             method_lower.clone(),
                         );
                         if let Some(impl_id) = CallGraph::node_id_for(insight, &impl_key) {
@@ -457,7 +485,7 @@ fn resolve_calls_from(
                 // `Codeunit.Run(Codeunit::"X")` dispatches to X.OnRun.
                 let onrun_key = NodeKey::Procedure(
                     ObjectKind::Codeunit,
-                    target.to_lowercase(),
+                    target.as_str().to_lowercase(),
                     "onrun".to_string(),
                 );
                 if let Some(onrun_id) = CallGraph::node_id_for(insight, &onrun_key) {

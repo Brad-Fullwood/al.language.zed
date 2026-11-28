@@ -188,6 +188,7 @@ dependencies = [
  "al-source",
  "al-symbols",
  "al-syntax",
+ "compact_str",
  "petgraph",
  "serde",
  "serde_json",
@@ -1141,6 +1142,7 @@ dependencies = [
  "itoa",
  "rustversion",
  "ryu",
+ "serde",
  "static_assertions",
 ]
 

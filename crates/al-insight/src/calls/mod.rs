@@ -162,14 +162,14 @@ impl RecordOp {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum CallSite {
     BareCall {
-        name: String,
+        name: CompactString,
     },
     MemberCall {
-        object: String,
-        method: String,
+        object: CompactString,
+        method: CompactString,
     },
     RecordOp {
-        variable: String,
+        variable: CompactString,
         op: RecordOp,
         run_trigger: bool,
     },
@@ -178,7 +178,7 @@ pub enum CallSite {
     /// target is `X`'s `OnRun` trigger. Only the *literal* form is captured;
     /// `Codeunit.Run(SomeVariable)` is left unresolved (no sound static target).
     CodeunitRun {
-        target: String,
+        target: CompactString,
     },
 }
 
@@ -196,6 +196,9 @@ mod tests;
 mod var_types;
 
 pub use call_sites::*;
+/// Names held by summaries and call sites. Up to 24 bytes live inline, so
+/// most identifiers need no allocation of their own.
+pub use compact_str::CompactString;
 pub use edges::*;
 pub use effects::*;
 pub use nodes::*;

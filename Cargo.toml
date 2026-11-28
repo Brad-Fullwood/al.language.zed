@@ -39,6 +39,7 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 # preserve_order: serde_json::Map keeps insertion order (IndexMap) so the native
 # `.app` emitter can reproduce alc's exact JSON key ordering byte-for-byte.
 serde_json = { version = "1.0", features = ["preserve_order"] }
+compact_str = { version = "0.9", features = ["serde"] }
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 # One API over Unix-domain sockets on Linux/macOS and named pipes on Windows.

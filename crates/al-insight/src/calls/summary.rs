@@ -111,18 +111,26 @@ impl SourceFileSummary {
                     .map(|(a, b)| a.capacity() + b.capacity())
                     .sum::<usize>()
         }
-        fn names<V>(map: &SortedMap<String, V>) -> usize {
-            std::mem::size_of_val(map.entries()) + map.keys().map(String::capacity).sum::<usize>()
+        // A name of up to 24 bytes is held inline and owns no heap bytes.
+        fn name(name: &CompactString) -> usize {
+            if name.is_heap_allocated() {
+                name.capacity()
+            } else {
+                0
+            }
         }
-        fn name_pairs(map: &SortedMap<String, String>) -> usize {
-            names(map) + map.iter().map(|(_, value)| value.capacity()).sum::<usize>()
+        fn names<V>(map: &SortedMap<CompactString, V>) -> usize {
+            std::mem::size_of_val(map.entries()) + map.keys().map(name).sum::<usize>()
+        }
+        fn name_pairs(map: &SortedMap<CompactString, CompactString>) -> usize {
+            names(map) + map.iter().map(|(_, value)| name(value)).sum::<usize>()
         }
         fn site(site: &CallSite) -> usize {
             match site {
-                CallSite::BareCall { name } => name.capacity(),
-                CallSite::MemberCall { object, method } => object.capacity() + method.capacity(),
-                CallSite::RecordOp { variable, .. } => variable.capacity(),
-                CallSite::CodeunitRun { target } => target.capacity(),
+                CallSite::BareCall { name: called } => name(called),
+                CallSite::MemberCall { object, method } => name(object) + name(method),
+                CallSite::RecordOp { variable, .. } => name(variable),
+                CallSite::CodeunitRun { target } => name(target),
             }
         }
         fn calls(calls: &ProcedureCalls) -> usize {
