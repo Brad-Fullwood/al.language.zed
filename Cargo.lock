@@ -340,6 +340,7 @@ dependencies = [
  "al-syntax",
  "al-types",
  "dashmap 6.2.1",
+ "libc",
  "proptest",
  "ropey",
  "serde",

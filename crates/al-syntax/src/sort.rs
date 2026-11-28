@@ -69,8 +69,8 @@ struct BodySpan {
 /// keeps a two-object file from being read as one body running from the first
 /// `{` to the last `}`. Returns `None` when the file does not parse, when it
 /// holds no object, when a brace shares its line with other code (the member
-/// split works on whole lines), or when the bodies are not disjoint and in
-/// source order.
+/// split works on whole lines), when a directive or inactive block is a direct
+/// child of a body, or when the bodies are not disjoint and in source order.
 fn object_body_spans(text: &str, lines: &[&str]) -> Option<Vec<BodySpan>> {
     let parsed = crate::parser::AlParser::parse_quick(text);
     // Splitting a body into members is line-based and assumes the braces inside
@@ -91,6 +91,16 @@ fn object_body_spans(text: &str, lines: &[&str]) -> Option<Vec<BodySpan>> {
             continue;
         }
         let body = object.child_by_field_name("body")?;
+        // The line split would move a member across a directive or inactive block
+        // that sits between members. Directives inside a member body are not direct
+        // children, so those members still sort.
+        let mut body_cursor = body.walk();
+        if body
+            .named_children(&mut body_cursor)
+            .any(|child| matches!(child.kind(), "directive" | "inactive_code"))
+        {
+            return None;
+        }
         let open = body.start_position().row;
         let close = body.end_position().row;
         if close <= open {
@@ -1523,5 +1533,47 @@ codeunit 50100 T
 }
 ";
         assert_eq!(sort_members(input).as_deref(), Some(expected));
+    }
+
+    /// A directive directly in the object body decides which members compile.
+    /// FEATURE is undefined here, so `procedure Z` is inactive code and `procedure A`
+    /// is not. Sorting would make A compile only when FEATURE is defined.
+    #[test]
+    fn declines_a_member_level_directive() {
+        let input = "codeunit 50100 Test\n{\n#if FEATURE\n    procedure Z()\n    begin\n    end;\n#endif\n\n    procedure A()\n    begin\n    end;\n}\n";
+        assert_eq!(sort_members(input), None);
+    }
+
+    /// A directive inside a member body is not a direct child of the object body,
+    /// so the member keeps it and moves with it.
+    #[test]
+    fn directive_inside_a_body_moves_with_its_member() {
+        let input = "codeunit 50100 Test\n{\n    procedure B()\n    begin\n#if FEATURE\n        Message('x');\n#endif\n    end;\n\n    procedure A()\n    begin\n    end;\n}\n";
+        let sorted = sort_members(input).expect("should sort");
+        let lines: Vec<&str> = sorted.lines().collect();
+        let b = lines
+            .iter()
+            .position(|l| *l == "    procedure B()")
+            .expect("B missing");
+        let a = lines
+            .iter()
+            .position(|l| *l == "    procedure A()")
+            .expect("A missing");
+        assert!(a < b, "{sorted}");
+        let begin = b + lines[b..]
+            .iter()
+            .position(|l| *l == "    begin")
+            .expect("begin missing");
+        let end = b + lines[b..]
+            .iter()
+            .position(|l| *l == "    end;")
+            .expect("end missing");
+        for line in ["#if FEATURE", "Message('x');", "#endif"] {
+            let at = b + lines[b..]
+                .iter()
+                .position(|l| l.trim() == line)
+                .expect("line missing");
+            assert!(begin < at && at < end, "{sorted}");
+        }
     }
 }

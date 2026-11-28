@@ -34,6 +34,8 @@ pub struct NavxManifest {
     pub publisher: String,
     pub version: String,
     pub dependencies: Vec<ManifestDependency>,
+    /// `Name` of each `PreprocessorSymbol` in document order.
+    pub preprocessor_symbols: Vec<String>,
 }
 
 /// The manifest XML typically looks like:
@@ -53,10 +55,19 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
     let mut publisher = None;
     let mut version = None;
     let mut dependencies = Vec::new();
+    let mut preprocessor_symbols = Vec::new();
+    // Set on the start tag only, so `<PreprocessorSymbols />` never leaves it set.
+    let mut in_preprocessor_symbols = false;
     let mut buf = Vec::new();
 
     loop {
         match reader.read_event_into(&mut buf) {
+            Ok(Event::Start(ref e)) if e.local_name().as_ref() == b"PreprocessorSymbols" => {
+                in_preprocessor_symbols = true;
+            }
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == b"PreprocessorSymbols" => {
+                in_preprocessor_symbols = false;
+            }
             Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
                 let local_name = e.local_name();
                 if local_name.as_ref() == b"App" {
@@ -118,6 +129,18 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
                             ManifestError::MissingElement("Dependency/@MinVersion".into())
                         })?,
                     });
+                } else if local_name.as_ref() == b"PreprocessorSymbol" && in_preprocessor_symbols {
+                    for attr in e.attributes() {
+                        let attr = attr
+                            .map_err(|error| ManifestError::InvalidAttribute(error.to_string()))?;
+                        let local = attr.key.local_name();
+                        if std::str::from_utf8(local.as_ref())? == "Name" {
+                            let value = attr
+                                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                                .map_err(ManifestError::Xml)?;
+                            preprocessor_symbols.push(value.to_string());
+                        }
+                    }
                 }
             }
             Ok(Event::Eof) => break,
@@ -134,6 +157,7 @@ pub fn parse_manifest(xml_bytes: &[u8]) -> Result<NavxManifest, ManifestError> {
             .ok_or_else(|| ManifestError::MissingElement("App/@Publisher".into()))?,
         version: version.ok_or_else(|| ManifestError::MissingElement("App/@Version".into()))?,
         dependencies,
+        preprocessor_symbols,
     })
 }
 
@@ -224,5 +248,32 @@ mod tests {
         let xml = r#"<Package><App Name="X" Publisher="Y" Version="1.0" /></Package>"#;
         let err = parse_manifest(xml.as_bytes()).unwrap_err();
         assert!(matches!(err, ManifestError::MissingElement(_)));
+    }
+
+    #[test]
+    fn parses_preprocessor_symbols() {
+        let xml = r#"<Package>
+  <App Id="app" Name="App" Publisher="Vendor" Version="1.0.0.0" />
+  <PreprocessorSymbols>
+    <PreprocessorSymbol Name="CLEAN24" />
+    <PreprocessorSymbol Name="CLEAN25" />
+  </PreprocessorSymbols>
+</Package>"#;
+        let manifest = parse_manifest(xml.as_bytes()).expect("manifest");
+        assert_eq!(manifest.preprocessor_symbols, vec!["CLEAN24", "CLEAN25"]);
+    }
+
+    #[test]
+    fn missing_preprocessor_symbols_is_empty() {
+        let absent = r#"<Package><App Id="app" Name="App" Publisher="Vendor" Version="1.0.0.0" /></Package>"#;
+        let manifest = parse_manifest(absent.as_bytes()).expect("manifest");
+        assert!(manifest.preprocessor_symbols.is_empty());
+
+        let empty = r#"<Package>
+  <App Id="app" Name="App" Publisher="Vendor" Version="1.0.0.0" />
+  <PreprocessorSymbols />
+</Package>"#;
+        let manifest = parse_manifest(empty.as_bytes()).expect("manifest");
+        assert!(manifest.preprocessor_symbols.is_empty());
     }
 }

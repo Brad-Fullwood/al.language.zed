@@ -15,10 +15,11 @@ pub fn format_al(text: &str, options: &FormatOptions) -> String {
     format_al_inner(text, options, false)
 }
 
-/// `format_al` without the passes that add or remove lines: brace style,
-/// the gap between procedures and long property wrapping. Range formatting
-/// maps old lines to new lines one to one, so it needs the line count kept.
-/// Blank run collapse still applies, and `format_range` accounts for it.
+/// `format_al` without the passes that move or split lines: brace style, the
+/// property sort and long property wrapping. Range formatting maps old lines
+/// to new lines one to one, so the non-blank lines must keep their order and
+/// count. The gap between procedures and blank run collapse still apply, and
+/// `format_range` aligns the blank runs.
 pub(super) fn format_al_keeping_line_count(text: &str, options: &FormatOptions) -> String {
     format_al_inner(text, options, true)
 }
@@ -47,7 +48,11 @@ fn format_al_inner(text: &str, options: &FormatOptions, keep_line_count: bool) -
     } else {
         apply_brace_style(text, options)
     };
-    let reordered = sort_object_properties(braced, options);
+    let reordered = if keep_line_count {
+        braced
+    } else {
+        sort_object_properties(braced, options)
+    };
     let text: &str = &reordered;
 
     let mut result = String::with_capacity(text.len());
@@ -686,10 +691,10 @@ fn format_al_inner(text: &str, options: &FormatOptions, keep_line_count: bool) -
     // The pass order is significant for idempotence: normalize procedure gaps,
     // then wrap long properties. The brace merge and the property sort already
     // ran ahead of the indentation pass.
+    let result = normalize_blank_lines_between_procedures(result, options);
     let result = if keep_line_count {
         result
     } else {
-        let result = normalize_blank_lines_between_procedures(result, options);
         wrap_long_property_lines(result, options)
     };
     // Casing runs last, on the final layout, so the parse sees the real tokens.

@@ -20,6 +20,9 @@ pub const MAX_AL_FILE_BYTES: u64 = 50 * 1024 * 1024; // 50 MiB
 /// Reaching the cap is an explicit scan error rather than a partial index.
 pub const MAX_WORKSPACE_SOURCE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
 
+/// Largest `app.json` the index reads. Matches the cap `al-project` applies to the same file.
+const MAX_APP_JSON_BYTES: u64 = 1_048_576;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ScanError {
     #[error("failed to read workspace directory '{}': {source}", path.display())]
@@ -151,12 +154,20 @@ struct AppIdentity {
 }
 
 impl AppIdentity {
-    fn read(app_json: &Path) -> Self {
-        let Ok(text) = std::fs::read_to_string(app_json) else {
-            return Self::default();
+    /// The identity `app_json` declares. A missing or unparsable file gives the
+    /// default identity. `Err` when the file is refused: not a regular file, over
+    /// [`MAX_APP_JSON_BYTES`], unreadable or not UTF-8. The caller then keeps the
+    /// identity it already holds.
+    fn read(app_json: &Path) -> Result<Self, String> {
+        // Standard route checked: `al_types::regular_file` is the bounded, non-blocking
+        // reader `al-project` uses for the same manifest. A plain `read_to_string` waits
+        // on a FIFO and reads a file of any size whole.
+        let read = al_types::regular_file::read_regular_text_file(app_json, MAX_APP_JSON_BYTES)?;
+        let Some(text) = read else {
+            return Ok(Self::default());
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return Self::default();
+            return Ok(Self::default());
         };
         let id = value
             .get("id")
@@ -187,11 +198,11 @@ impl AppIdentity {
                     .collect()
             })
             .unwrap_or_default();
-        Self {
+        Ok(Self {
             id,
             dependency_ids,
             preprocessor_symbols,
-        }
+        })
     }
 }
 
@@ -541,13 +552,33 @@ impl FileIndex {
         let metadata = strict_metadata_for_paths(&paths, &mut delta.skipped)?;
         let mut staged = Vec::new();
 
+        // The owner each indexed file was parsed with is only recorded in the
+        // directory memo. Read it before the memo is cleared, so the loop below
+        // sees an `app.json` added, removed or moved since the last scan.
+        let previous_owner: std::collections::HashMap<PathBuf, Option<PathBuf>> = self
+            .file_metadata
+            .iter()
+            .map(|entry| (entry.key().clone(), self.app_root_for(entry.key())))
+            .collect();
+        self.dir_app_root.clear();
+        // An app whose `app.json` is gone reads as no app again.
+        self.apps
+            .retain(|app_root, _| app_root.join("app.json").is_file());
+
         // An edited `app.json` changes how every file of that app parses
         // (`preprocessorSymbols`) and how its objects rank. Reread each known
         // app and reparse the files of an app whose identity changed.
         let mut stale_apps = std::collections::HashSet::new();
         let known_apps: Vec<PathBuf> = self.apps.iter().map(|e| e.key().clone()).collect();
         for app_root in known_apps {
-            let fresh = AppIdentity::read(&app_root.join("app.json"));
+            let app_json = app_root.join("app.json");
+            let fresh = match AppIdentity::read(&app_json) {
+                Ok(fresh) => fresh,
+                Err(reason) => {
+                    tracing::warn!(path = %app_json.display(), %reason, "app.json refused, keeping the last identity");
+                    continue;
+                }
+            };
             if self.apps.get(&app_root).is_some_and(|old| *old != fresh) {
                 self.apps.insert(app_root.clone(), fresh);
                 stale_apps.insert(app_root);
@@ -555,10 +586,15 @@ impl FileIndex {
         }
 
         for (path, current_meta) in &metadata {
-            let app_changed = !stale_apps.is_empty()
-                && self
-                    .app_root_for(path)
-                    .is_some_and(|app_root| stale_apps.contains(&app_root));
+            let owner = self.app_root_for(path);
+            let owner_changed = previous_owner
+                .get(path)
+                .is_some_and(|previous| *previous != owner);
+            let app_changed = owner_changed
+                || (!stale_apps.is_empty()
+                    && owner
+                        .as_ref()
+                        .is_some_and(|app_root| stale_apps.contains(app_root)));
             let unchanged = !app_changed
                 && self
                     .file_metadata
@@ -966,7 +1002,11 @@ impl FileIndex {
         if let Some(cached) = self.apps.get(app_root) {
             return cached.value().clone();
         }
-        let identity = AppIdentity::read(&app_root.join("app.json"));
+        let app_json = app_root.join("app.json");
+        let identity = AppIdentity::read(&app_json).unwrap_or_else(|reason| {
+            tracing::warn!(path = %app_json.display(), %reason, "app.json refused, the app gets no identity");
+            AppIdentity::default()
+        });
         self.apps.insert(app_root.to_path_buf(), identity.clone());
         identity
     }

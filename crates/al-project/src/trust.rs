@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::config::{AlConfig, ConfigLoadError};
+use al_types::regular_file::open_regular_file;
 
 /// The command a user runs to trust a project.
 pub const TRUST_COMMAND: &str = "al-explorer trust";
@@ -1624,26 +1625,6 @@ fn file_hash(path: &Path, limit: u64, read: &mut u64) -> FileHash {
         sha256: format!("sha256:{:x}", hasher.finalize()),
         bytes,
     }
-}
-
-/// `path` opened for reading, when it is a regular file once open.
-///
-/// On Unix the open does not wait. A file swapped for a FIFO after it was
-/// checked opens at once and is refused here, where a plain open blocked
-/// until something wrote to the FIFO.
-pub(crate) fn open_regular_file(path: &Path) -> Option<std::fs::File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
-    }
-    let file = options.open(path).ok()?;
-    file.metadata()
-        .ok()
-        .filter(std::fs::Metadata::is_file)
-        .map(|_| file)
 }
 
 /// One hash over the `shape` tree at `dir`, with the count, or the reason it

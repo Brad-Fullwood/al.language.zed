@@ -294,9 +294,10 @@ pub(crate) struct SubscriberTarget {
     /// element (table field) the event belongs to.
     argument: SubscriberArgumentKind,
     /// The object declaring the renamed symbol: its AL keyword (`codeunit`,
-    /// `table`, …) and its name.
+    /// `table`, …), its name and its id (`50101` in `codeunit 50101 Pub`).
     object_keyword: String,
     object_name: String,
+    object_id: Option<i64>,
     /// The name being renamed, as the subscriber spells it.
     current_name: String,
 }
@@ -323,11 +324,12 @@ fn subscriber_target_at(
                 if !covers_name_field(ancestor, node) || !publishes_an_event(ancestor, source) {
                     return None;
                 }
-                let (object_keyword, object_name) = enclosing_object(ancestor, source)?;
+                let (object_keyword, object_name, object_id) = enclosing_object(ancestor, source)?;
                 return Some(SubscriberTarget {
                     argument: SubscriberArgumentKind::Event,
                     object_keyword,
                     object_name,
+                    object_id,
                     current_name: clean_name.to_string(),
                 });
             }
@@ -338,7 +340,7 @@ fn subscriber_target_at(
                 if !name.eq_ignore_ascii_case(clean_name) {
                     return None;
                 }
-                let (object_keyword, object_name) = enclosing_object(ancestor, source)?;
+                let (object_keyword, object_name, object_id) = enclosing_object(ancestor, source)?;
                 if !object_keyword.eq_ignore_ascii_case("table") {
                     return None;
                 }
@@ -346,6 +348,7 @@ fn subscriber_target_at(
                     argument: SubscriberArgumentKind::Element,
                     object_keyword,
                     object_name,
+                    object_id,
                     current_name: clean_name.to_string(),
                 });
             }
@@ -361,6 +364,7 @@ fn subscriber_target_at(
                     argument: SubscriberArgumentKind::Object,
                     object_keyword: keyword,
                     object_name: clean_name.to_string(),
+                    object_id: declared_object_id(ancestor, source),
                     current_name: clean_name.to_string(),
                 });
             }
@@ -402,8 +406,11 @@ fn publishes_an_event(declaration: tree_sitter::Node<'_>, source: &[u8]) -> bool
     publishes
 }
 
-/// The AL keyword and name of the object declaration enclosing `node`.
-fn enclosing_object(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(String, String)> {
+/// The AL keyword, name and id of the object declaration enclosing `node`.
+fn enclosing_object(
+    node: tree_sitter::Node<'_>,
+    source: &[u8],
+) -> Option<(String, String, Option<i64>)> {
     let mut current = node.parent();
     while let Some(ancestor) = current {
         if ancestor.kind() == "object_declaration" {
@@ -413,11 +420,22 @@ fn enclosing_object(node: tree_sitter::Node<'_>, source: &[u8]) -> Option<(Strin
                 .ok()?
                 .to_string();
             let name = al_syntax::node_text_clean(ancestor.child_by_field_name("name")?, source)?;
-            return Some((keyword, name));
+            return Some((keyword, name, declared_object_id(ancestor, source)));
         }
         current = ancestor.parent();
     }
     None
+}
+
+/// The numeric id of an object declaration, `50101` in `codeunit 50101 Pub`.
+/// `None` for an object without an integer id, such as an interface.
+fn declared_object_id(declaration: tree_sitter::Node<'_>, source: &[u8]) -> Option<i64> {
+    declaration
+        .child_by_field_name("id")?
+        .utf8_text(source)
+        .ok()?
+        .parse::<i64>()
+        .ok()
 }
 
 /// The name token in an `object_section`'s parenthesized header, e.g.
@@ -471,8 +489,8 @@ fn merge_subscriber_edits(edits: &mut Vec<TextEdit>, from_subscribers: Vec<TextE
 }
 
 /// Whether the `[EventSubscriber]` `attribute` subscribes to the publisher
-/// that `target` names. The publisher is matched by object type and object
-/// name, so a publisher named by id (`Codeunit::50101`) does not match.
+/// that `target` names. The publisher matches on object type and on either
+/// its name or, when the subscriber writes an integer (`50101`), its id.
 pub(crate) fn subscriber_matches_publisher(
     attribute: &al_syntax::EventSubscriberAttribute,
     target: &SubscriberTarget,
@@ -486,10 +504,14 @@ pub(crate) fn subscriber_matches_publisher(
     {
         return false;
     }
-    attribute
-        .object
-        .as_ref()
-        .is_some_and(|object| object.name.eq_ignore_ascii_case(&target.object_name))
+    let Some(object) = attribute.object.as_ref() else {
+        return false;
+    };
+    // The id guard keeps two objects without an id (`None == None`) from matching.
+    let id_matches = target
+        .object_id
+        .is_some_and(|id| object.name.parse::<i64>().ok() == Some(id));
+    object.name.eq_ignore_ascii_case(&target.object_name) || id_matches
 }
 
 /// The publisher of the event declared at `decl`, a `decl_loc` key, as the
@@ -528,10 +550,12 @@ pub(crate) fn event_publisher(
                     && event.range.start_byte <= node.end_byte()
             })
         })?;
+    let object = attribute.object?;
     Some(SubscriberTarget {
         argument: SubscriberArgumentKind::Event,
         object_keyword: attribute.object_type.to_ascii_lowercase(),
-        object_name: attribute.object?.name,
+        object_id: object.name.parse::<i64>().ok(),
+        object_name: object.name,
         current_name: clean_name.to_string(),
     })
 }
@@ -563,6 +587,12 @@ fn subscriber_edits(
             ),
         };
         let Some(argument) = argument else { continue };
+        // A numeric publisher names the object by id. A rename of the object
+        // keeps that integer.
+        if target.argument == SubscriberArgumentKind::Object && argument.name.parse::<i64>().is_ok()
+        {
+            continue;
+        }
         if !argument.name.eq_ignore_ascii_case(&target.current_name) {
             continue;
         }
@@ -1521,6 +1551,16 @@ mod tests {
 }
 "#;
 
+    /// A subscriber that names the publisher by its bare integer id, 50100.
+    const NUMERIC_SUBSCRIBER: &str = r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, 50100, 'OnAfterPostSalesDoc', '', false, false)]
+    local procedure OnAfterPostBare(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#;
+
     /// Renaming a published event has to rewrite the subscriber's event-name
     /// string. It is a string literal, so the identifier walk cannot see it and
     /// the subscriber is left naming an event that no longer exists.
@@ -1659,6 +1699,82 @@ mod tests {
     end;
 }
 "#
+        );
+    }
+
+    /// A subscriber that names the publisher by id is still a subscriber of its
+    /// events, so renaming an event rewrites its event-name string.
+    #[test]
+    fn rename_event_updates_numeric_subscriber() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &subscriber_uri, NUMERIC_SUBSCRIBER);
+
+        let pos = Position {
+            line: 3,
+            character: 24,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (publisher_uri.clone(), PUBLISHER),
+                (subscriber_uri.clone(), NUMERIC_SUBSCRIBER),
+            ],
+            &publisher_uri,
+            pos,
+            |placeholder| {
+                assert_eq!(placeholder, "OnAfterPostSalesDoc");
+                "OnAfterPostSales".to_string()
+            },
+        );
+        assert_eq!(
+            text_for(&renamed, &subscriber_uri),
+            r#"codeunit 50101 "Sales Post Sub"
+{
+    [EventSubscriber(ObjectType::Codeunit, 50100, 'OnAfterPostSales', '', false, false)]
+    local procedure OnAfterPostBare(var Header: Record "Sales Header")
+    begin
+    end;
+}
+"#
+        );
+    }
+
+    /// A subscriber that names the publisher by id has no name to rewrite.
+    #[test]
+    fn rename_publisher_keeps_numeric_selector() {
+        let ws = Workspace::new();
+        let publisher_uri = Url::parse("file:///test/src/Pub.al").unwrap();
+        let subscriber_uri = Url::parse("file:///test/src/Sub.al").unwrap();
+        open_and_index(&ws, &publisher_uri, PUBLISHER);
+        open_and_index(&ws, &subscriber_uri, NUMERIC_SUBSCRIBER);
+
+        let pos = Position {
+            line: 0,
+            character: 18,
+        };
+        let renamed = client_rename(
+            &ws,
+            &[
+                (publisher_uri.clone(), PUBLISHER),
+                (subscriber_uri.clone(), NUMERIC_SUBSCRIBER),
+            ],
+            &publisher_uri,
+            pos,
+            |placeholder| {
+                assert_eq!(placeholder, "Sales Post");
+                "Sales Posting".to_string()
+            },
+        );
+        assert!(
+            text_for(&renamed, &publisher_uri).starts_with(r#"codeunit 50100 "Sales Posting""#),
+            "the publisher object was not renamed"
+        );
+        assert!(
+            renamed.iter().all(|(u, _)| u != &subscriber_uri),
+            "renaming the publisher object edited a numeric subscriber: {renamed:?}"
         );
     }
 

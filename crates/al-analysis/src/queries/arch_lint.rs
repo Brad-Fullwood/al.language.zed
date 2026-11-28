@@ -236,7 +236,7 @@ impl ArchConfig {
             // delete / bulk writes belong in a codeunit so the logic is
             // reusable and testable without the UI.
             ArchRule {
-                id: "BUILTIN-PAGE-NO-DB-WRITE".to_string(),
+                id: PAGE_NO_DB_WRITE_RULE.to_string(),
                 description: "Pages must not perform direct database writes".to_string(),
                 kind: ArchRuleKind::ForbiddenPattern,
                 pattern: "page".to_string(),
@@ -252,6 +252,9 @@ impl ArchConfig {
     }
 }
 
+/// Id of the built-in rule that keeps database writes out of pages.
+const PAGE_NO_DB_WRITE_RULE: &str = "BUILTIN-PAGE-NO-DB-WRITE";
+
 pub fn arch_lint(
     workspace: &Workspace,
     config: &ArchConfig,
@@ -262,22 +265,32 @@ pub fn arch_lint(
     let builtin = ArchConfig::builtin_rules();
     for source in sources {
         let file_path = source.path.to_string_lossy().to_string();
+        let resolver = al_syntax::TypeResolver::new(&source.tree, &source.text);
         // Per object declaration, not per file: a file may hold several
         // objects, and reading the kind, name and ID from the first one put
         // every violation under that object and skipped the rules that only
         // apply to the later objects' kinds.
         for (object, node) in source.object_nodes() {
             let obj_kind_lower = object.info.kind.to_lowercase();
-            for rule in config.rules.iter().chain(builtin.iter()) {
+            // Disabled `#if` branches are blanked so a rule never matches code the build drops.
+            let object_text = al_syntax::lint::text_without_inactive_code(node, &source.text);
+            for (rule, from_builtin) in config
+                .rules
+                .iter()
+                .map(|rule| (rule, false))
+                .chain(builtin.iter().map(|rule| (rule, true)))
+            {
                 apply_rule(
                     &file_path,
                     &source.text,
-                    object.text(&source.text),
+                    &object_text,
                     object.first_line(),
                     node,
                     &object.info,
                     &obj_kind_lower,
                     rule,
+                    from_builtin,
+                    &resolver,
                     &mut violations,
                 );
             }
@@ -303,21 +316,116 @@ fn applies_to_kind(rule_pattern: &str, obj_kind_lower: &str) -> bool {
 /// joined to either end, so `message(` does not match inside `logmessage(`.
 /// An end of `needle` that is not an identifier character needs no boundary.
 fn contains_on_identifier_boundary(haystack: &str, needle: &str) -> bool {
+    identifier_boundary_offsets(haystack, needle)
+        .next()
+        .is_some()
+}
+
+/// Byte offsets in `haystack` where `needle` occurs on an identifier boundary,
+/// as `contains_on_identifier_boundary` defines it. An empty needle has none.
+fn identifier_boundary_offsets<'a>(
+    haystack: &'a str,
+    needle: &'a str,
+) -> impl Iterator<Item = usize> + 'a {
     let is_ident = |c: char| c.is_alphanumeric() || c == '_';
-    if needle.is_empty() {
-        return false;
-    }
     let needs_start = needle.chars().next().is_some_and(is_ident);
     let needs_end = needle.chars().next_back().is_some_and(is_ident);
-    haystack.match_indices(needle).any(|(at, _)| {
-        let before_ok = !needs_start || !haystack[..at].chars().next_back().is_some_and(is_ident);
-        let after_ok = !needs_end
-            || !haystack[at + needle.len()..]
-                .chars()
-                .next()
-                .is_some_and(is_ident);
-        before_ok && after_ok
-    })
+    haystack
+        .match_indices(needle)
+        .map(|(at, _)| at)
+        .filter(move |&at| {
+            let before_ok =
+                !needs_start || !haystack[..at].chars().next_back().is_some_and(is_ident);
+            let after_ok = !needs_end
+                || !haystack[at + needle.len()..]
+                    .chars()
+                    .next()
+                    .is_some_and(is_ident);
+            !needle.is_empty() && before_ok && after_ok
+        })
+}
+
+/// Whether the match of a page write pattern at byte `at` of `code` is a write
+/// the built-in page rule does not report. `code` is one masked line of the
+/// file at zero-based row `row`.
+///
+/// Skipped: the receiver resolves to a `temporary` declaration. On a page whose
+/// `SourceTableTemporary` is true, also a `Rec` or `xRec` receiver, or no
+/// receiver on this line. A chained receiver such as `GetRec()` resolves to no
+/// name, so it is reported. Standard routes checked: `TypeResolver::is_temporary`
+/// covers the declaration check, and no standard object decides whether a page
+/// write is allowed.
+fn page_write_is_skipped(
+    code: &str,
+    at: usize,
+    row: usize,
+    file_text: &str,
+    resolver: &al_syntax::TypeResolver<'_>,
+    source_table_temporary: bool,
+) -> bool {
+    let before = code[..at].trim_end();
+    let receiver = receiver_span(before);
+    let name = al_syntax::clean_identifier(receiver);
+    if !name.is_empty() {
+        let file_line = file_text.lines().nth(row).unwrap_or("");
+        let start = before.len() - receiver.len();
+        let pos = al_syntax::SyntaxPosition {
+            line: row as u32,
+            character: al_syntax::byte_col_to_utf16_col(file_line, start),
+        };
+        if resolver
+            .resolve_type(&name, pos)
+            .is_some_and(|decl| resolver.is_temporary(&decl))
+        {
+            return true;
+        }
+    }
+    source_table_temporary
+        && (before.is_empty()
+            || name.eq_ignore_ascii_case("Rec")
+            || name.eq_ignore_ascii_case("xRec"))
+}
+
+/// The receiver at the end of `before`, quotes included. Empty when `before`
+/// ends in anything other than an identifier, such as the `)` of `GetRec()`.
+fn receiver_span(before: &str) -> &str {
+    if let Some(inner) = before.strip_suffix('"') {
+        // A `""` pair is an escaped quote inside the name, not the opening quote.
+        let mut open = inner.rfind('"');
+        while let Some(at) = open.filter(|&at| at > 0 && inner.as_bytes()[at - 1] == b'"') {
+            open = inner[..at - 1].rfind('"');
+        }
+        return open.map_or("", |at| &before[at..]);
+    }
+    let start = before
+        .char_indices()
+        .rev()
+        .take_while(|&(_, c)| c.is_alphanumeric() || c == '_')
+        .last()
+        .map_or(before.len(), |(at, _)| at);
+    &before[start..]
+}
+
+/// Whether the object is a page whose `SourceTableTemporary` property is `true`.
+fn page_source_table_temporary(object_node: tree_sitter::Node<'_>, text: &str) -> bool {
+    let Some(body) = object_node.child_by_field_name("body") else {
+        return false;
+    };
+    let bytes = text.as_bytes();
+    let mut cursor = body.walk();
+    let property = body
+        .children(&mut cursor)
+        .filter(|child| child.kind() == "property_assignment")
+        .find(|child| {
+            child
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(bytes).ok())
+                .is_some_and(|name| name.eq_ignore_ascii_case("SourceTableTemporary"))
+        });
+    let value = property
+        .and_then(|child| child.child_by_field_name("value"))
+        .and_then(|value| value.utf8_text(bytes).ok());
+    value.is_some_and(|value| value.trim().eq_ignore_ascii_case("true"))
 }
 
 fn legacy_naming_regex(pattern: &str) -> String {
@@ -344,6 +452,8 @@ fn apply_rule(
     obj_info: &al_syntax::ObjectInfo,
     obj_kind_lower: &str,
     rule: &ArchRule,
+    from_builtin: bool,
+    resolver: &al_syntax::TypeResolver<'_>,
     violations: &mut Vec<ArchViolation>,
 ) {
     if !applies_to_kind(&rule.pattern, obj_kind_lower) {
@@ -385,6 +495,13 @@ fn apply_rule(
                     None => None,
                 };
                 let forbidden_lower = (!rule.regex).then(|| forbidden.to_lowercase());
+                let needle = forbidden_lower.as_deref().unwrap_or_default();
+                // Only the built-in page rule skips some matches. Its pattern
+                // is plain text, so the regex branch never applies to it.
+                let page_write_rule =
+                    from_builtin && rule.id == PAGE_NO_DB_WRITE_RULE && !rule.regex;
+                let source_table_temporary =
+                    page_write_rule && page_source_table_temporary(object, file_text);
                 // Comments and single-quoted strings are blanked out first, so
                 // a commented call or a message text does not match.
                 let mut in_block_comment = false;
@@ -395,15 +512,26 @@ fn apply_rule(
                             in_block_comment,
                         );
                     in_block_comment = still_in_block_comment;
-                    let matches = regex.as_ref().map_or_else(
-                        || {
-                            contains_on_identifier_boundary(
-                                &code.to_lowercase(),
-                                forbidden_lower.as_deref().unwrap_or_default(),
-                            )
-                        },
-                        |regex| regex.is_match(&code),
-                    );
+                    let matches = match regex.as_ref() {
+                        Some(regex) => regex.is_match(&code),
+                        // ASCII lowering keeps each offset equal to its offset in `code`.
+                        None if page_write_rule => {
+                            let row = first_line as usize + idx;
+                            let lower = code.to_ascii_lowercase();
+                            let mut offsets = identifier_boundary_offsets(&lower, needle);
+                            offsets.any(|at| {
+                                !page_write_is_skipped(
+                                    &code,
+                                    at,
+                                    row,
+                                    file_text,
+                                    resolver,
+                                    source_table_temporary,
+                                )
+                            })
+                        }
+                        None => contains_on_identifier_boundary(&code.to_lowercase(), needle),
+                    };
                     matches.then_some(first_line + idx as u32 + 1)
                 });
                 if let Some(line) = line_no {
@@ -967,6 +1095,28 @@ page 50101 "Ship Card"
     }
 
     #[test]
+    fn inactive_branch_is_not_matched() {
+        let ws = workspace_with(vec![(
+            "/src/Order.al",
+            r#"table 50100 "Order"
+{
+    fields { field(1; "No."; Code[20]) { } }
+    trigger OnInsert()
+    begin
+#if NOTDEFINED
+        Page.Run(Page::"Order List");
+#endif
+    end;
+}"#,
+        )]);
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
+        assert!(
+            !v.iter().any(|x| x.rule_id == "BUILTIN-TABLE-NO-PAGE-RUN"),
+            "a Page.Run in a disabled branch is not built: {v:?}"
+        );
+    }
+
+    #[test]
     fn builtin_table_must_not_show_dialog() {
         let ws = workspace_with(vec![(
             "/src/Customer.al",
@@ -1034,6 +1184,118 @@ page 50101 "Ship Card"
             v.iter().any(|x| x.rule_id == "BUILTIN-PAGE-NO-DB-WRITE"),
             "Page performing a direct Insert must be flagged: {v:?}"
         );
+    }
+
+    #[test]
+    fn temporary_record_insert_on_page_is_allowed() {
+        let ws = workspace_with(vec![(
+            "/src/TempCard.al",
+            r#"page 50100 "Temp Card"
+{
+    PageType = Card;
+    SourceTable = "Order";
+    var
+        TempRec: Record "Order" temporary;
+    actions
+    {
+        area(Processing)
+        {
+            action(Create)
+            {
+                trigger OnAction()
+                var
+                    LocalTemp: Record "Order" temporary;
+                begin
+                    TempRec.Insert();
+                    LocalTemp.Insert();
+                end;
+            }
+        }
+    }
+}"#,
+        )]);
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
+        assert!(
+            !v.iter().any(|x| x.rule_id == "BUILTIN-PAGE-NO-DB-WRITE"),
+            "Inserts into temporary records must not be flagged: {v:?}"
+        );
+    }
+
+    #[test]
+    fn source_table_temporary_page_rec_insert_is_allowed() {
+        let source = r#"page 50100 "Buffer List"
+{
+    PageType = List;
+    SourceTable = "Order";
+    SourceTableTemporary = true;
+    actions
+    {
+        area(Processing)
+        {
+            action(Create)
+            {
+                trigger OnAction()
+                begin
+                    Rec.Insert();
+                    xRec.Delete();
+                end;
+            }
+        }
+    }
+}"#;
+        let ws = workspace_with(vec![("/src/BufferList.al", source)]);
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
+        assert!(
+            !v.iter().any(|x| x.rule_id == "BUILTIN-PAGE-NO-DB-WRITE"),
+            "Rec and xRec writes on a SourceTableTemporary page must not be flagged: {v:?}"
+        );
+
+        // Same page without the property: the writes are real and must be reported.
+        let plain = source.replace("    SourceTableTemporary = true;\n", "");
+        let ws = workspace_with(vec![("/src/BufferList.al", plain.as_str())]);
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
+        assert!(
+            v.iter().any(|x| x.rule_id == "BUILTIN-PAGE-NO-DB-WRITE"),
+            "Rec writes on a page without SourceTableTemporary must be flagged: {v:?}"
+        );
+    }
+
+    #[test]
+    fn temporary_skip_still_reports_a_later_real_write() {
+        let source = r#"page 50100 "Order Card"
+{
+    PageType = Card;
+    SourceTable = "Order";
+    var
+        TempRec: Record "Order" temporary;
+    actions
+    {
+        area(Processing)
+        {
+            action(Create)
+            {
+                trigger OnAction()
+                begin
+                    TempRec.Insert();
+                    Rec.Insert();
+                end;
+            }
+        }
+    }
+}"#;
+        let ws = workspace_with(vec![("/src/OrderCard.al", source)]);
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
+        let hits: Vec<_> = v
+            .iter()
+            .filter(|x| x.rule_id == "BUILTIN-PAGE-NO-DB-WRITE")
+            .collect();
+        assert_eq!(hits.len(), 1, "Expected one real write: {v:?}");
+        let rec_line = source
+            .lines()
+            .position(|line| line.trim() == "Rec.Insert();")
+            .unwrap()
+            + 1;
+        assert_eq!(hits[0].line, rec_line as u32, "{v:?}");
     }
 
     #[test]

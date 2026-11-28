@@ -11,6 +11,7 @@ pub mod private_dir;
 pub mod procedure;
 pub mod profile_timing;
 pub mod profiler;
+pub mod regular_file;
 pub mod test_result;
 
 pub use app::AppDependency;
