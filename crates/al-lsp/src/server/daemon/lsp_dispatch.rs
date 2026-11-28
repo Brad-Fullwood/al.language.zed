@@ -300,23 +300,70 @@ pub(super) fn dispatch_inlay_hints(
     serialized_response(id, &hints, "textDocument/inlayHint")
 }
 
-pub(super) fn dispatch_code_actions(
+/// Code actions for a position or, with `endLine` and `endCharacter`, a
+/// selection: the quick fixes for the native diagnostics that overlap it,
+/// built the way `handle_code_action` builds them in the editor, then the
+/// source actions.
+pub(super) async fn dispatch_code_actions(
     workspace: &Workspace,
     id: u64,
     params: &serde_json::Value,
 ) -> Response {
-    let Some(position) = extract_position(params) else {
+    use al_analysis::queries::code_actions::{
+        namespace_quick_fix_for_diagnostic, quick_fix_for_diagnostic, source_actions,
+        DiagnosticInfo,
+    };
+
+    let Some(start) = extract_position(params) else {
         return invalid_params(id);
     };
+    let mut end = start;
+    for (key, slot) in [
+        ("endLine", &mut end.line),
+        ("endCharacter", &mut end.character),
+    ] {
+        if let Some(value) = params.get(key) {
+            match value.as_u64().and_then(|value| u32::try_from(value).ok()) {
+                Some(value) => *slot = value,
+                None => {
+                    return rpc_error(
+                        id,
+                        error_codes::INVALID_PARAMS,
+                        &format!("'{key}' must be a non-negative 32-bit integer"),
+                    );
+                }
+            }
+        }
+    }
     let (uri, _supplied) = match read_document_from_params(workspace, params, id) {
         Ok(document) => document,
         Err(response) => return response,
     };
-    let range = al_analysis::queries::Range {
-        start: position,
-        end: position,
+    let range = al_analysis::queries::Range { start, end };
+    let before = |a: al_analysis::queries::Position, b: al_analysis::queries::Position| {
+        (a.line, a.character) <= (b.line, b.character)
     };
-    let actions = al_analysis::queries::code_actions::source_actions(workspace, &uri, range);
+
+    let mut actions = Vec::new();
+    if let Some(text) = workspace.documents.get_text(&uri) {
+        let config = workspace.config.read().await.clone();
+        let diagnostics =
+            al_analysis::queries::diagnostics::syntax_diagnostics(workspace, &uri, &config);
+        for diagnostic in diagnostics.into_iter().filter(|diagnostic| {
+            before(diagnostic.range.start, range.end) && before(range.start, diagnostic.range.end)
+        }) {
+            let info = DiagnosticInfo {
+                range: diagnostic.range,
+                message: diagnostic.message,
+                code: Some(diagnostic.code),
+            };
+            actions.extend(quick_fix_for_diagnostic(workspace, &uri, &text, &info));
+            actions.extend(namespace_quick_fix_for_diagnostic(
+                workspace, &uri, &text, &info,
+            ));
+        }
+    }
+    actions.extend(source_actions(workspace, &uri, range));
     serialized_response(id, &actions, "textDocument/codeAction")
 }
 

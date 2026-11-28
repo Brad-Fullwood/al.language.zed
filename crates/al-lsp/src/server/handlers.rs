@@ -85,6 +85,18 @@ pub(crate) fn handle_code_action(
     diagnostics: &[Diagnostic],
     only: Option<&Vec<CodeActionKind>>,
 ) -> Option<Vec<CodeActionOrCommand>> {
+    // `al.enableCodeActions` turns off every action, including Format File,
+    // Lint File and the object actions below. The same read as the query
+    // layer's `code_actions_enabled`.
+    if !server
+        .workspace
+        .config
+        .try_read()
+        .map(|config| config.enable_code_actions)
+        .unwrap_or(true)
+    {
+        return None;
+    }
     let (text, version) = server
         .workspace
         .documents

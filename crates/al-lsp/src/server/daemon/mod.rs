@@ -1420,7 +1420,7 @@ dispatch_table! {
         "foldingRanges" [read] => lsp_dispatch::dispatch_folding_ranges(workspace, id, &params),
         "semanticTokens" [read] => lsp_dispatch::dispatch_semantic_tokens(workspace, id, &params),
         "inlayHints" [read] => lsp_dispatch::dispatch_inlay_hints(workspace, id, &params),
-        "codeActions" [read] => lsp_dispatch::dispatch_code_actions(workspace, id, &params),
+        "codeActions" [read] => lsp_dispatch::dispatch_code_actions(workspace, id, &params).await,
         "search" [] => lsp_dispatch::dispatch_search(workspace, id, &params),
         "object" [] => {
             let (ws, args) = (Arc::clone(workspace), params.clone());

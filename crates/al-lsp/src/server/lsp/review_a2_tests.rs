@@ -230,3 +230,30 @@ async fn sort_members_edit_carries_the_buffer_version() {
     assert_eq!(edits[0].text_document.uri, uri);
     assert_eq!(edits[0].text_document.version, Some(7));
 }
+
+/// A2-codex-14, A2-neon-08: `al.enableCodeActions` off removes every action,
+/// including the object actions on a declaration line.
+#[tokio::test]
+async fn disabled_code_actions_offer_nothing_on_an_object_line() {
+    let (service, _socket) = LspService::new(AlLsp::new);
+    let server = service.inner();
+    let uri = Url::parse("file:///tmp/review_a2_disabled/Sort.al").unwrap();
+    let source = "codeunit 50100 \"Sort\"\n{\n    procedure Zebra()\n    begin\n    end;\n\n    procedure Apple()\n    begin\n    end;\n}\n";
+    server
+        .workspace
+        .documents
+        .open_with_client_version(uri.clone(), source.to_string(), 1)
+        .unwrap();
+    let request = || {
+        crate::server::handlers::handle_code_action(
+            server,
+            &uri,
+            Range::new(Position::new(0, 0), Position::new(0, 0)),
+            &[],
+            None,
+        )
+    };
+    assert!(request().is_some_and(|actions| !actions.is_empty()));
+    server.workspace.config.write().await.enable_code_actions = false;
+    assert!(request().is_none());
+}
