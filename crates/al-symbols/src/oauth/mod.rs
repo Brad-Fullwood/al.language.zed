@@ -16,7 +16,7 @@ mod redirect;
 mod settings;
 mod validation;
 
-pub use cache::{cached_token_expiry, invalidate_cached_token, token_cache_path};
+pub use cache::{cached_token_expiry_for, invalidate_cached_token, token_cache_path};
 pub use flows::{
     acquire_token, acquire_token_blocking, acquire_token_with_mode, acquire_token_with_settings,
     SignInMode,

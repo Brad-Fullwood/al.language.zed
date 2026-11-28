@@ -95,7 +95,9 @@ fn keyring_delete(tenant: &str) -> bool {
     .unwrap_or(false)
 }
 
-pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedToken> {
+/// `migrate` moves a file token into the keyring and deletes the file. Status
+/// checks pass `false`, so they do not write.
+fn read_cached_token(path: &PathBuf, tenant: &str, migrate: bool) -> Option<CachedToken> {
     if let Some(json) = keyring_get(tenant) {
         let json = zeroize::Zeroizing::new(json);
         match serde_json::from_str::<CachedToken>(&json) {
@@ -158,7 +160,7 @@ pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedTo
     // plaintext file, so a token cached by an earlier version stops lingering on
     // disk after the first load. Best-effort — if the keyring is unavailable the
     // file simply stays as the fallback store.
-    if keyring_set(tenant, &content) {
+    if migrate && keyring_set(tenant, &content) {
         let _ = std::fs::remove_file(path);
         tracing::info!(
             tenant,
@@ -166,6 +168,10 @@ pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedTo
         );
     }
     Some(tok)
+}
+
+pub(super) fn load_cached_token(path: &PathBuf, tenant: &str) -> Option<CachedToken> {
+    read_cached_token(path, tenant, true)
 }
 
 /// Persist the OAuth token bundle so subsequent al-lsp invocations don't
@@ -315,22 +321,19 @@ pub fn invalidate_cached_token(tenant: &str) -> bool {
     keyring_cleared || file_cleared
 }
 
-/// Return the cached token's `expires_at` (unix secs) for `tenant` if one is
-/// cached in either the OS keyring or the legacy file. Read-only, unlike
-/// `load_cached_token`, which migrates and deletes: this is for the auth `status`
-/// command. Keyring-aware so status is correct after a token migrates off disk.
-pub fn cached_token_expiry(tenant: &str) -> Option<u64> {
-    if let Some(json) = keyring_get(tenant) {
-        let json = zeroize::Zeroizing::new(json);
-        if let Ok(tok) = serde_json::from_str::<CachedToken>(&json) {
-            return Some(tok.expires_at);
-        }
-    }
-    let path = token_cache_path(tenant);
-    let content = zeroize::Zeroizing::new(std::fs::read_to_string(&path).ok()?);
-    serde_json::from_str::<CachedToken>(&content)
-        .ok()
-        .map(|t| t.expires_at)
+/// Expiry (unix secs) of the cached token for `tenant`, if the token was issued
+/// for the settings the token flow would use. Read-only, for the auth `status`
+/// command. `None` when no token matches or the configured client id is malformed,
+/// since the token flow refuses that configuration.
+pub fn cached_token_expiry_for(tenant: &str, settings: &AuthSettings) -> Option<u64> {
+    // BC_CLIENT_ID overrides the default client id, as in the token flow.
+    let client_id = super::flows::configured_client_id(&settings.client_id).ok()?;
+    let resolved = AuthSettings {
+        client_id,
+        ..settings.clone()
+    };
+    let cached = read_cached_token(&token_cache_path(tenant), tenant, false)?;
+    cached_token_matches(&cached, &resolved).then_some(cached.expires_at)
 }
 
 pub(super) fn now_unix() -> u64 {
@@ -516,6 +519,7 @@ mod cache_io_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[cfg(unix)]
     #[test]
@@ -582,6 +586,79 @@ mod tests {
             ..AuthSettings::default()
         };
         assert!(!cached_token_matches(&legacy, &custom));
+    }
+
+    /// Unique to the status tests, so no other test shares its cache file.
+    const STATUS_TENANT: &str = "3a3e0005-0000-4000-8000-000000000005";
+
+    /// Unsets `BC_CLIENT_ID` until dropped, then puts the old value back.
+    struct NoClientIdOverride(Option<std::ffi::OsString>);
+
+    impl NoClientIdOverride {
+        fn new() -> Self {
+            let previous = std::env::var_os("BC_CLIENT_ID");
+            std::env::remove_var("BC_CLIENT_ID");
+            Self(previous)
+        }
+    }
+
+    impl Drop for NoClientIdOverride {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("BC_CLIENT_ID", value),
+                None => std::env::remove_var("BC_CLIENT_ID"),
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn expiry_for_ignores_a_token_for_another_client() {
+        let _env = NoClientIdOverride::new();
+        invalidate_cached_token(STATUS_TENANT);
+        let issued_for = AuthSettings {
+            client_id: "11111111-1111-1111-1111-111111111111".to_string(),
+            ..AuthSettings::default()
+        };
+        save_cached_token(
+            &token_cache_path(STATUS_TENANT),
+            STATUS_TENANT,
+            &cache_io_tests::sample_token(),
+            &issued_for,
+        );
+        assert!(cached_token_expiry_for(STATUS_TENANT, &issued_for).is_some());
+        assert_eq!(
+            cached_token_expiry_for(STATUS_TENANT, &AuthSettings::default()),
+            None
+        );
+        invalidate_cached_token(STATUS_TENANT);
+    }
+
+    #[test]
+    #[serial]
+    fn expiry_for_counts_a_legacy_token_as_default_settings() {
+        let _env = NoClientIdOverride::new();
+        invalidate_cached_token(STATUS_TENANT);
+        let path = token_cache_path(STATUS_TENANT);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let expires_at = now_unix() + 3600;
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"access_token":"a","refresh_token":"r","expires_at":{expires_at},"tenant":"{STATUS_TENANT}"}}"#
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            cached_token_expiry_for(STATUS_TENANT, &AuthSettings::default()),
+            Some(expires_at)
+        );
+        let custom = AuthSettings {
+            client_id: "33333333-3333-3333-3333-333333333333".to_string(),
+            ..AuthSettings::default()
+        };
+        assert_eq!(cached_token_expiry_for(STATUS_TENANT, &custom), None);
+        invalidate_cached_token(STATUS_TENANT);
     }
 
     #[cfg(unix)]

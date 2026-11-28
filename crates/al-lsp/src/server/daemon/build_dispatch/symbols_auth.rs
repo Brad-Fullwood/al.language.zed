@@ -105,10 +105,26 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
             };
             let mut statuses = Vec::new();
             for tenant in &selected {
-                // Keyring-aware: cached_token_expiry checks the OS keyring first,
-                // then the legacy file, so status is correct after a token has
-                // migrated off plaintext disk.
-                match al_symbols::oauth::cached_token_expiry(tenant) {
+                // Same settings as the login arm, so status reports a token only
+                // when the token flow would use it. A settings error means login
+                // refuses this tenant, so status reports it unauthenticated.
+                let settings = match workspace.project.try_read() {
+                    Ok(guard) => guard.as_ref().map_or_else(
+                        || Ok(al_symbols::oauth::AuthSettings::default()),
+                        |p| {
+                            al_symbols::oauth::AuthSettings::for_tenant(
+                                Some(&p.root),
+                                &p.server_configs,
+                                tenant,
+                            )
+                        },
+                    ),
+                    Err(_) => Ok(al_symbols::oauth::AuthSettings::default()),
+                };
+                let expiry = settings
+                    .ok()
+                    .and_then(|s| al_symbols::oauth::cached_token_expiry_for(tenant, &s));
+                match expiry {
                     Some(expires_at) => {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
