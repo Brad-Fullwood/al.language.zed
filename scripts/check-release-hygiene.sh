@@ -219,6 +219,15 @@ check_versions() {
     ok "versions aligned at ${extension_version}"
 }
 
+# A tagged release publishes Docs/release-notes/<tag>.md as the top of its notes
+# (release.yml create-release, body_path), so the file must exist and hold text.
+check_release_notes() {
+    [ -n "${TAG_NAME}" ] || return 0
+    local notes="Docs/release-notes/${TAG_NAME#refs/tags/}.md"
+    [ -s "${notes}" ] || fail "missing ${notes}: write the release notes for this tag before tagging"
+    ok "release notes ${notes} present"
+}
+
 # examples/zed-settings.jsonc tells users which schema to load. A URL that names an
 # older tag loads a schema that no longer matches this release, so every tag in
 # those URLs must equal the extension version.
@@ -642,6 +651,7 @@ elif [ -z "${CHANGED_SINCE}" ] && [ -n "${TAG_NAME}" ]; then
 fi
 
 check_versions
+check_release_notes
 check_example_schema_tag
 check_submodule_and_grammar_rev
 check_actions_sha_pinned

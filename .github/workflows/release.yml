@@ -370,6 +370,8 @@ jobs:
           name: "AL Extension ${{ github.ref_name }}"
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
+          # The tracked notes come first and the generated list of changes follows them.
+          body_path: Docs/release-notes/${{ github.ref_name }}.md
           generate_release_notes: true
           files: |
             artifacts/**/*.tar.gz

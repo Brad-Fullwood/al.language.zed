@@ -253,10 +253,39 @@ STUB
     expect_in stderr "is not on dev or main" "require ci: refusal names the ancestry check"
 }
 
+# A tag needs a non-empty Docs/release-notes/<tag>.md. With the file present the
+# run stops at the next missing piece of the fixture, the grammar submodule.
+test_release_notes() {
+    local fx="$t/hyg-notes" tag
+    make_hygiene_fixture "${fx}"
+    tag="v$(awk -F'"' '/^version = / { print $2; exit }' "${fx}/extension.toml")"
+    git_fx "${fx}" tag "${tag}"
+
+    run_cmd bash "${fx}/scripts/check-release-hygiene.sh" --tag "${tag}"
+    expect_nonzero "release notes: a tag without notes is refused"
+    expect_in stderr "missing Docs/release-notes/${tag}.md" "release notes: refusal names the notes file"
+
+    mkdir -p "${fx}/Docs/release-notes"
+    : > "${fx}/Docs/release-notes/${tag}.md"
+    commit_fixture_change "${fx}" "empty release notes"
+    git_fx "${fx}" tag -f "${tag}" >/dev/null
+    run_cmd bash "${fx}/scripts/check-release-hygiene.sh" --tag "${tag}"
+    expect_in stderr "missing Docs/release-notes/${tag}.md" "release notes: an empty notes file is refused"
+
+    printf '# Notes\n' > "${fx}/Docs/release-notes/${tag}.md"
+    commit_fixture_change "${fx}" "release notes"
+    git_fx "${fx}" tag -f "${tag}" >/dev/null
+    run_cmd bash "${fx}/scripts/check-release-hygiene.sh" --tag "${tag}"
+    expect_nonzero "release notes: with notes the fixture stops at a later check"
+    expect_in stdout "release notes Docs/release-notes/${tag}.md present" "release notes: the notes check passes"
+    expect_in stderr "tree-sitter-al submodule directory is missing" "release notes: the run reaches the submodule check"
+}
+
 main() {
     test_grammar_ancestry
     test_glibc_floor
     test_hygiene_fixtures
+    test_release_notes
     test_require_ci
     echo "test-release-scripts: all passed"
 }
