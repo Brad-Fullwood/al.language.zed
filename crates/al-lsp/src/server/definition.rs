@@ -75,13 +75,18 @@ pub(crate) fn handle_rename(
     new_name: String,
 ) -> Result<Option<WorkspaceEdit>, String> {
     let core_pos = position.into();
+    let version = server.workspace.documents.get_client_version(uri);
     let Some(result) =
         al_analysis::queries::rename::rename(&server.workspace, uri, core_pos, &new_name)
             .map_err(|error| error.to_string())?
     else {
         return Ok(None);
     };
-    Ok(Some(super::handlers::core_workspace_edit_to_lsp(result)))
+    Ok(Some(super::handlers::core_workspace_edit_to_lsp(
+        server,
+        result,
+        Some((uri, version)),
+    )))
 }
 
 pub(crate) fn handle_prepare_rename(

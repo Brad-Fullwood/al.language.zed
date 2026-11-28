@@ -321,6 +321,34 @@ pub(crate) fn apply(method: &str, params: &serde_json::Value, response: Response
     }
 }
 
+/// [`apply`] for a result that the method itself knows is cut short, such as
+/// a search that stopped at the index scan budget or an event trace that
+/// stopped at its node budget.
+///
+/// A paged request (`limit`, `offset` or `fields`) is projected here, and the
+/// envelope gains `complete: false` and `truncated: true`, so a caller sees
+/// the cut even when the page does not reach the row that marks it. The later
+/// [`apply`] in `dispatch_request_inner` sees an object and passes it
+/// through. A plain request keeps its array. Only a method that `scope` does
+/// not rewrite may use this, because scope runs before the projection.
+pub(crate) fn mark_incomplete(
+    method: &str,
+    params: &serde_json::Value,
+    response: Response,
+) -> Response {
+    debug_assert!(super::scope::scoped_list(method).is_none());
+    let paged = Projection::from_params(params).is_ok_and(|projection| !projection.is_empty());
+    if !paged {
+        return response;
+    }
+    let mut response = apply(method, params, response);
+    if let Some(serde_json::Value::Object(envelope)) = response.result.as_mut() {
+        envelope.insert("complete".into(), serde_json::Value::Bool(false));
+        envelope.insert("truncated".into(), serde_json::Value::Bool(true));
+    }
+    response
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +375,34 @@ mod tests {
             Some(3),
             "an unprojected call must keep the array shape its callers expect"
         );
+    }
+
+    #[test]
+    fn mark_incomplete_flags_a_page_and_leaves_a_plain_request_alone() {
+        let response = || Response {
+            id: 1,
+            result: Some(rows(3)),
+            ..Default::default()
+        };
+        let paged = mark_incomplete("trace", &serde_json::json!({ "limit": 50 }), response());
+        let envelope = paged.result.expect("result");
+        assert_eq!(envelope["complete"], false, "{envelope}");
+        assert_eq!(envelope["truncated"], true, "{envelope}");
+        assert_eq!(envelope["returned"], 3, "{envelope}");
+        // The projection that runs after the dispatch keeps the envelope.
+        let again = apply(
+            "trace",
+            &serde_json::json!({ "limit": 50 }),
+            Response {
+                id: 1,
+                result: Some(envelope.clone()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(again.result.expect("result"), envelope);
+
+        let plain = mark_incomplete("trace", &serde_json::json!({ "event": "x" }), response());
+        assert!(plain.result.expect("result").is_array());
     }
 
     #[test]

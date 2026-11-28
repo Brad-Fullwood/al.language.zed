@@ -311,7 +311,7 @@ reads three commands and prints `pwned`.
 `plugin/scripts/al-fetch-release.sh`, called from the `SessionStart` hook
 (`al-session-context.sh`) right after it confirms the working directory is an
 AL project. Step 1 asks `al-bin.sh --resolve` whether a complete pair is already
-available: `$AL_BIN_DIR`, a `target/release` or `target/debug` next to this
+available: `$AL_BIN_DIR`, a `target/release`, `target/editor` or `target/debug` next to this
 repository, `PATH`, or `${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/al-bc}/bin`
 from an earlier session. The download runs only when all four miss.
 

@@ -293,7 +293,7 @@ fn read_source_file_rejects_symlinks_and_directories() {
 }
 
 #[test]
-fn scan_rejects_oversized_al_file_without_publishing_partial_index() {
+fn scan_skips_oversized_al_file_and_indexes_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(dir.path().join("ok.al"), "codeunit 1 Ok {}").unwrap();
     let big = dir.path().join("big.al");
@@ -302,21 +302,19 @@ fn scan_rejects_oversized_al_file_without_publishing_partial_index() {
     drop(f);
 
     let index = FileIndex::new();
-    let error = index
-        .scan(dir.path())
-        .expect_err("oversized source must fail the complete scan");
-    assert!(matches!(error, ScanError::FileTooLarge { .. }));
-    assert_eq!(
-        index.len(),
-        0,
-        "a failed scan must publish no partial index"
-    );
-    assert!(index.get_content(&dir.path().join("ok.al")).is_none());
+    let (found, skipped) = index
+        .scan_reporting(dir.path())
+        .expect("an oversized source is skipped, not fatal");
+    assert_eq!(found, 2, "the skipped file is still one of the files found");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].0, big);
+    assert!(index.get_content(&dir.path().join("ok.al")).is_some());
     assert!(index.get_content(&big).is_none());
+    assert_eq!(index.len(), 1);
 }
 
 #[test]
-fn scan_rejects_invalid_utf8_without_replacing_previous_generation() {
+fn scan_skips_invalid_utf8_and_keeps_the_other_files() {
     let dir = tempfile::tempdir().unwrap();
     let existing = dir.path().join("Existing.al");
     fs::write(&existing, "codeunit 1 Existing {}").unwrap();
@@ -325,12 +323,33 @@ fn scan_rejects_invalid_utf8_without_replacing_previous_generation() {
 
     let invalid = dir.path().join("Invalid.al");
     fs::write(&invalid, [0xff, 0xfe]).unwrap();
-    let error = index
-        .scan(dir.path())
-        .expect_err("non-UTF-8 AL source must fail the complete scan");
-    assert!(matches!(error, ScanError::ReadFile { .. }));
-    assert_eq!(index.len(), 1);
+    let (_, skipped) = index
+        .scan_reporting(dir.path())
+        .expect("non-UTF-8 AL source is skipped, not fatal");
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].0, invalid);
     assert!(index.get_content(&existing).is_some());
+    assert!(index.get_content(&invalid).is_none());
+    assert_eq!(index.len(), 1);
+}
+
+#[test]
+fn scan_skips_unreadable_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let valid = dir.path().join("Valid.al");
+    fs::write(&valid, "codeunit 1 Valid {}").unwrap();
+    let invalid = dir.path().join("Invalid.al");
+    fs::write(&invalid, [0xff, 0xfe]).unwrap();
+
+    let index = FileIndex::new();
+    let (found, skipped) = index
+        .scan_reporting(dir.path())
+        .expect("an unreadable file is skipped, not fatal");
+    assert_eq!(found, 2);
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].0, invalid);
+    assert!(!skipped[0].1.is_empty(), "the skip carries a reason");
+    assert!(index.get_content(&valid).is_some());
     assert!(index.get_content(&invalid).is_none());
 }
 
@@ -389,7 +408,7 @@ fn discovery_preserves_an_aliased_project_root() {
 }
 
 #[test]
-fn incremental_scan_rejects_file_that_grew_oversized_atomically() {
+fn incremental_scan_skips_file_that_grew_oversized_and_drops_its_entries() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Grower.al");
     fs::write(&path, "codeunit 50100 \"Grower\" { }").unwrap();
@@ -407,12 +426,53 @@ fn incremental_scan_rejects_file_that_grew_oversized_atomically() {
 
     let second = index
         .incremental_scan(dir.path())
-        .expect_err("oversized changed file must fail the refresh");
-    assert!(matches!(second, ScanError::FileTooLarge { .. }));
+        .expect("an oversized changed file is skipped, not fatal");
+    assert_eq!(second.skipped.len(), 1);
+    assert_eq!(second.skipped[0].0, path);
     assert!(
-        index.get_content(&path).is_some(),
-        "failed refresh must retain the complete previous generation"
+        second.changed.contains(&path),
+        "the dropped entries are reported as changed"
     );
+    assert!(
+        second.topology_changed,
+        "the dropped object leaves the topology"
+    );
+    assert!(index.get_content(&path).is_none());
+    assert_eq!(index.len(), 0);
+
+    // Shrink the file back under the cap. The next refresh retries it.
+    fs::write(&path, "codeunit 50100 \"Grower\" { }").unwrap();
+    let third = index.incremental_scan(dir.path()).unwrap();
+    assert!(third.skipped.is_empty());
+    assert!(third.changed.contains(&path));
+    assert!(index.get_content(&path).is_some());
+}
+
+#[test]
+fn incremental_scan_skips_invalid_utf8_and_indexes_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let valid = dir.path().join("a.al");
+    fs::write(&valid, "codeunit 1 Old {}").unwrap();
+    let index = FileIndex::new();
+    index.incremental_scan(dir.path()).unwrap();
+
+    // In one refresh: a.al changes and b.al is not valid UTF-8.
+    fs::write(&valid, "codeunit 1 New {}").unwrap();
+    let invalid = dir.path().join("b.al");
+    fs::write(&invalid, [0xff, 0xfe]).unwrap();
+    let delta = index
+        .incremental_scan(dir.path())
+        .expect("a non-UTF-8 file is skipped, not fatal");
+
+    assert_eq!(delta.skipped.len(), 1);
+    assert_eq!(delta.skipped[0].0, invalid);
+    assert!(!delta.skipped[0].1.is_empty(), "the skip carries a reason");
+    assert!(delta.changed.contains(&valid));
+    assert_eq!(
+        index.get_content(&valid).as_deref(),
+        Some("codeunit 1 New {}")
+    );
+    assert!(index.get_content(&invalid).is_none());
     assert_eq!(index.len(), 1);
 }
 

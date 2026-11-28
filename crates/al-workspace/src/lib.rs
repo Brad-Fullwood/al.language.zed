@@ -431,6 +431,11 @@ pub struct Workspace {
     /// generation. LSP request handlers hold a read guard while querying; a
     /// reindex holds the write guard only for the final in-memory swap.
     pub generation_lock: tokio::sync::RwLock<()>,
+    /// Held by every diagnostics publish around its "is the input still
+    /// current" check and its send, and by the clear a document close sends.
+    /// So a report checked before a close reaches the client before the
+    /// close's clear, without holding edits behind client I/O.
+    pub diagnostic_publication: tokio::sync::Mutex<()>,
     /// Monotonic publication revision used by operations that stage work under
     /// a read guard and then upgrade by reacquiring the write lock.
     pub generation_revision: std::sync::atomic::AtomicU64,
@@ -608,6 +613,7 @@ impl Workspace {
             semantic_lifecycle_lock: tokio::sync::Mutex::new(()),
             file_index: Arc::new(FileIndex::new()),
             generation_lock: tokio::sync::RwLock::new(()),
+            diagnostic_publication: tokio::sync::Mutex::new(()),
             generation_revision: std::sync::atomic::AtomicU64::new(0),
             package_revision: std::sync::atomic::AtomicU64::new(0),
             config: RwLock::new(AlConfig::default()),
@@ -856,75 +862,85 @@ impl Workspace {
             }
         }
 
-        let mut cache = self
-            .dependency_source_index
-            .write()
-            .map_err(|_| WorkspaceStateError::poisoned("dependency_source_index"))?;
-        if let Some(existing) = cache
-            .as_ref()
-            .filter(|existing| existing.fingerprint == fingerprint)
-        {
-            return Ok((fingerprint, Arc::clone(&existing.index)));
-        }
+        // Summarising every package reads and parses each `.app`, so run it under
+        // block_in_place like the call graph build below (neon-12).
+        let build = || -> Result<_, DependencySourceError> {
+            let mut cache = self
+                .dependency_source_index
+                .write()
+                .map_err(|_| WorkspaceStateError::poisoned("dependency_source_index"))?;
+            if let Some(existing) = cache
+                .as_ref()
+                .filter(|existing| existing.fingerprint == fingerprint)
+            {
+                return Ok((fingerprint, Arc::clone(&existing.index)));
+            }
 
-        let mut packages = Vec::with_capacity(fingerprint.len());
-        let mut skipped_files = 0usize;
-        let mut files_done = 0usize;
-        let mut from_disk = 0usize;
-        let mut entries = std::collections::HashSet::new();
-        // Decided once: a generation that finds the directory open to other
-        // users reads nothing from it, even after its own writes close it.
-        let disk_readable = self
-            .source_summary_cache
-            .get()
-            .is_some_and(SourceSummaryCache::is_readable);
-        self.dependency_source_progress.begin(fingerprint.len());
-        for (app_path, _, _) in &fingerprint {
-            self.dependency_source_progress.finished_package(files_done);
-            // Degrade per package the way the build degrades per file: one
-            // `.app` whose embedded source trips a limit, or that was
-            // rewritten mid-build, must not take call-graph and insight
-            // features down for every other package.
-            match self.package_source_summary(app_path, disk_readable) {
-                Ok(loaded) => {
-                    skipped_files += loaded.summary.skipped_files;
-                    files_done += loaded.summary.files.len();
-                    if loaded.from_disk {
-                        from_disk += 1;
-                        self.dependency_source_progress.loaded_package_from_disk();
+            let mut packages = Vec::with_capacity(fingerprint.len());
+            let mut skipped_files = 0usize;
+            let mut files_done = 0usize;
+            let mut from_disk = 0usize;
+            let mut entries = std::collections::HashSet::new();
+            // Decided once: a generation that finds the directory open to other
+            // users reads nothing from it, even after its own writes close it.
+            let disk_readable = self
+                .source_summary_cache
+                .get()
+                .is_some_and(SourceSummaryCache::is_readable);
+            self.dependency_source_progress.begin(fingerprint.len());
+            for (app_path, _, _) in &fingerprint {
+                self.dependency_source_progress.finished_package(files_done);
+                // Degrade per package the way the build degrades per file: one
+                // `.app` whose embedded source trips a limit, or that was
+                // rewritten mid-build, must not take call-graph and insight
+                // features down for every other package.
+                match self.package_source_summary(app_path, disk_readable) {
+                    Ok(loaded) => {
+                        skipped_files += loaded.summary.skipped_files;
+                        files_done += loaded.summary.files.len();
+                        if loaded.from_disk {
+                            from_disk += 1;
+                            self.dependency_source_progress.loaded_package_from_disk();
+                        }
+                        entries.extend(loaded.entry);
+                        packages.push((app_path.clone(), loaded.summary));
                     }
-                    entries.extend(loaded.entry);
-                    packages.push((app_path.clone(), loaded.summary));
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "dependency source index: skipping a package whose source cannot be summarized"
-                    );
-                    skipped_packages.push(error.to_string());
+                    Err(error) => {
+                        tracing::warn!(
+                            %error,
+                            "dependency source index: skipping a package whose source cannot be summarized"
+                        );
+                        skipped_packages.push(error.to_string());
+                    }
                 }
             }
+            if let Some(disk) = self.source_summary_cache.get() {
+                disk.retain(&entries);
+            }
+            let index = Arc::new(DependencySources::new(packages));
+            self.dependency_source_progress.finish(index.len());
+            tracing::info!(
+                packages = fingerprint.len(),
+                packages_from_disk = from_disk,
+                source_files = index.len(),
+                skipped_files,
+                skipped_packages = skipped_packages.len(),
+                "dependency AL source index ready"
+            );
+            *cache = Some(DependencySourceCache {
+                fingerprint: fingerprint.clone(),
+                index: Arc::clone(&index),
+                skipped_files,
+                skipped_packages,
+            });
+            Ok((fingerprint, index))
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(build)
+            }
+            _ => build(),
         }
-        if let Some(disk) = self.source_summary_cache.get() {
-            disk.retain(&entries);
-        }
-        let index = Arc::new(DependencySources::new(packages));
-        self.dependency_source_progress.finish(index.len());
-        tracing::info!(
-            packages = fingerprint.len(),
-            packages_from_disk = from_disk,
-            source_files = index.len(),
-            skipped_files,
-            skipped_packages = skipped_packages.len(),
-            "dependency AL source index ready"
-        );
-        *cache = Some(DependencySourceCache {
-            fingerprint: fingerprint.clone(),
-            index: Arc::clone(&index),
-            skipped_files,
-            skipped_packages,
-        });
-        Ok((fingerprint, index))
     }
 
     /// Keep package summaries in `cache` between starts. Returns `false` when
@@ -1534,10 +1550,9 @@ pub async fn initialize_core_workspace(
             let pkg_info: Vec<PackageInfo> = loaded.iter().map(PackageInfo::from).collect();
             workspace.replace_package_info(pkg_info);
 
-            // Scan workspace .al files. file_index.scan walks the tree
-            // synchronously (read_dir + read_to_string per file) so wrap
-            // it in block_in_place — we still hold the &Workspace borrow.
-            file_count = tokio::task::block_in_place(|| workspace.file_index.scan(&project.root))?;
+            // Scan workspace .al files. The helper runs the synchronous walk
+            // in block_in_place because this still holds the &Workspace borrow.
+            file_count = scan_workspace_files(&workspace.file_index, &project.root)?;
 
             *workspace.project.write().await = Some(project);
             workspace.project_file_stamps.lock().await.packages = Some(packages_stamp);
@@ -1552,9 +1567,8 @@ pub async fn initialize_core_workspace(
         Err(al_project::errors::DiscoveryError::NoProjectFound { .. }) => {
             tracing::info!(root = %project_root.display(), "workspace: no app.json; using syntax-only workspace");
 
-            // Still scan for .al files even without a project. Same
-            // block_in_place bridge as the happy path above.
-            file_count = tokio::task::block_in_place(|| workspace.file_index.scan(project_root))?;
+            // Still scan for .al files even without a project.
+            file_count = scan_workspace_files(&workspace.file_index, project_root)?;
         }
         Err(e) => {
             tracing::warn!(error = %e, root = %project_root.display(), "workspace: project discovery failed");
@@ -1655,6 +1669,15 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
         if previous_identity.is_empty() && new_identity.is_empty() {
             workspace.symbols.invalidate_all_composed();
         }
+        // An extension's composed view is cached under its base object's name,
+        // which the per-name calls above do not reach (neon-05).
+        if previous_identity
+            .iter()
+            .chain(&new_identity)
+            .any(|(kind, _, _)| kind.ends_with("extension"))
+        {
+            workspace.symbols.invalidate_all_composed();
+        }
 
         // Compare new procedure set to the snapshot — same set ⇒ no topology
         // change ⇒ insight_graph stays valid.
@@ -1682,6 +1705,29 @@ pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
     workspace.mark_generation_changed();
 }
 
+/// Scan the `.al` files under `root`. The walk and the reads are synchronous,
+/// so they run under `block_in_place`. Each file the scan set aside is logged.
+fn scan_workspace_files(
+    file_index: &FileIndex,
+    root: &Path,
+) -> Result<usize, al_source::file_index::ScanError> {
+    let (count, skipped) = tokio::task::block_in_place(|| file_index.scan_reporting(root))?;
+    warn_skipped_files(&skipped);
+    Ok(count)
+}
+
+/// Log each file a scan set aside. It stays out of the index until a later
+/// scan reads it cleanly.
+fn warn_skipped_files(skipped: &[(PathBuf, String)]) {
+    for (path, reason) in skipped {
+        tracing::warn!(
+            path = %path.display(),
+            reason = %reason,
+            "workspace: AL file skipped, not indexed"
+        );
+    }
+}
+
 /// Bring the file index in line with the `.al` files under `root` on disk:
 /// re-read the ones whose size or modification time changed, add new ones,
 /// drop deleted ones, and invalidate what was derived from them.
@@ -1696,6 +1742,7 @@ pub fn refresh_workspace_files(
     root: &std::path::Path,
 ) -> Result<al_source::file_index::ScanDelta, al_source::file_index::ScanError> {
     let delta = workspace.file_index.incremental_scan(root)?;
+    warn_skipped_files(&delta.skipped);
     if delta.is_empty() {
         return Ok(delta);
     }
@@ -1923,6 +1970,14 @@ pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
         for info in &objects {
             workspace.symbols.invalidate_composed(&info.name);
         }
+        // Same reason as on_document_change: an extension's base object is
+        // cached under its own name, which the loop above does not reach (neon-05).
+        if objects
+            .iter()
+            .any(|info| info.kind.to_ascii_lowercase().ends_with("extension"))
+        {
+            workspace.symbols.invalidate_all_composed();
+        }
     } else {
         workspace.symbols.invalidate_all_composed();
     }
@@ -1932,6 +1987,8 @@ pub fn on_document_close(workspace: &Workspace, uri: &url::Url) {
     workspace.mark_generation_changed();
 }
 
+#[cfg(test)]
+mod review_a2_tests;
 #[cfg(test)]
 mod source_cache_tests;
 #[cfg(test)]

@@ -159,7 +159,7 @@ symbol-index lookup that also covers Base Application and every other dependency
 
 The plugin drives `al-lsp` and `al-explorer` and does not ship them.
 `plugin/scripts/al-bin.sh` looks for both, in this order: `$AL_BIN_DIR`, a
-`target/release` or `target/debug` directory in an enclosing checkout of this
+`target/release`, `target/editor` or `target/debug` directory in an enclosing checkout of this
 repository, `PATH`, then `$CLAUDE_PLUGIN_DATA/bin`. The two binaries have to
 sit in the same directory, because `al-explorer` starts the daemon by looking
 next to itself first.

@@ -72,7 +72,7 @@ pub(in crate::server::daemon) fn dispatch_metrics(
         return file_not_found(id);
     };
 
-    let parsed = al_syntax::AlParser::parse_quick(&text);
+    let parsed = super::super::parse_for_uri(workspace, &uri, &text);
     if parsed.tree.root_node().has_error() {
         return rpc_error(
             id,

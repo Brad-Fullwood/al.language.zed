@@ -117,7 +117,12 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
                     ),
                 );
             }
-            let sorted = match sort_members_strict(&indexed, &path.display().to_string()) {
+            let sorted = match sort_members_strict(
+                workspace,
+                Some(&path),
+                &indexed,
+                &path.display().to_string(),
+            ) {
                 Ok(sorted) => sorted,
                 Err(message) => {
                     return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &message);
@@ -140,9 +145,11 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
             );
         }
         if !dry_run {
-            let mut applied: Vec<(std::path::PathBuf, String)> = Vec::new();
+            let mut applied: Vec<(std::path::PathBuf, String, String)> = Vec::new();
             for (path, original, sorted) in &pending {
-                if let Err(error) = write_al_file_and_refresh(workspace, path, sorted.to_string()) {
+                if let Err(error) =
+                    write_al_file_and_refresh(workspace, path, sorted.to_string(), Some(original))
+                {
                     let rollback_errors = rollback_sorted_files(workspace, &applied);
                     let suffix = if rollback_errors.is_empty() {
                         String::new()
@@ -155,7 +162,7 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
                         &format!("failed to sort {}: {error}{suffix}", path.display()),
                     );
                 }
-                applied.push((path.clone(), original.clone()));
+                applied.push((path.clone(), original.clone(), sorted.to_string()));
             }
         }
         return Response {
@@ -206,14 +213,16 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
         || "supplied content".to_string(),
         |path| path.display().to_string(),
     );
-    let sorted = match sort_members_strict(&content, &label) {
+    let sorted = match sort_members_strict(workspace, path.as_deref(), &content, &label) {
         Ok(sorted) => sorted,
         Err(message) => return rpc_error(id, error_codes::CODE_ANALYSIS_ERROR, &message),
     };
     let changed = sorted != content;
     if changed && !dry_run {
         if let Some(path) = path {
-            if let Err(error) = write_al_file_and_refresh(workspace, &path, sorted.clone()) {
+            if let Err(error) =
+                write_al_file_and_refresh(workspace, &path, sorted.clone(), Some(&content))
+            {
                 return rpc_error(
                     id,
                     error_codes::INTERNAL_ERROR,
@@ -235,8 +244,13 @@ pub(in crate::server::daemon) fn dispatch_sort_members(
     }
 }
 
-fn sort_members_strict(source: &str, label: &str) -> Result<String, String> {
-    let parsed = al_syntax::AlParser::parse_quick(source);
+fn sort_members_strict(
+    workspace: &Workspace,
+    file: Option<&std::path::Path>,
+    source: &str,
+    label: &str,
+) -> Result<String, String> {
+    let parsed = super::super::parse_for_file(workspace, file, source);
     if parsed.tree.root_node().has_error() {
         let details = parsed
             .errors
@@ -267,11 +281,13 @@ fn sort_members_strict(source: &str, label: &str) -> Result<String, String> {
 
 fn rollback_sorted_files(
     workspace: &Workspace,
-    applied: &[(std::path::PathBuf, String)],
+    applied: &[(std::path::PathBuf, String, String)],
 ) -> Vec<String> {
     let mut errors = Vec::new();
-    for (path, original) in applied.iter().rev() {
-        if let Err(error) = write_al_file_and_refresh(workspace, path, original.clone()) {
+    for (path, original, written) in applied.iter().rev() {
+        if let Err(error) =
+            write_al_file_and_refresh(workspace, path, original.clone(), Some(written))
+        {
             errors.push(format!("{}: {error}", path.display()));
         }
     }
@@ -313,7 +329,7 @@ pub(in crate::server::daemon) fn dispatch_organize_files(
                 );
             }
         };
-        let parsed = al_syntax::AlParser::parse_quick(&text);
+        let parsed = super::super::parse_for_file(workspace, Some(&path), &text);
         if parsed.tree.root_node().has_error() {
             return rpc_error(
                 id,

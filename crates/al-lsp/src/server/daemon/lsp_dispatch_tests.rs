@@ -750,11 +750,80 @@ fn dispatch_document_symbols_rejects_missing_uri() {
     assert_invalid_params(&resp, 8);
 }
 
-#[test]
-fn dispatch_code_actions_rejects_missing_position() {
+#[tokio::test]
+async fn dispatch_code_actions_rejects_missing_position() {
     let ws = al_workspace::Workspace::new();
-    let resp = dispatch_code_actions(&ws, 9, &serde_json::json!({ "uri": "file:///tmp/x.al" }));
+    let resp =
+        dispatch_code_actions(&ws, 9, &serde_json::json!({ "uri": "file:///tmp/x.al" })).await;
     assert_invalid_params(&resp, 9);
+}
+
+fn action_titles(response: &Response) -> Vec<String> {
+    response
+        .result
+        .as_ref()
+        .and_then(|result| result.as_array())
+        .map(|actions| {
+            actions
+                .iter()
+                .filter_map(|action| action["title"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+const TABLE_WITHOUT_CLASSIFICATION: &str = "table 50140 \"Review Table\"\n{\n    fields\n    {\n        field(1; Code; Code[20])\n        {\n        }\n    }\n}\n";
+
+/// A2-neon-15: the daemon returns the quick fix for a native diagnostic at
+/// the position, as the editor does.
+#[tokio::test]
+async fn dispatch_code_actions_returns_the_diagnostic_quick_fix() {
+    let ws = al_workspace::Workspace::new();
+    let resp = dispatch_code_actions(
+        &ws,
+        10,
+        &serde_json::json!({
+            "file": "/tmp/review_a2_actions/Review.Table.al",
+            "text": TABLE_WITHOUT_CLASSIFICATION,
+            "line": 4,
+            "character": 12,
+        }),
+    )
+    .await;
+    assert!(resp.error.is_none(), "{:?}", resp.error);
+    let titles = action_titles(&resp);
+    assert!(
+        titles
+            .iter()
+            .any(|title| title == "Add DataClassification = CustomerContent"),
+        "{titles:?}"
+    );
+}
+
+/// A2-neon-15: `endLine` makes the request a selection, which offers Wrap in
+/// region.
+#[tokio::test]
+async fn dispatch_code_actions_with_an_end_line_offers_wrap_in_region() {
+    let ws = al_workspace::Workspace::new();
+    let resp = dispatch_code_actions(
+        &ws,
+        11,
+        &serde_json::json!({
+            "file": "/tmp/review_a2_actions/Region.Table.al",
+            "text": TABLE_WITHOUT_CLASSIFICATION,
+            "line": 4,
+            "character": 0,
+            "endLine": 6,
+            "endCharacter": 9,
+        }),
+    )
+    .await;
+    assert!(resp.error.is_none(), "{:?}", resp.error);
+    let titles = action_titles(&resp);
+    assert!(
+        titles.iter().any(|title| title == "AL: Wrap in region"),
+        "{titles:?}"
+    );
 }
 
 #[test]
@@ -1148,4 +1217,49 @@ fn dispatch_deps_no_project_returns_internal_error() {
         "message: {}",
         err.message
     );
+}
+
+/// A4 neon-07 display part: a search whose substring scan stopped at the
+/// index budget says so in the paged envelope, and a plain request keeps
+/// its array.
+#[test]
+fn dispatch_search_marks_a_stopped_substring_scan() {
+    let ws = al_workspace::Workspace::new();
+    let over_budget = al_symbols::SymbolIndex::SUBSTRING_SCAN_BUDGET + 10;
+    let mut entries: Vec<al_symbols::SymbolEntry> = (0..over_budget)
+        .map(|i| al_symbols::SymbolEntry {
+            kind: al_symbols::ObjectKind::Table,
+            id: i as i32 + 1,
+            name: format!("Aaa Object {i:06}"),
+            package: "Base Application".to_string(),
+            ..Default::default()
+        })
+        .collect();
+    entries.push(al_symbols::SymbolEntry {
+        kind: al_symbols::ObjectKind::Table,
+        id: 999_999,
+        name: "Zzz Needle Object".to_string(),
+        package: "Base Application".to_string(),
+        ..Default::default()
+    });
+    ws.symbols.add_entries(&entries);
+
+    let paged = dispatch_search(
+        &ws,
+        21,
+        &serde_json::json!({ "query": "needle", "limit": 5 }),
+    );
+    let envelope = paged.result.expect("paged search result");
+    assert_eq!(envelope["complete"], false, "{envelope}");
+    assert_eq!(envelope["truncated"], true, "{envelope}");
+    assert!(envelope["items"].is_array(), "{envelope}");
+
+    // The outer projection leaves the envelope as it is.
+    let params = serde_json::json!({ "query": "needle", "limit": 5 });
+    let again =
+        super::super::projection::apply("search", &params, dispatch_search(&ws, 22, &params));
+    assert_eq!(again.result.expect("result")["complete"], false);
+
+    let plain = dispatch_search(&ws, 23, &serde_json::json!({ "query": "needle" }));
+    assert!(plain.result.expect("plain result").is_array());
 }

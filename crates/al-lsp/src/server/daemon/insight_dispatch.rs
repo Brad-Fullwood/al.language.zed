@@ -57,7 +57,21 @@ pub(super) fn dispatch_trace(
     // body actually raises instead of fabricating hops from its object's
     // unrelated publishers.
     let steps = al_insight::search::trace_event(&graph, _cg_guard.as_ref(), event_name, max_depth);
-    serialized_response(id, &steps, "trace")
+    let response = serialized_response(id, &steps, "trace");
+    if trace_was_cut(&steps) {
+        // The marker is the last row, so a page of the first rows would not
+        // show it.
+        return super::projection::mark_incomplete("trace", params, response);
+    }
+    response
+}
+
+/// `trace_event` ends a trace that reached `MAX_CHAIN_NODES` with a step
+/// whose `edge_type` is `truncated`.
+fn trace_was_cut(steps: &[al_insight::search::TraceStep]) -> bool {
+    steps
+        .last()
+        .is_some_and(|step| step.edge_type == "truncated")
 }
 
 pub(super) fn dispatch_entrypoints(workspace: &Workspace, id: u64) -> Response {
@@ -1379,5 +1393,32 @@ mod tests {
         let ws = Workspace::new();
         let resp = dispatch_suggest_event(&ws, 19, &serde_json::json!({ "unrelated": true }));
         assert_invalid_params(&resp);
+    }
+}
+
+#[cfg(test)]
+mod trace_cut_tests {
+    use al_insight::search::TraceStep;
+
+    fn step(edge_type: &str) -> TraceStep {
+        TraceStep {
+            depth: 0,
+            edge_type: edge_type.to_string(),
+            node_type: String::new(),
+            name: String::new(),
+            object: String::new(),
+        }
+    }
+
+    /// A4 codex-31 follow-up: only a trace that ends with the budget marker
+    /// counts as cut, so only that one is marked `complete: false`.
+    #[test]
+    fn a_trace_is_cut_only_when_it_ends_with_the_marker() {
+        assert!(super::trace_was_cut(&[step("origin"), step("truncated")]));
+        assert!(!super::trace_was_cut(&[
+            step("origin"),
+            step("subscribes_to")
+        ]));
+        assert!(!super::trace_was_cut(&[]));
     }
 }

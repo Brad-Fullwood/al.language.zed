@@ -34,9 +34,9 @@ Each action is a `CodeActionEntry { title, kind, edit, is_preferred }` where `ki
 | **Set `ApplicationArea` on the object** | `promoted.rs` | On a page/pageextension/report/reportextension with no object-level `ApplicationArea`, adds `ApplicationArea = All;` to the object and removes the now-redundant `ApplicationArea = All;` overrides on its controls. |
 | **Fix report layout** | `promoted.rs` | Converts legacy `RDLCLayout`/`WordLayout` report properties into the modern `rendering { layout(...) { Type = …; LayoutFile = …; } }` section. Offered within 3 lines of a legacy layout property. |
 
-In the editor, `server/handlers.rs` also always offers an *AL: Format File* action when formatting
-yields edits and an *AL: Lint File* command action, alongside the quick fix for the diagnostic under
-the cursor.
+In the editor, `server/handlers.rs` also offers *AL: Format File* when a quick check finds CRLF line
+endings, a missing final newline, trailing whitespace or tab indentation (Format Document formats in
+every case), and an *AL: Lint File* command action.
 
 ## Microsoft comparison
 
@@ -74,6 +74,6 @@ blindly batch-applied.
 
 - The native set is a curated subset of Microsoft's code-fix catalog. The CLI reports the
   diagnostic, fixable, and unfixable counts separately instead of treating an unsafe rule as fixed.
-- AL0185's namespace quick fix and the shared query implementation are wired
-  across LSP, daemon/MCP, and CLI surfaces.
+- The daemon and MCP `codeActions` method returns the native diagnostic quick fixes and the source
+  actions. AL0185's namespace fix needs the compiler diagnostic and is offered in the editor only.
 - Disabling `al.enableCodeActions` turns all of these off (parity with VS Code).

@@ -188,7 +188,7 @@ pub(in crate::server::daemon) async fn dispatch_format(
             };
             if changed {
                 if let Err(e) = crate::server::daemon::blocking(|| {
-                    write_al_file_and_refresh(workspace, &path, formatted.clone())
+                    write_al_file_and_refresh(workspace, &path, formatted.clone(), Some(&content))
                 }) {
                     return rpc_error(
                         id,
@@ -280,7 +280,7 @@ pub(in crate::server::daemon) fn dispatch_fix(
     let mut diagnostics_count = 0usize;
     let mut fixable_count = 0usize;
     let mut edits_json = Vec::new();
-    let mut pending_writes = Vec::new();
+    let mut pending_writes: Vec<(std::path::PathBuf, String, String)> = Vec::new();
     for (path, uri) in &targets {
         if let Err(response) = ensure_document(workspace, uri, id) {
             return response;
@@ -288,7 +288,7 @@ pub(in crate::server::daemon) fn dispatch_fix(
         let Some(text) = workspace.documents.get_text(uri) else {
             return file_not_found(id);
         };
-        let result = al_syntax::AlParser::parse_quick(&text);
+        let result = super::parse_for_file(workspace, Some(path), &text);
         let diagnostics = al_syntax::lint(&result.tree, &text);
         let mut file_edits = Vec::new();
         for diagnostic in diagnostics.iter().filter(|diagnostic| {
@@ -342,14 +342,16 @@ pub(in crate::server::daemon) fn dispatch_fix(
                 }
             };
             if updated != text {
-                pending_writes.push((path.clone(), updated));
+                pending_writes.push((path.clone(), text.clone(), updated));
             }
         }
     }
 
     if !dry_run {
-        for (path, updated) in &pending_writes {
-            if let Err(error) = write_al_file_and_refresh(workspace, path, updated.clone()) {
+        for (path, original, updated) in &pending_writes {
+            if let Err(error) =
+                write_al_file_and_refresh(workspace, path, updated.clone(), Some(original))
+            {
                 return rpc_error(
                     id,
                     error_codes::INTERNAL_ERROR,
@@ -566,7 +568,7 @@ pub(in crate::server::daemon) fn dispatch_parse(
     };
 
     let start = std::time::Instant::now();
-    let result = al_syntax::AlParser::parse_quick(&text);
+    let result = super::parse_for_uri(workspace, &uri, &text);
     let elapsed = start.elapsed();
 
     let node_count = al_source::parsing::count_nodes(&result.tree);
@@ -782,15 +784,18 @@ fn apply_bulk_fix_plan(
         }
     }
 
-    let mut applied: Vec<(std::path::PathBuf, String)> = Vec::new();
+    let mut applied: Vec<(std::path::PathBuf, String, String)> = Vec::new();
     for change in &plan.changes {
-        if let Err(error) =
-            write_al_file_and_refresh(workspace, &change.path, change.updated.clone())
-        {
+        if let Err(error) = write_al_file_and_refresh(
+            workspace,
+            &change.path,
+            change.updated.clone(),
+            Some(&change.original),
+        ) {
             let mut rollback_errors = Vec::new();
-            for (path, original) in applied.iter().rev() {
+            for (path, original, written) in applied.iter().rev() {
                 if let Err(rollback_error) =
-                    write_al_file_and_refresh(workspace, path, original.clone())
+                    write_al_file_and_refresh(workspace, path, original.clone(), Some(written))
                 {
                     rollback_errors.push(format!("{}: {rollback_error}", path.display()));
                 }
@@ -809,7 +814,11 @@ fn apply_bulk_fix_plan(
                 ),
             );
         }
-        applied.push((change.path.clone(), change.original.clone()));
+        applied.push((
+            change.path.clone(),
+            change.original.clone(),
+            change.updated.clone(),
+        ));
     }
     serialized_response(id, &result, &format!("{label} fix result"))
 }

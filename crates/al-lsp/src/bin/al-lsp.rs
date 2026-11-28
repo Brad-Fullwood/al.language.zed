@@ -160,6 +160,24 @@ fn spawn_signal_handlers() {
 /// threads, not a deadline on user work.
 const RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// The subcommand, read from the first argument only. The extension,
+/// `al-explorer` and the plugin's `.mcp.json` put `mcp` or `daemon` there, and
+/// a later argument such as a `--project` value named `mcp` is not a mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Mcp,
+    Daemon,
+    Other,
+}
+
+fn mode(args: &[String]) -> Mode {
+    match args.get(1).map(String::as_str) {
+        Some("mcp") => Mode::Mcp,
+        Some("daemon") => Mode::Daemon,
+        _ => Mode::Other,
+    }
+}
+
 #[cfg(not(windows))]
 fn main() {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -354,7 +372,7 @@ async fn run() {
     }
 
     #[cfg(unix)]
-    let is_daemon_mode = args.iter().any(|a| a == "daemon");
+    let is_daemon_mode = mode(&args) == Mode::Daemon;
     #[cfg(unix)]
     if !is_daemon_mode {
         spawn_parent_monitor();
@@ -581,7 +599,7 @@ async fn run() {
             tracing::error!(error = %e, "DAP server exited with error");
             std::process::exit(1);
         }
-    } else if args.iter().any(|a| a == "mcp") {
+    } else if mode(&args) == Mode::Mcp {
         let project_arg = args
             .iter()
             .position(|a| a == "--project")
@@ -603,7 +621,7 @@ async fn run() {
             tracing::error!(error = %e, "MCP server failed");
             std::process::exit(1);
         }
-    } else if args.iter().any(|a| a == "daemon") {
+    } else if mode(&args) == Mode::Daemon {
         let project_arg = args
             .iter()
             .position(|a| a == "--project")
@@ -651,6 +669,33 @@ async fn run() {
         }
     } else {
         al_lsp::server::run_lsp().await;
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::{mode, Mode};
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| value.to_string()).collect()
+    }
+
+    #[test]
+    fn a_project_named_mcp_does_not_start_mcp() {
+        assert_eq!(
+            mode(&args(&["al-lsp", "daemon", "--project", "mcp"])),
+            Mode::Daemon
+        );
+        assert_eq!(
+            mode(&args(&["al-lsp", "mcp", "--project", "daemon"])),
+            Mode::Mcp
+        );
+        assert_eq!(
+            mode(&args(&["al-lsp", "mcp", "--extension-build", "0.5.0"])),
+            Mode::Mcp
+        );
+        assert_eq!(mode(&args(&["al-lsp", "--stdio", "daemon"])), Mode::Other);
+        assert_eq!(mode(&args(&["al-lsp"])), Mode::Other);
     }
 }
 

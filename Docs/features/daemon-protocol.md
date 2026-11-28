@@ -93,9 +93,12 @@ path uses LSP handlers directly and does not go through the daemon. See
   the number that decides whether a daemon is worth restarting. The per-structure totals beside
   them count only allocations the workspace owns. Current resident size comes from `/proc/self/status`
   on Linux and is null elsewhere. The peak comes from `getrusage` on every Unix.
-- **Startup:** a workspace file the document store rejects (over `maxDocumentSizeBytes`,
-  unreadable, or without a file URI) is skipped with a warning, and daemon and MCP startup
-  continue.
+- **Startup and refresh:** a workspace `.al` file that cannot be read, is not valid UTF-8 or is
+  over the per-file size cap is left out of the index with a warning naming it, and the other
+  files are indexed. A file the document store rejects (over `maxDocumentSizeBytes`, or without a
+  file URI) is skipped the same way. Daemon and MCP startup continue, and a skipped file is read
+  again on the next request. A file that changes while it is read keeps its previous indexed text
+  and is read again on the next request.
 - **Changes on disk:** before each request the daemon reads what changed in the project since
   the last one. A metadata walk reads each `.al` file that is new or whose size or mtime moved,
   and drops deleted ones. `app.json`, `.zed/debug.json` and `.vscode/launch.json` are hashed by

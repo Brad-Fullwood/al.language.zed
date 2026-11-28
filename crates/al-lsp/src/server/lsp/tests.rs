@@ -1392,11 +1392,11 @@ mod code_lens_command_wiring_tests {
     }
 
     #[tokio::test]
-    async fn run_test_without_server_reports_no_server() {
+    async fn run_test_without_a_project_reports_failed() {
         let (service, _uri) = build_server();
         let server = service.inner();
-        // No project / launch config loaded → routing must report `noServer`
-        // (not a silent no-op) and never attempt a BC round-trip.
+        // With no project loaded the lens run reports `failed` with its
+        // target and makes no Business Central call.
         let params = ExecuteCommandParams {
             command: "al.runTest".to_string(),
             arguments: vec![serde_json::json!({
@@ -1410,7 +1410,7 @@ mod code_lens_command_wiring_tests {
             .await
             .expect("ok")
             .expect("runTest returns a value");
-        assert_eq!(result["status"], serde_json::json!("noServer"));
+        assert_eq!(result["status"], serde_json::json!("failed"), "{result}");
         assert_eq!(
             result["target"]["methodName"],
             serde_json::json!("TestAlpha")
@@ -1804,6 +1804,10 @@ mod project_diagnostics_close_tests {
             if pass.is_finished() {
                 break;
             }
+            // A close changes the document and sends its clear while it
+            // holds `diagnostic_publication`, so a report this pass checked
+            // before the close reaches the client before the clear.
+            let publication = server.workspace.diagnostic_publication.lock().await;
             if is_open {
                 assert!(server.workspace.documents.close(&uri));
                 match saved {
@@ -1822,6 +1826,7 @@ mod project_diagnostics_close_tests {
                 version += 1;
                 open(version);
             }
+            drop(publication);
             is_open = !is_open;
         }
         drop(writer);
@@ -1847,9 +1852,10 @@ mod project_diagnostics_close_tests {
     /// pass that reported a cross-file diagnostic on it which another file's
     /// edit has since removed. The test hands the generation write guard over
     /// one acquisition at a time, as the close tests do, and each write
-    /// replaces the document's text: clean, broken, clean, and so on. So every
-    /// staging attempt reads it clean and every publish step runs with it
-    /// broken. A write that breaks it also sends the document's own publish,
+    /// replaces the document's text: clean, broken, clean, and so on. It holds
+    /// `diagnostic_publication` through each write and releases it after, so
+    /// every staging attempt reads it clean and every publish step runs with
+    /// it broken. A write that breaks it also sends the document's own publish,
     /// as the debounced per document task does in project scope. Whatever
     /// the pass sends between two writes must agree with the text the first
     /// of them left.
@@ -1888,6 +1894,8 @@ mod project_diagnostics_close_tests {
 
         let lock = &server.workspace.generation_lock;
         let mut writer = lock.write().await;
+        let publication_lock = &server.workspace.diagnostic_publication;
+        let mut publication = publication_lock.lock().await;
         let pass = tokio::spawn({
             let workspace = Arc::clone(&server.workspace);
             let client = server.client.clone();
@@ -1946,7 +1954,12 @@ mod project_diagnostics_close_tests {
             } else {
                 edit(SAVED, version);
             }
+            // The pass publishes now, with the text this write left.
+            drop(publication);
+            settle().await;
+            publication = publication_lock.lock().await;
         }
+        drop(publication);
         drop(writer);
 
         assert!(
