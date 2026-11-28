@@ -2110,6 +2110,71 @@ mod dispatch_debug_tests {
             assert_eq!(err_code(&response), error_codes::INVALID_PARAMS);
         }
     }
+
+    #[tokio::test]
+    async fn follow_up_handlers_refuse_a_session_outside_the_declared_tenant() {
+        use al_bc::tenant_guard::{
+            install_test_registry, scope_declaration, Declaration, TEST_DEMO_TENANT,
+        };
+        use al_dap::dap::bc_debug::BcDebugConfig;
+        use al_dap::native_debug::NativeDebugSession;
+
+        install_test_registry();
+        let ws = Workspace::new();
+        let config = BcDebugConfig {
+            environment_type: "Sandbox".into(),
+            tenant: TEST_DEMO_TENANT.into(),
+            ..BcDebugConfig::default()
+        };
+        *ws.debug_session.lock().await = Some(NativeDebugSession::test_with_config(config));
+
+        // Each command carries the params its handler reads before the guard runs.
+        let commands = [
+            (
+                "breakpoint",
+                json!({"cmd": "breakpoint", "file": "/tmp/Foo.al", "line": 3,
+                       "objectType": 5, "objectId": 50000}),
+            ),
+            ("state", json!({"cmd": "state"})),
+            ("stack", json!({"cmd": "stack"})),
+            ("variables", json!({"cmd": "variables"})),
+            ("expand", json!({"cmd": "expand", "path": "Rec"})),
+            ("eval", json!({"cmd": "eval", "expr": "Rec"})),
+            ("continue", json!({"cmd": "continue"})),
+            ("step", json!({"cmd": "step", "stepType": "into"})),
+            ("stop", json!({"cmd": "stop"})),
+        ];
+
+        let other = Declaration {
+            tenant: Some("00000000-0000-0000-0000-000000000001".into()),
+            purpose: None,
+        };
+        scope_declaration(other, async {
+            for (name, params) in commands {
+                let r = dispatch_debug(&ws, 1, &params).await;
+                let Some(err) = r.error.as_ref() else {
+                    panic!("{name} ran on a session declared for another tenant");
+                };
+                assert_eq!(
+                    err.code,
+                    error_codes::INVALID_PARAMS,
+                    "{name}: {}",
+                    err.message
+                );
+                assert!(
+                    err.message.contains("does not match"),
+                    "{name}: {}",
+                    err.message
+                );
+                assert!(
+                    err.message.contains(TEST_DEMO_TENANT),
+                    "{name}: {}",
+                    err.message
+                );
+            }
+        })
+        .await;
+    }
 }
 
 #[cfg(test)]

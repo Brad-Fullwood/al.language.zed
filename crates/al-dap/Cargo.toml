@@ -22,6 +22,10 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 futures-util = "0.3"
 uuid = { workspace = true }
 
+[features]
+# Test-only constructors that other crates' tests use. Off by default.
+test-support = []
+
 [dev-dependencies]
 al-bc = { path = "../al-bc", version = "0.1.0", features = ["test-support"] }
 # al-syntax is referenced only by a #[cfg(test)] assertion in native_dap.rs

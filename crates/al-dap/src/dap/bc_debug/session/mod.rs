@@ -971,35 +971,24 @@ impl TestSignalRTx {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl BcDebugSession {
-    /// Test-only constructor that bypasses the SignalR negotiate + WebSocket
-    /// handshake performed by [`BcDebugSession::connect`], wiring up the exact
-    /// same internal channels so unit tests can drive `invoke()` and the public
-    /// debug operations against injected `SignalRMessage` responses.
+    /// Builds a session on fresh channels, as `connect()` would wire them, and
+    /// returns the injection ends. Spawns no tasks.
     ///
-    /// Returns the session plus three injection handles:
-    /// - `event_tx`: push `SignalRMessage`s (type-3 completions and type-1
-    ///   server-push callbacks) that the session's `invoke()` / drain paths
-    ///   consume — i.e. the channel the real WebSocket *reader* task feeds.
-    /// - `break_event_tx`: signal `wait_for_break_event()` (`true` = Break,
-    ///   `false` = session end) — the channel the reader task feeds.
-    /// - `ws_rx`: receives the JSON frames the session *sends* (the channel the
-    ///   real WebSocket *writer* task drains), so tests can assert the on-wire
-    ///   request shape.
+    /// The returned handles are the event and completion senders for
+    /// `SignalRMessage`s (type-3 is a completion, type-1 a server push), the
+    /// break-event sender (`true` for Break, `false` for session end) and the
+    /// receiver for outgoing JSON frames.
     ///
-    /// Behaviour-preserving: compiled only under `#[cfg(test)]`, spawns no
-    /// tasks, and constructs the struct with the identical field initialisers
-    /// `connect()` uses. It introduces no new runtime code path.
-    ///
-    /// Module-private (not `pub`): the in-file `tests` child module can reach it
-    /// while the private `SignalRMessage` type stays unexposed (no
+    /// Module-private (not `pub`) so `SignalRMessage` stays unexposed (no
     /// `private_interfaces` leak).
-    fn test_new(
+    fn test_wired(
         connection_id: String,
     ) -> (
         Self,
-        TestSignalRTx,
+        mpsc::Sender<SignalRMessage>,
+        mpsc::Sender<SignalRMessage>,
         mpsc::UnboundedSender<bool>,
         mpsc::Receiver<String>,
     ) {
@@ -1022,6 +1011,30 @@ impl BcDebugSession {
             break_event_rx: Mutex::new(break_event_rx),
             debugger_major: None,
         };
+        (session, event_tx, completion_tx, break_event_tx, ws_rx)
+    }
+
+    /// A session whose connection is already gone. The injection handles are
+    /// dropped, so the outgoing channel refuses the next `invoke` at once.
+    pub(crate) fn test_disconnected_owned(connection_id: &str) -> Self {
+        Self::test_wired(connection_id.to_string()).0
+    }
+}
+
+#[cfg(test)]
+impl BcDebugSession {
+    /// Test-only: `test_wired` with the two `SignalRMessage` senders wrapped in
+    /// `TestSignalRTx`, so the in-file tests can inject responses.
+    fn test_new(
+        connection_id: String,
+    ) -> (
+        Self,
+        TestSignalRTx,
+        mpsc::UnboundedSender<bool>,
+        mpsc::Receiver<String>,
+    ) {
+        let (session, event_tx, completion_tx, break_event_tx, ws_rx) =
+            Self::test_wired(connection_id);
         (
             session,
             TestSignalRTx {
@@ -1033,11 +1046,9 @@ impl BcDebugSession {
         )
     }
 
-    /// A session whose connection is already gone. The injection handles are
-    /// dropped, so the outgoing channel refuses the next `invoke` at once.
+    /// A session whose connection is already gone (see `test_disconnected_owned`).
     pub(crate) fn test_disconnected(connection_id: &str) -> std::sync::Arc<Self> {
-        let (session, _, _, _) = Self::test_new(connection_id.to_string());
-        std::sync::Arc::new(session)
+        std::sync::Arc::new(Self::test_disconnected_owned(connection_id))
     }
 }
 
