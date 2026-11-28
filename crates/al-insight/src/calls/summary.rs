@@ -96,87 +96,92 @@ impl SourceFileSummary {
         }
     }
 
-    /// Bytes this summary owns: struct sizes plus string and vector
-    /// capacities. Allocator overhead is not counted.
+    /// Bytes this summary owns: struct sizes, string and vector capacities,
+    /// and an estimate for the `BTreeMap` of procedure calls. Allocator
+    /// overhead per allocation is not counted.
     pub fn heap_bytes(&self) -> usize {
-        fn pairs(pairs: &[(String, String)]) -> usize {
-            std::mem::size_of_val(pairs)
+        use std::mem::size_of;
+        fn vec<T>(items: &Vec<T>) -> usize {
+            items.capacity() * size_of::<T>()
+        }
+        fn pairs(pairs: &Vec<(String, String)>) -> usize {
+            vec(pairs)
                 + pairs
                     .iter()
                     .map(|(a, b)| a.capacity() + b.capacity())
                     .sum::<usize>()
         }
-        fn map(map: &BTreeMap<String, String>) -> usize {
-            map.iter()
-                .map(|(k, v)| std::mem::size_of::<(String, String)>() + k.capacity() + v.capacity())
-                .sum()
+        // A name of up to 24 bytes is held inline and owns no heap bytes.
+        fn name(name: &CompactString) -> usize {
+            if name.is_heap_allocated() {
+                name.capacity()
+            } else {
+                0
+            }
+        }
+        fn names<V>(map: &SortedMap<CompactString, V>) -> usize {
+            std::mem::size_of_val(map.entries()) + map.keys().map(name).sum::<usize>()
+        }
+        fn name_pairs(map: &SortedMap<CompactString, CompactString>) -> usize {
+            names(map) + map.iter().map(|(_, value)| name(value)).sum::<usize>()
         }
         fn site(site: &CallSite) -> usize {
-            std::mem::size_of::<CallSite>()
-                + match site {
-                    CallSite::BareCall { name } => name.capacity(),
-                    CallSite::MemberCall { object, method } => {
-                        object.capacity() + method.capacity()
-                    }
-                    CallSite::RecordOp { variable, .. } => variable.capacity(),
-                    CallSite::CodeunitRun { target } => target.capacity(),
-                }
+            match site {
+                CallSite::BareCall { name: called } => name(called),
+                CallSite::MemberCall { object, method } => name(object) + name(method),
+                CallSite::RecordOp { variable, .. } => name(variable),
+                CallSite::CodeunitRun { target } => name(target),
+            }
+        }
+        fn calls(calls: &ProcedureCalls) -> usize {
+            std::mem::size_of_val(&*calls.call_sites)
+                + calls.call_sites.iter().map(site).sum::<usize>()
+                + name_pairs(&calls.record_vars)
+                + name_pairs(&calls.object_vars)
+                + names(&calls.object_var_kinds)
         }
         fn effect(effect: &EffectSite) -> usize {
-            std::mem::size_of::<EffectSite>() + effect.label.capacity()
+            effect.label.capacity()
         }
         fn procedure_effects(sites: &ProcedureEffectSites) -> usize {
-            std::mem::size_of::<ProcedureEffectSites>()
-                + sites.name.capacity()
+            sites.name.capacity()
                 + pairs(&sites.attributes)
+                + vec(&sites.writes)
+                + vec(&sites.commits)
                 + sites.writes.iter().map(effect).sum::<usize>()
                 + sites.commits.iter().map(effect).sum::<usize>()
         }
+        // A `BTreeMap` filled in key order, as deserializing fills it, leaves
+        // its nodes about half full, so each entry takes about two slots.
+        const BTREE_SLOTS_PER_ENTRY: usize = 2;
         let objects: usize = self
             .objects
             .iter()
             .map(|object| {
-                std::mem::size_of::<ObjectSummary>()
-                    + object.kind.capacity()
+                object.kind.capacity()
                     + object.name.capacity()
+                    + vec(&object.procedures)
                     + object
                         .procedures
                         .iter()
-                        .map(|decl| {
-                            std::mem::size_of::<ProcedureDecl>()
-                                + decl.name.capacity()
-                                + pairs(&decl.attributes)
-                        })
+                        .map(|decl| decl.name.capacity() + pairs(&decl.attributes))
                         .sum::<usize>()
                     + object
                         .calls
                         .iter()
                         .map(|(name, declared)| {
-                            name.capacity()
-                                + declared
-                                    .iter()
-                                    .map(|calls| {
-                                        std::mem::size_of::<ProcedureCalls>()
-                                            + calls.call_sites.iter().map(site).sum::<usize>()
-                                            + map(&calls.record_vars)
-                                            + map(&calls.object_vars)
-                                            + calls
-                                                .object_var_kinds
-                                                .keys()
-                                                .map(|k| {
-                                                    std::mem::size_of::<(String, ObjectKind)>()
-                                                        + k.capacity()
-                                                })
-                                                .sum::<usize>()
-                                    })
-                                    .sum::<usize>()
+                            BTREE_SLOTS_PER_ENTRY * size_of::<(String, Vec<ProcedureCalls>)>()
+                                + name.capacity()
+                                + vec(declared)
+                                + declared.iter().map(calls).sum::<usize>()
                         })
                         .sum::<usize>()
-                    + object.head_calls.call_sites.iter().map(site).sum::<usize>()
+                    + calls(&object.head_calls)
+                    + vec(&object.effects)
                     + object.effects.iter().map(procedure_effects).sum::<usize>()
             })
             .sum();
-        std::mem::size_of::<Self>() + self.archive_path.capacity() + objects
+        size_of::<Self>() + vec(&self.objects) + self.archive_path.capacity() + objects
     }
 }
 

@@ -9,6 +9,7 @@ repository.workspace = true
 al-symbols = { path = "../al-symbols", version = "0.1.0", default-features = false }
 al-source = { path = "../al-source", version = "0.1.0" }
 al-syntax = { path = "../al-syntax", version = "0.1.0" }
+compact_str = { workspace = true }
 petgraph = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
