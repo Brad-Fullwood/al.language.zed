@@ -28,6 +28,8 @@ CI_WORKFLOW="${CI_WORKFLOW:-CI}"
 CI_DISCOVERY_TIMEOUT_SECONDS="${CI_DISCOVERY_TIMEOUT_SECONDS:-120}"
 REGENERATE=0
 FULL_REGENERATE=0
+# The grammar branch that the pinned tree-sitter-al rev must be on. Checked only with --tag.
+GRAMMAR_BRANCH="${GRAMMAR_BRANCH:-dev}"
 
 usage() {
     cat <<'USAGE'
@@ -289,6 +291,42 @@ check_submodule_and_grammar_rev() {
     [ -n "${manifest_rev}" ] || fail "could not parse [grammars.al].rev from extension.toml"
     [ "${manifest_rev}" = "${gitlink}" ] \
         || fail "extension.toml [grammars.al].rev (${manifest_rev}) != tree-sitter-al gitlink (${gitlink})"
+
+    # toml_first_string would return the [package] repository, which comes first in extension.toml.
+    local manifest_repo sub_url
+    manifest_repo="$(awk -F'"' '
+        /^\[grammars\.al\]/ { in_grammar = 1; next }
+        /^\[/ { in_grammar = 0 }
+        in_grammar && /^[[:space:]]*repository[[:space:]]*=/ { print $2; exit }
+    ' extension.toml)"
+    [ -n "${manifest_repo}" ] || fail "could not parse [grammars.al].repository from extension.toml"
+    sub_url="$(git config -f .gitmodules --get submodule.tree-sitter-al.url || true)"
+    [ -n "${sub_url}" ] || fail "could not read submodule.tree-sitter-al.url from .gitmodules"
+    sub_url="${sub_url%.git}"
+    manifest_repo="${manifest_repo%.git}"
+    [ "${sub_url}" = "${manifest_repo}" ] \
+        || fail ".gitmodules tree-sitter-al url (${sub_url}) != extension.toml [grammars.al].repository (${manifest_repo}), trailing .git removed"
+
+    # A tagged release needs the pin on the grammar's branch. Without --tag a pull request may pin
+    # an unmerged grammar commit, so the same result is only a warning there.
+    local merged_out merged_rc=0
+    if [ -n "${TAG_NAME}" ]; then
+        local fetch_args=(--quiet --no-tags)
+        if [ "$(git -C tree-sitter-al rev-parse --is-shallow-repository)" = true ]; then
+            fetch_args+=(--unshallow)
+        fi
+        git -C tree-sitter-al fetch "${fetch_args[@]}" origin \
+            "+refs/heads/${GRAMMAR_BRANCH}:refs/remotes/origin/${GRAMMAR_BRANCH}" \
+            || fail "could not fetch ${GRAMMAR_BRANCH} of tree-sitter-al (git's error is above)"
+    fi
+    merged_out="$("${SCRIPT_DIR}/check-grammar-rev-merged.sh" tree-sitter-al "${gitlink}" "${GRAMMAR_BRANCH}" 2>&1)" \
+        || merged_rc=$?
+    if [ "${merged_rc}" -ne 0 ]; then
+        if [ -n "${TAG_NAME}" ]; then
+            fail "${merged_out#ERROR: }"
+        fi
+        warn "${merged_out#ERROR: }"
+    fi
 
     ok "tree-sitter-al gitlink, HEAD, and extension.toml grammar rev are aligned"
 }

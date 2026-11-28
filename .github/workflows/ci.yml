@@ -251,6 +251,9 @@ jobs:
       - name: Check release hygiene invariants
         run: ./scripts/check-release-hygiene.sh
 
+      - name: Release script tests
+        run: bash scripts/test-release-scripts.sh
+
   windows-native:
     # Default features do not require the .NET semantic bridge.
     name: Windows native build
