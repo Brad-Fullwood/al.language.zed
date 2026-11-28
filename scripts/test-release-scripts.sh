@@ -133,7 +133,7 @@ make_hygiene_fixture() {
     local dir="$1" f
     assert_in_t "${dir}"
     mkdir -p "${dir}/scripts" "${dir}/examples" "${dir}/crates/al-lsp" "${dir}/crates/al-explorer"
-    for f in scripts/check-release-hygiene.sh Cargo.toml Cargo.lock extension.toml \
+    for f in scripts/check-release-hygiene.sh scripts/require-ci-success.sh Cargo.toml Cargo.lock extension.toml \
         examples/zed-settings.jsonc crates/al-lsp/Cargo.toml crates/al-explorer/Cargo.toml; do
         cp -p "${REPO}/${f}" "${dir}/${f}"
     done
@@ -185,10 +185,79 @@ test_hygiene_fixtures() {
     expect_in stderr "Cargo.lock zed-al version" "hygiene fixture: refusal names the Cargo.lock check"
 }
 
+# Writes one fake workflow run to a JSON file in the shape gh run list --json prints.
+# rows_json <file> <head sha> <event> <head branch> <status> <conclusion>
+rows_json() {
+    printf '[{"databaseId":101,"status":"%s","conclusion":"%s","url":"https://example.invalid/runs/101","headSha":"%s","headBranch":"%s","event":"%s"}]\n' \
+        "$5" "$6" "$2" "$4" "$3" > "$1"
+}
+
+# Runs require-ci-success.sh in the fixture repo with the stub gh. The rows come from the JSON file given first.
+run_require_ci() {
+    run_cmd env PATH="$t/bin:${PATH}" GH_STUB_JSON="$1" REQUIRE_CI=1 GH_TOKEN=x \
+        GITHUB_REPOSITORY=owner/repo CI_WORKFLOW=CI CI_POLL_SECONDS=0 \
+        CI_DISCOVERY_TIMEOUT_SECONDS=0 CI_TIMEOUT_SECONDS=0 \
+        bash -c 'cd "$1" && exec "$2"' _ "$t/ci-repo" "${REPO}/scripts/require-ci-success.sh"
+}
+
+test_require_ci() {
+    local g="$t/ci-repo" head_dev head_new
+    command -v jq >/dev/null || fail "require ci tests need jq"
+    mkdir -p "$t/bin" "${g}"
+
+    # The stub answers "gh run list ... --jq FILTER" by applying FILTER to GH_STUB_JSON.
+    # It ignores --event, --commit and the other flags, so the jq filter in the script decides.
+    cat > "$t/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+[ "$1 $2" = "run list" ] || { echo "stub gh: unexpected arguments: $*" >&2; exit 2; }
+shift 2
+filter=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --jq) filter="$2"; shift 2 ;;
+        *) shift ;;
+    esac
+done
+[ -n "${filter}" ] || { echo "stub gh: no --jq filter" >&2; exit 2; }
+jq -r "${filter}" "${GH_STUB_JSON}"
+STUB
+    chmod 755 "$t/bin/gh"
+
+    git_fx "${g}" init -q -b dev
+    git_fx "${g}" commit -q --allow-empty -m "dev head"
+    head_dev="$(git_fx "${g}" rev-parse HEAD)"
+    git_fx "${g}" update-ref refs/remotes/origin/dev "${head_dev}"
+
+    rows_json "$t/rows-pr.json" "${head_dev}" pull_request dev completed success
+    run_require_ci "$t/rows-pr.json"
+    expect_nonzero "require ci: completed success pull_request run is refused"
+    expect_in stderr "no CI run was found" "require ci: pull_request run is not counted"
+
+    rows_json "$t/rows-push-dev.json" "${head_dev}" push dev completed success
+    run_require_ci "$t/rows-push-dev.json"
+    expect_exit 0 "require ci: completed success push run on dev passes"
+    expect_in stdout "CI succeeded for" "require ci: success line names the run"
+
+    rows_json "$t/rows-push-feature.json" "${head_dev}" push feature/x completed success
+    run_require_ci "$t/rows-push-feature.json"
+    expect_nonzero "require ci: push run on a feature branch is refused"
+    expect_in stderr "no CI run was found" "require ci: feature branch run is not counted"
+
+    # Last case: a new commit on dev that origin/dev does not have yet. Its run passes the
+    # filter, so only the ancestry check can refuse it.
+    git_fx "${g}" commit -q --allow-empty -m "unmerged commit"
+    head_new="$(git_fx "${g}" rev-parse HEAD)"
+    rows_json "$t/rows-push-new.json" "${head_new}" push dev completed success
+    run_require_ci "$t/rows-push-new.json"
+    expect_nonzero "require ci: passing run on a commit not on dev or main is refused"
+    expect_in stderr "is not on dev or main" "require ci: refusal names the ancestry check"
+}
+
 main() {
     test_grammar_ancestry
     test_glibc_floor
     test_hygiene_fixtures
+    test_require_ci
     echo "test-release-scripts: all passed"
 }
 
