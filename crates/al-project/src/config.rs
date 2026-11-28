@@ -426,8 +426,8 @@ impl AlConfig {
             path: path.to_path_buf(),
             source,
         })?;
-        let value: serde_json::Value =
-            serde_json::from_str(&data).map_err(|error| ConfigLoadError::InvalidJson {
+        let value: serde_json::Value = serde_json::from_str(crate::project::strip_utf8_bom(&data))
+            .map_err(|error| ConfigLoadError::InvalidJson {
                 path: path.to_path_buf(),
                 message: error.to_string(),
             })?;
@@ -933,12 +933,11 @@ pub(crate) fn read_editor_settings_file(
         path: path.to_path_buf(),
         source,
     })?;
-    let value = serde_json::from_str(&strip_jsonc(&source)).map_err(|error| {
-        ConfigLoadError::InvalidJson {
+    let value = serde_json::from_str(&strip_jsonc(crate::project::strip_utf8_bom(&source)))
+        .map_err(|error| ConfigLoadError::InvalidJson {
             path: path.to_path_buf(),
             message: error.to_string(),
-        }
-    })?;
+        })?;
     Ok(Some(value))
 }
 
@@ -1688,6 +1687,27 @@ mod tests {
 
         let result = read_editor_settings_file(&path);
         assert!(matches!(result, Err(ConfigLoadError::InvalidJson { .. })));
+    }
+
+    #[test]
+    fn settings_with_a_bom_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, "\u{feff}{\"al.useOfficialCompiler\": false}").unwrap();
+
+        let value = read_editor_settings_file(&path)
+            .expect("a BOM-prefixed settings file reads")
+            .expect("settings file exists");
+        let mut config = AlConfig::default();
+        assert!(config.merge_editor_settings(&value).is_empty());
+        assert_eq!(config.use_official_compiler, Some(false));
+
+        // AlConfig::load takes the bare camelCase keys it persists, not the dotted editor keys.
+        std::fs::write(&path, "\u{feff}{\"useOfficialCompiler\": false}").unwrap();
+        let loaded = AlConfig::load(&path)
+            .expect("a BOM-prefixed settings file loads")
+            .expect("settings file exists");
+        assert_eq!(loaded.use_official_compiler, Some(false));
     }
 
     #[test]

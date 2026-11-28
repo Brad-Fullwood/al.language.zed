@@ -405,14 +405,20 @@ pub fn find_project(start: &Path) -> Result<AlProject, DiscoveryError> {
 /// pathological inputs that would OOM the daemon on `read_to_string`.
 const MAX_APP_JSON_BYTES: u64 = 1_048_576;
 
-/// The text `reader` holds, or `None` when it holds more than `cap` bytes.
-/// Reads at most `cap + 1` bytes, so a source that never ends stops there.
+// Windows tools write a UTF-8 BOM, which serde_json rejects.
+pub(crate) fn strip_utf8_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
+/// The text `reader` holds without a leading BOM, or `None` when it holds more
+/// than `cap` bytes. Reads at most `cap + 1` bytes, so a source that never ends
+/// stops there.
 fn read_text_up_to(reader: impl std::io::Read, cap: u64) -> std::io::Result<Option<String>> {
     use std::io::Read;
 
     let mut text = String::new();
     reader.take(cap + 1).read_to_string(&mut text)?;
-    Ok((text.len() as u64 <= cap).then_some(text))
+    Ok((text.len() as u64 <= cap).then(|| strip_utf8_bom(&text).to_owned()))
 }
 
 /// The text of the regular file at `path`, read up to `cap` bytes.
@@ -1156,6 +1162,25 @@ mod tests {
 
         let manifest = load_app_manifest(&project).expect("a link to a regular file loads");
         assert_eq!(manifest.name, "Linked");
+    }
+
+    #[test]
+    fn read_text_up_to_drops_a_utf8_bom() {
+        assert_eq!(
+            read_text_up_to(&b"\xEF\xBB\xBF{}"[..], 64).unwrap(),
+            Some("{}".to_string())
+        );
+    }
+
+    #[test]
+    fn app_json_with_a_bom_loads() {
+        let project = tempdir();
+        let manifest = r#"{"id":"00000000-0000-0000-0000-000000000000","name":"Test","publisher":"Test","version":"1.0.0.0","idRange":{"from":50000,"to":50099}}"#;
+        std::fs::write(project.join("app.json"), format!("\u{feff}{manifest}")).unwrap();
+
+        let loaded = load_app_manifest(&project).expect("a BOM-prefixed manifest loads");
+        assert_eq!(loaded.name, "Test");
+        assert_eq!(load_id_ranges(&project), Some(vec![(50000, 50099)]));
     }
 
     #[test]
