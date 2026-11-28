@@ -6,6 +6,7 @@
 //! All of these run against a real daemon process, because the thing under
 //! test is the process exiting, or what it leaves in the runtime directory.
 
+use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -27,10 +28,49 @@ fn private_runtime_dir(tag: &str) -> PathBuf {
     dir
 }
 
+/// The file a daemon's stderr is written to. The temporary directory that holds
+/// it is removed when this value is dropped, so it must live as long as the
+/// daemon does.
+struct StderrLog {
+    path: PathBuf,
+    _dir: tempfile::TempDir,
+}
+
+impl StderrLog {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().expect("create a directory for the daemon's stderr");
+        Self {
+            path: dir.path().join("stderr.log"),
+            _dir: dir,
+        }
+    }
+}
+
+/// The last `lines` lines of the file at `path`, for a panic message. Says so
+/// when the file is empty, and names the read error when it cannot be read.
+fn stderr_tail(path: &Path, lines: usize) -> String {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) => return format!("(could not read {}: {error})", path.display()),
+    };
+    let all: Vec<&str> = text.lines().collect();
+    if all.is_empty() {
+        return "(no stderr)".to_string();
+    }
+    let shown = &all[all.len().saturating_sub(lines)..];
+    format!(
+        "last {} lines of stderr:\n{}",
+        shown.len(),
+        shown.join("\n")
+    )
+}
+
 struct DaemonProcess {
     child: Child,
     endpoint: PathBuf,
     runtime_dir: Option<PathBuf>,
+    /// `None` when stderr is a pipe, which [`Self::stderr`] reads.
+    stderr_log: Option<StderrLog>,
 }
 
 impl DaemonProcess {
@@ -46,13 +86,15 @@ impl DaemonProcess {
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
             .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"));
+        // Stderr goes to a file, so a timeout in `wait_until_listening` can
+        // show what the daemon was doing.
         Self::spawn(
             command,
             project,
             idle_timeout_secs,
             endpoint,
             Some(runtime_dir),
-            Stdio::null(),
+            Some(StderrLog::new()),
         )
     }
 
@@ -71,28 +113,24 @@ impl DaemonProcess {
             .env("XDG_DATA_HOME", runtime_dir.join("data"))
             .env("XDG_CACHE_HOME", runtime_dir.join("cache"))
             .env("XDG_CONFIG_HOME", runtime_dir.join("config"));
-        Self::spawn(
-            command,
-            project,
-            idle_timeout_secs,
-            endpoint,
-            None,
-            Stdio::piped(),
-        )
+        Self::spawn(command, project, idle_timeout_secs, endpoint, None, None)
     }
 
     /// A daemon on this process's own runtime directory, so the harness helper
     /// under test can find it the way it finds the daemons a test started.
     /// The project directory is unique, so its endpoint is too.
     fn start_on_shared_runtime(project: &Path, idle_timeout_secs: &str) -> Self {
+        // `al_lsp_binary` sets this process's private `XDG_RUNTIME_DIR` on its
+        // first call, so it runs before `socket_path` reads that variable.
+        let binary = al_lsp_binary();
         let endpoint = al_protocol::socket_path(project).expect("compute the daemon endpoint");
         Self::spawn(
-            Command::new(al_lsp_binary()),
+            Command::new(binary),
             project,
             idle_timeout_secs,
             endpoint,
             None,
-            Stdio::null(),
+            Some(StderrLog::new()),
         )
     }
 
@@ -102,8 +140,14 @@ impl DaemonProcess {
         idle_timeout_secs: &str,
         endpoint: PathBuf,
         runtime_dir: Option<PathBuf>,
-        stderr: Stdio,
+        stderr_log: Option<StderrLog>,
     ) -> Self {
+        let stderr = match &stderr_log {
+            Some(log) => {
+                Stdio::from(File::create(&log.path).expect("create the daemon's stderr file"))
+            }
+            None => Stdio::piped(),
+        };
         let child = command
             .arg("daemon")
             .arg("--project")
@@ -119,6 +163,15 @@ impl DaemonProcess {
             child,
             endpoint,
             runtime_dir,
+            stderr_log,
+        }
+    }
+
+    /// The last 40 lines of the daemon's stderr file, for a panic message.
+    fn stderr_for_panic(&self) -> String {
+        match &self.stderr_log {
+            Some(log) => stderr_tail(&log.path, 40),
+            None => "(no stderr)".to_string(),
         }
     }
 
@@ -131,13 +184,17 @@ impl DaemonProcess {
                 return;
             }
             if let Some(status) = self.child.try_wait().expect("poll the daemon") {
-                panic!("the daemon exited before it listened: {status}");
+                panic!(
+                    "the daemon exited before it listened: {status}\n{}",
+                    self.stderr_for_panic()
+                );
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         panic!(
-            "the daemon did not open {} within 60s",
-            self.endpoint.display()
+            "the daemon did not open {} within 60s\n{}",
+            self.endpoint.display(),
+            self.stderr_for_panic()
         );
     }
 
