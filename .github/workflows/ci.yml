@@ -18,6 +18,7 @@ jobs:
   ci:
     name: CI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45 # about 3x the longest green run (14.9 min, 2026-11-28)
     strategy:
       fail-fast: false
       matrix:
@@ -120,6 +121,7 @@ jobs:
     # release instead of the PR.
     name: Semantic bridge (.NET FFI)
     runs-on: ubuntu-latest
+    timeout-minutes: 25 # about 3x the longest green run (6.9 min), rounded up
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -167,6 +169,7 @@ jobs:
     # Enforces the deny.toml license, advisory, source, and banned-crate policy.
     name: Dependency policy (cargo-deny)
     runs-on: ubuntu-latest
+    timeout-minutes: 5 # about 3x the longest green run (1.4 min), rounded up
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -197,6 +200,7 @@ jobs:
   wasm:
     name: WASM extension build
     runs-on: ubuntu-latest
+    timeout-minutes: 10 # longest green run 2.2 min, rounded up to a 10 min limit
 
     steps:
       - name: Checkout
@@ -251,6 +255,7 @@ jobs:
     # Default features do not require the .NET semantic bridge.
     name: Windows native build
     runs-on: windows-latest
+    timeout-minutes: 40 # about 3x the longest green run (12.0 min), rounded up
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -295,6 +300,7 @@ jobs:
     # Same cross build as the Linux release leg, so a glibc regression fails on pull requests too.
     name: Linux x86_64 cross build (glibc floor)
     runs-on: ubuntu-latest
+    timeout-minutes: 25 # about 3x the longest green run (7.9 min), rounded up
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

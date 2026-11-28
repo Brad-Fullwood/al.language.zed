@@ -266,6 +266,73 @@ fn every_checkout_discards_persisted_credentials() {
     );
 }
 
+/// Every workflow job names its own limit with a job level `timeout-minutes`.
+/// Without one, a hung runner keeps the job for GitHub's six-hour default.
+#[test]
+fn every_workflow_job_has_a_timeout() {
+    let workflows = [
+        ("ci.yml", include_str!("../.github/workflows/ci.yml")),
+        (
+            "release.yml",
+            include_str!("../.github/workflows/release.yml"),
+        ),
+        (
+            "verify-generated-assets.yml",
+            include_str!("../.github/workflows/verify-generated-assets.yml"),
+        ),
+    ];
+
+    for (file, source) in workflows {
+        let lines: Vec<&str> = source.lines().collect();
+        let jobs_at = lines
+            .iter()
+            .position(|line| *line == "jobs:")
+            .unwrap_or_else(|| panic!("{file} has no top level `jobs:` key"));
+        let section_end = lines[jobs_at + 1..]
+            .iter()
+            .position(|line| is_top_level_key(line))
+            .map_or(lines.len(), |offset| jobs_at + 1 + offset);
+        let starts: Vec<(usize, &str)> = (jobs_at + 1..section_end)
+            .filter_map(|index| job_key(lines[index]).map(|job| (index, job)))
+            .collect();
+        assert!(
+            !starts.is_empty(),
+            "{file} has no jobs under `jobs:`, so the timeout check would pass without checking"
+        );
+
+        for (position, &(start, job)) in starts.iter().enumerate() {
+            let end = starts
+                .get(position + 1)
+                .map_or(section_end, |&(next, _)| next);
+            assert!(
+                lines[start + 1..end]
+                    .iter()
+                    .any(|line| line.starts_with("    timeout-minutes:")),
+                "{file}: job `{job}` has no job level `timeout-minutes:` (4 spaces) before the next job"
+            );
+        }
+    }
+}
+
+/// A line that opens a top level key: no indent, not a comment.
+fn is_top_level_key(line: &str) -> bool {
+    !line.is_empty() && !line.starts_with([' ', '#'])
+}
+
+/// The name of a job key at two spaces of indent, such as `  cargo-deny:`.
+fn job_key(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("  ")?;
+    if rest.starts_with(' ') {
+        return None;
+    }
+    let (name, after) = rest.split_once(':')?;
+    let is_identifier = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    (is_identifier && (after.is_empty() || after.starts_with(' '))).then_some(name)
+}
+
 #[test]
 fn github_repo_is_owner_slash_repo() {
     assert!(
