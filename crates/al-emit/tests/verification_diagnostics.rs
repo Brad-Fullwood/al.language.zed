@@ -1142,3 +1142,106 @@ codeunit 50100 Finder
     )]);
     assert_silent(&codes, "ALN2003");
 }
+
+/// A Record subtype with a namespace is checked by its object name, as a
+/// codeunit subtype is above.
+#[test]
+fn namespace_qualified_record_variable_is_known() {
+    let codes = codes_for(&[(
+        "Widget.al",
+        r#"namespace Sales.Tools;
+
+table 50100 Widget
+{
+    fields
+    {
+        field(1; Id; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; Id) { Clustered = true; }
+    }
+}
+
+codeunit 50101 User
+{
+    procedure Run()
+    var
+        W: Record Sales.Tools.Widget;
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN2401");
+}
+
+/// A quoted table name may hold a dot. The dot does not split the name.
+#[test]
+fn record_name_with_a_dot_is_known() {
+    let codes = codes_for(&[(
+        "Series.al",
+        r#"table 50102 "No. Series"
+{
+    fields
+    {
+        field(1; Id; Code[20]) { }
+    }
+    keys
+    {
+        key(PK; Id) { Clustered = true; }
+    }
+}
+
+codeunit 50103 User
+{
+    procedure Run()
+    var
+        N: Record "No. Series";
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_silent(&codes, "ALN2401");
+}
+
+#[test]
+fn unknown_qualified_record_is_still_reported() {
+    let codes = codes_for(&[(
+        "Missing.al",
+        r#"namespace Sales.Tools;
+
+codeunit 50100 User
+{
+    procedure Run()
+    var
+        M: Record Sales.Tools.Missing;
+    begin
+    end;
+}
+"#,
+    )]);
+    assert_reports(&codes, "ALN2401");
+}
+
+#[test]
+fn aln2401_points_at_the_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    write_project(
+        dir.path(),
+        APP_JSON,
+        &[(
+            "Finder.al",
+            "codeunit 50100 Finder\n{\n    procedure Run()\n    var\n        c: Record Missing;\n    begin\n    end;\n}\n",
+        )],
+    );
+    let built = build_verified_app_from_project(dir.path(), "13.0.0.0", "2026-01-01T00:00:00Z")
+        .expect("verification runs");
+    let unknown = built
+        .diagnostics
+        .iter()
+        .find(|d| d.code == "ALN2401")
+        .unwrap_or_else(|| panic!("{:?}", built.diagnostics));
+    assert_eq!(unknown.line, 5, "{:?}", built.diagnostics);
+}

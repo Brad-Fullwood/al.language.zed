@@ -448,13 +448,9 @@ fn verify_provable_body_bindings(
         let vars = variable_types(&object.source_text);
         for (name, ty) in &vars {
             if let Some(table) = record_subtype(ty) {
-                let table = table.unquote_identifier().to_ascii_lowercase();
+                let table = raw_subtype_object_name(table);
                 if !tables.contains(&table) {
-                    let offset = object
-                        .source_text
-                        .to_ascii_lowercase()
-                        .find(name)
-                        .unwrap_or(0);
+                    let offset = declaration_offset(&object.source_text, name);
                     out.push(VerificationDiagnostic::error_at_source_offset(
                         object,
                         offset,
@@ -684,7 +680,7 @@ fn verify_local_procedure_semantics(
                     let table = vars
                         .get(&receiver.to_ascii_lowercase())
                         .and_then(|ty| record_subtype(ty))
-                        .map(|table| table.unquote_identifier().to_ascii_lowercase())
+                        .map(raw_subtype_object_name)
                         .filter(|table| known_tables.contains(table));
                     let unknown = table.is_some_and(|table| {
                         !known_record_method(&site.name)
@@ -1246,6 +1242,42 @@ fn record_subtype(type_name: &str) -> Option<&str> {
             .filter(|split| subtype[*split..].eq_ignore_ascii_case(" temporary"))
             .map_or(subtype, |split| subtype[..split].trim_end()),
     )
+}
+
+// Reads source text, where `symbol_reference::subtype_object_name` reads extractor output.
+fn raw_subtype_object_name(subtype: &str) -> String {
+    let mut last_start = 0;
+    let mut in_quotes = false;
+    for (index, ch) in subtype.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '.' if !in_quotes => last_start = index + 1,
+            _ => {}
+        }
+    }
+    subtype[last_start..]
+        .trim()
+        .unquote_identifier()
+        .to_ascii_lowercase()
+}
+
+/// Byte offset of the first declaration of `name`: the name as a whole identifier,
+/// then `:` and not `:=`. Returns 0 when there is none.
+fn declaration_offset(source: &str, name: &str) -> usize {
+    let source = source.to_ascii_lowercase();
+    let name = name.to_ascii_lowercase();
+    let bytes = source.as_bytes();
+    let is_identifier = |byte: &u8| byte.is_ascii_alphanumeric() || *byte == b'_';
+    source
+        .match_indices(&name)
+        .find(|&(at, _)| {
+            let before_ok = at == 0 || !is_identifier(&bytes[at - 1]);
+            let after = at + name.len();
+            let after_ok = bytes.get(after).is_none_or(|byte| !is_identifier(byte));
+            let rest = source[after..].trim_start();
+            before_ok && after_ok && rest.starts_with(':') && !rest.starts_with(":=")
+        })
+        .map_or(0, |(at, _)| at)
 }
 
 fn exit_expressions(source: &str) -> Vec<&str> {
@@ -2221,5 +2253,31 @@ mod builtin_call_contract_tests {
         assert!(known_record_method("Truncate"));
         assert!(!known_record_method("Error"));
         assert!(!known_record_method("NoSuchMethodHere"));
+    }
+}
+
+#[cfg(test)]
+mod source_name_tests {
+    use super::{declaration_offset, raw_subtype_object_name};
+
+    #[test]
+    fn raw_subtype_object_name_keeps_the_last_part_outside_quotes() {
+        assert_eq!(raw_subtype_object_name("Sales.Tools.Widget"), "widget");
+        assert_eq!(
+            raw_subtype_object_name("\"Sales\".\"Tools\".\"Widget\""),
+            "widget"
+        );
+        assert_eq!(raw_subtype_object_name("\"No. Series\""), "no. series");
+        assert_eq!(raw_subtype_object_name("Customer"), "customer");
+    }
+
+    #[test]
+    fn declaration_offset_skips_keyword_matches_and_assignments() {
+        let source = "codeunit 50100 X\n{\n    procedure P()\n    var\n        c: Integer;\n    begin\n        c := 1;\n    end;\n}\n";
+        let declaration = source.find("c: Integer").unwrap();
+        assert_eq!(declaration_offset(source, "c"), declaration);
+
+        let assignment_only = "codeunit 1 X\n{\n    begin\n        c := 1;\n    end;\n}\n";
+        assert_eq!(declaration_offset(assignment_only, "c"), 0);
     }
 }
