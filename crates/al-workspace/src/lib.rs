@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 mod dependency_sources;
 mod doctor;
+mod project_pass_cache;
 mod semantic_lifecycle;
 mod semantic_project;
 mod source_cache;
@@ -532,6 +533,9 @@ pub struct Workspace {
     dependency_source_progress: DependencySourceProgress,
     /// Whether the call graph build is running, readable while it runs.
     call_graph_progress: CallGraphProgress,
+    /// Whole-project pass results of the current generation. See
+    /// [`cached_project_pass`](Self::cached_project_pass).
+    project_pass_cache: project_pass_cache::ProjectPassCache,
     /// How many times the call graph has actually been built.
     ///
     /// Exists so single-flight is testable: a cold build is 86 s on a project
@@ -638,6 +642,7 @@ impl Workspace {
             source_summary_cache: std::sync::OnceLock::new(),
             dependency_source_progress: DependencySourceProgress::default(),
             call_graph_progress: CallGraphProgress::default(),
+            project_pass_cache: project_pass_cache::ProjectPassCache::default(),
             call_graph_builds: std::sync::atomic::AtomicU64::new(0),
             profiler_session: std::sync::RwLock::new(None),
             test_results: std::sync::RwLock::new(None),
@@ -817,6 +822,34 @@ impl Workspace {
     ) -> Result<Arc<DependencySources>, DependencySourceError> {
         self.get_or_build_dependency_source_generation()
             .map(|(_, index)| index)
+    }
+
+    /// The result of the whole-project pass named `key`, computed by
+    /// `compute` once per workspace generation, call graph invalidation and
+    /// dependency package set.
+    ///
+    /// Concurrent callers wait for the first one and share its result. A
+    /// result computed while the generation moved is returned but not kept.
+    /// `compute` must read only the workspace sources, symbols and dependency
+    /// packages, and must not call this method itself.
+    pub fn cached_project_pass<T, E>(
+        &self,
+        key: &'static str,
+        compute: impl FnOnce() -> Result<T, E>,
+    ) -> Result<Arc<T>, E>
+    where
+        T: std::any::Any + Send + Sync,
+    {
+        self.project_pass_cache.get_or_compute(
+            key,
+            || {
+                (
+                    (self.generation_revision(), self.call_graph_revision_now()),
+                    self.dependency_package_fingerprint_reporting().0,
+                )
+            },
+            compute,
+        )
     }
 
     /// How many embedded `.al` files the current dependency-source generation

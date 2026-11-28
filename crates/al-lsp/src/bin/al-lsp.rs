@@ -178,8 +178,30 @@ fn mode(args: &[String]) -> Mode {
     }
 }
 
+/// Cap glibc's malloc arenas at two.
+///
+/// glibc gives each thread that allocates under contention its own arena, up
+/// to eight per core, and keeps freed memory in it. The analysis passes
+/// allocate from many Tokio and blocking threads, so freed pass results stayed
+/// resident: with native lint on, a project with 10,224 dependency files
+/// peaked at 1.6-2.3 GB, and at 1.36-1.43 GB with two arenas, with no rise in
+/// CPU per edit. `mallopt` is glibc's own setting for this, the same one the
+/// `MALLOC_ARENA_MAX` environment variable sets, which still wins when given.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn limit_malloc_arenas() {
+    if std::env::var_os("MALLOC_ARENA_MAX").is_none() {
+        // SAFETY: `mallopt` only changes allocator settings and is called
+        // before any other thread exists.
+        unsafe {
+            libc::mallopt(libc::M_ARENA_MAX, 2);
+        }
+    }
+}
+
 #[cfg(not(windows))]
 fn main() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    limit_malloc_arenas();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
