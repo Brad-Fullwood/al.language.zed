@@ -688,8 +688,10 @@ impl AlServer {
     /// without blocking edits. Project scope finishes with a bridge-free native
     /// generation that merges only still-current semantic cache entries.
     async fn refresh_diagnostics_after_configuration(&self) {
-        // Held through the clearing publishes, as in `publish_if_current`.
+        // The generation read lock and `diagnostic_publication` are held through
+        // the clears, so a project pass cannot send between them.
         let generation = self.workspace.generation_lock.read().await;
+        let publication = self.workspace.diagnostic_publication.lock().await;
         let stale: Vec<Url> = {
             let mut published = self.workspace_diagnostic_uris.lock().await;
             published.drain().collect()
@@ -700,6 +702,7 @@ impl AlServer {
                 .publish_diagnostics(uri, Vec::new(), version)
                 .await;
         }
+        drop(publication);
         let open_snapshots: Vec<(Url, Arc<String>, i32)> = self
             .workspace
             .documents

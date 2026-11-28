@@ -650,15 +650,31 @@ fn report_file_name(report: &str, object: &str) -> String {
 /// for the object the code action was offered on, save the output under the
 /// cache folder and open it in the editor.
 /// The `al-explorer` report process. It is killed when the future that waits
-/// for it is dropped, which is what the timeout in [`show_report`] does.
+/// for it is dropped, which is what the timeout in [`wait_for_report`] does.
 fn report_command(
     explorer: &std::path::Path,
     args: &[String],
     cwd: &std::path::Path,
 ) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(explorer);
-    command.args(args).current_dir(cwd).kill_on_drop(true);
     command
+        .args(args)
+        .current_dir(cwd)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    command
+}
+
+/// Waits up to `timeout` for a report process started by [`report_command`].
+async fn wait_for_report(
+    child: tokio::process::Child,
+    timeout: std::time::Duration,
+    label: &str,
+) -> Result<std::io::Result<std::process::Output>, String> {
+    tokio::time::timeout(timeout, child.wait_with_output())
+        .await
+        .map_err(|_| format!("al-explorer {label} did not finish in {timeout:?}"))
 }
 
 pub(super) async fn show_report(
@@ -694,15 +710,11 @@ pub(super) async fn show_report(
             .map(std::path::Path::to_path_buf)
             .unwrap_or_default(),
     };
-    let run = report_command(&explorer, &args, &cwd).output();
-    let output = tokio::time::timeout(REPORT_TIMEOUT, run)
-        .await
-        .map_err(|_| {
-            format!(
-                "al-explorer {} did not finish in {REPORT_TIMEOUT:?}",
-                args.join(" ")
-            )
-        })?
+    let child = report_command(&explorer, &args, &cwd)
+        .spawn()
+        .map_err(|error| format!("cannot run {}: {error}", explorer.display()))?;
+    let output = wait_for_report(child, REPORT_TIMEOUT, &args.join(" "))
+        .await?
         .map_err(|error| format!("cannot run {}: {error}", explorer.display()))?;
     let mut text = format!("al-explorer {}\n\n", args.join(" "));
     text.push_str(&String::from_utf8_lossy(&output.stdout));

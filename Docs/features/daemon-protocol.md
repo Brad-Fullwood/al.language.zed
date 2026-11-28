@@ -121,6 +121,11 @@ path uses LSP handlers directly and does not go through the daemon. See
   caller that wants two requests running at once through it opens a second connection. Up to 64
   connections are served at once. There is no per-request cancellation, so a request already
   dispatched runs to completion even if its client gives up waiting.
+- **Files changed on disk:** `format`, `fix`, `fix.applicationArea`, `fix.tooltips`,
+  `fix.dataClassification` and `sortMembers` compare the file on disk with the text they read
+  before they write. When the file changed, they write nothing and answer an error that names the
+  file and says to run the command again. The client sends the same request again, and it then
+  works on the new text.
 
 ## Dispatch
 

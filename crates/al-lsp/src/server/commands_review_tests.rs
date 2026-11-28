@@ -7,8 +7,8 @@ use super::*;
 #[tokio::test]
 async fn run_test_runs_a_local_test_without_a_launch_configuration() {
     // The client socket is dropped, so a request to the editor fails at once.
-    // A socket that is read and never answered leaves the first-run settings
-    // prompt of `initialize_workspace` waiting on a machine with a new home folder.
+    // A socket that is read and never answered leaves a request that is awaited
+    // waiting, for example the symbol download prompt of `initialize_workspace`.
     let (service, _) = tower_lsp::LspService::new(crate::server::AlLsp::new);
     let server = service.inner();
     let root = tempfile::tempdir().unwrap();
@@ -72,12 +72,9 @@ async fn a_timed_out_report_process_is_killed() {
     .spawn()
     .expect("sleep starts");
     let pid = child.id().expect("pid");
-    let waited = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        child.wait_with_output(),
-    )
-    .await;
-    assert!(waited.is_err(), "sleep 30 outlives the timeout");
+    let waited = wait_for_report(child, std::time::Duration::from_millis(100), "sleep 30").await;
+    let error = waited.expect_err("sleep 30 outlives the timeout");
+    assert!(error.contains("did not finish"), "{error}");
 
     let mut gone = false;
     for _ in 0..50 {

@@ -120,6 +120,8 @@ Handled in `server/commands.rs`:
 | `al.compile` | Build the project (`alc` when the toolchain is found, else the native emitter, `al.useOfficialCompiler` forces either) |
 | `al.applyRecommendedSettings` | Apply recommended Zed workspace settings for AL |
 
+On the first open of an AL project with no AL settings in Zed, the server asks once whether to apply the recommended settings. Project diagnostics start while the question is open. When symbol packages are missing, the server asks whether to download them and starts project diagnostics after the answer.
+
 ### CodeLens command IDs
 
 CodeLens entries invoke `al.findReferences`, `al.showProfiler`, `al.runTest`, `al.showSubscribers`

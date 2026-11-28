@@ -920,7 +920,11 @@ async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
 /// inline on the async connection task stalls the tokio worker that drives I/O
 /// for *every* connection, so they get the same treatment `deadCode` already
 /// had.
-async fn offload<F>(id: u64, method: &'static str, work: F) -> Response
+pub(in crate::server::daemon) async fn offload<F>(
+    id: u64,
+    method: &'static str,
+    work: F,
+) -> Response
 where
     F: FnOnce() -> Response + Send + 'static,
 {
@@ -1446,13 +1450,30 @@ dispatch_table! {
         "deps" [] => lsp_dispatch::dispatch_deps(workspace, id),
         "lint" [read] => build_dispatch::dispatch_lint(workspace, id, &params).await,
         "format" [write] => build_dispatch::dispatch_format(workspace, id, &params).await,
-        "fix" [write] => build_dispatch::dispatch_fix(workspace, id, &params),
-        "fix.applicationArea" [] => {
-            build_dispatch::dispatch_fix_application_area(workspace, id, &params)
+        "fix" [write] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix", move || build_dispatch::dispatch_fix(&ws, id, &args)).await
         },
-        "fix.tooltips" [] => build_dispatch::dispatch_fix_tooltips(workspace, id, &params),
+        "fix.applicationArea" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix.applicationArea", move || {
+                build_dispatch::dispatch_fix_application_area(&ws, id, &args)
+            })
+            .await
+        },
+        "fix.tooltips" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix.tooltips", move || {
+                build_dispatch::dispatch_fix_tooltips(&ws, id, &args)
+            })
+            .await
+        },
         "fix.dataClassification" [] => {
-            build_dispatch::dispatch_fix_data_classification(workspace, id, &params)
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix.dataClassification", move || {
+                build_dispatch::dispatch_fix_data_classification(&ws, id, &args)
+            })
+            .await
         },
         "rules" [] => build_dispatch::dispatch_rules(id),
         "parse" [read] => build_dispatch::dispatch_parse(workspace, id, &params),
@@ -2384,11 +2405,34 @@ pub(crate) enum DaemonWorkspaceInitError {
     Core(#[from] al_workspace::CoreInitError),
 }
 
+/// The folder the al-lsp unit tests use in place of the user data directory.
+/// One folder per test process under the system temp dir.
+#[cfg(test)]
+pub(crate) fn unit_test_data_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("al-lsp-unit-{}", std::process::id()))
+}
+
+/// The dependency source summary store for the project at `project_root`.
+/// The unit tests get a store under [`unit_test_data_dir`]. Other builds use
+/// the per-user store, which `for_project` names.
+#[cfg(not(test))]
+pub(crate) fn summary_cache_for(project_root: &Path) -> Option<al_workspace::SourceSummaryCache> {
+    al_workspace::SourceSummaryCache::for_project(project_root)
+}
+
+#[cfg(test)]
+pub(crate) fn summary_cache_for(project_root: &Path) -> Option<al_workspace::SourceSummaryCache> {
+    let _ = project_root;
+    Some(al_workspace::SourceSummaryCache::at(
+        unit_test_data_dir().join("al-lsp").join("source-index"),
+    ))
+}
+
 /// Keep the dependency source summaries of `project_root` in its data
 /// directory, so the next daemon or MCP server on the same packages loads
 /// them instead of parsing every embedded file again.
 pub(crate) fn persist_dependency_source_summaries(workspace: &Workspace, project_root: &Path) {
-    match al_workspace::SourceSummaryCache::for_project(project_root) {
+    match summary_cache_for(project_root) {
         Some(cache) => {
             tracing::info!(
                 dir = %cache.dir().display(),

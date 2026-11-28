@@ -5,6 +5,7 @@
 //! Auto-downloads missing BC symbol packages via BC server (launch.json) or NuGet.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use al_workspace::Workspace;
@@ -14,6 +15,18 @@ use tracing::{info, warn};
 
 use super::lsp::LspSessionState;
 use super::{diagnostics, AlServer, WorkspaceInitState};
+
+/// True while a settings prompt is open. One prompt at a time per process.
+static SETTINGS_PROMPT_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// Clears `SETTINGS_PROMPT_OPEN` when dropped, so an aborted or panicking prompt task frees the flag.
+struct SettingsPromptGuard;
+
+impl Drop for SettingsPromptGuard {
+    fn drop(&mut self) {
+        SETTINGS_PROMPT_OPEN.store(false, Ordering::Release);
+    }
+}
 
 /// Where to download symbol packages from.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -389,77 +402,89 @@ pub(crate) async fn initialize_workspace(
         .log_message(MessageType::INFO, "AL workspace: ready")
         .await;
 
-    // Offer recommended settings on first open of an AL project.
-    // Runs after workspace init but before diagnostics — same timing window
-    // as the symbol download prompt, which Zed reliably displays.
-    let should_prompt =
-        tokio::task::spawn_blocking(|| !settings_prompt_shown() && !zed_has_al_settings())
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("settings prompt check panicked: {e}");
-                false
-            });
+    // The prompt is sent from its own task, so project diagnostics do not wait
+    // for the answer. `SETTINGS_PROMPT_OPEN` keeps one prompt open per process.
+    let should_prompt = tokio::task::spawn_blocking(settings_prompt_needed)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("settings prompt check panicked: {e}");
+            false
+        });
     if session_cancelled(&session) {
         return Ok(());
     }
-    if should_prompt {
-        if let Ok(response) = client
-            .show_message_request(
-                MessageType::INFO,
-                "Apply recommended AL development settings? (Updates Zed settings.json)"
-                    .to_string(),
-                Some(vec![
-                    MessageActionItem {
-                        title: "Yes".to_string(),
-                        properties: Default::default(),
-                    },
-                    MessageActionItem {
-                        title: "No".to_string(),
-                        properties: Default::default(),
-                    },
-                ]),
-            )
-            .await
-        {
-            if response.is_some_and(|action| action.title == "Yes") {
-                match tokio::task::spawn_blocking(apply_recommended_settings).await {
-                    Ok(Ok(backup)) => {
-                        client
-                            .show_message(
-                                MessageType::INFO,
-                                applied_settings_message(backup.as_deref()),
-                            )
-                            .await;
+    if should_prompt && !SETTINGS_PROMPT_OPEN.swap(true, Ordering::AcqRel) {
+        // Built before the spawn. A task dropped before its first poll never
+        // runs its body, but the captured guard still drops and clears the flag.
+        let guard = SettingsPromptGuard;
+        let client = client.clone();
+        let session = session.clone();
+        tokio::spawn(async move {
+            let _guard = guard;
+            if session_cancelled(&session) {
+                return;
+            }
+            if let Ok(response) = client
+                .show_message_request(
+                    MessageType::INFO,
+                    "Apply recommended AL development settings? (Updates Zed settings.json)"
+                        .to_string(),
+                    Some(vec![
+                        MessageActionItem {
+                            title: "Yes".to_string(),
+                            properties: Default::default(),
+                        },
+                        MessageActionItem {
+                            title: "No".to_string(),
+                            properties: Default::default(),
+                        },
+                    ]),
+                )
+                .await
+            {
+                if response.is_some_and(|action| action.title == "Yes") {
+                    if session_cancelled(&session) {
+                        return;
                     }
-                    Ok(Err(e)) => {
-                        client
-                            .show_message(
-                                MessageType::WARNING,
-                                format!("Failed to apply settings: {e}"),
-                            )
-                            .await;
+                    match tokio::task::spawn_blocking(apply_recommended_settings).await {
+                        Ok(Ok(backup)) => {
+                            client
+                                .show_message(
+                                    MessageType::INFO,
+                                    applied_settings_message(backup.as_deref()),
+                                )
+                                .await;
+                        }
+                        Ok(Err(e)) => {
+                            client
+                                .show_message(
+                                    MessageType::WARNING,
+                                    format!("Failed to apply settings: {e}"),
+                                )
+                                .await;
+                        }
+                        Err(e) => {
+                            tracing::warn!("Settings task panicked: {e}");
+                        }
                     }
+                }
+                // Mark as shown once the user answered Yes or No or dismissed the
+                // notification, which also declines it.
+                // Run the sentinel write on the blocking pool so the async
+                // executor thread is not stalled on disk I/O. Await the join
+                // handle so a runtime shutdown mid-write surfaces in the log
+                // instead of silently leaving the sentinel unwritten. The user
+                // would otherwise see the prompt again on next launch.
+                match tokio::task::spawn_blocking(record_settings_prompt_shown).await {
+                    Ok(()) => {}
                     Err(e) => {
-                        tracing::warn!("Settings task panicked: {e}");
+                        tracing::warn!("settings prompt sentinel write task did not complete: {e}");
                     }
                 }
             }
-            // Mark as shown once the user answered Yes or No or dismissed the
-            // notification, which also declines it.
-            // Run the sentinel write on the blocking pool so the async
-            // executor thread is not stalled on disk I/O. Await the join
-            // handle so a runtime shutdown mid-write surfaces in the log
-            // instead of silently leaving the sentinel unwritten — the
-            // user would otherwise see the prompt again on next launch.
-            match tokio::task::spawn_blocking(mark_settings_prompt_shown).await {
-                Ok(()) => {}
-                Err(e) => {
-                    tracing::warn!("settings prompt sentinel write task did not complete: {e}");
-                }
-            }
-        }
-        // An Err means the request did not reach the user, so the prompt
-        // comes back next time.
+            // An Err means the request did not reach the user, so the prompt
+            // comes back next time.
+        });
     }
 
     if let Some(diagnostic_state) = diagnostic_state {
@@ -1521,10 +1546,49 @@ fn mark_settings_prompt_shown() {
     }
 }
 
+/// Whether `initialize_workspace` offers the settings prompt. Unit tests read
+/// their own sentinel, so the answer does not depend on the machine.
+#[cfg(not(test))]
+fn settings_prompt_needed() -> bool {
+    !settings_prompt_shown() && !zed_has_al_settings()
+}
+
+#[cfg(test)]
+fn settings_prompt_needed() -> bool {
+    !unit_test_sentinel().exists()
+}
+
+/// Record that the settings prompt was answered or dismissed.
+#[cfg(not(test))]
+fn record_settings_prompt_shown() {
+    mark_settings_prompt_shown();
+}
+
+#[cfg(test)]
+fn record_settings_prompt_shown() {
+    let path = unit_test_sentinel();
+    if let Err(e) = ensure_parent_dir(&path).and_then(|()| std::fs::write(&path, b"")) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "failed to write unit test settings sentinel"
+        );
+    }
+}
+
 /// Path to the sentinel file that records the popup was shown.
 fn sentinel_path() -> Option<PathBuf> {
     let data_dir = al_project::project::user_data_dir()?;
     Some(data_dir.join("al-lsp").join(".settings-prompt-shown"))
+}
+
+/// The sentinel the unit tests use in place of the one under the user data
+/// directory.
+#[cfg(test)]
+fn unit_test_sentinel() -> PathBuf {
+    crate::server::daemon::unit_test_data_dir()
+        .join("al-lsp")
+        .join(".settings-prompt-shown")
 }
 
 /// Check whether Zed's settings.json already has correct AL settings.
