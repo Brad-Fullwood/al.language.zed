@@ -81,7 +81,7 @@ Symbol acquisition is native and parallel where it is safe:
 
 ### Less memory churn
 
-The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, on-demand member loading in the TUI, and `Arc<String>` document text keep editor workflows from making repeated copies or growing state without bound. Default completion results also have a small cache for the common "blank completion at top level" path.
+The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, on-demand member loading in the TUI, and `Arc<String>` document text keep editor workflows from making repeated copies or growing state without bound.
 
 ### Native Compile And Deterministic Build Loop
 
@@ -115,9 +115,9 @@ Current MCP tools:
 
 - `al_call` - invoke any method in the shared daemon tool catalog, so every daemon method is reachable from MCP.
 - `al_snapshot` - snapshot debugging: start (with optional snappoints), status, finish, list, show.
-- `al_debug` - retain and drive a Business Central debug session across agent calls (start/attach,
-  conditional breakpoints, state, stack, locals/globals/expansion, evaluate, step, continue,
-  history, stop).
+- `al_debug` - retain and drive a Business Central debug session across agent calls (`start` launches
+  the session in launch style. There is no `attach` command. The session supports conditional
+  breakpoints, state, stack, locals/globals/expansion, evaluate, step, continue, history and stop).
 - `al_build` - compile the project and return success, diagnostics, and `.app` path.
 - `al_downloadsymbols` - download dependency symbol packages into `.alpackages`.
 - `al_symbolsearch` - fuzzy-search symbols across workspace and packages.

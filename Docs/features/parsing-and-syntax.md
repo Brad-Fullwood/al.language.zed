@@ -12,7 +12,7 @@ symbols, folding, formatting, and analysis all consume. It is transport-agnostic
 | Capability | File | What it produces |
 | --- | --- | --- |
 | Parser wrapper | `parser.rs` | `ParseResult` (tree + errors), incremental & thread-local "quick" parsing |
-| Semantic token extraction | `tokens.rs` | 43 AL-aware token classes, delta-encoded for LSP |
+| Semantic token extraction | `tokens.rs` | 47 AL-aware token classes, delta-encoded for LSP |
 | AST navigation | `navigation.rs` | node-at-position, object/procedure info, reference collection |
 | Folding | `folding.rs` | foldable regions (blocks, procedures, comments) |
 | Document symbols | `symbols/` | hierarchical outline (objects → members) |
@@ -33,17 +33,21 @@ symbols, folding, formatting, and analysis all consume. It is transport-agnostic
 offers three entry points:
 
 - `parse(text)`: full parse → `ParseResult`.
-- `parse_incremental(text, old_tree)`: reuses the previous tree for edited documents (this is what
-  keeps editing fast under the document store).
+- `parse_incremental(text, old_tree)`: reuses a previous tree. The document store does not call it.
+  Each edit drops the cached tree, so the next request parses the whole file again.
 - `parse_quick(text)`: a thread-local cached parser for one-shot use.
+
+Each entry point has a `_with_symbols` form that defines preprocessor symbols. The document store and
+`FileIndex` parse a file with the `preprocessorSymbols` of the `app.json` that owns it
+(`FileIndex::preprocessor_symbols_for`), so `#if` blocks on those symbols are active.
 
 Errors are collected from both `is_error()` nodes and `is_missing()` nodes (the latter reported as
 `Missing {kind}`), so syntactic diagnostics reflect both garbage and absent-but-required tokens.
 
 ### Semantic tokens (`tokens.rs`)
 
-A single tree walk classifies every meaningful node into one of **43** token types: the 12 standard
-LSP types plus 31 AL-specific ones (e.g. `OBJECT_KEYWORD`, `BUILTIN_TYPE`, `TABLE_FIELD`,
+A single tree walk classifies every meaningful node into one of **47** token types: the 12 standard
+LSP types plus 35 AL-specific ones (e.g. `OBJECT_KEYWORD`, `BUILTIN_TYPE`, `TABLE_FIELD`,
 `PAGE_CONTROL`, `PAGE_ACTION`, `TRIGGER_NAME`, `EVENT_CREATION`, `EVENT_SUBSCRIPTION`,
 `QUERY_DATA_ITEM`, `XMLPORT_FIELD_ELEMENT`, `EXCLUDED_CODE`, …). Tokens are delta-encoded per the LSP
 spec, and byte offsets are converted to UTF-16 columns via a per-line lookup table. Multi-line block
@@ -95,10 +99,14 @@ properties rather than attempting general expression reflow.
 
 ### Sort (`sort.rs`)
 
-`sort_members` is a text-based reorder (no tree needed) producing canonical order: `var` block
-(verbatim), then triggers alphabetically, then procedures alphabetically (including
-local/internal/protected), preserving the object header/footer. Returns `None` if the text is not a
-single, non-nested object.
+`sort_members` finds each object body with the syntax tree and sorts every object in the file on
+its own. Inside a body it splits members by line and orders them: the preamble first (object
+properties and sections such as `fields` and `keys`, which alc rejects after a procedure), then
+`var` blocks in source order, then triggers alphabetically, then procedures alphabetically
+(including local/internal/protected). A doc comment or attribute moves with the member below it.
+Headers, braces and text between objects stay as they are. Returns `None` when the file has syntax
+errors, a brace shares a line with other code, or the result is not a pure reordering of the input
+lines.
 
 ### Language data (`language_data.rs`)
 
@@ -146,6 +154,8 @@ and the analyzer disagree about what a keyword is" drift.
   obsolete-use `AL-NL008`, and architecture-layer `AL-NL009` diagnostics share the editor,
   CLI/daemon, and native build surfaces. `al.enableNativeLint` and `al.nativeLintRules` are
   honored.
+- 🟡 The build and fix commands in `al-lsp` (`server/daemon/build_dispatch/`) parse without the
+  app's `preprocessorSymbols`, so `#if` blocks on those symbols are inactive there.
 - 🟡 Formatter line wrapping is intentionally limited to supported single-line object properties.
   It does not attempt general expression reflow.
 

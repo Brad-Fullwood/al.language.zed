@@ -65,18 +65,17 @@ impl SourceFileSummary {
                 count_call_suffixes(node, &mut call_suffixes);
                 let procedures = procedure_decls_in_node(node, bytes);
                 let mut calls = BTreeMap::new();
+                let mut declarations = procedures_by_name(node, bytes);
                 for decl in &procedures {
                     let key = decl.name.to_lowercase();
-                    if calls.contains_key(&key) {
+                    let Some(nodes) = declarations.remove(&key) else {
                         continue;
-                    }
-                    let declared: Vec<ProcedureCalls> = find_procedures_in_node(node, bytes, &key)
+                    };
+                    let declared: Vec<ProcedureCalls> = nodes
                         .into_iter()
                         .map(|proc_node| ProcedureCalls::from_node(proc_node, source))
                         .collect();
-                    if !declared.is_empty() {
-                        calls.insert(key, declared);
-                    }
+                    calls.insert(key, declared);
                 }
                 ObjectSummary {
                     kind: info.kind,
@@ -161,6 +160,14 @@ impl SourceFileSummary {
                                             + calls.call_sites.iter().map(site).sum::<usize>()
                                             + map(&calls.record_vars)
                                             + map(&calls.object_vars)
+                                            + calls
+                                                .object_var_kinds
+                                                .keys()
+                                                .map(|k| {
+                                                    std::mem::size_of::<(String, ObjectKind)>()
+                                                        + k.capacity()
+                                                })
+                                                .sum::<usize>()
                                     })
                                     .sum::<usize>()
                         })

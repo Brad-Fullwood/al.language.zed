@@ -1,6 +1,7 @@
 //! REST calls to the BC dev endpoint (publish + metadata).
 //! Split out of the former monolithic `bc_debug.rs` (pure move, no behavior change).
 
+use al_bc::bc_client::{read_body_capped, read_error_body_capped, MAX_BC_JSON_RESPONSE_BYTES};
 use std::path::Path;
 
 use al_bc::bc_client::{upload_dev_app, BcClientError, DevAppsUpload};
@@ -60,17 +61,14 @@ pub async fn get_metadata(
         .map_err(|e| DapError::ConnectionFailed(format!("Metadata request failed: {e}")))?;
 
     if resp.status().is_success() {
-        resp.json()
+        let bytes = read_body_capped(resp, MAX_BC_JSON_RESPONSE_BYTES)
             .await
+            .map_err(|e| DapError::ConnectionFailed(format!("Bad metadata response: {e}")))?;
+        serde_json::from_slice(&bytes)
             .map_err(|e| DapError::ConnectionFailed(format!("Bad metadata response: {e}")))
     } else {
         let status = resp.status();
-        let body = al_bc::bc_client::sanitize_error_body(
-            &resp
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("<body read failed: {e}>")),
-        );
+        let body = al_bc::bc_client::sanitize_error_body(&read_error_body_capped(resp).await);
         Err(DapError::ConnectionFailed(format!(
             "Metadata failed (HTTP {status}): {body}"
         )))
@@ -101,22 +99,17 @@ pub async fn get_web_endpoint(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = al_bc::bc_client::sanitize_error_body(
-            &resp
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("<body read failed: {e}>")),
-        );
+        let body = al_bc::bc_client::sanitize_error_body(&read_error_body_capped(resp).await);
         return Err(DapError::ConnectionFailed(format!(
             "Web endpoint lookup failed (HTTP {status}): {body}. Configure \
              PublicWebBaseUrl on the Business Central server."
         )));
     }
 
-    let body = resp
-        .text()
+    let bytes = read_body_capped(resp, MAX_BC_JSON_RESPONSE_BYTES)
         .await
         .map_err(|e| DapError::ConnectionFailed(format!("Web endpoint body failed: {e}")))?;
+    let body = String::from_utf8_lossy(&bytes);
     let trimmed = body.trim();
     let endpoint = serde_json::from_str::<serde_json::Value>(trimmed)
         .ok()

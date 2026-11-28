@@ -7,7 +7,7 @@ use super::super::XlfCommands;
 
 use super::{
     connect, print_json, project_root, report_error, request_checked, run_command,
-    run_command_with_exit, terminal_lines, terminal_text, text_field,
+    run_command_with_exit, set_command_timeout, terminal_lines, terminal_text, text_field,
 };
 
 /// Print a build/package result in human-readable form and return the exit code.
@@ -107,7 +107,7 @@ pub fn cmd_compile(project_dir: Option<&str>, json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    client.set_request_timeout(BUILD_TIMEOUT);
+    set_command_timeout(&mut client, BUILD_TIMEOUT);
     match request_checked(&mut client, "compile", None) {
         Ok(result) => print_build_result(&result, json),
         Err(e) => report_error(&e, json),
@@ -128,7 +128,7 @@ pub fn cmd_publish(config: Option<&str>, incremental: bool, json: bool) -> ExitC
         Ok(client) => client,
         Err(error) => return report_error(&error, json),
     };
-    client.set_request_timeout(PUBLISH_TIMEOUT);
+    set_command_timeout(&mut client, PUBLISH_TIMEOUT);
     let mut params = serde_json::json!({ "incremental": incremental });
     if let Some(config) = config {
         params["config"] = serde_json::json!(config);
@@ -202,7 +202,7 @@ pub fn cmd_package(json: bool) -> ExitCode {
         Ok(c) => c,
         Err(e) => return report_error(&e, json),
     };
-    client.set_request_timeout(BUILD_TIMEOUT);
+    set_command_timeout(&mut client, BUILD_TIMEOUT);
     match request_checked(&mut client, "package", None) {
         Ok(result) => print_build_result(&result, json),
         Err(e) => report_error(&e, json),
@@ -370,15 +370,30 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
+        let name = entry.file_name();
+        if name == ".git" {
+            continue;
+        }
         let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
+        let to = dst.join(&name);
+        if entry_is_dir(&entry)? {
             copy_dir(&from, &to)?;
         } else {
             std::fs::copy(&from, &to)?;
         }
     }
     Ok(())
+}
+
+/// Whether `entry` is a directory, following a symbolic link to one. The
+/// entry's own file type does not follow links, so a linked folder would
+/// otherwise be copied as a single file.
+fn entry_is_dir(entry: &std::fs::DirEntry) -> std::io::Result<bool> {
+    let file_type = entry.file_type()?;
+    if file_type.is_symlink() {
+        return Ok(std::fs::metadata(entry.path())?.is_dir());
+    }
+    Ok(file_type.is_dir())
 }
 
 /// Create a private, per-invocation temp dir for `--validate`'s alc copy.
@@ -492,13 +507,16 @@ fn validate_with_alc(
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
-            // Skip prior build outputs to keep the copy lean.
-            if name == "output" || name.to_string_lossy().starts_with(".al-build-tmp") {
+            // Skip prior build outputs and git metadata to keep the copy lean.
+            if name == "output"
+                || name == ".git"
+                || name.to_string_lossy().starts_with(".al-build-tmp")
+            {
                 continue;
             }
             let from = entry.path();
             let to = tmp_path.join(&name);
-            if entry.file_type()?.is_dir() {
+            if entry_is_dir(&entry)? {
                 copy_dir(&from, &to)?;
             } else {
                 std::fs::copy(&from, &to)?;
@@ -934,6 +952,24 @@ mod validation_trust_tests {
             error.contains(&format!("--show {}", project.path().display())),
             "{error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_follows_directory_symlink() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::fs::write(real.join("a.app"), b"app").unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join(".git")).unwrap();
+        std::os::unix::fs::symlink(&real, src.join("pkgs")).unwrap();
+        let dst = tmp.path().join("dst");
+
+        copy_dir(&src, &dst).unwrap();
+
+        assert!(dst.join("pkgs").join("a.app").is_file());
+        assert!(!dst.join(".git").exists());
     }
 }
 

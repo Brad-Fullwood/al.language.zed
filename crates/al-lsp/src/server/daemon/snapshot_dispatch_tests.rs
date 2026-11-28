@@ -5,7 +5,7 @@
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
-use al_bc::snapshot::state::{now_secs, SessionStore};
+use al_bc::snapshot::state::{now_secs, SessionRecord, SessionStore};
 use al_protocol::jsonrpc::error_codes;
 use serde_json::{json, Value};
 use wiremock::matchers::{method, path, query_param};
@@ -995,4 +995,208 @@ async fn snapshot_and_profile_commands_pick_their_own_kind_of_session() {
     )
     .await;
     assert_eq!(code, error_codes::INVALID_PARAMS);
+}
+
+const SECOND_CONTEXT: &str = "00389080-795c-4c2e-9d6e-6f1b0f6a2b11";
+const THIRD_CONTEXT: &str = "ed75bfc5-a198-4fe6-ad81-54b95d34965a";
+
+/// Rewrite the project's launch.json with one OnPrem configuration per
+/// `(name, serverInstance)` pair, all at the mock's snapshot port.
+fn write_configs(env: &Env, configs: &[(&str, &str)]) {
+    let port = env.server.address().port();
+    let entries: Vec<Value> = configs
+        .iter()
+        .map(|(name, instance)| {
+            json!({
+                "name": name,
+                "type": "al",
+                "request": "launch",
+                "environmentType": "OnPrem",
+                "server": "http://127.0.0.1",
+                "serverInstance": instance,
+                "authentication": "AAD",
+                "tenant": "default",
+                "snapshotPort": port,
+            })
+        })
+        .collect();
+    std::fs::write(
+        env.root.join(".vscode/launch.json"),
+        json!({ "configurations": entries }).to_string(),
+    )
+    .unwrap();
+}
+
+/// A copy of a started record with no configuration name, under another
+/// context and server instance. A Zed capture saves its record this way.
+fn nameless_copy(record: &SessionRecord, context: &str, server_instance: &str) -> SessionRecord {
+    let mut copy = record.clone();
+    copy.debugging_context = context.to_string();
+    copy.configuration_name = None;
+    copy.server_instance = Some(server_instance.to_string());
+    copy.created_at = now_secs();
+    copy
+}
+
+#[tokio::test]
+async fn nameless_record_resolves_by_target() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    write_configs(&env, &[("Local", "BC"), ("Second", "BC2")]);
+    let store = SessionStore::at(&env.store);
+    let record = store.load(&first).unwrap().unwrap();
+    store
+        .save(&nameless_copy(&record, SECOND_CONTEXT, "BC2"))
+        .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/BC2/snapshotdebugger/status"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("Started"))
+        .mount(&env.server)
+        .await;
+
+    let status = ok(
+        &env,
+        json!({ "cmd": "status", "context": SECOND_CONTEXT, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(status["debuggingContext"], SECOND_CONTEXT);
+    assert_eq!(status["status"], "Started");
+    let sent = requests(&env).await;
+    assert_eq!(
+        sent.last().unwrap().url.path(),
+        "/BC2/snapshotdebugger/status"
+    );
+}
+
+#[tokio::test]
+async fn nameless_record_with_two_matching_configs_is_refused() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    write_configs(&env, &[("Local", "BC"), ("Copy", "BC")]);
+    let store = SessionStore::at(&env.store);
+    let record = store.load(&first).unwrap().unwrap();
+    store
+        .save(&nameless_copy(&record, SECOND_CONTEXT, "BC"))
+        .unwrap();
+
+    let (code, message) = err(
+        &env,
+        json!({ "cmd": "status", "context": SECOND_CONTEXT, "accessToken": TOKEN }),
+    )
+    .await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+    assert!(
+        message.contains("several debug configurations"),
+        "{message}"
+    );
+    assert!(message.contains("Local, Copy"), "{message}");
+    assert_eq!(requests(&env).await.len(), 1, "only the attach was sent");
+}
+
+#[tokio::test]
+async fn default_record_is_from_this_project_and_unfinished() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    let first = ok(&env, start_params()).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let store = SessionStore::at(&env.store);
+    let mut open = store.load(&first).unwrap().unwrap();
+    open.created_at = now_secs() - 100;
+    store.save(&open).unwrap();
+
+    // Newer than `open` but finished, so it is skipped.
+    let mut finished = open.clone();
+    finished.debugging_context = SECOND_CONTEXT.to_string();
+    finished.created_at = now_secs() - 10;
+    finished.finished_at = Some(now_secs() - 10);
+    store.save(&finished).unwrap();
+
+    // Newest and unfinished, but started in another project, so it is skipped.
+    let mut elsewhere = open.clone();
+    elsewhere.debugging_context = THIRD_CONTEXT.to_string();
+    elsewhere.created_at = now_secs() - 5;
+    elsewhere.project_root = PathBuf::from("/work/elsewhere");
+    store.save(&elsewhere).unwrap();
+
+    mock_op(
+        &env,
+        "status",
+        ResponseTemplate::new(200).set_body_string("Started"),
+    )
+    .await;
+    let status = ok(&env, json!({ "cmd": "status", "accessToken": TOKEN })).await;
+    assert_eq!(status["debuggingContext"], first.as_str());
+}
+
+#[tokio::test]
+async fn changed_snapshot_port_is_refused() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    ok(&env, start_params()).await;
+    let port = env.server.address().port();
+    let launch = env.root.join(".vscode/launch.json");
+    let edited = std::fs::read_to_string(&launch)
+        .unwrap()
+        .replace(&format!("\"snapshotPort\":{port}"), "\"snapshotPort\":1");
+    std::fs::write(&launch, edited).unwrap();
+
+    let (code, message) = err(&env, json!({ "cmd": "status", "accessToken": TOKEN })).await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+    assert!(
+        message.contains("tenant or environment changed"),
+        "{message}"
+    );
+    assert_eq!(requests(&env).await.len(), 1, "only the attach was sent");
+}
+
+#[tokio::test]
+async fn start_accepts_session_id_minus_one() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    let mut params = start_params();
+    params["sessionId"] = json!(-1);
+    let context = ok(&env, params).await["debuggingContext"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let saved = SessionStore::at(&env.store)
+        .load(&context)
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.session_id, -1);
+}
+
+#[tokio::test]
+async fn start_refuses_session_id_minus_two() {
+    let env = env().await;
+    let mut params = start_params();
+    params["sessionId"] = json!(-2);
+    let (code, message) = err(&env, params).await;
+    assert_eq!(code, error_codes::INVALID_PARAMS);
+    assert!(
+        message.contains("must be -1 or a non negative integer"),
+        "{message}"
+    );
+    assert!(requests(&env).await.is_empty());
+}
+
+#[tokio::test]
+async fn empty_finish_reports_warnings_field() {
+    let env = env().await;
+    mock_attach(&env, "UserSession").await;
+    ok(&env, start_params()).await;
+    mock_op(&env, "finish", ResponseTemplate::new(200)).await;
+    let result = ok(&env, json!({ "cmd": "finish", "accessToken": TOKEN })).await;
+    assert_eq!(result["empty"], true);
+    assert_eq!(result["warnings"], json!([]));
 }

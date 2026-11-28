@@ -154,7 +154,8 @@ pub(crate) fn snapshot_with_skipped(
     let mut sources = Vec::with_capacity(coherent.len());
     let mut skipped = Vec::new();
     for source in coherent {
-        match validate_object_source(source) {
+        let symbols = workspace.file_index.preprocessor_symbols_for(&source.path);
+        match validate_object_source(source, &symbols) {
             Ok(valid) => sources.push(valid),
             Err(error) => {
                 // Every error `validate_object_source` can produce names a
@@ -211,10 +212,11 @@ pub(crate) fn coherent_snapshot(
 
 fn validate_object_source(
     source: CoherentWorkspaceSource,
+    symbols: &[String],
 ) -> Result<WorkspaceSource, WorkspaceSourceError> {
     let CoherentWorkspaceSource { path, text, tree } = source;
     if tree.root_node().has_error() {
-        let parsed = al_syntax::AlParser::parse_quick(&text);
+        let parsed = al_syntax::AlParser::parse_quick_with_symbols(&text, symbols);
         let details = parsed
             .errors
             .iter()

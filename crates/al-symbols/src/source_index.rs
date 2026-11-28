@@ -329,59 +329,75 @@ impl AppSourceIndex {
         }
 
         let mut archive = ZipArchive::new(file)?;
-        let mut sources = Vec::with_capacity(self.source_paths.len());
-        let mut extracted_total = 0u64;
-        let mut seen = HashSet::new();
-        for path in &self.source_paths {
-            if !seen.insert(path) {
-                continue;
-            }
-            let mut entry = archive.by_name(path).map_err(|error| {
+        read_indexed_sources(
+            &mut archive,
+            &self.source_paths,
+            MAX_TOTAL_EXTRACTED_SOURCE_BYTES,
+        )
+    }
+}
+
+/// Read the indexed sources from `archive`, charging the bytes actually read
+/// against `total_budget`. Header sizes only reject early, because a header
+/// can understate the size that decompresses.
+fn read_indexed_sources<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    paths: &[String],
+    total_budget: u64,
+) -> io::Result<Vec<(String, String)>> {
+    let mut sources = Vec::with_capacity(paths.len());
+    let mut extracted_total = 0u64;
+    let mut seen = HashSet::new();
+    for path in paths {
+        if !seen.insert(path) {
+            continue;
+        }
+        let mut entry = archive.by_name(path).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("indexed AL source '{path}' disappeared from package: {error}"),
+            )
+        })?;
+        if entry.size() > MAX_EXTRACTED_SOURCE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "embedded AL source '{path}' is {} bytes, exceeding the extraction limit of {MAX_EXTRACTED_SOURCE_BYTES} bytes",
+                    entry.size()
+                ),
+            ));
+        }
+
+        let remaining = total_budget.saturating_sub(extracted_total);
+        let limit = remaining.min(MAX_EXTRACTED_SOURCE_BYTES);
+        let mut bytes = Vec::with_capacity(entry.size().min(limit) as usize);
+        entry.by_ref().take(limit + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > limit {
+            return Err(if remaining < MAX_EXTRACTED_SOURCE_BYTES {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!("indexed AL source '{path}' disappeared from package: {error}"),
-                )
-            })?;
-            if entry.size() > MAX_EXTRACTED_SOURCE_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "embedded AL source '{path}' is {} bytes, exceeding the extraction limit of {MAX_EXTRACTED_SOURCE_BYTES} bytes",
-                        entry.size()
-                    ),
-                ));
-            }
-            extracted_total = extracted_total.saturating_add(entry.size());
-            if extracted_total > MAX_TOTAL_EXTRACTED_SOURCE_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
                     "embedded AL sources exceed the 1 GiB package extraction limit",
-                ));
-            }
-
-            let mut bytes = Vec::with_capacity(entry.size() as usize);
-            entry
-                .by_ref()
-                .take(MAX_EXTRACTED_SOURCE_BYTES + 1)
-                .read_to_end(&mut bytes)?;
-            if bytes.len() as u64 > MAX_EXTRACTED_SOURCE_BYTES {
-                return Err(io::Error::new(
+                )
+            } else {
+                io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
                         "embedded AL source '{path}' expanded beyond the extraction limit of {MAX_EXTRACTED_SOURCE_BYTES} bytes"
                     ),
-                ));
-            }
-            let source = String::from_utf8(bytes).map_err(|error| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("embedded AL source '{path}' is not UTF-8: {error}"),
                 )
-            })?;
-            sources.push((path.clone(), source));
+            });
         }
-        Ok(sources)
+        extracted_total += bytes.len() as u64;
+
+        let source = String::from_utf8(bytes).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("embedded AL source '{path}' is not UTF-8: {error}"),
+            )
+        })?;
+        sources.push((path.clone(), source));
     }
+    Ok(sources)
 }
 
 /// Get a cached index for the given `.app` path, rebuilding if the file changed.
@@ -564,6 +580,9 @@ fn scan_object_headers(
     let s = text.as_ref();
     let b = s.as_bytes();
     let mut i = 0usize;
+    // Brace depth outside comments and literals. Object declarations sit at
+    // depth 0, so a keyword inside a body is not a header.
+    let mut depth = 0usize;
 
     while i < b.len() {
         skip_ws_and_comments(b, &mut i);
@@ -607,7 +626,7 @@ fn scan_object_headers(
                 i += 1;
             }
             let ident = &s[start..i];
-            if let Ok(kind) = ident.parse::<ObjectKind>() {
+            if let Some(kind) = ident.parse::<ObjectKind>().ok().filter(|_| depth == 0) {
                 let mut j = i;
                 skip_ws_and_comments(b, &mut j);
                 let (id, next) = match parse_int(b, j) {
@@ -641,6 +660,11 @@ fn scan_object_headers(
                 }
             }
         } else {
+            match b[i] {
+                b'{' => depth += 1,
+                b'}' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
             i += 1;
         }
     }
@@ -873,6 +897,48 @@ mod tests {
         let src = b"'table 1 NotReal' enum 7 RealEnum\n{";
         let got = parse_object_header(src).unwrap();
         assert_eq!(got, (ObjectKind::Enum, 7, "RealEnum".to_string()));
+    }
+
+    #[test]
+    fn nested_interface_variable_is_not_a_header() {
+        let src = r#"codeunit 7001 "Price Calc. Mgt."
+{
+    var
+        Handler: Interface "Price Calculation";
+}
+"#;
+        assert_eq!(
+            parse_object_headers(src.as_bytes(), false),
+            vec![(ObjectKind::Codeunit, 7001, "Price Calc. Mgt.".to_string())]
+        );
+    }
+
+    #[test]
+    fn source_path_prefers_real_interface_file() {
+        // The codeunit comes first in the archive. Before the fix its body
+        // match was the first (Interface, "price calculation") entry, so the
+        // interface resolved to the codeunit file.
+        let codeunit = r#"codeunit 7001 "Price Calc. Mgt."
+{
+    var
+        Handler: Interface "Price Calculation";
+}
+"#;
+        let interface = r#"interface "Price Calculation"
+{
+    procedure Init();
+}
+"#;
+        let path = write_app(&[
+            ("src/Calc.Codeunit.al", codeunit),
+            ("src/PriceCalculation.Interface.al", interface),
+        ]);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+
+        assert_eq!(
+            idx.source_path_for_entry(&entry(ObjectKind::Interface, 0, "Price Calculation")),
+            Some("src/PriceCalculation.Interface.al")
+        );
     }
 
     #[test]
@@ -1410,6 +1476,29 @@ mod tests {
                 "namespace Contoso.Tools;".to_string()
             )]
         );
+    }
+
+    #[test]
+    fn extraction_total_counts_read_bytes() {
+        let files = [
+            ("src/A.al", "codeunit 50120 A\n{\n}\n"),
+            ("src/B.al", "codeunit 50121 B\n{\n}\n"),
+        ];
+        let total: u64 = files.iter().map(|(_, body)| body.len() as u64).sum();
+        let path = write_app(&files);
+        let idx = AppSourceIndex::from_app_path(&path).unwrap();
+        let mut archive = ZipArchive::new(File::open(&path).unwrap()).unwrap();
+
+        let sources = read_indexed_sources(&mut archive, &idx.source_paths, total).unwrap();
+        assert_eq!(
+            sources.len(),
+            2,
+            "a budget equal to the bytes read must fit"
+        );
+
+        let error = read_indexed_sources(&mut archive, &idx.source_paths, total - 1).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("package extraction limit"));
     }
 
     #[test]

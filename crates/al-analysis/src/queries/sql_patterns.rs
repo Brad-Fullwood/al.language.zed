@@ -119,11 +119,7 @@ fn analyze_proc_text(
 
     for (offset, line) in proc_text.lines().enumerate() {
         let line_num = start_line + offset as u32;
-        let trimmed = line.trim_start();
-        if trimmed.starts_with("//") {
-            continue;
-        }
-        let cleaned = strip_string_literals(line);
+        let cleaned = strip_string_literals(strip_line_comment(line));
         let lower = cleaned.trim().to_lowercase();
         if lower.is_empty() {
             continue;
@@ -134,7 +130,8 @@ fn analyze_proc_text(
         let opens_block = lower == "begin"
             || lower.ends_with(" begin")
             || lower.ends_with("\tbegin")
-            || lower.ends_with("do begin");
+            || lower.ends_with("do begin")
+            || is_case_header(&lower);
         let closes_block = lower == "end"
             || lower.starts_with("end;")
             || lower.starts_with("end ")
@@ -245,7 +242,6 @@ fn analyze_proc_text(
                     line_num,
                 ));
             }
-            filtered_records.remove(receiver);
         }
 
         // A statement consumed the pending single-statement loop body.
@@ -367,9 +363,10 @@ fn receiver_before(lower: &str, dot: usize) -> &str {
         }
     }
     let start = before
-        .rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '"'))
-        .map(|index| index + 1)
-        .unwrap_or(0);
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '_' || c == '.' || c == '"'))
+        .map_or(0, |(index, c)| index + c.len_utf8());
     before[start..].trim_end_matches('.')
 }
 
@@ -387,11 +384,13 @@ fn contains_get_call(lower: &str) -> bool {
     }
 }
 
-/// Replace AL string literal contents (`'...'` and `"..."`) with spaces so
-/// that text-pattern matchers do not see method-call-like substrings buried
-/// inside literals (e.g. `if x = 'FindFirst()' then ...`). Quotes themselves
-/// are preserved so token shape is unchanged for downstream loop/begin/end
-/// detection.
+/// Replace AL text literal contents (`'...'`) with spaces so that text-pattern
+/// matchers do not see method-call-like substrings buried inside them (e.g.
+/// `if x = 'FindFirst()' then ...`). Quotes themselves are preserved so token
+/// shape is unchanged for downstream loop/begin/end detection. Double-quoted
+/// names are identifiers, so their text stays: `"Sales Line".FindSet()` keeps
+/// its receiver. An apostrophe inside a double-quoted name does not start a
+/// literal.
 fn strip_string_literals(line: &str) -> String {
     let mut out = String::with_capacity(line.len());
     let mut in_single = false;
@@ -406,11 +405,36 @@ fn strip_string_literals(line: &str) -> String {
                 in_double = !in_double;
                 out.push(ch);
             }
-            _ if in_single || in_double => out.push(' '),
+            _ if in_single => out.push(' '),
             _ => out.push(ch),
         }
     }
     out
+}
+
+/// The line up to a `//` that starts a comment. A `//` inside a text literal
+/// or a double-quoted name is not a comment.
+fn strip_line_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut in_single = false;
+    let mut in_double = false;
+    for (index, &byte) in bytes.iter().enumerate() {
+        match byte {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            b'/' if !in_single && !in_double && bytes.get(index + 1) == Some(&b'/') => {
+                return &line[..index];
+            }
+            _ => {}
+        }
+    }
+    line
+}
+
+/// Whether `lower` is a `case <expression> of` header. The case closes with its
+/// own `end`, so the header opens a block the way `begin` does.
+fn is_case_header(lower: &str) -> bool {
+    lower.starts_with("case ") && lower.split_whitespace().last() == Some("of")
 }
 
 fn is_loop_start(lower: &str) -> bool {
@@ -774,6 +798,95 @@ codeunit 50101 "Second CU"
         // distinct in the per-variable filter set.
         assert_eq!(receiver_before("\"my rec\".setrange(", 8), "\"my rec\"");
         assert_eq!(receiver_before("salesline.findset()", 9), "salesline");
+    }
+
+    #[test]
+    fn receiver_scan_handles_nbsp() {
+        // NBSP and section sign are two bytes each. The scan must step over
+        // the whole character, not `index + 1`, or the slice panics.
+        for sep in ["\u{a0}", "\u{a7}"] {
+            let text = format!("if{sep}cust.setrange(");
+            assert_eq!(receiver_before(&text, text.find('.').unwrap()), "cust");
+        }
+    }
+
+    #[test]
+    fn filter_survives_second_findset() {
+        let violations = violations_for(
+            r#"    procedure Scan()
+    begin
+        Cust.SetRange("No.", '1000');
+        Cust.FindSet();
+        Cust.FindSet();
+    end;"#,
+        );
+        assert!(!violations
+            .iter()
+            .any(|v| v.kind == SqlAntiPattern::FindSetWithoutFilters));
+    }
+
+    #[test]
+    fn quoted_receiver_is_kept() {
+        // Both quoted names used to blank to the same text, so the filter on
+        // "Item Entry" also covered "Sales Line".
+        let violations = violations_for(
+            r#"    procedure Scan()
+    begin
+        "Item Entry".SetRange("Entry No.", 1);
+        "Sales Line".FindSet();
+    end;"#,
+        );
+        let unfiltered = violations
+            .iter()
+            .filter(|v| v.kind == SqlAntiPattern::FindSetWithoutFilters)
+            .count();
+        assert_eq!(unfiltered, 1);
+    }
+
+    #[test]
+    fn case_block_keeps_depth() {
+        let violations = violations_for(
+            r#"    procedure Scan()
+    begin
+        for i := 1 to 2 do begin
+            case i of
+                1:
+                    Cust.Init();
+            end;
+            Cust.FindFirst();
+        end;
+    end;"#,
+        );
+        let in_loop = violations
+            .iter()
+            .filter(|v| v.kind == SqlAntiPattern::FindInLoop)
+            .count();
+        assert_eq!(in_loop, 1);
+    }
+
+    #[test]
+    fn commented_call_is_ignored() {
+        let violations = violations_for(
+            r#"    procedure Scan()
+    begin
+        Cust.Init(); // Cust.FindSet();
+    end;"#,
+        );
+        assert!(!violations
+            .iter()
+            .any(|v| v.kind == SqlAntiPattern::FindSetWithoutFilters));
+    }
+
+    #[test]
+    fn comment_marker_in_string_is_text() {
+        assert_eq!(
+            strip_line_comment("Message('see // below'); // Cust.FindSet();"),
+            "Message('see // below'); "
+        );
+        assert_eq!(
+            strip_line_comment("\"A//B\".SetRange(1);"),
+            "\"A//B\".SetRange(1);"
+        );
     }
 
     fn violations_for(body: &str) -> Vec<SqlPatternViolation> {

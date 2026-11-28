@@ -1,7 +1,8 @@
 //! Range formatting: format the whole document for context, then emit edits
-//! covering only the requested lines.
+//! covering only the requested lines. The passes that change the line count
+//! are off for this, so every edit stays inside the requested lines.
 
-use super::indent::format_al;
+use super::indent::format_al_keeping_line_count;
 use super::options::{BlankLinesBetweenProcedures, FormatOptions};
 
 /// Transport-agnostic text edit emitted by [`format_range`].
@@ -29,7 +30,7 @@ pub fn format_range(
     end_line: u32,
     options: &FormatOptions,
 ) -> Option<Vec<FormatTextEdit>> {
-    let formatted_full = format_al(text, options);
+    let formatted_full = format_al_keeping_line_count(text, options);
 
     let orig_lines: Vec<&str> = text.lines().collect();
     let fmt_lines: Vec<&str> = formatted_full.lines().collect();
@@ -166,6 +167,40 @@ fn extract_formatted_region<'a>(
 mod tests {
     use super::{format_range, FormatTextEdit};
     use crate::formatting::{BlankLinesBetweenProcedures, FormatOptions};
+
+    /// The full format moves `{` onto its own line, which shifts every later
+    /// line by one. The edit for line 3 used to carry the new line 3, `begin`.
+    #[test]
+    fn range_format_with_next_line_brace_edits_only_range() {
+        let input =
+            "codeunit 50100 Test {\n    procedure A()\n    begin\n    x :=  1;\n    end;\n}\n";
+        let edits = format_range(input, 3, 3, &FormatOptions::default()).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!((edits[0].start_line, edits[0].end_line), (3, 3));
+        assert_eq!(edits[0].new_text.trim_end(), "        x :=  1;");
+    }
+
+    /// `One` inserts a blank line between procedures in a full format, and
+    /// `SameLine` merges lines. Neither may move the text of a range edit.
+    #[test]
+    fn range_format_ignores_passes_that_change_the_line_count() {
+        let input = "codeunit 50100 Test\n{\n    procedure A()\n    begin\n    end;\n    procedure B()\n    begin\n    x := 1;\n    end;\n}\n";
+        for opts in [
+            FormatOptions {
+                blank_lines_between_procedures: BlankLinesBetweenProcedures::One,
+                ..FormatOptions::default()
+            },
+            FormatOptions {
+                brace_style: crate::formatting::BraceStyle::SameLine,
+                ..FormatOptions::default()
+            },
+        ] {
+            let edits = format_range(input, 7, 7, &opts).unwrap();
+            assert_eq!(edits.len(), 1);
+            assert_eq!((edits[0].start_line, edits[0].end_line), (7, 7));
+            assert_eq!(edits[0].new_text.trim_end(), "        x := 1;");
+        }
+    }
 
     #[test]
     fn test_format_range_no_change_needed() {

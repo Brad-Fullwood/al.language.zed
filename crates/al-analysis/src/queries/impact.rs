@@ -333,8 +333,10 @@ fn keyword_before(text: &str, offset: usize) -> Option<&str> {
     let before = text.get(..offset)?.trim_end();
     let before = before.strip_suffix("::").unwrap_or(before).trim_end();
     let start = before
-        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .map_or(0, |index| index + 1);
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |(index, c)| index + c.len_utf8());
     let word = &before[start..];
     (!word.is_empty()).then_some(word)
 }
@@ -971,8 +973,10 @@ const FIELD_ARGUMENT_METHODS: &[(&str, ImpactType)] = &[
 fn field_argument_call(text: &str, offset: usize) -> Option<(String, ImpactType)> {
     let before = text.get(..offset)?.trim_end().strip_suffix('(')?.trim_end();
     let start = before
-        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .map_or(0, |index| index + 1);
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |(index, c)| index + c.len_utf8());
     let method = &before[start..];
     let (_, use_type) = FIELD_ARGUMENT_METHODS
         .iter()
@@ -997,9 +1001,10 @@ fn receiver_before(text: &str, offset: usize) -> Option<String> {
         return Some(stripped[open + 1..].to_string());
     }
     let start = before
-        .rfind(|c: char| !(c.is_alphanumeric() || c == '_'))
-        .map(|index| index + 1)
-        .unwrap_or(0);
+        .char_indices()
+        .rev()
+        .find(|&(_, c)| !(c.is_alphanumeric() || c == '_'))
+        .map_or(0, |(index, c)| index + c.len_utf8());
     let receiver = &before[start..];
     if receiver.is_empty() {
         None
@@ -1014,6 +1019,25 @@ mod tests {
     use al_symbols::*;
     use al_workspace::Workspace;
     use std::path::PathBuf;
+
+    #[test]
+    fn receiver_scan_handles_nbsp() {
+        // NBSP and section sign are two bytes each. Each scan must step over
+        // the whole character, not `index + 1`, or the slice panics.
+        for sep in ["\u{a0}", "\u{a7}"] {
+            let text = format!("x{sep}Cust.SetRange(\"Name\", 1)");
+            let name = text.find("\"Name\"").unwrap();
+            let call = field_argument_call(&text, name).map(|(receiver, _)| receiver);
+            assert_eq!(call, Some("Cust".to_string()));
+            assert_eq!(
+                receiver_before(&text, text.find("SetRange").unwrap()),
+                Some("Cust".to_string())
+            );
+
+            let page = format!("x{sep}Page");
+            assert_eq!(keyword_before(&page, page.len()), Some("Page"));
+        }
+    }
 
     #[test]
     fn parse_symbol_unescapes_a_doubled_quote_in_either_part() {

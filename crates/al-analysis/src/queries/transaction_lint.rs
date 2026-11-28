@@ -156,8 +156,12 @@ fn lint_effects(
     if effects.is_empty() {
         return Vec::new();
     }
-    let by_node: HashMap<NodeId, &ProcedureEffects> =
-        effects.iter().map(|effect| (effect.node, effect)).collect();
+    // Several procedures can share a node, such as a table's field triggers,
+    // so each node keeps every effect.
+    let mut by_node: HashMap<NodeId, Vec<&ProcedureEffects>> = HashMap::new();
+    for effect in effects {
+        by_node.entry(effect.node).or_default().push(effect);
+    }
 
     let mut diagnostics = Vec::new();
     let mut seen: HashSet<(&'static str, PathBuf, u32, u32)> = HashSet::new();
@@ -177,7 +181,7 @@ fn lint_effects(
 
 fn lint_commits(
     effects: &[ProcedureEffects],
-    by_node: &HashMap<NodeId, &ProcedureEffects>,
+    by_node: &HashMap<NodeId, Vec<&ProcedureEffects>>,
     graph: &CallGraph,
     out: &mut Vec<WorkspaceLintDiagnostic>,
     seen: &mut HashSet<(&'static str, PathBuf, u32, u32)>,
@@ -233,7 +237,7 @@ fn lint_commits(
 
 fn lint_try_stacks(
     effects: &[ProcedureEffects],
-    by_node: &HashMap<NodeId, &ProcedureEffects>,
+    by_node: &HashMap<NodeId, Vec<&ProcedureEffects>>,
     graph: &CallGraph,
     out: &mut Vec<WorkspaceLintDiagnostic>,
     seen: &mut HashSet<(&'static str, PathBuf, u32, u32)>,
@@ -241,15 +245,16 @@ fn lint_try_stacks(
     for root in effects.iter().filter(|effect| effect.is_try_function) {
         let reachable = reachable_callees_with_paths(root.node, graph);
         for (node, path) in reachable {
-            let Some(effect) = by_node.get(&node).copied() else {
+            let Some(group) = by_node.get(&node) else {
                 // A genuinely symbol-only dependency has no body from which a
                 // write can be proven. Source-backed dependencies are present
                 // in `by_node` and participate normally.
                 continue;
             };
-            for write in &effect.writes {
-                let (file, range, message) = if effect.reportable {
-                    (
+            for &effect in group {
+                for write in &effect.writes {
+                    let (file, range, message) = if effect.reportable {
+                        (
                         effect.file.clone(),
                         write.range,
                         format!(
@@ -258,12 +263,12 @@ fn lint_try_stacks(
                             format_path(graph, &path)
                         ),
                     )
-                } else if root.reportable {
-                    // The dependency body is known, but editor diagnostics
-                    // must point into the user's project. Anchor the warning on
-                    // the project TryFunction declaration and name the proven
-                    // external write/path in the message.
-                    (
+                    } else if root.reportable {
+                        // The dependency body is known, but editor diagnostics
+                        // must point into the user's project. Anchor the warning on
+                        // the project TryFunction declaration and name the proven
+                        // external write/path in the message.
+                        (
                         root.file.clone(),
                         root.declaration_range,
                         format!(
@@ -272,20 +277,21 @@ fn lint_try_stacks(
                             format_path(graph, &path)
                         ),
                     )
-                } else {
-                    continue;
-                };
-                push_once(
-                    out,
-                    seen,
-                    WorkspaceLintDiagnostic {
-                        code: DATABASE_WRITE_IN_TRY_STACK,
-                        message,
-                        file,
-                        range,
-                        severity: WorkspaceLintSeverity::Warning,
-                    },
-                );
+                    } else {
+                        continue;
+                    };
+                    push_once(
+                        out,
+                        seen,
+                        WorkspaceLintDiagnostic {
+                            code: DATABASE_WRITE_IN_TRY_STACK,
+                            message,
+                            file,
+                            range,
+                            severity: WorkspaceLintSeverity::Warning,
+                        },
+                    );
+                }
             }
         }
     }
@@ -312,7 +318,7 @@ fn push_once(
 /// runtime call direction, so it is excluded from transaction traversal.
 fn find_upstream_write_path(
     start: NodeId,
-    effects: &HashMap<NodeId, &ProcedureEffects>,
+    effects: &HashMap<NodeId, Vec<&ProcedureEffects>>,
     graph: &CallGraph,
 ) -> Option<Vec<NodeId>> {
     let mut queue = VecDeque::from([(start, vec![start])]);
@@ -330,7 +336,7 @@ fn find_upstream_write_path(
             next.push(edge.from);
             if effects
                 .get(&edge.from)
-                .is_some_and(|effect| !effect.writes.is_empty())
+                .is_some_and(|group| group.iter().any(|effect| !effect.writes.is_empty()))
             {
                 next.reverse();
                 return Some(next);
@@ -1131,5 +1137,42 @@ codeunit 50100 "Local"
         assert!(transaction_lint_rules()
             .iter()
             .any(|rule| rule.code == DATABASE_WRITE_IN_TRY_STACK));
+    }
+
+    /// Two effects on one node, as when a table's field triggers share a node.
+    /// Both writes must reach the try-stack lint.
+    #[test]
+    fn two_effects_on_one_node_are_kept() {
+        let effect = |is_try_function: bool, line: u32, label: &str| ProcedureEffects {
+            node: NodeId(7),
+            file: PathBuf::from("Try.al"),
+            declaration_range: Range::default(),
+            reportable: true,
+            is_try_function,
+            writes: vec![EffectSite {
+                range: Range {
+                    start: super::super::Position { line, character: 4 },
+                    end: super::super::Position {
+                        line,
+                        character: 12,
+                    },
+                },
+                byte_start: line as usize,
+                label: label.to_string(),
+            }],
+            commits: Vec::new(),
+            subscriber_target: None,
+        };
+        let effects = [
+            effect(true, 1, "database write Rec.Insert()"),
+            effect(false, 2, "database write Rec.Modify()"),
+        ];
+
+        let lines: Vec<u32> = lint_effects(&effects, &CallGraph::new())
+            .iter()
+            .filter(|diagnostic| diagnostic.code == DATABASE_WRITE_IN_TRY_STACK)
+            .map(|diagnostic| diagnostic.range.start.line)
+            .collect();
+        assert_eq!(lines, [1, 2]);
     }
 }

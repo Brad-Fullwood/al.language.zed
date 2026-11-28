@@ -207,6 +207,9 @@ pub enum ProfileCommands {
         /// Debugging context (GUID). Default: the latest profiling session.
         #[arg(long)]
         context: Option<String>,
+        /// Allow a Production environment
+        #[arg(long = "allow-production")]
+        allow_production: bool,
     },
     /// Finish the profiling session, save the zip and extract the .alcpuprofile
     Stop {
@@ -216,6 +219,9 @@ pub enum ProfileCommands {
         /// Folder for the files, inside the project. Default: `.snapshots`.
         #[arg(long)]
         out: Option<String>,
+        /// Allow a Production environment
+        #[arg(long = "allow-production")]
+        allow_production: bool,
     },
     /// Parse a .alcpuprofile file and show hotspots
     Analyze {

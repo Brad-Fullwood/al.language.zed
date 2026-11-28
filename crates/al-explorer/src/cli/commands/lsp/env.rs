@@ -362,7 +362,7 @@ pub fn cmd_download_symbols(
         Err(e) => return report_error(&e, json),
     };
     // Symbol downloads may transfer large packages from NuGet or BC.
-    client.set_request_timeout(std::time::Duration::from_secs(900));
+    set_command_timeout(&mut client, std::time::Duration::from_secs(900));
     let params = serde_json::json!({
         "source": source,
     });

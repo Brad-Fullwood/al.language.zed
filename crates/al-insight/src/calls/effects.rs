@@ -155,6 +155,9 @@ fn collect_effect_sites(
         if node.kind() == "postfix_expression" {
             let mut cursor = node.walk();
             let children: Vec<_> = node.children(&mut cursor).collect();
+            // Arguments and receivers are walked as children, so `Log(R.Modify())`
+            // reaches the inner Modify.
+            stack.extend(children.iter().copied());
             let Some(last) = children.last().copied() else {
                 continue;
             };
@@ -166,6 +169,13 @@ fn collect_effect_sites(
                     let name = primary.utf8_text(bytes).unwrap_or("").trim();
                     if name.eq_ignore_ascii_case("Commit") {
                         commits.push(effect_site(primary, bytes, "Commit()"));
+                    } else if is_implicit_record_write(name) && is_table_object(node) {
+                        // An unqualified Modify() in a table object acts on the implicit Rec.
+                        writes.push(effect_site(
+                            primary,
+                            bytes,
+                            &format!("database write Rec.{name}()"),
+                        ));
                     }
                 }
                 "member_call_suffix" | "scope_call_suffix" => {
@@ -202,8 +212,8 @@ fn collect_effect_sites(
                 }
                 _ => {}
             }
-            // A postfix expression owns its nested suffixes; do not descend and
-            // accidentally report the same call twice.
+            // The children were pushed above. Skip the generic descent so they
+            // are not walked twice.
             continue;
         }
         let mut cursor = node.walk();
@@ -270,4 +280,78 @@ fn is_database_write_method(method: &str) -> bool {
         method.to_ascii_lowercase().as_str(),
         "insert" | "insertifnotexists" | "modify" | "modifyall" | "delete" | "deleteall" | "rename"
     )
+}
+
+/// Record methods that write when called without a receiver in a table object.
+fn is_implicit_record_write(method: &str) -> bool {
+    matches!(
+        method.to_ascii_lowercase().as_str(),
+        "insert" | "modify" | "delete" | "modifyall" | "deleteall"
+    )
+}
+
+fn is_table_object(node: tree_sitter::Node<'_>) -> bool {
+    super::var_types::enclosing_object(node)
+        .and_then(|object| object.child_by_field_name("kind"))
+        .is_some_and(|kind| matches!(kind.kind(), "kw_table" | "kw_tableextension"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write labels of the named procedure or trigger in `source`.
+    fn write_labels(source: &str, procedure: &str) -> Vec<String> {
+        let parsed = al_syntax::AlParser::parse_quick(source);
+        node_effect_sites(parsed.tree.root_node(), &parsed.tree, source)
+            .into_iter()
+            .find(|effect| effect.name == procedure)
+            .unwrap_or_else(|| panic!("no effects for {procedure}"))
+            .writes
+            .into_iter()
+            .map(|site| site.label)
+            .collect()
+    }
+
+    #[test]
+    fn nested_call_argument_effect_is_collected() {
+        let source = r#"table 50100 T
+{
+    fields { field(1; Id; Integer) { } }
+}
+codeunit 50100 C
+{
+    procedure P(var R: Record T)
+    begin
+        Log(R.Modify());
+    end;
+    procedure Log(b: Boolean) begin end;
+}"#;
+        assert_eq!(write_labels(source, "P"), ["database write R.Modify()"]);
+    }
+
+    #[test]
+    fn bare_modify_in_table_trigger_is_collected() {
+        let table = r#"table 50100 T
+{
+    fields { field(1; Id; Integer) { } }
+    trigger OnInsert()
+    begin
+        Modify();
+    end;
+}"#;
+        assert_eq!(
+            write_labels(table, "OnInsert"),
+            ["database write Rec.Modify()"]
+        );
+
+        let codeunit = r#"codeunit 50100 C
+{
+    procedure P()
+    begin
+        Modify();
+    end;
+}"#;
+        assert!(write_labels(codeunit, "P").is_empty());
+    }
 }

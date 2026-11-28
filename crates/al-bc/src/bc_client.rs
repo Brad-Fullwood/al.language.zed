@@ -30,7 +30,7 @@ use reqwest::{Client, StatusCode};
 use thiserror::Error;
 use tracing::{debug, warn};
 
-use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType};
+use crate::launch::{AuthMethod, BcServerConfig, EnvironmentType, DEFAULT_ONPREM_DEV_PORT};
 
 /// Maximum bytes of an HTTP error body kept in BcClientError messages.
 /// Anything past this is replaced with a `... [N more bytes truncated]`
@@ -58,7 +58,11 @@ pub fn sanitize_error_body(body: &str) -> String {
         body.to_string()
     };
     for needle in [
-        "Authorization: Bearer ",
+        // A bare `Bearer ` also covers `Authorization: Bearer `. The debug
+        // negotiate URL carries the token as `Authentication=Bearer%20<token>`,
+        // and a gateway page that echoes the URL repeats it.
+        "Bearer ",
+        "Bearer%20",
         "Authorization:Bearer ",
         // The UserPassword/Windows path sends `Authorization: Basic
         // <base64(user:pass)>`, so a verbose IIS/BC 401 or 500 page that echoes
@@ -178,7 +182,7 @@ async fn read_app_capped(app_path: &Path) -> Result<Vec<u8>, BcClientError> {
 /// in practice (under 1 MB). 16 MB is a generous defence-in-depth bound
 /// that mirrors the NuGet metadata cap and stops a
 /// misbehaving server from streaming gigabytes through `serde_json`.
-pub(crate) const MAX_BC_JSON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
+pub const MAX_BC_JSON_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
 
 /// Read a JSON response body, refusing bodies larger than
 /// `MAX_BC_JSON_RESPONSE_BYTES`. Requires a `Content-Length` header so
@@ -226,13 +230,13 @@ pub async fn read_json_body_capped<T: serde::de::DeserializeOwned>(
 /// `.alcpuprofile` and snapshot zips are typically a few MB to tens
 /// of MB; anything past 500 MB is almost certainly a misbehaving server and
 /// we refuse to buffer it into the daemon's address space.
-pub(crate) const MAX_BC_BINARY_RESPONSE_BYTES: u64 = 500 * 1024 * 1024;
+pub const MAX_BC_BINARY_RESPONSE_BYTES: u64 = 500 * 1024 * 1024;
 
 /// Read a binary response body, refusing bodies larger than
 /// `MAX_BC_BINARY_RESPONSE_BYTES`. A body whose advertised `Content-Length`
 /// exceeds the cap is rejected before any bytes are buffered; a server that
-/// lies about (or omits) `Content-Length` is still bounded by the post-read
-/// size re-check. Same defensive shape as `read_json_body_capped` and
+/// lies about (or omits) `Content-Length` is still bounded by the chunked read
+/// in `read_body_capped`. Same defensive shape as `read_json_body_capped` and
 /// `bc_server::download_one`.
 pub async fn read_binary_body_capped(
     response: reqwest::Response,
@@ -248,17 +252,27 @@ pub async fn read_binary_body_capped(
             });
         }
     }
-    let bytes = response.bytes().await?;
-    if bytes.len() as u64 > MAX_BC_BINARY_RESPONSE_BYTES {
-        return Err(BcClientError::ServerError {
-            status,
-            message: format!(
-                "binary response actual body {actual} bytes exceeds {MAX_BC_BINARY_RESPONSE_BYTES} byte limit — server lied about Content-Length",
-                actual = bytes.len(),
-            ),
-        });
+    read_body_capped(response, MAX_BC_BINARY_RESPONSE_BYTES).await
+}
+
+/// Read a response body in chunks and fail once the total would exceed `cap`.
+/// A body without a usable `Content-Length` is bounded this way too.
+pub async fn read_body_capped(
+    mut response: reqwest::Response,
+    cap: u64,
+) -> Result<Vec<u8>, BcClientError> {
+    let status = response.status().as_u16();
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if bytes.len() as u64 + chunk.len() as u64 > cap {
+            return Err(BcClientError::ServerError {
+                status,
+                message: format!("response body exceeds {cap} byte limit"),
+            });
+        }
+        bytes.extend_from_slice(&chunk);
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 /// Maximum number of bytes to buffer from a non-2xx (error) response body
@@ -355,6 +369,18 @@ pub async fn upload_dev_app(
     if status.is_success() {
         return Ok(());
     }
+    if status.is_redirection() {
+        let location = match response.headers().get(reqwest::header::LOCATION) {
+            Some(value) => String::from_utf8_lossy(value.as_bytes()).into_owned(),
+            None => "(no Location header)".to_string(),
+        };
+        return Err(BcClientError::ServerError {
+            status: status.as_u16(),
+            message: format!(
+                "the server redirected the upload to {location}, nothing was published"
+            ),
+        });
+    }
     let message = read_error_body_capped(response).await;
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
         return Err(BcClientError::AuthenticationFailed {
@@ -385,6 +411,8 @@ impl BcClient {
         let client = Client::builder()
             .danger_accept_invalid_certs(config.accept_invalid_certs)
             .timeout(Duration::from_secs(300)) // 5 min for large uploads
+            // Redirects are not followed. `upload_dev_app` reports a 3xx as an error.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("reqwest client must support the configured TLS backend");
 
@@ -473,29 +501,12 @@ impl BcClient {
     }
 }
 
-/// Fallback base URL used when `config.server` fails the [`is_safe_http_server`]
-/// allowlist. `.invalid` is the reserved TLD from RFC 2606 — guaranteed never
-/// to resolve — so a rejected `file://`/`gopher://`/etc. server config turns
-/// into an obvious connection failure instead of ever reaching the URL a
-/// hostile or misconfigured launch config supplied.
-const REJECTED_SERVER_BASE_URL: &str = "http://bc-client-rejected-unsafe-server.invalid";
-
-/// BC's documented on-premises dev-services port when a launch config omits
-/// `port` and the server string itself carries no explicit port. Applying
-/// this only when the host has no port of its own avoids double-porting a
-/// `server` value that already embeds one (e.g. a full `http://host:1234`
-/// URL, as used by every mock-server test in this crate).
-const DEFAULT_ONPREM_DEV_PORT: u16 = 7049;
-
-/// Whether `host` (the part of `server` after any `scheme://`) already
-/// carries an explicit `:<port>` suffix.
-fn host_has_explicit_port(host: &str) -> bool {
-    host.rsplit_once(':')
-        .map(|(_, maybe_port)| {
-            !maybe_port.is_empty() && maybe_port.bytes().all(|b| b.is_ascii_digit())
-        })
-        .unwrap_or(false)
-}
+/// Fallback base URL used when `config.server` fails the
+/// [`is_safe_http_server`](crate::launch::is_safe_http_server) allowlist.
+/// `.invalid` is the reserved TLD from RFC 2606 and does not resolve, so a
+/// rejected `file://` or `gopher://` server config fails to connect and the
+/// request does not reach the URL the launch config supplied.
+pub const REJECTED_SERVER_BASE_URL: &str = "http://bc-client-rejected-unsafe-server.invalid";
 
 /// Build the base URL for the BC Dev API from a server config.
 ///
@@ -511,29 +522,9 @@ fn build_base_url(config: &BcServerConfig) -> Result<String, String> {
             // (`launch.rs::dev_packages_url`) enforces on this same field —
             // refuse to build a request URL from a `file://`/`gopher://`/etc.
             // server value instead of silently embedding it.
-            let Some(with_scheme) = crate::launch::server_with_scheme(server) else {
-                return Ok(REJECTED_SERVER_BASE_URL.to_string());
-            };
-            let server_trimmed = with_scheme.trim_end_matches('/');
-            let host = server_trimmed
-                .split_once("://")
-                .map_or(server_trimmed, |(_, rest)| rest);
-
-            match config.port {
-                Some(port) => format!("{}:{}/{}", server_trimmed, port, instance),
-                // `server` already carries its own port (e.g. a full
-                // `http://host:1234` URL, as every mock-server test in this
-                // crate uses) — do not double it up.
-                None if host_has_explicit_port(host) => {
-                    format!("{}/{}", server_trimmed, instance)
-                }
-                // No port anywhere: apply BC's documented on-prem dev
-                // default instead of silently falling through to whatever
-                // the scheme's default port is (80 for http).
-                None => format!(
-                    "{}:{}/{}",
-                    server_trimmed, DEFAULT_ONPREM_DEV_PORT, instance
-                ),
+            match crate::launch::onprem_origin(server, config.port, DEFAULT_ONPREM_DEV_PORT) {
+                Some(origin) => format!("{origin}/{instance}"),
+                None => REJECTED_SERVER_BASE_URL.to_string(),
             }
         }),
         EnvironmentType::Sandbox | EnvironmentType::Production => config.cloud_base_url(),
@@ -686,6 +677,16 @@ mod tests {
         ] {
             assert!(!is_guid(bad), "{bad:?} must be refused");
         }
+    }
+
+    #[test]
+    fn sanitize_error_body_redacts_bare_and_url_encoded_bearer() {
+        let out = sanitize_error_body(
+            "<p>Bearer abc.def.ghi</p> url ?Authentication=Bearer%20tok.en.x&tenant=t",
+        );
+        assert!(!out.contains("abc.def.ghi"), "{out}");
+        assert!(!out.contains("tok.en.x"), "{out}");
+        assert!(out.contains("tenant=t"), "{out}");
     }
 
     #[test]
@@ -965,6 +966,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn binary_body_without_length_stops_at_cap() {
+        // Chunked body, no Content-Length: the cap is checked per chunk, so
+        // the 1024-byte cap stops early and the 8192-byte cap keeps all of it.
+        async fn serve_chunked_body() -> String {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 65536];
+                let _ = sock.read(&mut buf).await;
+                let mut reply = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+                for _ in 0..8 {
+                    reply.extend_from_slice(b"200\r\n");
+                    reply.extend_from_slice(&[b'x'; 512]);
+                    reply.extend_from_slice(b"\r\n");
+                }
+                reply.extend_from_slice(b"0\r\n\r\n");
+                sock.write_all(&reply).await.unwrap();
+                let _ = sock.shutdown().await;
+            });
+            format!("http://{addr}/")
+        }
+
+        let url = serve_chunked_body().await;
+        let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+        let err = read_body_capped(resp, 1024).await.unwrap_err();
+        assert!(err.to_string().contains("1024"), "{err}");
+
+        let url = serve_chunked_body().await;
+        let resp = reqwest::Client::new().get(&url).send().await.unwrap();
+        let bytes = read_body_capped(resp, 8192).await.unwrap();
+        assert_eq!(bytes.len(), 4096);
+    }
+
+    #[tokio::test]
     async fn read_error_body_capped_reads_small_error_body() {
         let body = "boom: something went wrong";
         let server = wiremock::MockServer::start().await;
@@ -1171,6 +1208,34 @@ mod tests {
     // reading the response body. No BC response body has been recorded, so the
     // mocks below return an empty body and a body with an arbitrary `status`
     // string to show that neither changes the outcome.
+
+    #[tokio::test]
+    async fn upload_redirect_is_an_error() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/BC/dev/apps"))
+            .respond_with(wiremock::ResponseTemplate::new(302).insert_header("Location", "/login"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::path("/login"))
+            .respond_with(wiremock::ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server.uri());
+        let dir = tempfile::tempdir().unwrap();
+        let app = dir.path().join("ext.app");
+        tokio::fs::write(&app, b"app-bytes").await.unwrap();
+
+        let err = client
+            .publish_extension(&app)
+            .await
+            .expect_err("a 302 on upload must not count as published");
+        let text = err.to_string();
+        assert!(text.contains("redirected"), "{text}");
+    }
 
     #[tokio::test]
     async fn publish_extension_posts_multipart_to_dev_apps_and_accepts_empty_body() {

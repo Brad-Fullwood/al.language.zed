@@ -15,6 +15,7 @@ mod stats;
 mod test_support;
 
 pub use errors::{PackageLoadError, PackageLoadFailure};
+pub use query::SearchResults;
 pub use stats::SymbolIndexMemoryStats;
 
 use crate::events;

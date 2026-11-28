@@ -14,17 +14,21 @@ pub struct SavedSnapshot {
     pub zip: PathBuf,
     /// `<dir>/<ctx>.alcpuprofile`, present when the zip held a CPU profile.
     pub cpu_profile: Option<PathBuf>,
+    /// Why the CPU profile was not saved. The zip is saved either way.
+    pub profile_error: Option<String>,
 }
 
 /// Largest CPU profile read out of a finished snapshot zip.
 const MAX_CPU_PROFILE_BYTES: u64 = 500 * 1024 * 1024;
 
-/// Save the bytes `finish` returned as `<dir>/<ctx>.zip`. When `sampling` is
-/// true (the response ETag was `"Sampling"`) the zip holds `<ctx>.alcpuprofile`,
-/// which is also written beside it. Both writes refuse a symbolic link or other
-/// non regular file at the destination. Standard route checked: the `zip` crate
-/// already in this crate reads the entry, and `output_file::write_no_follow`
-/// does the guarded write, so nothing is reimplemented here.
+/// Save the bytes `finish` returned as `<dir>/<ctx>.zip`. The zip is written
+/// first. When `sampling` is true (the response ETag was `"Sampling"`) the zip
+/// holds `<ctx>.alcpuprofile`, which is also written beside it. A profile that
+/// cannot be read or written is reported in `profile_error` and does not fail
+/// the call. Both writes refuse a symbolic link or other non regular file at the
+/// destination. Standard route checked: the `zip` crate already in this crate
+/// reads the entry, and `output_file::write_no_follow` does the guarded write,
+/// so nothing is reimplemented here.
 pub async fn save_finished_snapshot(
     dir: &std::path::Path,
     ctx: &str,
@@ -38,28 +42,44 @@ pub async fn save_finished_snapshot(
         ));
     }
     let zip_path = dir.join(format!("{ctx}.zip"));
-    let profile = if sampling {
-        let entry = format!("{ctx}.alcpuprofile");
-        let zip_bytes = bytes.clone();
-        tokio::task::spawn_blocking(move || read_zip_entry(&zip_bytes, &entry))
-            .await
-            .map_err(|e| std::io::Error::other(e.to_string()))??
-    } else {
-        None
-    };
+    let profile_source = sampling.then(|| bytes.clone());
     crate::output_file::write_no_follow(&zip_path, bytes).await?;
-    let cpu_profile = match profile {
-        Some(data) => {
-            let path = dir.join(format!("{ctx}.alcpuprofile"));
-            crate::output_file::write_no_follow(&path, data).await?;
-            Some(path)
-        }
-        None => None,
+    let (cpu_profile, profile_error) = match profile_source {
+        None => (None, None),
+        Some(zip_bytes) => match save_cpu_profile(dir, ctx, zip_bytes).await {
+            Ok(path) => (path, None),
+            Err(error) => (
+                None,
+                Some(format!("The CPU profile was not saved: {error}")),
+            ),
+        },
     };
     Ok(SavedSnapshot {
         zip: zip_path,
         cpu_profile,
+        profile_error,
     })
+}
+
+/// Extract `<ctx>.alcpuprofile` from the zip and write it beside the zip.
+/// `None` when the zip has no such entry.
+async fn save_cpu_profile(
+    dir: &std::path::Path,
+    ctx: &str,
+    zip_bytes: Vec<u8>,
+) -> std::io::Result<Option<PathBuf>> {
+    let entry = format!("{ctx}.alcpuprofile");
+    let data = tokio::task::spawn_blocking(move || read_zip_entry(&zip_bytes, &entry))
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))??;
+    match data {
+        Some(data) => {
+            let path = dir.join(format!("{ctx}.alcpuprofile"));
+            crate::output_file::write_no_follow(&path, data).await?;
+            Ok(Some(path))
+        }
+        None => Ok(None),
+    }
 }
 
 /// `None` when the zip has no entry of that name (a sampling run that recorded
@@ -169,6 +189,20 @@ mod tests {
         let err = save_finished_snapshot(dir.path(), ctx, vec![1, 2, 3], false).await;
         assert!(err.is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"keep");
+    }
+
+    #[tokio::test]
+    async fn corrupt_profile_entry_still_saves_zip() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = "c4fbb573-e325-443c-9887-8d0574e833ee";
+        let bytes = b"not a zip".to_vec();
+        let saved = save_finished_snapshot(dir.path(), ctx, bytes.clone(), true)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&saved.zip).unwrap(), bytes);
+        assert!(saved.cpu_profile.is_none());
+        let error = saved.profile_error.expect("profile error is reported");
+        assert!(error.contains("The CPU profile was not saved"), "{error}");
     }
 
     use super::*;
