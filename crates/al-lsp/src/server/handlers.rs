@@ -141,19 +141,18 @@ pub(crate) fn handle_code_action(
     }
 
     let core_range: al_analysis::queries::Range = range.into();
-    for entry in
-        al_analysis::queries::code_actions::source_actions(&server.workspace, uri, core_range)
-    {
-        let kind = match entry.kind {
-            al_analysis::queries::code_actions::CodeActionKind::QuickFix => {
-                CodeActionKind::QUICKFIX
-            }
-            al_analysis::queries::code_actions::CodeActionKind::Refactor => {
-                CodeActionKind::REFACTOR
-            }
-            al_analysis::queries::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
-        };
-        if !kind_requested(only, &kind) {
+    let lsp_kind = |kind: &al_analysis::queries::code_actions::CodeActionKind| match kind {
+        al_analysis::queries::code_actions::CodeActionKind::QuickFix => CodeActionKind::QUICKFIX,
+        al_analysis::queries::code_actions::CodeActionKind::Refactor => CodeActionKind::REFACTOR,
+        al_analysis::queries::code_actions::CodeActionKind::Source => CodeActionKind::SOURCE,
+    };
+    for entry in al_analysis::queries::code_actions::source_actions_filtered(
+        &server.workspace,
+        uri,
+        core_range,
+        |kind| kind_requested(only, &lsp_kind(&kind)),
+    ) {
+        if !kind_requested(only, &lsp_kind(&entry.kind)) {
             continue;
         }
         actions.push(core_action_to_lsp(server, entry, None, uri, version));
