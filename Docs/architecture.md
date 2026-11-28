@@ -139,7 +139,8 @@ is the single binary that re-exports the whole engine (LSP server + daemon + MCP
 extension) has **no** Cargo dependency on the engine and drives the compiled
 binaries at runtime (dashed). `al-test-harness` drives the binaries the same
 way. Its one production dependency is `al-protocol`, the client it uses to
-identify and stop the daemons it starts. It also has dev-dependencies on eight
+identify and stop the daemons it starts. `al-protocol` depends on
+`al-types` for the private folder checks. `al-test-harness` also has dev-dependencies on eight
 engine crates (`al-analysis`, `al-bc`, `al-compile`, `al-emit`, `al-project`,
 `al-publish`, `al-test`, `al-workspace`) for in-process assertions, and those
 edges are not drawn.
@@ -202,6 +203,7 @@ graph TD
 
   zed_al -.->|spawns al-lsp at runtime| al_lsp
   al_test_harness --> al_protocol
+  al_protocol --> al_types
   al_test_harness -.->|drives binaries in tests| al_lsp
   al_test_harness -.->|drives binaries in tests| al_explorer
 ```
