@@ -1036,3 +1036,27 @@ fn undefined_time_is_default_of_time_variable() {
     assert_eq!(Value::default_for("Time"), Some(Value::UndefinedTime));
     assert_ne!(Value::default_for("Time"), Some(Value::Time(0)));
 }
+
+#[test]
+fn zero_datetime_literal_is_the_datetime_default() {
+    assert_eq!(ok(parse_and_eval("0DT")), Value::DateTime(0));
+    assert_eq!(
+        ok(parse_and_eval("0DT")),
+        Value::default_for("DateTime").unwrap()
+    );
+}
+
+#[test]
+fn zero_datetime_literal_compares_with_a_datetime() {
+    assert_eq!(ok(parse_and_eval("0DT = 0DT")), Value::Boolean(true));
+}
+
+#[test]
+fn malformed_datetime_literal_is_an_error() {
+    let err = error_of(parse_and_eval("1DT"));
+    assert!(
+        err.message.contains("only 0DT is a DateTime literal"),
+        "a DateTime literal other than 0DT must say so, got: {}",
+        err.message
+    );
+}

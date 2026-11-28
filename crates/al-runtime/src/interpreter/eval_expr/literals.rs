@@ -362,6 +362,24 @@ pub(super) fn eval_time_literal(node: Node<'_>, source: &[u8]) -> Eval {
     Eval::Normal(Value::Time(ms))
 }
 
+/// Evaluate an AL DateTime literal. `0DT` is the only one: the undefined
+/// DateTime, which is also the default of a DateTime variable. Other DateTime
+/// values come from CreateDateTime. See Microsoft Learn, "DateTime data type".
+pub(super) fn eval_datetime_literal(node: Node<'_>, source: &[u8]) -> Eval {
+    let Some(text) = utf8_text(node, source) else {
+        return Eval::Error(error_info("invalid datetime literal text"));
+    };
+    let trimmed = text.trim();
+    let without_t = trimmed.strip_suffix(['t', 'T']).unwrap_or(trimmed);
+    let digits = without_t.strip_suffix(['d', 'D']).unwrap_or(without_t);
+    if digits == "0" {
+        return Eval::Normal(Value::DateTime(0));
+    }
+    Eval::Error(error_info(format!(
+        "malformed datetime literal: {text}; only 0DT is a DateTime literal, use CreateDateTime"
+    )))
+}
+
 fn is_leap_year(year: i64) -> bool {
     year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }

@@ -16,8 +16,8 @@ use crate::interpreter::value::{Decimal, Value};
 use super::assignment_chain::eval_expression_node;
 use super::helpers::{named_child, utf8_text};
 use super::literals::{
-    eval_date_literal, eval_set_literal, eval_time_literal, int_literal_value,
-    niladic_clock_builtin, unescape_al_string,
+    eval_date_literal, eval_datetime_literal, eval_set_literal, eval_time_literal,
+    int_literal_value, niladic_clock_builtin, unescape_al_string,
 };
 use super::member_access::eval_postfix;
 use super::operators::eval_unary;
@@ -101,6 +101,7 @@ fn eval_expr_inner(
         // lexer tokenises these; evaluation maps them onto the day/ms carriers.
         "date_literal" => eval_date_literal(node, source),
         "time_literal" => eval_time_literal(node, source),
+        "datetime_literal" => eval_datetime_literal(node, source),
         "string" | "verbatim_string" => {
             let text = utf8_text(node, source).unwrap_or("");
             Eval::Normal(Value::Text(unescape_al_string(text)))
