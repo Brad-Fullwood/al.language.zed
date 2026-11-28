@@ -45,6 +45,10 @@ pub struct RecordStore {
     /// variable's handle. BC gives each record variable independent state over
     /// the shared physical table.
     pub(super) views: HashMap<u64, RecordView>,
+    /// The store of a `temporary` record variable. Business Central 29 keeps a
+    /// FlowField value that Modify wrote to a temporary record and reads it back,
+    /// while Insert writes zero (checked on 2026-11-28).
+    pub(super) temporary: bool,
 }
 
 impl RecordStore {
@@ -148,6 +152,7 @@ pub(super) fn ensure_store(ctx: &mut DispatchCtx, table: &TableRef) -> Result<St
         field_defaults: meta.field_defaults,
         field_lengths: meta.field_lengths,
         views: HashMap::new(),
+        temporary: table.temp_owner.is_some(),
     };
     ctx.records.insert(key.clone(), store);
     Ok(key)

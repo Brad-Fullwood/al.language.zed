@@ -28,13 +28,15 @@ pub(super) fn read_buffer_field(store: &RecordStore, handle: u64, field: FieldNo
 }
 
 /// The value field `field` of view `handle` shows to a read: the typed zero for
-/// a FlowField that `CalcFields` has not calculated on this view, otherwise the
-/// buffer value.
+/// a FlowField that `CalcFields` has not calculated or code has not assigned on
+/// this view, otherwise the buffer value.
 ///
 /// The row can hold a FlowField value (an Insert after CalcFields stores the
 /// buffer), so an uncalculated FlowField ignores the stored value and reads zero.
+/// A temporary record reads the stored value back, as Business Central does.
 pub(super) fn visible_field_value(store: &RecordStore, handle: u64, field: FieldNo) -> Value {
-    let uncalculated_flowfield = store.flowfields.contains_key(&field)
+    let uncalculated_flowfield = !store.temporary
+        && store.flowfields.contains_key(&field)
         && !store
             .views
             .get(&handle)

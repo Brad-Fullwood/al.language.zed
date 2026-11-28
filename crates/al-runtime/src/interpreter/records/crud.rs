@@ -722,6 +722,38 @@ fn raise_table_event(
     )
 }
 
+/// Insert on a temporary record. Business Central 29 sets each FlowField to zero
+/// in the buffer and in the stored row (checked on 2026-11-28). A failed insert
+/// leaves the buffer as it was.
+fn insert_temporary(
+    store: &mut RecordStore,
+    view: &mut RecordView,
+    run_trigger: bool,
+) -> Result<(), crate::mock::record::RecordError> {
+    let saved: Vec<(FieldNo, Option<Value>)> = store
+        .flowfields
+        .keys()
+        .map(|&field| (field, store.record.field_get_in(view, field).cloned()))
+        .collect();
+    for &(field, _) in &saved {
+        let zero = store
+            .field_defaults
+            .get(&field)
+            .cloned()
+            .unwrap_or(Value::Empty);
+        store.record.field_set_in(view, field, zero);
+    }
+    let result = store.record.insert_in(view, run_trigger);
+    if result.is_err() {
+        for (field, value) in saved {
+            store
+                .record
+                .field_set_in(view, field, value.unwrap_or(Value::Empty));
+        }
+    }
+    result
+}
+
 /// The record-method body proper, operating on a taken-out view so early
 /// returns cannot lose the view (the caller reinserts it unconditionally).
 fn run_record_method(
@@ -781,6 +813,9 @@ fn run_record_method(
             _ => eval_error("Ascending expects an optional Boolean"),
         },
         "insert" => match optional_boolean("Insert", &values) {
+            Ok(run_trigger) if store.temporary => {
+                mutation_result("Insert", insert_temporary(store, view, run_trigger))
+            }
             Ok(run_trigger) => mutation_result("Insert", store.record.insert_in(view, run_trigger)),
             Err(error) => eval_error(error),
         },
@@ -1560,6 +1595,109 @@ mod tests {
         exit(T);
     end;
 
+    procedure TempHeadA(): Text
+    var
+        H: Record Hdr temporary;
+        L: Record Line;
+        T: Text;
+    begin
+        L.DocNo := 'A';
+        L.LineNo := 1;
+        L.Insert();
+        L.LineNo := 2;
+        L.Insert();
+        H.Init();
+        H.No := 'B';
+        H.Insert();
+        H.Init();
+        H.No := 'A';
+        H.OpenLines := 100;
+        T := Format(H.OpenLines);
+        H.Insert();
+        T += ' ' + Format(H.OpenLines);
+        H.Get('A');
+        T += ' ' + Format(H.OpenLines);
+        H.CalcFields(OpenLines);
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify();
+        T += ' ' + Format(H.OpenLines);
+        H.FindFirst();
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        T += ' ' + Format(H.OpenLines);
+        if H.Next() <> 1 then
+            exit('no next');
+        T += ' ' + H.No + Format(H.OpenLines);
+        if H.Next(-1) <> -1 then
+            exit('no previous');
+        T += ' ' + H.No + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Init();
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
+    procedure TempHeadC(): Text
+    var
+        H: Record Hdr temporary;
+        T: Text;
+    begin
+        H.Init();
+        H.No := 'C';
+        H.OpenLines := 100;
+        H.Insert();
+        T := Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify();
+        T += ' ' + Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.CalcFields(OpenLines);
+        T += ' ' + Format(H.OpenLines);
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 55;
+        H.Modify();
+        H.Get('C');
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
+    procedure HeadD(): Text
+    var
+        H: Record Hdr;
+    begin
+        exit(StepsD(H));
+    end;
+
+    procedure TempHeadD(): Text
+    var
+        H: Record Hdr temporary;
+    begin
+        exit(StepsD(H));
+    end;
+
+    local procedure StepsD(var H: Record Hdr): Text
+    var
+        T: Text;
+    begin
+        H.Init();
+        H.No := 'D';
+        H.OpenLines := 100;
+        T := Format(H.OpenLines);
+        H.Insert(true);
+        T += ' ' + Format(H.OpenLines);
+        H.OpenLines := 100;
+        H.Modify(true);
+        T += ' ' + Format(H.OpenLines);
+        H.Get('D');
+        T += ' ' + Format(H.OpenLines);
+        exit(T);
+    end;
+
     procedure ValidateReadsBack(): Integer
     var
         H: Record Hdr;
@@ -1633,6 +1771,8 @@ mod tests {
             ok(run("HeadC")),
             Value::Text("100 0 100 0 0 0 0".to_string())
         );
+        // Steps 27 to 30, Insert(true) and Modify(true) on a normal record.
+        assert_eq!(ok(run("HeadD")), Value::Text("100 100 100 0".to_string()));
         assert_eq!(ok(run("ValidateReadsBack")), Value::Integer(5));
         // Steps 11 to 13.
         assert!(matches!(run("TestFieldAfterAssign"), Eval::Normal(_)));
@@ -1649,6 +1789,33 @@ mod tests {
             run("TestFieldCalculatedAfterCalcFields"),
             Eval::Normal(_)
         ));
+    }
+
+    /// The temporary record column of the same steps: Insert stores zero, and
+    /// Modify stores the assigned value, which later reads return.
+    #[test]
+    fn temporary_record_stores_an_assigned_flowfield_on_modify_only() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowAssignTests.al", FLOW_ASSIGN_TESTS),
+        ];
+        let run = |proc: &str| run_sources(&sources, "Flow Assign Tests", proc);
+        // Steps 01 to 10.
+        assert_eq!(
+            ok(run("TempHeadA")),
+            Value::Text("100 0 0 2 100 100 100 B0 A100 0".to_string())
+        );
+        // Steps 20 to 26.
+        assert_eq!(
+            ok(run("TempHeadC")),
+            Value::Text("0 0 100 100 0 100 55".to_string())
+        );
+        // Steps 27 to 30.
+        assert_eq!(
+            ok(run("TempHeadD")),
+            Value::Text("100 0 100 100".to_string())
+        );
     }
 
     #[test]

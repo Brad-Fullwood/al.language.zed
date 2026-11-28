@@ -184,8 +184,9 @@ Supported behavior:
   current filters select. A FlowField reads as its typed zero value until CalcFields calculates it
   on that view. A value assigned in code reads back until the next read of the record. Insert and
   Modify keep it in the buffer and do not store it. Init, Get, Find and Next clear the calculation
-  and the assigned value. SetAutoCalcFields has no local
-  support and selects LiveBc.
+  and the assigned value. A temporary record differs, as in BC: Insert sets each FlowField to zero
+  and stores zero, Modify stores the assigned value, and later reads return the stored value.
+  SetAutoCalcFields has no local support and selects LiveBc.
 - Rename (the full new primary key, written with the rest of the buffer), TestField (empty, or a
   given value), IsTemporary. As in BC, a rename updates every field whose plain TableRelation names
   the renamed table's single-field key. A test that renames a table named by a conditional or
