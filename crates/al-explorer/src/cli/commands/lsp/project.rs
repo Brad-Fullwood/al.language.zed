@@ -658,6 +658,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "request": "launch",
             "environmentType": "Sandbox",
             "environmentName": "sandbox",
+            "tenant": "<entra-tenant-guid>",
             "startupObjectId": 22,
             "breakOnError": "All",
             "breakOnRecordWrite": "None",
@@ -690,6 +691,7 @@ pub fn cmd_init_debug(project_root: &std::path::Path, json: bool) -> ExitCode {
             "request": "attach",
             "environmentType": "Sandbox",
             "environmentName": "sandbox",
+            "tenant": "<entra-tenant-guid>",
             "breakOnError": "All",
             "breakOnRecordWrite": "None",
             "enableSqlInformationDebugger": true,
@@ -1147,6 +1149,20 @@ mod tests {
             assert_eq!(
                 config.get("authentication").and_then(|v| v.as_str()),
                 Some("MicrosoftEntraID")
+            );
+        }
+        let cloud: Vec<_> = configs
+            .iter()
+            .filter(|config| {
+                config.get("environmentType").and_then(|v| v.as_str()) == Some("Sandbox")
+            })
+            .collect();
+        assert_eq!(cloud.len(), 2);
+        for config in cloud {
+            assert_eq!(
+                config.get("tenant").and_then(|v| v.as_str()),
+                Some("<entra-tenant-guid>"),
+                "{config}"
             );
         }
     }

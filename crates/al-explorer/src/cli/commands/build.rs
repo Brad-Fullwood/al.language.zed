@@ -366,7 +366,33 @@ pub fn cmd_pack_native(
 
 /// Recursively copy a directory tree (used to validate in a throwaway copy so
 /// alc's own `.app`/temp output never lands in the user's project).
-fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+///
+/// `ancestors` holds the canonical paths of the folders on the current
+/// descent. A linked folder that resolves to one of them is a link cycle and
+/// is refused, so a link such as `loop -> ..` does not copy the tree again.
+fn copy_dir(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    ancestors: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
+    let canonical = std::fs::canonicalize(src)?;
+    if ancestors.contains(&canonical) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("link cycle at {}", src.display()),
+        ));
+    }
+    ancestors.push(canonical);
+    let result = copy_entries(src, dst, ancestors);
+    ancestors.pop();
+    result
+}
+
+fn copy_entries(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    ancestors: &mut Vec<std::path::PathBuf>,
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -377,7 +403,7 @@ fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()>
         let from = entry.path();
         let to = dst.join(&name);
         if entry_is_dir(&entry)? {
-            copy_dir(&from, &to)?;
+            copy_dir(&from, &to, ancestors)?;
         } else {
             std::fs::copy(&from, &to)?;
         }
@@ -504,6 +530,7 @@ fn validate_with_alc(
     let tmp_path = tmp.path();
     // Copy app.json + every source/.alpackages dir alc needs.
     if let Err(e) = (|| -> std::io::Result<()> {
+        let mut ancestors = vec![std::fs::canonicalize(dir)?];
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let name = entry.file_name();
@@ -517,7 +544,7 @@ fn validate_with_alc(
             let from = entry.path();
             let to = tmp_path.join(&name);
             if entry_is_dir(&entry)? {
-                copy_dir(&from, &to)?;
+                copy_dir(&from, &to, &mut ancestors)?;
             } else {
                 std::fs::copy(&from, &to)?;
             }
@@ -914,7 +941,7 @@ mod validation_trust_tests {
         al_project::trust::grant(project.path()).unwrap();
         let settings = al_project::trust::evaluate(project.path()).unwrap();
         let copy = tempfile::tempdir().unwrap();
-        copy_dir(project.path(), copy.path()).unwrap();
+        copy_dir(project.path(), copy.path(), &mut Vec::new()).unwrap();
 
         let entries = validation_analyzer_entries(
             project.path(),
@@ -966,10 +993,27 @@ mod validation_trust_tests {
         std::os::unix::fs::symlink(&real, src.join("pkgs")).unwrap();
         let dst = tmp.path().join("dst");
 
-        copy_dir(&src, &dst).unwrap();
+        copy_dir(&src, &dst, &mut Vec::new()).unwrap();
 
         assert!(dst.join("pkgs").join("a.app").is_file());
         assert!(!dst.join(".git").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_refuses_a_link_cycle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("a.al"), b"codeunit 1 A {}").unwrap();
+        std::os::unix::fs::symlink("..", src.join("loop")).unwrap();
+        // Outside `tmp`, so the copy does not grow inside the tree it reads.
+        let out = tempfile::tempdir().unwrap();
+        let dst = out.path().join("dst");
+
+        let error = copy_dir(&src, &dst, &mut Vec::new()).unwrap_err();
+
+        assert!(error.to_string().contains("link cycle"), "{error}");
     }
 }
 
