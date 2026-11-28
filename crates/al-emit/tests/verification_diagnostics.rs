@@ -302,6 +302,47 @@ fn aln2209_accepts_procedures_the_table_and_its_extensions_declare() {
 }
 
 #[test]
+fn commented_call_is_not_a_call_site() {
+    let source = r#"codeunit 50100 C
+{
+    local procedure Init()
+    begin
+    end;
+
+    procedure P()
+    var
+        Txt: Text;
+    begin
+        // Init (when empty)
+        Txt := 'Init (x)';
+    end;
+}
+"#;
+    let codes = codes_for(&[("C.Codeunit.al", source)]);
+    assert_silent(&codes, "ALN2201");
+}
+
+#[test]
+fn real_arity_mismatch_still_reported() {
+    let source = r#"codeunit 50100 C
+{
+    local procedure Init()
+    begin
+    end;
+
+    procedure P()
+    var
+        Txt: Text;
+    begin
+        Init(1);
+    end;
+}
+"#;
+    let codes = codes_for(&[("C.Codeunit.al", source)]);
+    assert_reports(&codes, "ALN2201");
+}
+
+#[test]
 fn aln2203_and_aln2204_missing_and_valueless_exit_in_a_returning_procedure() {
     let missing = codes_for(&[(
         "C.Codeunit.al",

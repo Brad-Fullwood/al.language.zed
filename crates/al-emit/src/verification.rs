@@ -673,7 +673,7 @@ fn verify_local_procedure_semantics(
             else {
                 continue;
             };
-            for site in call_sites(body) {
+            for site in call_sites(&mask_comments_and_strings(body)) {
                 if let Some(receiver) = &site.receiver {
                     // Only a table this build knows can be said to lack a
                     // method; an unknown one is ALN2401's to report.
@@ -1003,6 +1003,101 @@ struct CallSite {
     arguments: Vec<String>,
     offset: usize,
     receiver: Option<String>,
+}
+
+/// Blanks the text of comments and single quoted literals, so `call_sites`
+/// does not read `Init (x)` in `// Init (x)` or `'Init (x)'` as a call.
+///
+/// Each masked character becomes one space per UTF-8 byte. The output has the
+/// same byte length as `source`, so offsets found in it point into `source`.
+/// Newlines and the quotes of a literal are kept. Double quoted identifiers
+/// pass through unchanged, so a quote inside one cannot open a literal.
+///
+/// Checked `al_syntax::lint::mask_non_code_keep_quoted_identifiers`. It works
+/// one line at a time and blanks the quote characters of a literal. This
+/// masker covers the whole body and keeps the quotes.
+fn mask_comments_and_strings(source: &str) -> String {
+    enum Mode {
+        Code,
+        LineComment,
+        BlockComment,
+        Literal,
+        QuotedIdentifier,
+    }
+    let mut out = String::with_capacity(source.len());
+    let mut mode = Mode::Code;
+    let mut chars = source.chars().peekable();
+    while let Some(c) = chars.next() {
+        match mode {
+            Mode::Code => match c {
+                '/' if chars.peek() == Some(&'/') => {
+                    chars.next();
+                    out.push_str("  ");
+                    mode = Mode::LineComment;
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    out.push_str("  ");
+                    mode = Mode::BlockComment;
+                }
+                '\'' => {
+                    out.push(c);
+                    mode = Mode::Literal;
+                }
+                '"' => {
+                    out.push(c);
+                    mode = Mode::QuotedIdentifier;
+                }
+                _ => out.push(c),
+            },
+            Mode::LineComment => {
+                if c == '\n' {
+                    out.push(c);
+                    mode = Mode::Code;
+                } else {
+                    push_blank(&mut out, c);
+                }
+            }
+            Mode::BlockComment => {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    out.push_str("  ");
+                    mode = Mode::Code;
+                } else {
+                    push_blank(&mut out, c);
+                }
+            }
+            Mode::Literal => {
+                if c == '\'' {
+                    out.push(c);
+                    // A doubled quote is content, so the literal stays open.
+                    if chars.peek() == Some(&'\'') {
+                        chars.next();
+                        out.push('\'');
+                    } else {
+                        mode = Mode::Code;
+                    }
+                } else {
+                    push_blank(&mut out, c);
+                }
+            }
+            Mode::QuotedIdentifier => {
+                out.push(c);
+                if c == '"' {
+                    mode = Mode::Code;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn push_blank(out: &mut String, c: char) {
+    if c == '\n' || c == '\r' {
+        out.push(c);
+    } else {
+        out.extend(std::iter::repeat_n(' ', c.len_utf8()));
+    }
 }
 
 fn call_sites(source: &str) -> Vec<CallSite> {
@@ -2279,5 +2374,36 @@ mod source_name_tests {
 
         let assignment_only = "codeunit 1 X\n{\n    begin\n        c := 1;\n    end;\n}\n";
         assert_eq!(declaration_offset(assignment_only, "c"), 0);
+    }
+}
+
+#[cfg(test)]
+mod call_site_mask_tests {
+    use super::{call_sites, mask_comments_and_strings};
+
+    #[test]
+    fn masking_keeps_length_and_only_comments_and_literals_go_blank() {
+        let source = "a(1); // b(2)\nc('d(3)'); /* e(4) */ f(5)";
+        let masked = mask_comments_and_strings(source);
+        assert_eq!(masked.len(), source.len());
+        let names: Vec<String> = call_sites(&masked)
+            .into_iter()
+            .map(|site| site.name)
+            .collect();
+        assert_eq!(names, ["a", "c", "f"]);
+    }
+
+    #[test]
+    fn doubled_quote_stays_masked_and_non_ascii_keeps_the_byte_length() {
+        let source = "x('it''s Init (x)'); // é Init(1)\ny(2)";
+        let masked = mask_comments_and_strings(source);
+        assert_eq!(masked.len(), source.len());
+        assert!(std::str::from_utf8(masked.as_bytes()).is_ok());
+        assert!(!masked.contains("Init"));
+        let names: Vec<String> = call_sites(&masked)
+            .into_iter()
+            .map(|site| site.name)
+            .collect();
+        assert_eq!(names, ["x", "y"]);
     }
 }
