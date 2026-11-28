@@ -160,7 +160,9 @@ Supported behavior:
   assigned read back as their typed zero value (0 / '' / false / 0D) and match zero filters.
 - Init/Get/Insert/Modify/Delete (`Get` with fewer values than key fields, or none, fills the
   rest with their defaults, as BC does), field reads/writes, Find/FindSet/FindFirst/FindLast/Next,
-  with BC statement/expression semantics (a statement-position `Get`/`Find*` miss raises, `if Rec.Get`
+  `Find` with no argument as `Find('=')`, and a `Find` string of `=`, `>` and `<` tried in the order
+  written, where `>` and `<` are the next and previous record in the current sort order, with BC
+  statement/expression semantics (a statement-position `Get`/`Find*` miss raises, `if Rec.Get`
   yields false, and `if Rec.Insert() then` takes the false branch on a duplicate key).
 - A record method or table procedure written without parentheses (`R.Insert;`,
   `if R.FindFirst then`, `exit(R.Count)`) runs as the call. A field of the same name takes

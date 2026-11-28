@@ -909,23 +909,13 @@ fn run_record_method(
             find_result("FindLast", &table, store.record.find_last_in(view))
         }
         "find" => {
-            let direction = match values.as_slice() {
-                [Value::Text(direction)] | [Value::Code(direction)] => direction,
-                _ => {
-                    return eval_error("Find: expects exactly one Text or Code direction argument")
-                }
+            let which = match values.as_slice() {
+                [] => "=",
+                [Value::Text(which)] | [Value::Code(which)] => which.as_str(),
+                _ => return eval_error("Find: expects at most one Text or Code argument"),
             };
-            let mut chars = direction.chars();
-            let Some(direction) = chars.next() else {
-                return eval_error("Find: direction cannot be empty");
-            };
-            if chars.next().is_some() {
-                return eval_error(
-                    "Find: local record runtime supports only the single-character '-' and '+' directions",
-                );
-            }
             let table = store.record.table_name.clone();
-            find_result("Find", &table, store.record.find_in(view, direction))
+            find_result("Find", &table, store.record.find_in(view, which))
         }
         "next" => {
             let steps = match values.as_slice() {
@@ -1095,6 +1085,88 @@ mod tests {
 }
 "#;
 
+    const FIND_TESTS: &str = r#"codeunit 50113 "Find Tests"
+{
+    local procedure Setup(var PriceLine: Record "Price Line")
+    begin
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 1;
+        PriceLine.Insert();
+        PriceLine."Line No." := 2;
+        PriceLine.Insert();
+    end;
+
+    procedure FindWithoutArgument(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 2;
+        exit(PriceLine.Find());
+    end;
+
+    procedure FindEqualMisses(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 3;
+        exit(PriceLine.Find('='));
+    end;
+
+    procedure FindEqualOutsideFilter(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine.SetRange("Line No.", 1);
+        PriceLine."Line No." := 2;
+        exit(PriceLine.Find('='));
+    end;
+
+    procedure FindEqualThenNext(): Integer
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 1;
+        PriceLine.Find('=');
+        if PriceLine.Next() <> 1 then
+            exit(-1);
+        exit(PriceLine."Line No.");
+    end;
+
+    procedure FindNextLarger(): Integer
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 5;
+        if not PriceLine.Find('=><') then
+            exit(-1);
+        exit(PriceLine."Line No.");
+    end;
+
+    procedure FindMissInStatement()
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        PriceLine."Line No." := 3;
+        PriceLine.Find();
+    end;
+
+    procedure FindEmptyString(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        Setup(PriceLine);
+        exit(PriceLine.Find(''));
+    end;
+}
+"#;
+
     const FORM_TABLE: &str = r#"table 50103 Forms
 {
     fields
@@ -1207,6 +1279,36 @@ mod tests {
                 error.message
             ),
             other => panic!("expected an interpreter error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_without_argument_and_with_a_string_follow_business_central() {
+        let sources = [
+            ("/ws/PriceLine.al", PRICE_LINE_TABLE),
+            ("/ws/FindTests.al", FIND_TESTS),
+        ];
+        let run = |proc: &str| run_sources(&sources, "Find Tests", proc);
+        assert_eq!(ok(run("FindWithoutArgument")), Value::Boolean(true));
+        assert_eq!(ok(run("FindEqualMisses")), Value::Boolean(false));
+        assert_eq!(ok(run("FindEqualOutsideFilter")), Value::Boolean(false));
+        assert_eq!(ok(run("FindEqualThenNext")), Value::Integer(2));
+        assert_eq!(ok(run("FindNextLarger")), Value::Integer(2));
+        for (proc, text) in [
+            ("FindMissInStatement", "no 'Price Line' record matches"),
+            (
+                "FindEmptyString",
+                "invalid character in the Find expression ''",
+            ),
+        ] {
+            match run(proc) {
+                Eval::Error(error) => assert!(
+                    error.message.contains(text),
+                    "{proc}: unexpected message: {}",
+                    error.message
+                ),
+                other => panic!("{proc}: expected an interpreter error, got {other:?}"),
+            }
         }
     }
 

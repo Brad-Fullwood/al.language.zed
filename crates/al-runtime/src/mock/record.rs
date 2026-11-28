@@ -68,8 +68,13 @@ pub enum RecordError {
     FlowArithmeticOverflow(&'static str),
     #[error("field {0} is part of the primary key; ModifyAll cannot change it")]
     PrimaryKeyModifyAll(FieldNo),
-    #[error("invalid FIND direction '{0}' (expected '-' or '+')")]
-    InvalidFindDirection(char),
+    /// The text Business Central 29 gives for `Find('')` and other invalid strings.
+    #[error(
+        "There is an invalid character in the Find expression '{0}'.  In Find expressions, you \
+         can use =, >, and < in combinations, where each sign can only appear once, or you can \
+         use - or +."
+    )]
+    InvalidFindDirection(String),
 }
 
 #[derive(Debug, Clone)]
@@ -853,17 +858,65 @@ impl MockRecord {
         self.with_default_view(|table, view| table.find_set_in(view))
     }
 
-    /// `FIND('-')` / `FIND('+')` — position at first (−) or last (+) record.
-    pub fn find_in(&self, view: &mut RecordView, direction: char) -> Result<bool, RecordError> {
-        match direction {
-            '-' => self.find_first_in(view),
-            '+' => self.find_last_in(view),
-            _ => Err(RecordError::InvalidFindDirection(direction)),
+    /// `FIND(which)`. `-` and `+` stand alone and act as FindFirst and FindLast.
+    /// Otherwise `which` holds each of `=`, `>` and `<` at most once, and the
+    /// characters are tried in the order written until one finds a record:
+    /// `=` the row with the buffer's primary key, `>` the next row and `<` the
+    /// previous row in the view's order, measured from the buffer's position.
+    /// The buffer row does not need to exist or pass the filters. A miss leaves
+    /// the buffer as it was. Checked against Business Central 29 on 2026-11-28.
+    pub fn find_in(&self, view: &mut RecordView, which: &str) -> Result<bool, RecordError> {
+        match which {
+            "-" => return self.find_first_in(view),
+            "+" => return self.find_last_in(view),
+            _ => {}
         }
+        let mut seen = BTreeSet::new();
+        let valid = !which.is_empty()
+            && which
+                .chars()
+                .all(|c| matches!(c, '=' | '<' | '>') && seen.insert(c));
+        if !valid {
+            return Err(RecordError::InvalidFindDirection(which.to_string()));
+        }
+        self.build_iter_set(view);
+        let buffer_key = self.current_primary_key(view)?;
+        let buffer_sort = view.sort_key.key_of(&view.current);
+        let descending = view.sort_key.descending;
+        // Where an entry stands against the buffer in the view's order.
+        let order = |key: &PrimaryKey| {
+            let row = self.rows.get(key).expect("iter_set holds stored keys");
+            let ordering =
+                (view.sort_key.key_of(row), key).cmp(&(buffer_sort.clone(), &buffer_key));
+            if descending {
+                ordering.reverse()
+            } else {
+                ordering
+            }
+        };
+        for c in which.chars() {
+            let found = match c {
+                '=' => view.iter_set.iter().position(|key| *key == buffer_key),
+                '>' => view
+                    .iter_set
+                    .iter()
+                    .position(|key| order(key) == std::cmp::Ordering::Greater),
+                _ => view
+                    .iter_set
+                    .iter()
+                    .rposition(|key| order(key) == std::cmp::Ordering::Less),
+            };
+            if let Some(pos) = found {
+                self.load_row_at(view, pos)?;
+                return Ok(true);
+            }
+        }
+        view.iter_pos = None;
+        Ok(false)
     }
 
-    pub fn find(&mut self, direction: char) -> Result<bool, RecordError> {
-        self.with_default_view(|table, view| table.find_in(view, direction))
+    pub fn find(&mut self, which: &str) -> Result<bool, RecordError> {
+        self.with_default_view(|table, view| table.find_in(view, which))
     }
 
     /// `NEXT` — advance to the next (or previous) record.
@@ -1625,11 +1678,180 @@ mod tests {
         for i in [10i64, 20, 30] {
             insert_row(&mut rec, i, "x");
         }
-        assert!(rec.find('-').unwrap());
+        assert!(rec.find("-").unwrap());
         assert_eq!(rec.field_get(1), Some(&Value::Integer(10)));
 
-        assert!(rec.find('+').unwrap());
+        assert!(rec.find("+").unwrap());
         assert_eq!(rec.field_get(1), Some(&Value::Integer(30)));
+    }
+
+    #[derive(Clone, Copy)]
+    enum Setup {
+        Asc,
+        Desc,
+        Filter,
+        GapAsc,
+        GapDesc,
+        Empty,
+    }
+
+    /// Each row is a case from the Business Central 29 run on the CDX demo
+    /// tenant on 2026-11-28 (review-loop round-02/checks-A5.md, "D2: Find"):
+    /// setup, buffer key, Find string, then the return value and the key in the
+    /// buffer afterwards, or `None` for a runtime error. Rows 1, 2 and 3 exist,
+    /// except after `GapAsc`/`GapDesc` (rows 1 and 3) and `Empty` (no rows).
+    /// `Find()` rows use `=`, which the interpreter passes for no argument.
+    #[test]
+    fn find_follows_business_central_for_every_checked_case() {
+        type Case = (Setup, i64, &'static str, Option<(bool, i64)>);
+        let cases: &[Case] = &[
+            (Setup::Asc, 2, "=", Some((true, 2))),
+            (Setup::Asc, 2, ">", Some((true, 3))),
+            (Setup::Asc, 2, "<", Some((true, 1))),
+            (Setup::Asc, 2, "=><", Some((true, 2))),
+            (Setup::Asc, 2, "=<>", Some((true, 2))),
+            (Setup::Asc, 2, "<>", Some((true, 1))),
+            (Setup::Asc, 2, "><", Some((true, 3))),
+            (Setup::Asc, 4, "=><", Some((true, 3))),
+            (Setup::Asc, 4, "=>", Some((false, 4))),
+            (Setup::Asc, 4, "=<", Some((true, 3))),
+            (Setup::Asc, 4, ">", Some((false, 4))),
+            (Setup::Asc, 4, "<", Some((true, 3))),
+            (Setup::Asc, 0, "=><", Some((true, 1))),
+            (Setup::Asc, 0, ">", Some((true, 1))),
+            (Setup::Asc, 0, "<", Some((false, 0))),
+            (Setup::Asc, 2, ">=", Some((true, 3))),
+            (Setup::Asc, 2, "<=", Some((true, 1))),
+            (Setup::Asc, 2, ">=<", Some((true, 3))),
+            (Setup::Asc, 2, "<=>", Some((true, 1))),
+            (Setup::Asc, 2, "><=", Some((true, 3))),
+            (Setup::Asc, 2, "<>=", Some((true, 1))),
+            (Setup::Asc, 1, "<>", Some((true, 2))),
+            (Setup::Asc, 3, "<>", Some((true, 2))),
+            (Setup::Asc, 1, "><", Some((true, 2))),
+            (Setup::Asc, 3, "><", Some((true, 2))),
+            (Setup::Asc, 4, "<>", Some((true, 3))),
+            (Setup::Asc, 0, "<>", Some((true, 1))),
+            (Setup::Asc, 2, "-", Some((true, 1))),
+            (Setup::Asc, 2, "+", Some((true, 3))),
+            (Setup::Asc, 2, "=", Some((true, 2))),
+            (Setup::Desc, 2, "=", Some((true, 2))),
+            (Setup::Desc, 2, ">", Some((true, 1))),
+            (Setup::Desc, 2, "<", Some((true, 3))),
+            (Setup::Desc, 2, "=><", Some((true, 2))),
+            (Setup::Desc, 2, "=<>", Some((true, 2))),
+            (Setup::Desc, 2, "<>", Some((true, 3))),
+            (Setup::Desc, 2, "><", Some((true, 1))),
+            (Setup::Desc, 4, "=><", Some((true, 3))),
+            (Setup::Desc, 4, "=>", Some((true, 3))),
+            (Setup::Desc, 4, "=<", Some((false, 4))),
+            (Setup::Desc, 4, ">", Some((true, 3))),
+            (Setup::Desc, 4, "<", Some((false, 4))),
+            (Setup::Desc, 0, "=><", Some((true, 1))),
+            (Setup::Desc, 0, ">", Some((false, 0))),
+            (Setup::Desc, 0, "<", Some((true, 1))),
+            (Setup::Desc, 2, ">=", Some((true, 1))),
+            (Setup::Desc, 2, "<=", Some((true, 3))),
+            (Setup::Desc, 2, ">=<", Some((true, 1))),
+            (Setup::Desc, 2, "<=>", Some((true, 3))),
+            (Setup::Desc, 2, "><=", Some((true, 1))),
+            (Setup::Desc, 2, "<>=", Some((true, 3))),
+            (Setup::Desc, 1, "<>", Some((true, 2))),
+            (Setup::Desc, 3, "<>", Some((true, 2))),
+            (Setup::Desc, 1, "><", Some((true, 2))),
+            (Setup::Desc, 3, "><", Some((true, 2))),
+            (Setup::Desc, 4, "<>", Some((true, 3))),
+            (Setup::Desc, 0, "<>", Some((true, 1))),
+            (Setup::Desc, 2, "-", Some((true, 3))),
+            (Setup::Desc, 2, "+", Some((true, 1))),
+            (Setup::Desc, 2, "=", Some((true, 2))),
+            (Setup::Filter, 2, "=", Some((false, 2))),
+            (Setup::Filter, 2, "=><", Some((true, 3))),
+            (Setup::Asc, 1, "<=>", Some((true, 1))),
+            (Setup::Asc, 1, "<>=", Some((true, 2))),
+            (Setup::Asc, 1, "<=", Some((true, 1))),
+            (Setup::Asc, 3, ">=<", Some((true, 3))),
+            (Setup::Asc, 3, "><=", Some((true, 2))),
+            (Setup::Asc, 3, ">=", Some((true, 3))),
+            (Setup::Asc, 4, "=", Some((false, 4))),
+            (Setup::Asc, 4, "=", Some((false, 4))),
+            (Setup::GapAsc, 2, "=><", Some((true, 3))),
+            (Setup::GapAsc, 2, "=<>", Some((true, 1))),
+            (Setup::GapDesc, 2, "=><", Some((true, 1))),
+            (Setup::GapDesc, 2, "=<>", Some((true, 3))),
+            (Setup::Empty, 2, "=><", Some((false, 2))),
+            (Setup::Empty, 2, "-", Some((false, 2))),
+            (Setup::Empty, 2, "+", Some((false, 2))),
+            (Setup::Empty, 2, "=", Some((false, 2))),
+            (Setup::Empty, 2, "", None),
+        ];
+        for (index, &(setup, key, which, expected)) in cases.iter().enumerate() {
+            let mut rec = make_table();
+            for i in 1i64..=3 {
+                insert_row(&mut rec, i, "x");
+            }
+            match setup {
+                Setup::Asc => {}
+                Setup::Desc => rec.with_default_view(|t, v| t.set_ascending_in(v, false)),
+                Setup::Filter => rec.set_range(1, Value::Integer(3), Value::Integer(3)),
+                Setup::GapAsc | Setup::GapDesc => {
+                    rec.get(vec![Value::Integer(2)]).unwrap();
+                    rec.delete(false).unwrap();
+                    if matches!(setup, Setup::GapDesc) {
+                        rec.with_default_view(|t, v| t.set_ascending_in(v, false));
+                    }
+                }
+                Setup::Empty => {
+                    rec.delete_all(false).unwrap();
+                }
+            }
+            rec.field_set(1, Value::Integer(key));
+            let result = rec.find(which);
+            match expected {
+                None => assert_eq!(
+                    result,
+                    Err(RecordError::InvalidFindDirection(which.to_string())),
+                    "case {index}"
+                ),
+                Some((found, after)) => {
+                    assert_eq!(
+                        result,
+                        Ok(found),
+                        "case {index}: Find('{which}') at key {key}"
+                    );
+                    assert_eq!(
+                        rec.field_get(1).map(normalize_key_value),
+                        Some(normalize_key_value(&Value::Integer(after))),
+                        "case {index}: key after Find('{which}') at key {key}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn find_continues_with_next_from_the_row_it_found() {
+        let mut rec = make_table();
+        for i in 1i64..=3 {
+            insert_row(&mut rec, i, "x");
+        }
+        rec.field_set(1, Value::Integer(2));
+        assert_eq!(rec.find("="), Ok(true));
+        assert_eq!(rec.next(1), Ok(1));
+        assert_eq!(rec.field_get(1), Some(&Value::Integer(3)));
+    }
+
+    #[test]
+    fn find_rejects_a_repeated_or_mixed_string() {
+        let mut rec = make_table();
+        insert_row(&mut rec, 1, "x");
+        for which in ["==", "<<", "=-", "-+", "+=", "?"] {
+            assert_eq!(
+                rec.find(which),
+                Err(RecordError::InvalidFindDirection(which.to_string())),
+                "{which}"
+            );
+        }
     }
 
     #[test]
@@ -2186,7 +2408,10 @@ mod tests {
     #[test]
     fn invalid_find_direction_is_rejected() {
         let mut rec = detail_table();
-        assert_eq!(rec.find('?'), Err(RecordError::InvalidFindDirection('?')));
+        assert_eq!(
+            rec.find("?"),
+            Err(RecordError::InvalidFindDirection("?".to_string()))
+        );
     }
 
     #[test]
