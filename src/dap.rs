@@ -100,9 +100,7 @@ pub fn build_dap_binary(
                 .map_err(|error| format!("AL DAP: cannot serialize compile settings: {error}"))?,
         ));
     }
-    if let Some(path) = crate::settings::resolve_dotnet_path(user_settings)
-        .filter(|path| !crate::settings::is_worktree_resident_program(path, &workspace_path))
-    {
+    if let Some(path) = crate::settings::child_dotnet_path(user_settings, &workspace_path) {
         envs.push(("AL_DOTNET_PATH".to_string(), path));
     }
 
