@@ -194,6 +194,7 @@ rows_json() {
 
 # Runs require-ci-success.sh in the fixture repo with the stub gh. The rows come from the JSON file given first.
 run_require_ci() {
+    # shellcheck disable=SC2016 # $1 and $2 belong to the inner bash
     run_cmd env PATH="$t/bin:${PATH}" GH_STUB_JSON="$1" REQUIRE_CI=1 GH_TOKEN=x \
         GITHUB_REPOSITORY=owner/repo CI_WORKFLOW=CI CI_POLL_SECONDS=0 \
         CI_DISCOVERY_TIMEOUT_SECONDS=0 CI_TIMEOUT_SECONDS=0 \

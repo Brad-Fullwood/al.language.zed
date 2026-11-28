@@ -71,6 +71,7 @@ fi
 
 # A staged al-lsp that does not answer --version leaves the old copy in place.
 reset_tree
+# shellcheck disable=SC2016 # $1 expands inside the stub, not here
 stub "$target_dir/editor/al-lsp" 'if [ "$1" = --version ]; then exit 1; fi; echo "al-lsp 0.5.0 (test)"'
 mkdir -p "$work_dir/dev"
 printf 'old' > "$work_dir/dev/al-lsp"
