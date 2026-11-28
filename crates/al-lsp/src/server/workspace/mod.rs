@@ -392,13 +392,12 @@ pub(crate) async fn initialize_workspace(
     // Offer recommended settings on first open of an AL project.
     // Runs after workspace init but before diagnostics — same timing window
     // as the symbol download prompt, which Zed reliably displays.
-    let should_prompt =
-        tokio::task::spawn_blocking(|| !settings_prompt_shown() && !zed_has_al_settings())
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("settings prompt check panicked: {e}");
-                false
-            });
+    let should_prompt = tokio::task::spawn_blocking(settings_prompt_needed)
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("settings prompt check panicked: {e}");
+            false
+        });
     if session_cancelled(&session) {
         return Ok(());
     }
@@ -451,7 +450,7 @@ pub(crate) async fn initialize_workspace(
             // handle so a runtime shutdown mid-write surfaces in the log
             // instead of silently leaving the sentinel unwritten — the
             // user would otherwise see the prompt again on next launch.
-            match tokio::task::spawn_blocking(mark_settings_prompt_shown).await {
+            match tokio::task::spawn_blocking(record_settings_prompt_shown).await {
                 Ok(()) => {}
                 Err(e) => {
                     tracing::warn!("settings prompt sentinel write task did not complete: {e}");
@@ -1521,10 +1520,49 @@ fn mark_settings_prompt_shown() {
     }
 }
 
+/// Whether `initialize_workspace` offers the settings prompt. Unit tests read
+/// their own sentinel, so the answer does not depend on the machine.
+#[cfg(not(test))]
+fn settings_prompt_needed() -> bool {
+    !settings_prompt_shown() && !zed_has_al_settings()
+}
+
+#[cfg(test)]
+fn settings_prompt_needed() -> bool {
+    !unit_test_sentinel().exists()
+}
+
+/// Record that the settings prompt was answered or dismissed.
+#[cfg(not(test))]
+fn record_settings_prompt_shown() {
+    mark_settings_prompt_shown();
+}
+
+#[cfg(test)]
+fn record_settings_prompt_shown() {
+    let path = unit_test_sentinel();
+    if let Err(e) = ensure_parent_dir(&path).and_then(|()| std::fs::write(&path, b"")) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "failed to write unit test settings sentinel"
+        );
+    }
+}
+
 /// Path to the sentinel file that records the popup was shown.
 fn sentinel_path() -> Option<PathBuf> {
     let data_dir = al_project::project::user_data_dir()?;
     Some(data_dir.join("al-lsp").join(".settings-prompt-shown"))
+}
+
+/// The sentinel the unit tests use in place of the one under the user data
+/// directory.
+#[cfg(test)]
+fn unit_test_sentinel() -> PathBuf {
+    crate::server::daemon::unit_test_data_dir()
+        .join("al-lsp")
+        .join(".settings-prompt-shown")
 }
 
 /// Check whether Zed's settings.json already has correct AL settings.

@@ -2405,11 +2405,34 @@ pub(crate) enum DaemonWorkspaceInitError {
     Core(#[from] al_workspace::CoreInitError),
 }
 
+/// The folder the al-lsp unit tests use in place of the user data directory.
+/// One folder per test process under the system temp dir.
+#[cfg(test)]
+pub(crate) fn unit_test_data_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("al-lsp-unit-{}", std::process::id()))
+}
+
+/// The dependency source summary store for the project at `project_root`.
+/// The unit tests get a store under [`unit_test_data_dir`]. Other builds use
+/// the per-user store, which `for_project` names.
+#[cfg(not(test))]
+pub(crate) fn summary_cache_for(project_root: &Path) -> Option<al_workspace::SourceSummaryCache> {
+    al_workspace::SourceSummaryCache::for_project(project_root)
+}
+
+#[cfg(test)]
+pub(crate) fn summary_cache_for(project_root: &Path) -> Option<al_workspace::SourceSummaryCache> {
+    let _ = project_root;
+    Some(al_workspace::SourceSummaryCache::at(
+        unit_test_data_dir().join("al-lsp").join("source-index"),
+    ))
+}
+
 /// Keep the dependency source summaries of `project_root` in its data
 /// directory, so the next daemon or MCP server on the same packages loads
 /// them instead of parsing every embedded file again.
 pub(crate) fn persist_dependency_source_summaries(workspace: &Workspace, project_root: &Path) {
-    match al_workspace::SourceSummaryCache::for_project(project_root) {
+    match summary_cache_for(project_root) {
         Some(cache) => {
             tracing::info!(
                 dir = %cache.dir().display(),

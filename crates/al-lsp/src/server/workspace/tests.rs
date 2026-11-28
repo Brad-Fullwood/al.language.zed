@@ -1321,3 +1321,24 @@ async fn the_editor_download_refuses_a_linked_alpackages_in_an_untrusted_project
     assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
     assert!(refuse_symbol_download_into(&project.root, &project.packages_dir).is_some());
 }
+
+/// Unit tests keep the source summary store and the settings prompt sentinel
+/// out of the user data directory.
+#[test]
+fn unit_tests_keep_summaries_out_of_the_user_data_dir() {
+    let tempdir = tempfile::tempdir().unwrap();
+    let cache = crate::server::daemon::summary_cache_for(tempdir.path())
+        .expect("unit tests get a summary cache");
+    assert!(
+        cache
+            .dir()
+            .starts_with(crate::server::daemon::unit_test_data_dir()),
+        "{}",
+        cache.dir().display()
+    );
+
+    if unit_test_sentinel().exists() {
+        std::fs::remove_file(unit_test_sentinel()).unwrap();
+    }
+    assert!(settings_prompt_needed());
+}
