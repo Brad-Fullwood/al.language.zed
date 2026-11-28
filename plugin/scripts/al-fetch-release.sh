@@ -204,7 +204,7 @@ case "$AL_PIN_CHECKSUMS_SHA256" in
 *) [ "${#AL_PIN_CHECKSUMS_SHA256}" -eq 64 ] && pin_ok=1 ;;
 esac
 if [ "$pin_ok" -ne 1 ]; then
-	report "no $BINARY_CHECKSUMS_ASSET digest is pinned for release $AL_PIN_RELEASE_TAG (AL_PIN_CHECKSUMS_SHA256 is '$AL_PIN_CHECKSUMS_SHA256'). The release must publish $BINARY_CHECKSUMS_ASSET and its SHA-256 must be filled into AL_PIN_CHECKSUMS_SHA256 in al-fetch-release.sh. Nothing was downloaded"
+	report "automatic download is off in this plugin version: no $BINARY_CHECKSUMS_ASSET digest is pinned. Install the tools from source: clone https://github.com/Brad-Fullwood/al.language.zed and run \`make install\` (README, Installation). Nothing was downloaded"
 	exit 0
 fi
 
