@@ -2290,10 +2290,13 @@ impl DotnetHost {
 /// The `dotnet` host to run for a project, and the message for the user when
 /// the repository chose `AL_DOTNET_PATH` and the project is not trusted.
 ///
-/// The Zed extension turns `dotnetPath` from the merged editor settings into
-/// this environment entry, and `zed_extension_api` 0.7 gives it no way to tell
-/// a user-level value from a worktree one. al-lsp can tell, because it can read
-/// the repository's files, so the refusal lands here. A refused host gives
+/// The Zed extension turns `dotnetPath` into this environment entry. For the
+/// language server and the debug adapter it first drops a path inside the
+/// worktree, so a path inside the project reaches this decision only from the
+/// `al-tools` context server settings or from an `AL_DOTNET_PATH` in the
+/// environment al-lsp starts with. `zed_extension_api` 0.7 gives the
+/// extension no way to tell a user-level value from a worktree one. al-lsp can
+/// tell, because it can read the repository's files, so the refusal lands here. A refused host gives
 /// `dotnet` from `PATH` as the program. The environment is not changed,
 /// because al-lsp runs this on a multi-threaded runtime where `remove_var` is
 /// undefined behaviour, so every spawn takes the program from this result.

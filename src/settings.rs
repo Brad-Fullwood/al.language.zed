@@ -63,8 +63,8 @@ pub fn apply_al_settings_to_config(
 /// `initialization_options`. Dotted keys in the `al` object of `init` go through
 /// `apply_al_settings_to_config` before the merge, so
 /// `{"al": {"al.enableCodeAnalysis": false}}` reaches the server as
-/// `{"al": {"enableCodeAnalysis": false}}`. The proxy provides defaults from
-/// package.json, so this carries only the user's overrides.
+/// `{"al": {"enableCodeAnalysis": false}}`. al-lsp applies its own defaults,
+/// so this carries only the user's values.
 pub fn build_initialization_options(
     workspace_path: &str,
     settings: Option<&serde_json::Value>,
@@ -313,6 +313,16 @@ pub fn is_worktree_resident_program(path: &str, worktree_root: &str) -> bool {
             root == program
         }
     })
+}
+
+/// The `dotnetPath` the extension passes to a child process. A relative path,
+/// or one inside the worktree, is dropped.
+pub fn child_dotnet_path(
+    user_settings: Option<&serde_json::Value>,
+    worktree_root: &str,
+) -> Option<String> {
+    resolve_dotnet_path(user_settings)
+        .filter(|path| !is_worktree_resident_program(path, worktree_root))
 }
 
 /// Whether `path` starts at a filesystem root: `/…`, `\…`, or a drive such as

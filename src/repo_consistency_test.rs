@@ -266,6 +266,73 @@ fn every_checkout_discards_persisted_credentials() {
     );
 }
 
+/// Every workflow job names its own limit with a job level `timeout-minutes`.
+/// Without one, a hung runner keeps the job for GitHub's six-hour default.
+#[test]
+fn every_workflow_job_has_a_timeout() {
+    let workflows = [
+        ("ci.yml", include_str!("../.github/workflows/ci.yml")),
+        (
+            "release.yml",
+            include_str!("../.github/workflows/release.yml"),
+        ),
+        (
+            "verify-generated-assets.yml",
+            include_str!("../.github/workflows/verify-generated-assets.yml"),
+        ),
+    ];
+
+    for (file, source) in workflows {
+        let lines: Vec<&str> = source.lines().collect();
+        let jobs_at = lines
+            .iter()
+            .position(|line| *line == "jobs:")
+            .unwrap_or_else(|| panic!("{file} has no top level `jobs:` key"));
+        let section_end = lines[jobs_at + 1..]
+            .iter()
+            .position(|line| is_top_level_key(line))
+            .map_or(lines.len(), |offset| jobs_at + 1 + offset);
+        let starts: Vec<(usize, &str)> = (jobs_at + 1..section_end)
+            .filter_map(|index| job_key(lines[index]).map(|job| (index, job)))
+            .collect();
+        assert!(
+            !starts.is_empty(),
+            "{file} has no jobs under `jobs:`, so the timeout check would pass without checking"
+        );
+
+        for (position, &(start, job)) in starts.iter().enumerate() {
+            let end = starts
+                .get(position + 1)
+                .map_or(section_end, |&(next, _)| next);
+            assert!(
+                lines[start + 1..end]
+                    .iter()
+                    .any(|line| line.starts_with("    timeout-minutes:")),
+                "{file}: job `{job}` has no job level `timeout-minutes:` (4 spaces) before the next job"
+            );
+        }
+    }
+}
+
+/// A line that opens a top level key: no indent, not a comment.
+fn is_top_level_key(line: &str) -> bool {
+    !line.is_empty() && !line.starts_with([' ', '#'])
+}
+
+/// The name of a job key at two spaces of indent, such as `  cargo-deny:`.
+fn job_key(line: &str) -> Option<&str> {
+    let rest = line.strip_prefix("  ")?;
+    if rest.starts_with(' ') {
+        return None;
+    }
+    let (name, after) = rest.split_once(':')?;
+    let is_identifier = !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    (is_identifier && (after.is_empty() || after.starts_with(' '))).then_some(name)
+}
+
 #[test]
 fn github_repo_is_owner_slash_repo() {
     assert!(
@@ -910,5 +977,68 @@ fn extension_and_al_lsp_versions_are_equal() {
         (extension_toml.as_str(), root.as_str()),
         (lsp.as_str(), lsp.as_str()),
         "extension.toml, root Cargo.toml and crates/al-lsp/Cargo.toml versions must be equal"
+    );
+}
+
+/// The release dry-run recipe echoes `--- k/N` for each step, and
+/// `Docs/testing-guide.md` section 7 lists the same steps. This fails when a
+/// step is added or removed in only one of them.
+#[test]
+fn release_dryrun_steps_match_the_testing_guide() {
+    fn step_marker(line: &str) -> Option<(usize, usize)> {
+        let rest = line.split("--- ").nth(1)?;
+        let (k, rest) = rest.split_once('/')?;
+        let n: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        Some((k.parse().ok()?, n.parse().ok()?))
+    }
+
+    let makefile = include_str!("../Makefile");
+    let mut in_recipe = false;
+    let mut markers = Vec::new();
+    for line in makefile.lines() {
+        if line.starts_with("release-dryrun:") {
+            in_recipe = true;
+        } else if in_recipe && !line.is_empty() && !line.starts_with('\t') && !line.starts_with('#')
+        {
+            break;
+        } else if in_recipe {
+            markers.extend(step_marker(line));
+        }
+    }
+    assert!(
+        !markers.is_empty(),
+        "release-dryrun has no `--- k/N` step echoes"
+    );
+    let total = markers[0].1;
+    assert!(total > 0, "release-dryrun declares zero steps");
+    assert!(
+        markers.iter().all(|&(_, n)| n == total),
+        "release-dryrun step echoes disagree on the total: {markers:?}"
+    );
+    let numbers: Vec<usize> = markers.iter().map(|&(k, _)| k).collect();
+    let expected: Vec<usize> = (1..=total).collect();
+    assert_eq!(
+        numbers, expected,
+        "release-dryrun echoes steps {numbers:?}, expected 1 to {total} in order"
+    );
+
+    let guide = include_str!("../Docs/testing-guide.md");
+    let mut lines = guide.lines();
+    assert!(
+        lines
+            .by_ref()
+            .any(|line| line.trim_end() == "## 7. Release dry-run"),
+        "Docs/testing-guide.md has no `## 7. Release dry-run` heading"
+    );
+    let items = lines
+        .take_while(|line| !line.starts_with("## "))
+        .filter(|line| {
+            line.split_once('.')
+                .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .count();
+    assert_eq!(
+        items, total,
+        "Docs/testing-guide.md section 7 lists {items} numbered steps, but release-dryrun runs {total}"
     );
 }

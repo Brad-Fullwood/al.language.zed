@@ -430,10 +430,7 @@ async fn run() {
             );
             std::process::exit(1);
         };
-        let forward: Vec<String> = al_lsp::extension_build::without_flag(&args[1..])
-            .into_iter()
-            .filter(|a| a.as_str() != "--official-lsp" && a.as_str() != "--stdio")
-            .collect();
+        let forward = al_lsp::extension_build::official_lsp_forward_args(&args[1..]);
         tracing::info!(
             altool = %altool.display(),
             "delegating LSP session to the official AL language server"
@@ -443,10 +440,9 @@ async fn run() {
         // is decided against the working directory here.
         let dotnet = match std::env::current_dir() {
             Ok(project_root) => al_project::trust::enforce_dotnet_path(&project_root),
-            Err(_) => al_project::trust::DotnetHost {
-                program: al_project::toolchain::dotnet_program(),
-                advisory: None,
-            },
+            Err(_) => dotnet_host_without_project(
+                std::env::var_os(al_project::toolchain::DOTNET_PATH_ENV).as_deref(),
+            ),
         };
         if let Some(advisory) = &dotnet.advisory {
             tracing::warn!("{advisory}");
@@ -694,6 +690,28 @@ async fn run() {
     }
 }
 
+/// The dotnet host when the working directory cannot be read. No project can
+/// be checked, so a configured host is refused and `dotnet` from PATH is used.
+fn dotnet_host_without_project(
+    configured: Option<&std::ffi::OsStr>,
+) -> al_project::trust::DotnetHost {
+    match configured.filter(|value| !value.is_empty()) {
+        Some(value) => al_project::trust::DotnetHost {
+            program: "dotnet".into(),
+            advisory: Some(format!(
+                "Ignoring the dotnet host '{}': the working directory could not be \
+                 read, so the project it belongs to is unknown. Falling back to \
+                 'dotnet' from PATH.",
+                value.to_string_lossy()
+            )),
+        },
+        None => al_project::trust::DotnetHost {
+            program: al_project::toolchain::dotnet_program(),
+            advisory: None,
+        },
+    }
+}
+
 #[cfg(test)]
 mod mode_tests {
     use super::{mode, Mode};
@@ -780,5 +798,20 @@ mod tests {
             line.ends_with(&format!(" pid={}", std::process::id())),
             "{line}"
         );
+    }
+
+    #[test]
+    fn dotnet_host_without_project_ignores_a_configured_host() {
+        let host =
+            super::dotnet_host_without_project(Some(std::ffi::OsStr::new("/opt/dotnet/dotnet")));
+        assert_eq!(host.program, std::ffi::OsString::from("dotnet"));
+        let advisory = host.advisory.expect("an advisory for the refused host");
+        assert!(advisory.contains("/opt/dotnet/dotnet"), "{advisory}");
+    }
+
+    #[test]
+    fn dotnet_host_without_project_without_a_setting_has_no_advisory() {
+        let host = super::dotnet_host_without_project(None);
+        assert_eq!(host.advisory, None);
     }
 }

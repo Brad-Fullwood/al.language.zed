@@ -17,6 +17,10 @@
 #   An install in AL_BIN_DIR is found, so the fetch script makes no request.
 #   An archive whose al-lsp and al-explorer are mode 0644 installs both
 #   executable.
+#   al-bin.sh --resolve prefers target/editor to target/release in one
+#   checkout.
+#   A complete pair under CARGO_TARGET_DIR is found before target/release in
+#   the checkout.
 #
 # Serves small archives over a local python3 -m http.server: curl in
 # al-fetch-release.sh restricts --proto to https/http, so a file:// URL
@@ -25,6 +29,9 @@
 # Run directly, or via `make plugin-validate`.
 
 set -eu
+
+# The caller's cargo target dir must not satisfy the lookup.
+unset CARGO_TARGET_DIR
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
 fetch_script="$root/plugin/scripts/al-fetch-release.sh"
@@ -281,8 +288,10 @@ scenario_unpinned_listing() {
 		AL_ALLOW_INSECURE_RELEASE_URL=1 \
 		bash "$fetch_script" 2>&1)" && rc=0 || rc=$?
 	[ "$rc" -eq 0 ] || fail "unpinned listing: al-fetch-release.sh exited $rc, its contract is always 0. Output: $out"
-	printf '%s\n' "$out" | grep -qF "must publish binary-checksums.txt and its SHA-256 must be filled into AL_PIN_CHECKSUMS_SHA256" ||
-		fail "unpinned listing: expected a refusal asking for the pin to be filled. Output: $out"
+	printf '%s\n' "$out" | grep -qF "automatic download is off in this plugin version" ||
+		fail "unpinned listing: expected the refusal that automatic download is off. Output: $out"
+	printf '%s\n' "$out" | grep -qF "make install" ||
+		fail "unpinned listing: expected the refusal to name make install. Output: $out"
 	[ "$(archive_requests)" = "$before" ] ||
 		fail "unpinned listing: the archive was requested although no listing digest is pinned"
 	[ ! -d "$data/bin" ] ||
@@ -518,6 +527,48 @@ scenario_archive_mode_0644() {
 	pass "an archive whose al-lsp and al-explorer are mode 0644 installs both executable"
 }
 
+# ── al-bin.sh prefers target/editor to target/release ───────────────
+# make install builds the editor profile, so a checkout holding both pairs
+# resolves to the editor one.
+scenario_editor_before_release() {
+	local checkout="$work/checkout-order" dir out rc
+	rm -rf "$checkout"
+	mkdir -p "$checkout/plugin" "$checkout/target/release" "$checkout/target/editor"
+	for dir in "$checkout/target/release" "$checkout/target/editor"; do
+		printf '#!/bin/sh\nexit 0\n' >"$dir/al-explorer"
+		printf '#!/bin/sh\nexit 0\n' >"$dir/al-lsp"
+		chmod 755 "$dir/al-explorer" "$dir/al-lsp"
+	done
+
+	out="$(env -u AL_BIN_DIR -u CARGO_TARGET_DIR CLAUDE_PLUGIN_ROOT="$checkout/plugin" \
+		PATH="$test_path" bash "$bin_script" --resolve 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] || fail "editor before release: al-bin.sh --resolve exited $rc, expected 0. Output: $out"
+	[ "$out" = "$checkout/target/editor" ] ||
+		fail "editor before release: al-bin.sh --resolve printed '$out', expected '$checkout/target/editor'"
+	pass "al-bin.sh --resolve prefers target/editor to target/release in one checkout"
+}
+
+# ── CARGO_TARGET_DIR is searched before the checkout ────────────────
+# The Makefile builds into CARGO_TARGET_DIR when it is set, so a complete pair
+# there wins over a target/release pair in the checkout.
+scenario_cargo_target_dir() {
+	local checkout="$work/checkout-ctd" ctd="$work/ctd" dir out rc
+	rm -rf "$checkout" "$ctd"
+	mkdir -p "$checkout/plugin" "$checkout/target/release" "$ctd/editor"
+	for dir in "$checkout/target/release" "$ctd/editor"; do
+		printf '#!/bin/sh\nexit 0\n' >"$dir/al-explorer"
+		printf '#!/bin/sh\nexit 0\n' >"$dir/al-lsp"
+		chmod 755 "$dir/al-explorer" "$dir/al-lsp"
+	done
+
+	out="$(env -u AL_BIN_DIR CARGO_TARGET_DIR="$ctd" CLAUDE_PLUGIN_ROOT="$checkout/plugin" \
+		PATH="$test_path" bash "$bin_script" --resolve 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] || fail "CARGO_TARGET_DIR: al-bin.sh --resolve exited $rc, expected 0. Output: $out"
+	[ "$out" = "$ctd/editor" ] ||
+		fail "CARGO_TARGET_DIR: al-bin.sh --resolve printed '$out', expected '$ctd/editor'"
+	pass "a complete pair under CARGO_TARGET_DIR is found before target/release in the checkout"
+}
+
 scenario_symlink_member
 scenario_directory_member
 scenario_failed_install_step
@@ -529,5 +580,7 @@ scenario_mismatched_al_lsp_eval
 scenario_resolve_default_data_dir
 scenario_resolved_by_bin_dir
 scenario_archive_mode_0644
+scenario_editor_before_release
+scenario_cargo_target_dir
 
 printf 'al-fetch-release-test: all scenarios passed\n'

@@ -1,21 +1,21 @@
-# Zed AL Extension — Build System
+# Zed AL Extension: build system
 #
 # Usage:
-#   make install   — build the optimised al-lsp and al-explorer, the WASM extension and bridges, copy al-lsp to the extension's work dir (dev/), verify, print status
-#   make build     — rebuild everything (all Rust crates + WASM extension + .NET bridges)
-#   make rust      — rebuild all Rust crates (native, excludes zed-al)
-#   make wasm      — rebuild only the WASM extension (zed-al, wasm32-wasip2)
-#   make bridges   — rebuild just .NET bridges
-#   make grammar   — regenerate the tree-sitter-al parser sources before a
+#   make install: build the optimised al-lsp and al-explorer, the WASM extension, copy al-lsp to the extension's work dir (dev/), verify, print status
+#   make build    : rebuild everything (all Rust crates + WASM extension + .NET bridges)
+#   make rust     : rebuild all Rust crates (native, excludes zed-al)
+#   make wasm     : rebuild only the WASM extension (zed-al, wasm32-wasip2)
+#   make bridges  : rebuild just .NET bridges
+#   make grammar  : regenerate the tree-sitter-al parser sources before a
 #                    fresh `tree-sitter build`
-#   make language  — regenerate only the Zed-facing languages/al package files
-#   make record-methods — regenerate the Microsoft-derived Record method catalog
-#   make check-record-methods — prove the catalog matches the pinned Microsoft DLL
-#   make repro-artifacts — regenerate generated artifacts; fail on any diff (CI drift guard)
-#   make live-bc-contracts — strict tenant-backed publish/DAP/snapshot/profiling/symbols profile (live test run is SKIP)
-#   make release-dryrun  — release-readiness gate, never publishes (regenerates languages/al in the checkout)
-#   make plugin-validate — check the Claude Code plugin under plugin/
-#   make clean     — clean all build artifacts
+#   make language : regenerate only the Zed-facing languages/al package files
+#   make record-methods: regenerate the Microsoft-derived Record method catalog
+#   make check-record-methods: prove the catalog matches the pinned Microsoft DLL
+#   make repro-artifacts: regenerate generated artifacts; fail on any diff (CI drift guard)
+#   make live-bc-contracts: strict tenant-backed publish/DAP/snapshot/profiling/symbols profile (live test run is SKIP)
+#   make release-dryrun : release-readiness gate, never publishes (regenerates languages/al in the checkout)
+#   make plugin-validate: check the Claude Code plugin under plugin/
+#   make clean    : clean all build artifacts
 
 SHELL := /bin/bash
 ROOT := $(shell pwd)
@@ -59,19 +59,20 @@ build: rust wasm bridges
 	@echo "Build complete. Restart the LSP in Zed to pick up changes."
 
 # ── Install ──────────────────────────────────────────────────────
-# `install` builds the optimised al-lsp and al-explorer, the WASM extension and
-# the bridges, copies al-lsp into the extension's managed directory
+# `install` builds the optimised al-lsp and al-explorer and the WASM extension,
+# copies al-lsp into the extension's managed directory
 # ($(ZED_WORK_DIR)/dev, the one place the extension looks), checks what it
 # copied against `al-lsp --version`, links the dev extension into Zed and
 # prints a status. It is idempotent. It does not build the debug workspace:
 # run `make build` for that. The copy and the status run in the recipe, so
 # under `make -j` they start only after every build has finished.
-install: install-build wasm bridges
+install: install-build wasm
 	@$(MAKE) --no-print-directory install-files
 	@$(MAKE) --no-print-directory install-status
 
 # The optimised binaries `install` copies.
 install-build:
+	@case "$(UNAME_S)" in MINGW*|MSYS*|CYGWIN*) echo "ERROR: make install supports Linux and macOS. On Windows, install the dev extension from the clone in Zed and let it download the release (README, Installation)."; exit 1;; esac
 	@echo "=== Building al-lsp (semantic) and al-explorer, profile $(INSTALL_PROFILE) ==="
 	cargo build --profile $(INSTALL_PROFILE) -p al-lsp --bin al-lsp --features semantic
 	cargo build --profile $(INSTALL_PROFILE) -p al-explorer --bin al-explorer
@@ -103,6 +104,7 @@ install-lsp:
 # Microsoft's AL dotnet tool, `al` is Microsoft's altool wrapper and is left
 # alone. Use `al-explorer` in scripts.
 install-files:
+	@case "$(UNAME_S)" in MINGW*|MSYS*|CYGWIN*) echo "ERROR: make install supports Linux and macOS. On Windows, install the dev extension from the clone in Zed and let it download the release (README, Installation)."; exit 1;; esac
 	@test -x "$(LSP_BIN)" || { echo "ERROR: $(LSP_BIN) missing, run 'make install-build' first."; exit 1; }
 	@test -x "$(EXPLORER_BIN)" || { echo "ERROR: $(EXPLORER_BIN) missing, run 'make install-build' first."; exit 1; }
 	@set -e; \
@@ -165,7 +167,7 @@ install-status:
 	@echo "grammar:      $$([ -f "$(ROOT)/grammars/al.wasm" ] && echo built || echo 'not built yet, Zed builds it when the dev extension installs')"
 	@echo "dev ext link: $$([ -e "$(ZED_EXT_DIR)/al" ] && echo present || echo missing)"
 	@echo ""
-	@echo "Left to do in Zed: run 'zed: install dev extension' (first time) or 'zed: reload extensions'."
+	@echo "Left to do in Zed: run 'zed: install dev extension' and choose this clone, the first time and after each pull, so Zed loads the extension built from the same commit as al-lsp."
 
 # ── One-shot dev environment setup ───────────────────────────────
 # Installs prerequisites, then builds and copies everything. Run once
@@ -392,63 +394,83 @@ live-bc-contracts:
 	@bash scripts/live-bc-contracts.sh
 
 # ── Release readiness dry-run (never publishes) ───────────────────
-# Runs every self-contained gate a release would, without uploading anything:
+# Runs the self-contained gates a release would, without uploading anything:
 # grammar/generator/corpus/package checks, repository and generated-artifact
-# invariants, ShellCheck, formatting and clippy, the cargo-deny dependency
-# policy, native and WASM builds, host/WASM-extension tests, the full native
-# workspace test suite, the semantic-feature clippy and tests, local
-# package-manifest audits, the plugin validation and rustdoc with warnings
-# denied. Step 9 runs `make language`, which regenerates languages/al in the
-# checkout, so start from a clean languages/ directory. A tag push additionally waits for the whole CI
-# workflow to conclude successfully (check-release-hygiene.sh --require-ci),
-# so every gate that workflow runs is mirrored here.
-# ShellCheck and cargo-deny are skipped with a printed note when the tool is
-# not installed locally; CI installs both, so a skip here is not a pass there.
+# invariants, ShellCheck, the release and dev-install script tests, formatting
+# and clippy, the benchmark harness and the perf bench, the cargo-deny and
+# cargo-machete dependency policy, native and WASM builds, host/WASM-extension
+# tests, the full native workspace test suite, the semantic-feature clippy and
+# tests, local package-manifest audits, the plugin validation and rustdoc with
+# warnings denied. Step 11 runs `make language`, which regenerates languages/al
+# in the checkout, so start from a clean languages/ directory.
+#
+# A tag push also waits for the whole CI workflow to conclude successfully
+# (check-release-hygiene.sh --require-ci). This target does not run these parts
+# of CI or release.yml:
+#   - the glibc floor cross build (CI job `linux-glibc-floor`, which needs `cross`
+#     and a container engine)
+#   - the macOS leg of the `ci` job and the `windows-native` job
+#   - the semantic builds on macOS and Windows (CI job `semantic-other-os`)
+#   - the release packaging steps in release.yml
+# ShellCheck, cargo-deny and cargo-machete are skipped with a printed note when
+# the tool is not installed locally. CI installs them, so a skip here is not a pass there.
 # Profiles needing a proprietary Microsoft extension, `alc`, or live Business
 # Central remain explicit environment-gated checks in Docs/testing-guide.md.
 # The separate `crates-publish-dryrun` target is the strict registry-resolution
 # gate and never converts a blocked dependency into success.
 release-dryrun:
-	@echo "=== Release dry-run (nothing is published, step 9 regenerates languages/al) ==="
-	@echo "--- 1/18 grammar crate tests ---"
+	@echo "=== Release dry-run (nothing is published, step 11 regenerates languages/al) ==="
+	@echo "--- 1/22 grammar crate tests ---"
 	cd tree-sitter-al && cargo test --all-targets
-	@echo "--- 2/18 grammar generator tests ---"
+	@echo "--- 2/22 grammar generator tests ---"
 	cd tree-sitter-al && cargo test --manifest-path generator/Cargo.toml --all-targets
-	@echo "--- 3/18 focused grammar fixtures + pinned repository corpus ---"
+	@echo "--- 3/22 focused grammar fixtures + pinned repository corpus ---"
 	tree-sitter-al/tests/run_repo_tests.sh
-	@echo "--- 4/18 grammar package manifest ---"
+	@echo "--- 4/22 grammar package manifest ---"
 	cd tree-sitter-al && cargo package --list
-	@echo "--- 5/18 repo-slug consistency ---"
+	@echo "--- 5/22 repo-slug consistency ---"
 	@bash scripts/check-repo-consistency.sh
 	@bash scripts/test-use-api.sh
-	@echo "--- 6/18 ShellCheck over the shipped shell scripts ---"
+	@echo "--- 6/22 ShellCheck over the shipped shell scripts ---"
 	@$(MAKE) --no-print-directory shellcheck
-	@echo "--- 7/18 stale crates/<name> doc references ---"
+	@echo "--- 7/22 stale crates/<name> doc references ---"
 	@bash scripts/check-doc-paths.sh
-	@echo "--- 8/18 release hygiene (versions / submodule / grammar rev / generated assets) ---"
+	@echo "--- 8/22 release hygiene (versions / submodule / grammar rev / generated assets) ---"
 	@bash scripts/check-release-hygiene.sh
-	@echo "--- 9/18 reproducible generated artifacts ---"
+	@echo "--- 9/22 release script tests ---"
+	@bash scripts/test-release-scripts.sh
+	@echo "--- 10/22 dev-install script tests ---"
+	@bash scripts/test-dev-install.sh
+	@echo "--- 11/22 reproducible generated artifacts ---"
 	@$(MAKE) --no-print-directory repro-artifacts
-	@echo "--- 10/18 formatting + clippy + benchmark harness contracts ---"
+	@echo "--- 12/22 formatting + clippy + benchmark harness contracts ---"
 	cargo fmt --all -- --check
 	cargo clippy --workspace --exclude zed-al --all-targets -- -D warnings
 	cargo clippy -p zed-al --all-targets -- -D warnings
 	python3 -m unittest discover -s benchmarks/scripts -p 'test_*_bench.py'
-	@echo "--- 11/18 dependency policy (cargo-deny) ---"
+	@echo "--- 13/22 dependency policy (cargo-deny) ---"
 	@$(MAKE) --no-print-directory deny
-	@echo "--- 12/18 build workspace (excl zed-al) + real semantic al-lsp ---"
+	@echo "--- 14/22 unused dependencies (cargo-machete) ---"
+	@if command -v cargo-machete >/dev/null 2>&1; then \
+		cargo machete; \
+	else \
+		echo "  SKIPPED: cargo-machete is not installed. CI still runs it (see ci.yml). Install it with 'cargo install cargo-machete --version 0.9.2 --locked'."; \
+	fi
+	@echo "--- 15/22 build workspace (excl zed-al) + real semantic al-lsp ---"
 	cargo build --workspace --exclude zed-al
 	cargo build -p al-lsp --bin al-lsp --features semantic
-	@echo "--- 13/18 test workspace (excl zed-al) ---"
+	@echo "--- 16/22 test workspace (excl zed-al) ---"
 	cargo test --workspace --exclude zed-al
-	@echo "--- 14/18 semantic-feature clippy + tests (the unsafe CLR FFI) ---"
+	@echo "--- 17/22 semantic-feature clippy + tests (the unsafe CLR FFI) ---"
 	cargo clippy -p al-semantic -p al-lsp --features semantic --all-targets -- -D warnings
 	cargo test -p al-semantic --features semantic
-	@echo "--- 15/18 test + build the actual Zed extension ---"
+	@echo "--- 18/22 test + build the actual Zed extension ---"
 	cargo test -p zed-al
 	cargo build -p zed-al --target wasm32-wasip2 --release
 	@bash scripts/check-zed-wasm-component.sh "$(WASM_BIN)"
-	@echo "--- 16/18 local package-manifest audit for publishable crates ---"
+	@echo "--- 19/22 perf bench (CI timing arguments) ---"
+	cargo bench -p al-lsp --bench perf -- --warm-up-time 0.1 --measurement-time 0.2 --sample-size 10
+	@echo "--- 20/22 local package-manifest audit for publishable crates ---"
 	@fail=0; \
 	for dir in crates/*/; do \
 		f="$$dir/Cargo.toml"; \
@@ -464,9 +486,9 @@ release-dryrun:
 		fi; \
 	done; \
 	[ $$fail -eq 0 ] || { echo "release-dryrun: a crate package manifest is invalid"; exit 1; }
-	@echo "--- 17/18 Claude Code plugin validation ---"
+	@echo "--- 21/22 Claude Code plugin validation ---"
 	@$(MAKE) --no-print-directory plugin-validate
-	@echo "--- 18/18 rustdoc with warnings denied ---"
+	@echo "--- 22/22 rustdoc with warnings denied ---"
 	RUSTDOCFLAGS="-D warnings" cargo doc --workspace --exclude zed-al --no-deps
 	@echo ""
 	@echo "Release dry-run complete (nothing published)."

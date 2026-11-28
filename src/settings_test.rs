@@ -275,6 +275,50 @@ fn resolve_dotnet_path_honors_all_settings_shapes() {
     );
 }
 
+#[test]
+fn child_dotnet_path_drops_a_relative_path() {
+    let settings = serde_json::json!({"al.dotnetPath": ".dotnet/dotnet"});
+    assert_eq!(
+        crate::settings::child_dotnet_path(Some(&settings), "/work/app"),
+        None
+    );
+}
+
+#[test]
+fn child_dotnet_path_drops_a_path_under_the_worktree() {
+    let settings = serde_json::json!({"dotnetPath": "/work/app/.dotnet/dotnet"});
+    assert_eq!(
+        crate::settings::child_dotnet_path(Some(&settings), "/work/app"),
+        None
+    );
+}
+
+#[test]
+fn child_dotnet_path_keeps_a_path_outside_the_worktree() {
+    let settings = serde_json::json!({"al": {"dotnetPath": "/usr/share/dotnet/dotnet"}});
+    assert_eq!(
+        crate::settings::child_dotnet_path(Some(&settings), "/work/app"),
+        Some("/usr/share/dotnet/dotnet".to_string())
+    );
+}
+
+#[test]
+fn both_spawn_routes_use_child_dotnet_path() {
+    for (route, source) in [
+        ("lib.rs", include_str!("lib.rs")),
+        ("dap.rs", include_str!("dap.rs")),
+    ] {
+        assert!(
+            source.contains("child_dotnet_path("),
+            "{route} does not call child_dotnet_path"
+        );
+        assert!(
+            !source.contains("is_worktree_resident_program("),
+            "{route} still filters dotnetPath inline"
+        );
+    }
+}
+
 /// What the helper answers about `dotnetPath`, which is the only setting it
 /// still filters. It is not an authorisation: a false answer says the program
 /// is not a file the clone carried, and leaves every program the machine

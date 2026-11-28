@@ -148,7 +148,7 @@ live in [ROADMAP.md](../ROADMAP.md).
 - `dotnetPath` is different, because al-lsp is already running when it matters,
   and al-lsp can read the repository's files. The language server and debug
   adapter routes filter by location: a relative path, or an absolute path
-  under the worktree root, is not used (`settings::is_worktree_resident_program`,
+  under the worktree root, is not used (`settings::child_dotnet_path`,
   called in `language_server_command` and `src/dap.rs`). The AL Tools context
   server reads its own `al.dotnetPath` setting, and a `Project` has no root path
   to filter against, so al-lsp's check covers that route. The trust digest
@@ -165,8 +165,14 @@ live in [ROADMAP.md](../ROADMAP.md).
   WASM module with no filesystem API, so a path that reaches inside the worktree
   through a symlinked ancestor is accepted there. al-lsp's own check resolves
   symlinks, which covers `AL_DOTNET_PATH`.
-- The consequence for a legitimate setup: a `dotnet` you keep inside a project
-  directory needs `al-explorer trust` on that project, or a path outside it.
+- The consequence for a legitimate setup: `al.dotnetPath` in
+  `lsp."al-lsp".settings` that names a `dotnet` inside the project is not used
+  by the language server or the debug adapter, trusted or not. Use a `dotnet`
+  outside the project.
+- The `al-tools` context server's own `al.dotnetPath` reaches al-lsp, which uses
+  it in a trusted project, so a trusted project can run a different `dotnet` for
+  MCP than for the language server. The extension cannot filter that route,
+  because a `Project` has no root path.
 
 ## Daemon endpoint
 
