@@ -1524,3 +1524,94 @@ fn nested_app_added_after_the_first_scan_takes_its_files() {
         .collect();
     assert_eq!(owners, vec![file]);
 }
+
+/// An `app.json` over the size cap is refused. The refresh keeps the identity
+/// the app already had, so the oversized manifest does not change how its
+/// files parse.
+#[test]
+fn oversized_app_json_keeps_the_last_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("app.json"),
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":[]}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("src").join("C.Codeunit.al"),
+        "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    begin\n    end;\n#endif\n}\n",
+    )
+    .unwrap();
+    let index = FileIndex::new();
+    index.scan(root).unwrap();
+
+    // Valid JSON that declares CLEAN24, padded past the cap.
+    let padding = "x".repeat(usize::try_from(MAX_APP_JSON_BYTES).unwrap());
+    fs::write(
+        root.join("app.json"),
+        format!(
+            r#"{{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":["CLEAN24"],"padding":"{padding}"}}"#
+        ),
+    )
+    .unwrap();
+    index.incremental_scan(root).unwrap();
+
+    let symbols_kept = index
+        .apps
+        .get(root)
+        .expect("the app keeps its identity")
+        .preprocessor_symbols
+        .is_empty();
+    assert!(symbols_kept, "the refused manifest changed the identity");
+    assert!(index
+        .lookup_procedures("NewApi")
+        .unwrap_or_default()
+        .is_empty());
+}
+
+/// A FIFO named `app.json` must not block the refresh. Opening it for a read
+/// waits for a writer, so the refresh runs on a thread the test can give up on.
+#[cfg(unix)]
+#[test]
+fn fifo_app_json_does_not_block_the_refresh() {
+    fn make_fifo(path: &std::path::Path) {
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // Safety: `name` is a NUL terminated path that outlives the call.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    fs::create_dir_all(root.join("src")).unwrap();
+    let app_json = root.join("app.json");
+    fs::write(
+        &app_json,
+        r#"{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":[]}"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("src").join("C.Codeunit.al"),
+        "codeunit 50100 C\n{\n}\n",
+    )
+    .unwrap();
+    let index = std::sync::Arc::new(FileIndex::new());
+    index.scan(&root).unwrap();
+
+    fs::remove_file(&app_json).unwrap();
+    make_fifo(&app_json);
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::sync::Arc::clone(&index);
+    let worker_root = root.clone();
+    std::thread::spawn(move || {
+        let refused = AppIdentity::read(&worker_root.join("app.json")).is_err();
+        let scanned = worker.incremental_scan(&worker_root).is_ok();
+        tx.send((refused, scanned)).unwrap();
+    });
+    let (refused, scanned) = rx
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the refresh blocked on the FIFO app.json");
+    assert!(refused, "a FIFO app.json is refused, not read");
+    assert!(scanned, "the scan completes past the FIFO app.json");
+}
