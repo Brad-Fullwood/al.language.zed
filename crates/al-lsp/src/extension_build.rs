@@ -40,6 +40,15 @@ pub fn without_flag(args: &[String]) -> Vec<String> {
     kept
 }
 
+/// The arguments `--official-lsp` forwards to the official server: `args`
+/// without the extension build pair, `--official-lsp` and `--stdio`.
+pub fn official_lsp_forward_args(args: &[String]) -> Vec<String> {
+    without_flag(args)
+        .into_iter()
+        .filter(|a| a.as_str() != "--official-lsp" && a.as_str() != "--stdio")
+        .collect()
+}
+
 /// An extension build stamp split into its parts.
 #[derive(Debug, PartialEq, Eq)]
 struct Stamp<'a> {
@@ -81,8 +90,10 @@ pub fn mismatch_message(args: &[String], own: &BuildIdentity, exe: &Path) -> Opt
     }
     Some(format!(
         "al-lsp {} ({}) at {} does not match the AL extension {stamp}. \
-         Run `make install` in the extension repo, or delete {} \
-         to use the release download.",
+         Run `make install` in the extension repo to rebuild al-lsp and the \
+         extension from the same commit, then run `zed: install dev extension` \
+         in Zed and choose the clone so Zed loads the rebuilt extension. To use \
+         the release download instead, delete {} and restart the language server.",
         own.version,
         own.build,
         exe.display(),
@@ -134,6 +145,7 @@ mod tests {
         assert!(message.contains("/home/u/.local/bin/al-lsp"), "{message}");
         assert!(message.contains("0.5.0+git.aaaaaaaaaaaa"), "{message}");
         assert!(message.contains("make install"), "{message}");
+        assert!(message.contains("zed: install dev extension"), "{message}");
         assert!(!message.contains("PATH"), "{message}");
         assert!(
             message.contains("delete /home/u/.local/bin/al-lsp "),
@@ -180,5 +192,24 @@ mod tests {
     fn without_flag_keeps_args_without_the_flag() {
         let args = ["--stdio"].map(str::to_string);
         assert_eq!(without_flag(&args), ["--stdio"]);
+    }
+
+    #[test]
+    fn official_lsp_forward_args_drops_the_extension_build_pair_and_mode_flags() {
+        let args = [
+            "--official-lsp",
+            "--stdio",
+            "--extension-build",
+            "0.5.0+git.abc",
+            "--x",
+        ]
+        .map(str::to_string);
+        assert_eq!(official_lsp_forward_args(&args), ["--x"]);
+    }
+
+    #[test]
+    fn official_lsp_forward_args_keeps_other_args() {
+        let args = ["--official-lsp", "--y", "1"].map(str::to_string);
+        assert_eq!(official_lsp_forward_args(&args), ["--y", "1"]);
     }
 }
