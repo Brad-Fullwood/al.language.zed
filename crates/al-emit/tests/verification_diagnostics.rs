@@ -867,6 +867,59 @@ fn implicit_false_return_only_warns() {
 }
 
 #[test]
+fn variable_redeclared_with_another_type_only_warns() {
+    // variable_types keeps one map per object, so procedure B's Record declaration
+    // of Cust reaches procedure A, where Cust is an Integer.
+    let (diagnostics, written) = build_summary(&[
+        (
+            "Customer.Table.al",
+            r#"table 50100 Customer
+{
+    fields
+    {
+        field(1; "No."; Code[20]) { }
+    }
+}
+"#,
+        ),
+        (
+            "Redeclared.Codeunit.al",
+            r#"codeunit 50101 "Prop Redeclared"
+{
+    procedure A()
+    var
+        Cust: Integer;
+        N: Integer;
+    begin
+        N := Cust;
+    end;
+
+    procedure B()
+    var
+        Cust: Record Customer;
+    begin
+    end;
+}
+"#,
+        ),
+    ]);
+    assert!(
+        diagnostics.contains(&(
+            "ALN2403".to_string(),
+            al_emit::VerificationSeverity::Warning
+        )),
+        "expected ALN2403 as a warning: {diagnostics:?}"
+    );
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|(_, severity)| *severity == al_emit::VerificationSeverity::Error),
+        "{diagnostics:?}"
+    );
+    assert!(written, "{diagnostics:?}");
+}
+
+#[test]
 fn curr_report_break_only_warns() {
     let (diagnostics, written) = build_summary(&[(
         "Break.Report.al",

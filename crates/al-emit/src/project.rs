@@ -1337,7 +1337,7 @@ pagecustomization "Local Card Custom" customizes "Local Card"
     }
 
     #[test]
-    fn verified_build_rejects_invalid_local_call_and_return_contracts() {
+    fn verified_build_warns_on_invalid_local_call_and_return_contracts() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("app.json"),
@@ -1354,7 +1354,7 @@ pagecustomization "Local Card Custom" customizes "Local Card"
 
         let result =
             build_verified_app_from_project(dir.path(), "test", "2026-01-01T00:00:00Z").unwrap();
-        assert!(result.app.is_none());
+        assert!(result.app.is_some());
         for code in ["ALN2201", "ALN2205"] {
             assert!(
                 result

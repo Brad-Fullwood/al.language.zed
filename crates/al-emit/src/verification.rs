@@ -318,8 +318,8 @@ pub(crate) fn verify_layout_files(
 
 /// Codes of the heuristic body checks reported as warnings.
 const HEURISTIC_CODES: &[&str] = &[
-    "ALN2202", "ALN2203", "ALN2204", "ALN2205", "ALN2206", "ALN2207", "ALN2208", "ALN2209",
-    "ALN2210",
+    "ALN2201", "ALN2202", "ALN2203", "ALN2204", "ALN2205", "ALN2206", "ALN2207", "ALN2208",
+    "ALN2209", "ALN2210", "ALN2211", "ALN2403",
 ];
 
 /// AL keywords that can be followed by a parenthesised expression. They are
