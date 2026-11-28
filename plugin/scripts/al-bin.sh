@@ -57,7 +57,8 @@ if [ -n "${AL_BIN_DIR-}" ] && has_pair "$AL_BIN_DIR"; then
 fi
 
 # 2. A target/ directory in an enclosing checkout of this repository, for
-#    someone developing the toolchain and the plugin together.
+#    someone developing the toolchain and the plugin together. `make install`
+#    builds into target/editor.
 if [ -z "$bin_dir" ]; then
 	# Absolute before the loop. A relative CLAUDE_PLUGIN_ROOT such as
 	# `plugins/al-bc` walked down to "." and stayed there, because `dirname .`
@@ -66,7 +67,7 @@ if [ -z "$bin_dir" ]; then
 	search="${CLAUDE_PLUGIN_ROOT:-$(dirname -- "$0")/..}"
 	search="$(CDPATH='' cd -- "$search" 2>/dev/null && pwd)" || search=""
 	while [ -n "$search" ] && [ "$search" != "/" ]; do
-		for profile in release debug; do
+		for profile in release editor debug; do
 			if has_pair "$search/target/$profile"; then
 				bin_dir="$search/target/$profile"
 				break
@@ -124,7 +125,7 @@ if [ -z "$bin_dir" ]; then
 	log "3. Point AL_BIN_DIR at a directory that already holds both:"
 	log "     export AL_BIN_DIR=/path/to/dir"
 	log ""
-	log "Searched: \$AL_BIN_DIR, target/release and target/debug above the plugin"
+	log "Searched: \$AL_BIN_DIR, target/release, target/editor and target/debug above the plugin"
 	log "directory, PATH, and \"$data_bin\"."
 	exit 127
 fi
