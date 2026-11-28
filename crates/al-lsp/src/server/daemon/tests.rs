@@ -2360,3 +2360,99 @@ mod dispatch_tests {
         );
     }
 }
+
+/// Tests for the area A2 review fixes in the daemon dispatch (A2-J11).
+mod review_a2_dispatch {
+    use super::*;
+    use std::sync::atomic::Ordering;
+
+    fn error_message(response: Response) -> String {
+        response
+            .error
+            .map(|error| error.message)
+            .unwrap_or_default()
+    }
+
+    /// A2-codex-11, A2-neon-11 part 1: supplied text for one URI is held by
+    /// one request at a time, and a request without text never reads it.
+    #[test]
+    fn supplied_text_is_not_shared_between_requests() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        let workspace = Workspace::new();
+        set_test_project_root(&workspace, &root);
+        let outside = dir.path().join("Outside.al");
+        let params = serde_json::json!({
+            "file": outside.to_str().unwrap(),
+            "text": "codeunit 50100 Supplied { }",
+        });
+
+        let (uri, guard) = read_document_from_params(&workspace, &params, 1).unwrap();
+        assert!(guard.is_some());
+        let second = read_document_from_params(&workspace, &params, 2)
+            .err()
+            .expect("a second request for the same URI is refused");
+        assert!(
+            error_message(second).contains("another request is using supplied text"),
+            "the refusal names the cause"
+        );
+        let without_text =
+            read_document_from_params(&workspace, &serde_json::json!({ "uri": uri }), 3);
+        assert!(
+            without_text.is_err(),
+            "a request without text does not answer from another request's text"
+        );
+
+        drop(guard);
+        let (_, again) = read_document_from_params(&workspace, &params, 4)
+            .expect("the URI is free once the first request is answered");
+        assert!(again.is_some());
+    }
+
+    /// A2-neon-19 item 2: the document methods are the list the protocol
+    /// crate shares with the client.
+    #[test]
+    fn reads_document_matches_the_protocol_list() {
+        for dispatcher in DISPATCHERS {
+            assert_eq!(
+                reads_document(dispatcher.method),
+                al_protocol::methods::TEXT_CAPABLE_METHODS.contains(&dispatcher.method),
+                "{}",
+                dispatcher.method
+            );
+        }
+    }
+
+    /// A2-codex-15, A2-neon-03: the configuration is in place before the new
+    /// fingerprint is stored, so a request that sees the new fingerprint runs
+    /// with the new configuration.
+    #[tokio::test]
+    async fn trust_refresh_writes_the_config_before_the_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("project");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("app.json"), "{}").unwrap();
+        let workspace = Workspace::new();
+        set_test_project_root(&workspace, &root);
+        let fingerprint = al_project::trust::inputs_fingerprint(&root);
+        TRUST_INPUTS.store(fingerprint.wrapping_add(1), Ordering::Release);
+
+        let evaluated = al_project::config::AlConfig {
+            background_code_analysis: false,
+            ..Default::default()
+        };
+        refresh_trust_with(&workspace, move |_| {
+            // A panic here fails the worker, and the refresh then denies
+            // privileged settings instead of writing `evaluated`.
+            assert_ne!(TRUST_INPUTS.load(Ordering::Acquire), fingerprint);
+            Ok::<_, String>(evaluated)
+        })
+        .await;
+
+        assert!(
+            !workspace.config.read().await.background_code_analysis,
+            "the evaluated configuration was written"
+        );
+    }
+}
