@@ -20,7 +20,7 @@ use crate::mock::filter;
 use crate::mock::record::{FieldNo, FlowAgg, FlowFilter};
 
 use super::crud::{write_all, RecordWrite};
-use super::field_access::{read_buffer_field, record_value_on, x_rec_of};
+use super::field_access::{read_buffer_field, record_value_on, visible_field_value, x_rec_of};
 use super::helpers::node_text;
 use super::store::{ensure_store, TableRef};
 use super::table_meta::load_table_meta;
@@ -245,13 +245,7 @@ pub(super) fn dispatch_testfield(
         .get(&field_no)
         .cloned()
         .unwrap_or(Value::Empty);
-    let view = store.take_view(handle);
-    let current = store
-        .record
-        .field_get_in(&view, field_no)
-        .cloned()
-        .unwrap_or_else(|| default.clone());
-    store.put_view(handle, view);
+    let current = visible_field_value(store, handle, field_no);
     let table_name = store.record.table_name.clone();
     match expected {
         None if current == default || matches!(current, Value::Empty | Value::Null) => eval_error(

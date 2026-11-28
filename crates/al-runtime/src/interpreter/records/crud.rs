@@ -1446,6 +1446,40 @@ mod tests {
         H.FindFirst();
         exit(H.OpenLines);
     end;
+
+    procedure TestFieldOnUncalculatedFlowField()
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        L.DocNo := 'X';
+        L.LineNo := 10;
+        L.Insert();
+        H.Init();
+        H.No := 'X';
+        H.Insert();
+        H.CalcFields(OpenLines);
+        H.Modify();
+        H.Get('X');
+        H.TestField(OpenLines);
+    end;
+
+    procedure TestFieldWithValueOnUncalculatedFlowField()
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        L.DocNo := 'X';
+        L.LineNo := 10;
+        L.Insert();
+        H.Init();
+        H.No := 'X';
+        H.Insert();
+        H.CalcFields(OpenLines);
+        H.Modify();
+        H.Get('X');
+        H.TestField(OpenLines, 0);
+    end;
 }
 "#;
 
@@ -1474,6 +1508,33 @@ mod tests {
             )),
             Value::Integer(0)
         );
+    }
+
+    // TestField reads what a plain read reads: zero for a FlowField that Get
+    // reloaded without a calculation, not the value Modify stored in the row.
+    #[test]
+    fn testfield_reads_an_uncalculated_flowfield_as_zero() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowTests.al", FLOW_TESTS),
+        ];
+        match run_sources(&sources, "Flow Tests", "TestFieldOnUncalculatedFlowField") {
+            Eval::Error(error) => assert!(
+                error.message.contains("must have a value"),
+                "unexpected message: {}",
+                error.message
+            ),
+            other => panic!("expected an interpreter error, got {other:?}"),
+        }
+        match run_sources(
+            &sources,
+            "Flow Tests",
+            "TestFieldWithValueOnUncalculatedFlowField",
+        ) {
+            Eval::Normal(_) => {}
+            other => panic!("expected Eval::Normal, got {other:?}"),
+        }
     }
 
     // Modify writes the calculated value into the row. Get must not keep it.
