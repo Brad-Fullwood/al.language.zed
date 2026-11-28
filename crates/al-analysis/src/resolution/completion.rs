@@ -59,7 +59,11 @@ static SYMBOL_PACKAGE_DOCS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| std::sync::RwLock::new(std::collections::HashMap::new()));
 
 /// The documentation map for one already-extracted symbol-package source file.
-fn proc_docs_for_file(path: &Path, generation: u64) -> ProcDocs {
+///
+/// `symbols` are the preprocessor symbols of the package's manifest. The cache
+/// keys on `generation` alone: it moves whenever a package reloads, which is
+/// when the symbols can change.
+fn proc_docs_for_file(path: &Path, generation: u64, symbols: &[String]) -> ProcDocs {
     {
         let cache = SYMBOL_PACKAGE_DOCS
             .read()
@@ -72,7 +76,7 @@ fn proc_docs_for_file(path: &Path, generation: u64) -> ProcDocs {
     }
     let mut map = std::collections::HashMap::new();
     if let Ok(content) = std::fs::read_to_string(path) {
-        let result = al_syntax::AlParser::parse_quick(&content);
+        let result = al_syntax::AlParser::parse_quick_with_symbols(&content, symbols);
         for symbol in al_syntax::extract_document_symbols(&result.tree, &content) {
             let Some(children) = symbol.children else {
                 continue;
@@ -101,6 +105,29 @@ fn proc_docs_for_file(path: &Path, generation: u64) -> ProcDocs {
     docs
 }
 
+/// The preprocessor symbols of the package `entry` comes from, so the `#if`
+/// branches of its source resolve as they do for the owning app. Empty when
+/// the package has no app path or its index cannot be built.
+fn manifest_symbols(
+    workspace: &Workspace,
+    entry: &al_symbols::SymbolEntry,
+) -> std::sync::Arc<[String]> {
+    let Some(app_path) = workspace.symbols.app_path_for_entry(entry) else {
+        return std::sync::Arc::from(Vec::<String>::new());
+    };
+    match al_symbols::source_index::get_or_build(&app_path) {
+        Ok(index) => index.preprocessor_symbols(),
+        Err(error) => {
+            tracing::warn!(
+                package = %app_path.display(),
+                %error,
+                "symbol package docs: parsing without the manifest symbols"
+            );
+            std::sync::Arc::from(Vec::<String>::new())
+        }
+    }
+}
+
 /// Procedure documentation for a symbol-package object, one map per source
 /// file the package ships for it (the same sources go-to-definition opens).
 /// Empty when the package ships none, and completion then shows no
@@ -113,7 +140,8 @@ fn symbol_package_proc_docs(workspace: &Workspace, object_name: &str) -> Vec<Pro
         .into_iter()
         .filter_map(|entry| {
             let path = crate::queries::virtual_file_path(workspace, &entry)?;
-            Some(proc_docs_for_file(&path, generation))
+            let symbols = manifest_symbols(workspace, &entry);
+            Some(proc_docs_for_file(&path, generation, &symbols))
         })
         .filter(|docs| !docs.is_empty())
         .collect()
@@ -490,18 +518,18 @@ mod tests {
     )
     .expect("write");
 
-        let first = proc_docs_for_file(&path, 7);
+        let first = proc_docs_for_file(&path, 7, &[]);
         assert!(first.contains_key("post"), "got {first:?}");
 
         std::fs::remove_file(&path).expect("remove");
-        let second = proc_docs_for_file(&path, 7);
+        let second = proc_docs_for_file(&path, 7, &[]);
         assert!(
             std::sync::Arc::ptr_eq(&first, &second),
             "the second lookup re-read and re-parsed the source"
         );
 
         // A new package generation drops what the old one produced.
-        let after_reload = proc_docs_for_file(&path, 8);
+        let after_reload = proc_docs_for_file(&path, 8, &[]);
         assert!(after_reload.is_empty());
     }
 

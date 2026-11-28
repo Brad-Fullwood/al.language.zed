@@ -46,8 +46,9 @@ impl PackageSourceSummary {
                 source,
             }
         })?;
+        let symbols = source_index.preprocessor_symbols();
         let work = |(archive_path, source): (String, String)| {
-            let summary = summarize_embedded(app_path, archive_path, &source);
+            let summary = summarize_embedded(app_path, archive_path, &source, &symbols);
             if summary.is_some() {
                 on_file();
             }
@@ -77,6 +78,9 @@ impl PackageSourceSummary {
 
 /// Parse one embedded file and summarize it, or `None` when it is skipped.
 ///
+/// `symbols` are the preprocessor symbols of the package's manifest, so `#if`
+/// branches resolve as they do for the owning app.
+///
 /// Degrade per file: one odd embedded `.al` (a grammar gap for a newer AL
 /// construct, a namespace-only file, a vendor's scratch file) must not
 /// disable call-graph and insight features for the whole workspace.
@@ -84,8 +88,9 @@ fn summarize_embedded(
     app_path: &Path,
     archive_path: String,
     source: &str,
+    symbols: &[String],
 ) -> Option<SourceFileSummary> {
-    let parsed = al_syntax::AlParser::parse_quick(source);
+    let parsed = al_syntax::AlParser::parse_quick_with_symbols(source, symbols);
     if !parsed.errors.is_empty() {
         let details = parsed
             .errors
@@ -220,4 +225,82 @@ pub(crate) fn dependency_virtual_path(app_path: &Path, archive_path: &str) -> Pa
         path.push("source.al");
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Cursor, Write};
+
+    /// `NewApi` exists only while `CLEAN24` is defined.
+    const GATED: &str = r#"codeunit 50100 "Gated"
+{
+#if CLEAN24
+    procedure NewApi()
+    begin
+    end;
+#endif
+    procedure Always()
+    begin
+    end;
+}
+"#;
+
+    /// Writes a NAVX package at `path` whose manifest holds `symbols`.
+    fn write_package(path: &Path, app_id: &str, symbols: &str) {
+        let manifest = format!(
+            r#"<?xml version="1.0"?><Package><App Id="{app_id}" Name="Gated" Publisher="Test" Version="1.0.0.0" />{symbols}</Package>"#
+        );
+        let mut zip_data = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(Cursor::new(&mut zip_data));
+            let options = zip::write::SimpleFileOptions::default();
+            zip.start_file("NavxManifest.xml", options).unwrap();
+            zip.write_all(manifest.as_bytes()).unwrap();
+            zip.start_file("SymbolReference.json", options).unwrap();
+            zip.write_all(br#"{"Tables":[]}"#).unwrap();
+            zip.start_file("src/Gated.al", options).unwrap();
+            zip.write_all(GATED.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let mut bytes = Vec::from(&b"NAVX"[..]);
+        bytes.resize(40, 0);
+        bytes.extend_from_slice(&zip_data);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    fn procedure_names(summary: &PackageSourceSummary) -> Vec<String> {
+        summary.files[0].objects[0]
+            .procedures
+            .iter()
+            .map(|procedure| procedure.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn summary_uses_the_manifest_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Case 1: the manifest defines CLEAN24, so the gated procedure is summarized.
+        let defined = dir.path().join("Defined.app");
+        write_package(
+            &defined,
+            "11111111-1111-1111-1111-111111111111",
+            r#"<PreprocessorSymbols><PreprocessorSymbol Name="CLEAN24" /></PreprocessorSymbols>"#,
+        );
+        let summary = PackageSourceSummary::build(&defined, || {}).unwrap();
+        assert_eq!(summary.skipped_files, 0);
+        assert_eq!(procedure_names(&summary), ["NewApi", "Always"]);
+
+        // Case 2: the manifest defines no symbols, so the gated procedure is absent.
+        let undefined = dir.path().join("Undefined.app");
+        write_package(
+            &undefined,
+            "22222222-2222-2222-2222-222222222222",
+            "<PreprocessorSymbols />",
+        );
+        let summary = PackageSourceSummary::build(&undefined, || {}).unwrap();
+        assert_eq!(summary.skipped_files, 0);
+        assert_eq!(procedure_names(&summary), ["Always"]);
+    }
 }
