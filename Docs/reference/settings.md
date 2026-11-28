@@ -78,7 +78,7 @@ setting for it.
 | `al.compilationOptions` | string[] | `[]` | ✅ official `alc` backend only, 🔒. A repository entry that names a file alc loads from (`/analyzer:`, `/assemblyprobingpaths:`, `/ruleset:`, `/packagecachepath:`, an `@` response file) keeps the project from being trusted |
 | `al.incrementalBuild` | boolean | `false` | ⛔ read so a shared `.vscode/settings.json` still loads. A VS Code language server option, `alc` has no incremental switch (it answers AL1009), so it changes nothing here |
 | `al.useOfficialCompiler` | boolean\|null | unset (auto) | ✅ three states. Unset builds with Microsoft's `dotnet alc` when the toolchain is found and with the native emitter otherwise. `true` requires `alc` and fails without a toolchain. `false` forces the native emitter, which still drops page extension variables, `ActionChanges`, `DocComments` and option members |
-| `al.dotnetPath` | string\|null | `null` | ✅ the `dotnet` executable for every .NET and `alc` process the toolchain spawns, the setting form of `AL_DOTNET_PATH`, 🔒. A program inside the project, or reached through a link written inside it, is checked again before each spawn |
+| `al.dotnetPath` | string\|null | `null` | ✅ the `dotnet` executable for every .NET and `alc` process the toolchain spawns, the setting form of `AL_DOTNET_PATH`, 🔒. A path inside the project is dropped by the extension for the language server and the debug adapter. An `AL_DOTNET_PATH` that reaches al-lsp and names a program inside the project, or reached through a link written inside it, is checked again before each spawn |
 
 ## Resource limits & escape hatches
 
