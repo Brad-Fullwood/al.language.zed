@@ -74,6 +74,17 @@ impl From<&al_symbols::model::SymbolPackage> for PackageInfo {
 
 type DependencyFingerprint = Vec<(PathBuf, u64, std::time::SystemTime)>;
 
+/// The workspace generation, the call graph invalidation revision and the
+/// dependency package files, from [`Workspace::project_pass_stamp`]. A package
+/// load or a daemon file refresh can invalidate the call graph without a new
+/// generation, so the generation alone does not say a pass result is current.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectPassStamp {
+    generation: u64,
+    call_graph: u64,
+    packages: DependencyFingerprint,
+}
+
 struct DependencySourceCache {
     /// `(canonical app path, byte length, modified time)` in stable order.
     fingerprint: DependencyFingerprint,
@@ -850,6 +861,17 @@ impl Workspace {
             },
             compute,
         )
+    }
+
+    /// The inputs [`cached_project_pass`](Self::cached_project_pass) keys a
+    /// result on, for a caller that keeps its own cache of a pass that reads
+    /// the symbols or the call graph.
+    pub fn project_pass_stamp(&self) -> ProjectPassStamp {
+        ProjectPassStamp {
+            generation: self.generation_revision(),
+            call_graph: self.call_graph_revision_now(),
+            packages: self.dependency_package_fingerprint_reporting().0,
+        }
     }
 
     /// How many embedded `.al` files the current dependency-source generation
