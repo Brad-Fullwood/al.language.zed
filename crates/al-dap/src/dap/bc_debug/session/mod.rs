@@ -1032,6 +1032,13 @@ impl BcDebugSession {
             ws_rx,
         )
     }
+
+    /// A session whose connection is already gone. The injection handles are
+    /// dropped, so the outgoing channel refuses the next `invoke` at once.
+    pub(crate) fn test_disconnected(connection_id: &str) -> std::sync::Arc<Self> {
+        let (session, _, _, _) = Self::test_new(connection_id.to_string());
+        std::sync::Arc::new(session)
+    }
 }
 
 #[cfg(test)]
@@ -1058,4 +1065,19 @@ async fn within<T>(
                 "Business Central did not answer within {deadline:?} during {phase}"
             ))
         })
+}
+
+#[cfg(test)]
+mod disconnected_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_disconnected_session_fails_stop_debugging() {
+        let session = BcDebugSession::test_disconnected("c1");
+        let error = session
+            .stop_debugging()
+            .await
+            .expect_err("a dropped connection cannot confirm StopDebugging");
+        assert!(matches!(error, DapError::ConnectionFailed(_)), "{error}");
+    }
 }

@@ -11,7 +11,7 @@ use std::time::Duration;
 use al_bc::snapshot::state::{now_secs, SessionStore};
 use serde_json::{json, Value};
 use tokio::sync::{watch, Mutex};
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{any, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use crate::dap::framing::read_dap_body;
@@ -747,4 +747,37 @@ async fn failed_finish_after_server_finish_gives_no_retry_advice() {
         "{text}"
     );
     assert!(!text.contains("retry"), "{text}");
+}
+
+#[tokio::test]
+async fn capture_http_client_does_not_follow_redirects() {
+    let rig = rig().await;
+    let reads = rig.token_reads.clone();
+    let (state, _events) = build_state(
+        rig.project.path(),
+        &rig.store,
+        &reads,
+        super::test_support::allow_every_target(),
+        Duration::from_secs(60),
+    );
+    // Following the redirect would send the attach POST to this server as a GET.
+    let target = MockServer::start().await;
+    Mock::given(any())
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&target)
+        .await;
+    mock_op(
+        &rig,
+        "attach",
+        ResponseTemplate::new(302).insert_header("location", format!("{}/landed", target.uri())),
+    )
+    .await;
+
+    send(&state, "initialize", json!({})).await;
+    let (_, frames) = send(&state, "attach", attach_args(&rig, json!({}))).await;
+    assert_eq!(response(&frames)["success"], true, "{frames:?}");
+    let (_, frames) = send(&state, "configurationDone", json!({})).await;
+    assert_eq!(response(&frames)["success"], false, "{frames:?}");
+    target.verify().await;
 }
