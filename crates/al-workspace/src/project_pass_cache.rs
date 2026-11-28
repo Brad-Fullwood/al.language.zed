@@ -75,6 +75,7 @@ impl ProjectPassCache {
             return Ok(hit);
         }
         let value = Arc::new(compute()?);
+        release_freed_memory();
         // A result computed while the generation moved may mix two
         // generations. It is returned to this caller but not kept.
         if stamp() == (revision, fingerprint.clone()) {
@@ -89,6 +90,23 @@ impl ProjectPassCache {
             );
         }
         Ok(value)
+    }
+}
+
+/// Hand the memory a project pass freed back to the system.
+///
+/// A pass allocates a resolved call graph and the dependency summary edges,
+/// hundreds of MB, and frees them when it returns. glibc keeps freed memory
+/// in its arenas, so the process stayed at its peak between passes: on a
+/// project with 10,224 dependency files, 301 MB of 943 MB of malloc memory
+/// was free, and `malloc_trim(0)` lowered RSS from 1430 to 1119 MB.
+/// `malloc_trim` is glibc's own call for this.
+fn release_freed_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    // SAFETY: `malloc_trim` only returns free pages to the system and is safe
+    // to call from any thread.
+    unsafe {
+        libc::malloc_trim(0);
     }
 }
 
