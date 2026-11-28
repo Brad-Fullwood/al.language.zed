@@ -72,7 +72,7 @@ Output events:
   set against (see below).
 
 Disconnect to finish. The adapter downloads the snapshot, saves the zip under `snapshotOutputPath`
-and prints `Snapshot saved to <path>`. The adapter saves the scenario `label` in the session record, so `al-explorer snapshot status` and `finish` find the configuration of a Zed capture by that label. If the finish fails before the server has finished the capture, the session record stays on this machine and `al-explorer snapshot finish` retries it. After the server has finished, a second finish returns nothing, and the message says so.
+and prints `Snapshot saved to <path>`. The adapter saves the scenario `label` in the session record, so `al-explorer snapshot status` and `finish` find the configuration of a Zed capture by that label. When the label is no longer in the configuration file, the configuration with the same tenant, environment, server and snapshot port is used when exactly one matches. If the finish fails before the server has finished the capture, the session record stays on this machine and `al-explorer snapshot finish` retries it. After the server has finished, a second finish returns nothing, and the message says so.
 
 Before it asks the server to finish, `finish` creates a staging file `.<context>.zip.partial` in the store dir (`<local data dir>/al-lsp/snapshot-sessions`, context in lower case), and it does not finish when that fails. The zip is then written to these places, in order:
 
