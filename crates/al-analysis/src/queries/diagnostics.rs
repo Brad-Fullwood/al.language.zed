@@ -1479,6 +1479,30 @@ mod tests {
     /// that file. The fast run leaves out only the transaction rules.
     fn assert_per_file_matches_project(ws: &Workspace, uris: &[Url]) {
         let config = AlConfig::default();
+        // The single-file computation itself, uncached, against the
+        // workspace-wide one. The calls below mostly read the pass cache.
+        for transactions in [false, true] {
+            let whole = native_workspace_diagnostics_impl(ws, &config, None, transactions, None);
+            for uri in uris {
+                let path = uri.to_file_path().unwrap();
+                let single: Vec<SyntaxDiagnostic> =
+                    native_workspace_diagnostics_impl(ws, &config, None, transactions, Some(&path))
+                        .into_iter()
+                        .filter(|(file, _)| file == &path)
+                        .map(|(_, diagnostic)| diagnostic)
+                        .collect();
+                let expected: Vec<SyntaxDiagnostic> = whole
+                    .iter()
+                    .filter(|(file, _)| file == &path)
+                    .map(|(_, diagnostic)| diagnostic.clone())
+                    .collect();
+                assert_eq!(
+                    sorted(single),
+                    sorted(expected),
+                    "single-file native run of {uri}, transactions {transactions}"
+                );
+            }
+        }
         let project = workspace_syntax_diagnostics_at_root(ws, &config, None).unwrap();
         for uri in uris {
             let path = uri.to_file_path().unwrap();
