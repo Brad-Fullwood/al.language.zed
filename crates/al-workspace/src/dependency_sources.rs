@@ -46,19 +46,17 @@ impl PackageSourceSummary {
                 source,
             }
         })?;
-        let summaries: Vec<Option<SourceFileSummary>> = al_symbols::index_pool::index_pool()
-            .install(|| {
-                sources
-                    .into_par_iter()
-                    .map(|(archive_path, source)| {
-                        let summary = summarize_embedded(app_path, archive_path, &source);
-                        if summary.is_some() {
-                            on_file();
-                        }
-                        summary
-                    })
-                    .collect()
-            });
+        let work = |(archive_path, source): (String, String)| {
+            let summary = summarize_embedded(app_path, archive_path, &source);
+            if summary.is_some() {
+                on_file();
+            }
+            summary
+        };
+        let summaries: Vec<Option<SourceFileSummary>> = match al_symbols::index_pool::index_pool() {
+            Some(pool) => pool.install(|| sources.into_par_iter().map(work).collect()),
+            None => sources.into_iter().map(work).collect(),
+        };
         let skipped_files = summaries.iter().filter(|summary| summary.is_none()).count();
         Ok(Self {
             files: summaries.into_iter().flatten().collect(),
