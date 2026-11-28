@@ -979,3 +979,66 @@ fn extension_and_al_lsp_versions_are_equal() {
         "extension.toml, root Cargo.toml and crates/al-lsp/Cargo.toml versions must be equal"
     );
 }
+
+/// The release dry-run recipe echoes `--- k/N` for each step, and
+/// `Docs/testing-guide.md` section 7 lists the same steps. This fails when a
+/// step is added or removed in only one of them.
+#[test]
+fn release_dryrun_steps_match_the_testing_guide() {
+    fn step_marker(line: &str) -> Option<(usize, usize)> {
+        let rest = line.split("--- ").nth(1)?;
+        let (k, rest) = rest.split_once('/')?;
+        let n: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        Some((k.parse().ok()?, n.parse().ok()?))
+    }
+
+    let makefile = include_str!("../Makefile");
+    let mut in_recipe = false;
+    let mut markers = Vec::new();
+    for line in makefile.lines() {
+        if line.starts_with("release-dryrun:") {
+            in_recipe = true;
+        } else if in_recipe && !line.is_empty() && !line.starts_with('\t') && !line.starts_with('#')
+        {
+            break;
+        } else if in_recipe {
+            markers.extend(step_marker(line));
+        }
+    }
+    assert!(
+        !markers.is_empty(),
+        "release-dryrun has no `--- k/N` step echoes"
+    );
+    let total = markers[0].1;
+    assert!(total > 0, "release-dryrun declares zero steps");
+    assert!(
+        markers.iter().all(|&(_, n)| n == total),
+        "release-dryrun step echoes disagree on the total: {markers:?}"
+    );
+    let numbers: Vec<usize> = markers.iter().map(|&(k, _)| k).collect();
+    let expected: Vec<usize> = (1..=total).collect();
+    assert_eq!(
+        numbers, expected,
+        "release-dryrun echoes steps {numbers:?}, expected 1 to {total} in order"
+    );
+
+    let guide = include_str!("../Docs/testing-guide.md");
+    let mut lines = guide.lines();
+    assert!(
+        lines
+            .by_ref()
+            .any(|line| line.trim_end() == "## 7. Release dry-run"),
+        "Docs/testing-guide.md has no `## 7. Release dry-run` heading"
+    );
+    let items = lines
+        .take_while(|line| !line.starts_with("## "))
+        .filter(|line| {
+            line.split_once('.')
+                .is_some_and(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .count();
+    assert_eq!(
+        items, total,
+        "Docs/testing-guide.md section 7 lists {items} numbered steps, but release-dryrun runs {total}"
+    );
+}
