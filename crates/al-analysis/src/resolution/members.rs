@@ -172,8 +172,8 @@ pub(super) struct ComposedMembers {
 /// excludes the extension objects that add fields/methods/enum-values (they
 /// are indexed under their own names and tracked via the `extends` relation).
 /// For each non-extension entry we therefore pull the composed view from
-/// `get_composed_cached`, which merges the base with all applicable
-/// extensions, so callers see extension-added members. Extension entries that
+/// `get_composed_for_entry`, which merges the base with the extensions that
+/// target its package, so callers see extension-added members. Extension entries that
 /// happen to share the name are returned with their raw members (composition
 /// would return `None` for them).
 pub(super) fn composed_members_for(workspace: &Workspace, name: &str) -> Vec<ComposedMembers> {
@@ -188,7 +188,7 @@ pub(super) fn composed_members_for(workspace: &Workspace, name: &str) -> Vec<Com
             });
             continue;
         }
-        match workspace.symbols.get_composed_cached(entry.kind, name) {
+        match workspace.symbols.get_composed_for_entry(&entry) {
             Some(composed) => out.push(ComposedMembers {
                 package: entry.package.clone(),
                 methods: composed.all_methods.clone(),
@@ -493,6 +493,88 @@ mod tests {
         assert!(matches!(method.kind, ResolvedMemberKind::Procedure { .. }));
 
         assert!(resolve_member(&ws, &uri, &receiver, "No.").is_some());
+    }
+
+    /// Writes a NAVX package whose `NavxManifest.xml` is `manifest`.
+    /// Copied from the `queries::source` tests.
+    fn write_package(
+        path: &std::path::Path,
+        manifest: &str,
+        symbols: &str,
+        sources: &[(&str, &str)],
+    ) {
+        use std::io::Write;
+        let mut archive_bytes = Vec::new();
+        {
+            let mut archive = zip::ZipWriter::new(std::io::Cursor::new(&mut archive_bytes));
+            let options = zip::write::SimpleFileOptions::default();
+            archive.start_file("NavxManifest.xml", options).unwrap();
+            archive.write_all(manifest.as_bytes()).unwrap();
+            archive.start_file("SymbolReference.json", options).unwrap();
+            archive.write_all(symbols.as_bytes()).unwrap();
+            for (zip_path, body) in sources {
+                archive.start_file(*zip_path, options).unwrap();
+                archive.write_all(body.as_bytes()).unwrap();
+            }
+            archive.finish().unwrap();
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"NAVX");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&40u32.to_le_bytes());
+        bytes.extend_from_slice(&[0u8; 28]);
+        bytes.extend_from_slice(&archive_bytes);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn composed_members_follow_each_base_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = |app_id: &str, name: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="utf-8"?>
+<Package><App Id="{app_id}" Name="{name}" Publisher="Test" Version="1.0.0.0" /></Package>"#
+            )
+        };
+        let p1 = directory.path().join("P1.app");
+        let p2 = directory.path().join("P2.app");
+        let p3 = directory.path().join("P3.app");
+        write_package(
+            &p1,
+            &manifest("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "P1"),
+            r#"{ "Tables": [ { "Id": 50100, "Name": "Setup", "Fields": [ { "Id": 1, "Name": "F1", "TypeDefinition": { "Name": "Code" } } ] } ] }"#,
+            &[],
+        );
+        write_package(
+            &p2,
+            &manifest("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "P2"),
+            r#"{ "Tables": [ { "Id": 50100, "Name": "Setup", "Fields": [ { "Id": 1, "Name": "F2", "TypeDefinition": { "Name": "Code" } } ] } ] }"#,
+            &[],
+        );
+        // P3 extends the P1 table. The target carries P1's app id without dashes.
+        write_package(
+            &p3,
+            &manifest("cccccccc-cccc-cccc-cccc-cccccccccccc", "P3"),
+            r##"{ "TableExtensions": [ { "Id": 50101, "Name": "Setup Ext", "Target": "#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#Setup", "Fields": [ { "Id": 50101, "Name": "X1", "TypeDefinition": { "Name": "Code" } } ] } ] }"##,
+            &[],
+        );
+
+        let workspace = Workspace::new();
+        workspace.symbols.load_packages(&[&p1, &p2, &p3]).unwrap();
+
+        let members = composed_members_for(&workspace, "Setup");
+        assert_eq!(members.len(), 2);
+        let field_names = |package: &str| -> Vec<String> {
+            let mut names: Vec<String> = members
+                .iter()
+                .filter(|member| member.package == package)
+                .flat_map(|member| member.fields.iter().map(|field| field.name.clone()))
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(field_names("P1"), vec!["F1", "X1"]);
+        assert_eq!(field_names("P2"), vec!["F2"]);
     }
 
     #[test]
