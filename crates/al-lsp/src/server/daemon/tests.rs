@@ -1469,6 +1469,62 @@ mod dispatch_tests {
         );
     }
 
+    /// A documentSymbols answer uses the preprocessor symbols of the app that
+    /// owns the file, on the request path the daemon serves.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn daemon_symbols_use_the_owning_apps_preprocessor_symbols() {
+        fn symbol_names(symbols: &serde_json::Value, names: &mut Vec<String>) {
+            for symbol in symbols.as_array().into_iter().flatten() {
+                if let Some(name) = symbol["name"].as_str() {
+                    names.push(name.to_string());
+                }
+                symbol_names(&symbol["children"], names);
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let source = "codeunit 50100 C\n{\n#if CLEAN24\n    procedure NewApi()\n    var\n        X: Integer;\n    begin\n        X := 1;\n    end;\n#endif\n}\n";
+        for (app, symbols, defines) in [("defines", r#"["CLEAN24"]"#, true), ("plain", "[]", false)]
+        {
+            let root = dir.path().join(app);
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(
+                root.join("app.json"),
+                format!(
+                    r#"{{"id":"00000000-0000-0000-0000-00000000000{}","name":"{app}","publisher":"Tests","version":"1.0.0.0","preprocessorSymbols":{symbols}}}"#,
+                    app.len()
+                ),
+            )
+            .unwrap();
+            let file = root.join("C.Codeunit.al");
+            std::fs::write(&file, source).unwrap();
+
+            let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+            *ws.config.write().await = al_project::trust::evaluate(&root).unwrap().config;
+            super::initialize_daemon_workspace(&ws, &root)
+                .await
+                .expect("the project loads");
+            let shutdown = Notify::new();
+            let params = serde_json::json!({ "file": file.to_str().unwrap() });
+            let response = dispatch_request(
+                &ws,
+                Request::new(5, "documentSymbols", Some(params)),
+                &shutdown,
+            )
+            .await;
+            assert!(response.error.is_none(), "{app}: {:?}", response.error);
+            let mut names = Vec::new();
+            symbol_names(
+                &response.result.expect("documentSymbols answers"),
+                &mut names,
+            );
+            assert_eq!(
+                names.iter().any(|name| name == "NewApi"),
+                defines,
+                "{app}: {names:?}"
+            );
+        }
+    }
+
     /// Text for a path *inside* the project is refused: the daemon holds that
     /// file itself, and substituting content for it would let a later write
     /// flush a caller's text over the real source.

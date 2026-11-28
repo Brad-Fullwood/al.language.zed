@@ -1057,6 +1057,14 @@ async fn refresh_workspace_files(workspace: &std::sync::Arc<Workspace>) {
     }
 }
 
+/// Record the owning app's preprocessor symbols for `uri`, the same step as
+/// `al_workspace::on_document_change`. The store parses a document with the
+/// symbols it holds, so each daemon open calls this once the open succeeds.
+fn set_document_symbols(workspace: &Workspace, uri: &url::Url, path: &Path) {
+    let symbols = workspace.file_index.preprocessor_symbols_for(path);
+    workspace.documents.set_preprocessor_symbols(uri, symbols);
+}
+
 /// Carry a disk refresh into the daemon's document store.
 ///
 /// The daemon opens every scanned file as a document at startup, and the
@@ -1076,8 +1084,10 @@ fn sync_disk_documents(workspace: &Workspace, delta: &al_source::file_index::Sca
         else {
             continue;
         };
-        if let Err(error) = workspace.documents.replace_or_open(uri, text) {
+        if let Err(error) = workspace.documents.replace_or_open(uri.clone(), text) {
             tracing::warn!(path = %path.display(), %error, "daemon: changed file rejected by the document store");
+        } else {
+            set_document_symbols(workspace, &uri, path);
         }
     }
     for path in &delta.removed {
@@ -2063,7 +2073,9 @@ pub(crate) fn ensure_document(
                 error_codes::INVALID_PARAMS,
                 &format!("Document was rejected: {error}"),
             )
-        })
+        })?;
+    set_document_symbols(workspace, uri, &path);
+    Ok(())
 }
 
 /// A path parameter the daemon refused, carrying the JSON-RPC code the client
@@ -2322,6 +2334,7 @@ pub(crate) fn read_document_from_params<'a>(
                 &format!("supplied document was rejected: {error}"),
             ));
         }
+        set_document_symbols(workspace, &uri, &absolute);
         let guard = SuppliedDocument {
             workspace,
             uri: uri.clone(),
@@ -2438,13 +2451,15 @@ pub(crate) async fn initialize_daemon_workspace(
             skipped.push(path.display().to_string());
             continue;
         };
-        if let Err(error) = workspace.documents.open(uri, entry.value().clone()) {
+        if let Err(error) = workspace.documents.open(uri.clone(), entry.value().clone()) {
             tracing::warn!(
                 path = %path.display(),
                 %error,
                 "daemon: skipping workspace file rejected by the document store"
             );
             skipped.push(format!("{}: {error}", path.display()));
+        } else {
+            set_document_symbols(workspace, &uri, &path);
         }
     }
     if !skipped.is_empty() {
