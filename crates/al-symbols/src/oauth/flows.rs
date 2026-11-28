@@ -746,4 +746,92 @@ mod tests {
             other => panic!("expected Other(allowed hosts), got {other:?}"),
         }
     }
+
+    /// Unsets `BC_CLIENT_ID` for one test and restores the old value on drop.
+    /// Tests that use it are `#[serial]`, like the other tests that touch env.
+    struct ClientIdUnset(Option<std::ffi::OsString>);
+
+    impl ClientIdUnset {
+        fn new() -> Self {
+            let previous = std::env::var_os("BC_CLIENT_ID");
+            std::env::remove_var("BC_CLIENT_ID");
+            Self(previous)
+        }
+    }
+
+    impl Drop for ClientIdUnset {
+        fn drop(&mut self) {
+            match self.0.take() {
+                Some(value) => std::env::set_var("BC_CLIENT_ID", value),
+                None => std::env::remove_var("BC_CLIENT_ID"),
+            }
+        }
+    }
+
+    /// Deletes the tenant's token cache file on drop, also when the test panics.
+    struct CacheFile(&'static str);
+
+    impl Drop for CacheFile {
+        fn drop(&mut self) {
+            crate::oauth::invalidate_cached_token(self.0);
+        }
+    }
+
+    fn save_token_for(tenant: &str, settings: &AuthSettings, access_token: &str) {
+        let tok = TokenResponse {
+            access_token: access_token.into(),
+            refresh_token: None,
+            expires_in: 3600,
+        };
+        save_cached_token(&token_cache_path(tenant), tenant, &tok, settings);
+    }
+
+    fn acquire_cached_only(tenant: &str, settings: &AuthSettings) -> Result<String, OAuthError> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(acquire_token_with_settings(
+                &reqwest::Client::new(),
+                tenant,
+                settings,
+                SignInMode::CachedOnly,
+                |_| {},
+            ))
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cached_token_for_another_client_is_not_used() {
+        let _client_id = ClientIdUnset::new();
+        let tenant = "3a3e0001-0000-4000-8000-000000000001";
+        let _cache = CacheFile(tenant);
+        let other_client = AuthSettings {
+            client_id: "3a3e0003-0000-4000-8000-000000000003".into(),
+            ..Default::default()
+        };
+        save_token_for(tenant, &other_client, "token-issued-to-another-client");
+
+        match acquire_cached_only(tenant, &AuthSettings::default()) {
+            Err(OAuthError::SignInRequired) => {}
+            Err(other) => panic!("expected SignInRequired, got {other:?}"),
+            Ok(_) => panic!("a token issued to another client id was returned"),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn cached_token_for_the_current_client_is_used() {
+        let _client_id = ClientIdUnset::new();
+        let tenant = "3a3e0002-0000-4000-8000-000000000002";
+        let _cache = CacheFile(tenant);
+        save_token_for(
+            tenant,
+            &AuthSettings::default(),
+            "token-for-the-current-client",
+        );
+
+        let token = acquire_cached_only(tenant, &AuthSettings::default())
+            .expect("the cached token for the current client should be returned");
+        assert_eq!(token, "token-for-the-current-client");
+    }
 }
