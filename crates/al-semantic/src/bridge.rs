@@ -625,6 +625,9 @@ impl SemanticBridge {
     ) -> Result<Vec<DiagnosticEntry>, SemanticError> {
         check_al_target(&req.file)?;
         check_text_size(Some(&req.source))?;
+        for document in &req.open_documents {
+            check_text_size(Some(&document.source))?;
+        }
         let params = serde_json::to_value(&req)
             .map_err(|e| SemanticError::SerializationError(e.to_string()))?;
         let result = self.call("analyze", params).await?;
@@ -1404,6 +1407,42 @@ mod tests {
             let err = bridge.analyze(req).await.unwrap_err();
             assert!(
                 matches!(err, SemanticError::NotAlFile(_)),
+                "analyze returned: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn analyze_rejects_oversized_open_document() {
+        // Stub build only, as in analyze_rejects_non_al_target. A request that
+        // got past the size check would fail with NotInitialized instead.
+        #[cfg(not(feature = "semantic"))]
+        {
+            let bridge = SemanticBridge {
+                host: Arc::new(std::sync::Mutex::new(DotNetHost)),
+                call_gate: global_call_gate(),
+                version: String::new(),
+                generation: 0,
+                last_timeout_secs: std::sync::atomic::AtomicU64::new(0),
+            };
+            let req = AnalyzeRequest {
+                file: PathBuf::from("/app/Codeunit.al"),
+                source: "codeunit 50000 Foo { }".to_string(),
+                analyzers: Vec::new(),
+                package_cache: PathBuf::new(),
+                project_root: None,
+                open_documents: vec![OpenDocument {
+                    file: PathBuf::from("/app/Big.al"),
+                    source: "a".repeat(MAX_TEXT_BYTES + 1),
+                }],
+            };
+            let err = bridge.analyze(req).await.unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    SemanticError::InputTooLarge { size, max }
+                        if size == MAX_TEXT_BYTES + 1 && max == MAX_TEXT_BYTES
+                ),
                 "analyze returned: {err}"
             );
         }
