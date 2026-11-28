@@ -36,6 +36,16 @@ Templates:
 | `agent` | two plain codeunits, an entry point and a job handler that echoes its input. It uses no Agent API and does not call a model |
 | `api` | a REST API page |
 
+The `appsource` template leaves four things for the author to fill before AppSourceCop passes.
+`create_project` lists them in `fieldsToFill` in the JSON result (set only for this template), and
+`al-explorer new` prints them after the file list. Each item names the field and the rule that
+reports it:
+
+- app.json `brief`, `description`, `privacyStatement`, `EULA`, `help`, `logo`, `contextSensitiveHelpUrl`: AS0051 needs a value.
+- app.json `url`: AS0052 needs a valid URL.
+- app.json `idRanges`: AS0084 needs a range inside the publisher's AppSource allocation (50100-50149 is refused).
+- AppSourceCop.json `mandatoryPrefix`, `mandatorySuffix` or `mandatoryAffixes`: AS0054 needs one set.
+
 ## Object generators (`generators.rs`)
 
 From workspace symbols. Without `--id`, `al-explorer generate` gives the object the first free ID

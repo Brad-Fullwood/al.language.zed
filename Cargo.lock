@@ -64,6 +64,7 @@ dependencies = [
  "al-types",
  "al-workspace",
  "petgraph",
+ "quick-xml",
  "regex",
  "serde",
  "serde_json",

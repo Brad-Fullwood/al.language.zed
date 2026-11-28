@@ -9,6 +9,7 @@
 use al_syntax::IdentifierText;
 use serde_json::{json, Map, Value};
 
+use super::manifest::InternalsVisibleTo;
 use super::method_id::{combine_hash, fnv1_hash, fnv1_hash_bytes, member_id, method_id, ParamSig};
 use super::symbol_extract::{
     ControlChange, EmitObject, PageControl, PermissionDecl, QueryElement, ReportLayout,
@@ -64,6 +65,38 @@ fn lookup<'r>(resolver: &'r Resolver, kind: ObjectKind, name: &str) -> Option<&'
     resolver.get(&(kind, name.to_lowercase()))
 }
 
+/// The resolver key of an object in a namespace: `sales.tools.finder`.
+pub(crate) fn qualified_key(namespace: &str, name: &str) -> Option<String> {
+    let namespace = namespace.trim();
+    (!namespace.is_empty()).then(|| format!("{namespace}.{name}").to_lowercase())
+}
+
+/// The object name of a subtype. The extractor writes a namespace qualified
+/// subtype as `Sales"."Tools"."Finder` (see `extract_type_reference`), and alc
+/// names only the object (`Finder`) in `Subtype.Name`.
+pub(crate) fn subtype_object_name(subtype: &str) -> &str {
+    subtype.rsplit("\".\"").next().unwrap_or(subtype)
+}
+
+/// Look a subtype up. A qualified subtype resolves by its full name, so a
+/// project object does not shadow a dependency object of the same name in
+/// another namespace. An unqualified one resolves by name, where project
+/// objects shadow dependency objects, as alc resolves the file's own
+/// namespace first.
+fn lookup_subtype<'r>(
+    resolver: &'r Resolver,
+    kind: ObjectKind,
+    subtype: &str,
+) -> Option<&'r ObjectRef> {
+    if subtype.contains("\".\"") {
+        let qualified = subtype.split("\".\"").collect::<Vec<_>>().join(".");
+        if let Some(found) = lookup(resolver, kind, &qualified) {
+            return Some(found);
+        }
+    }
+    lookup(resolver, kind, subtype_object_name(subtype))
+}
+
 /// Symbols loaded from *referenced* apps (`.alpackages`), used to resolve
 /// cross-app object ids and the field types of fields added to base
 /// pages/reports. All keys are lowercased.
@@ -82,9 +115,25 @@ pub struct ExternalSymbols {
     /// package. Used to reject an explicitly declared dependency that is absent
     /// from `.alpackages` instead of emitting against an incomplete symbol set.
     pub package_ids: std::collections::HashSet<String>,
+    /// Lowercase, brace-free app ID → the highest version loaded for it, as the
+    /// package states it. Compare with `version_key`.
+    pub package_versions: std::collections::HashMap<String, String>,
     /// `(table, procedure)` for every procedure a dependency's table, or a
     /// dependency's extension of a table, declares. Lowercase.
     pub table_methods: std::collections::HashSet<(String, String)>,
+}
+
+/// The four `u32` parts of an app version such as `1.2.3.4`. A missing part
+/// counts as 0. `None` when a part is not a number or there are more than four.
+pub(crate) fn version_key(version: &str) -> Option<[u32; 4]> {
+    let mut parts = [0u32; 4];
+    for (count, text) in version.trim().split('.').enumerate() {
+        if count == 4 {
+            return None;
+        }
+        parts[count] = text.parse().ok()?;
+    }
+    Some(parts)
 }
 
 const OBJECT_GROUPS: &[(&str, Option<ObjectKind>, bool)] = &[
@@ -150,24 +199,37 @@ fn namespace_tree(objects: &[EmitObject]) -> NamespaceNode<'_> {
 fn merged_resolver(objects: &[EmitObject], external: &Resolver) -> Resolver {
     let mut resolver = external.clone();
     for o in objects {
-        resolver.insert(
-            (o.entry.kind, o.entry.name.to_lowercase()),
-            ObjectRef {
-                id: o.entry.id,
-                module_id: None,
-            },
-        );
+        let local = ObjectRef {
+            id: o.entry.id,
+            module_id: None,
+        };
+        if let Some(key) = qualified_key(&o.entry.namespace, &o.entry.name) {
+            resolver.insert((o.entry.kind, key), local.clone());
+        }
+        resolver.insert((o.entry.kind, o.entry.name.to_lowercase()), local);
     }
     resolver
 }
 
 /// Build the full `SymbolReference.json` document. `external` resolves object
 /// references (and base table field types / page source tables) that live in
-/// referenced apps (System/Base) to their id + module.
+/// referenced apps (System/Base) to their id + module. The document lists no
+/// `InternalsVisibleToModules`. Use `build_symbol_reference_with_internals` for that.
 pub fn build_symbol_reference(
     objects: &[EmitObject],
     meta: &SymbolRefMeta,
     external: &ExternalSymbols,
+) -> Value {
+    build_symbol_reference_with_internals(objects, meta, external, &[])
+}
+
+/// `build_symbol_reference` with the app's `internalsVisibleTo` list, written as
+/// `InternalsVisibleToModules` in the same order.
+pub fn build_symbol_reference_with_internals(
+    objects: &[EmitObject],
+    meta: &SymbolRefMeta,
+    external: &ExternalSymbols,
+    internals_visible_to: &[InternalsVisibleTo],
 ) -> Value {
     let resolver = merged_resolver(objects, &external.resolver);
 
@@ -243,7 +305,11 @@ pub fn build_symbol_reference(
         );
     }
 
-    root.insert("InternalsVisibleToModules".into(), json!([]));
+    let internals: Vec<Value> = internals_visible_to
+        .iter()
+        .map(|m| json!({"AppId": m.id, "Name": m.name, "Publisher": m.publisher}))
+        .collect();
+    root.insert("InternalsVisibleToModules".into(), Value::Array(internals));
     root.insert("AppId".into(), json!(meta.app_id));
     root.insert("Name".into(), json!(meta.name));
     root.insert("Publisher".into(), json!(meta.publisher));
@@ -960,10 +1026,13 @@ fn subtype_hash_for(type_str: &str, resolver: &Resolver) -> i32 {
         | "testrequestpage" => subtype
             .as_deref()
             .zip(type_keyword_kind(&base_type_name(type_str)))
-            .and_then(|(s, kind)| lookup(resolver, kind, s).map(|r| r.id))
+            .and_then(|(s, kind)| lookup_subtype(resolver, kind, s).map(|r| r.id))
             .unwrap_or(0),
         // Interface: FNV of the name (NOT upper-cased, unlike method names).
-        "interface" => subtype.as_deref().map(fnv1_hash).unwrap_or(0),
+        "interface" => subtype
+            .as_deref()
+            .map(|s| fnv1_hash(subtype_object_name(s)))
+            .unwrap_or(0),
         _ => 1,
     }
 }
@@ -1620,12 +1689,12 @@ fn type_def_json(type_str: &str, resolver: &Resolver) -> Value {
     let (base, subtype) = split_type(type_str);
     if let Some(sub) = subtype {
         let mut st = Map::new();
-        let r = type_keyword_kind(&base).and_then(|kind| lookup(resolver, kind, &sub));
+        let r = type_keyword_kind(&base).and_then(|kind| lookup_subtype(resolver, kind, &sub));
         // External subtypes record the defining module id (before Name).
         if let Some(module_id) = r.and_then(|r| r.module_id.as_deref()) {
             st.insert("ModuleId".into(), json!(module_id));
         }
-        st.insert("Name".into(), json!(sub));
+        st.insert("Name".into(), json!(subtype_object_name(&sub)));
         // alc emits Subtype.Id for objects with a real id (Enum/Record/…) but
         // not for interfaces (no declared numeric id).
         if let Some(id) = r.map(|r| r.id).filter(|&id| id != 0) {

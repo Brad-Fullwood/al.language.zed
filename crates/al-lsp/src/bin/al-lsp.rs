@@ -401,13 +401,18 @@ async fn run() {
         // Zed starts the language server in the worktree, and this process
         // execs `dotnet` before any configuration arrives, so the dotnet host
         // is decided against the working directory here.
-        if let Ok(project_root) = std::env::current_dir() {
-            if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
-                tracing::warn!("{advisory}");
-                eprintln!("al-lsp: {advisory}");
-            }
+        let dotnet = match std::env::current_dir() {
+            Ok(project_root) => al_project::trust::enforce_dotnet_path(&project_root),
+            Err(_) => al_project::trust::DotnetHost {
+                program: al_project::toolchain::dotnet_program(),
+                advisory: None,
+            },
+        };
+        if let Some(advisory) = &dotnet.advisory {
+            tracing::warn!("{advisory}");
+            eprintln!("al-lsp: {advisory}");
         }
-        let mut cmd = al_lsp::toolchain::official_lsp_command(&altool, &forward);
+        let mut cmd = al_lsp::toolchain::official_lsp_command(&dotnet.program, &altool, &forward);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;

@@ -99,7 +99,7 @@ mod tests {
         let body = find_proc_body(root, bytes).expect("body");
         let mut stack = ScopeStack::new();
         let mut frame = CallFrame::new("Regression", "Test");
-        frame.bind("t", Value::Time(0));
+        frame.bind("t", Value::UndefinedTime);
         stack.push(frame);
         let mut ctx = ctx();
         let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);
@@ -741,7 +741,7 @@ mod tests {
         let body = find_proc_body(tree.root_node(), bytes).expect("body");
         let mut stack = ScopeStack::new();
         let mut frame = CallFrame::new("Regression", "Test");
-        frame.bind("t", Value::Time(0));
+        frame.bind("t", Value::UndefinedTime);
         stack.push(frame);
         let mut ctx = ctx();
         let eval = crate::interpreter::eval_stmt::eval_stmt(body, bytes, &mut stack, &mut ctx);

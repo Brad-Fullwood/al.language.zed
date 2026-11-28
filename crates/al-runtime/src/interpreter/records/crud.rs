@@ -796,24 +796,35 @@ fn run_record_method(
             if values.is_empty() {
                 return eval_error("Get: requires at least one primary-key value");
             }
-            if values.len() != store.record.primary_key_len() {
+            let key_len = store.record.primary_key_len();
+            if values.len() > key_len {
                 return eval_error(format!(
-                    "Get: local record runtime requires all {} primary-key values (got {}); \
-                     partial composite-key lookup requires live Business Central",
-                    store.record.primary_key_len(),
-                    values.len()
+                    "Get: {} values given for a primary key of {} fields",
+                    values.len(),
+                    key_len
                 ));
             }
-            // Coerce each key part to the declared PK field type so a Text
+            // Coerce each given key part to the declared PK field type so a Text
             // literal matches a Code key and an Integer a Decimal one.
             let pk_fields: Vec<FieldNo> = store.record.primary_key_fields().to_vec();
-            let mut key_values = Vec::with_capacity(values.len());
+            let mut key_values = Vec::with_capacity(key_len);
             for (field, value) in pk_fields.into_iter().zip(values) {
                 match store.coerce_to_field(field, value) {
                     Ok(coerced) => key_values.push(coerced),
                     Err(error) => return eval_error(format!("Get: {error}")),
                 }
             }
+            // Key fields left out take their declared default, as BC fills them.
+            let key_values = match store.record.key_with_defaults(key_values) {
+                Ok(key) => key,
+                Err(field) => {
+                    return eval_error(format!(
+                        "Get: primary-key field {field} of table '{}' has no declared \
+                         default, so Get needs every key value",
+                        store.record.table_name
+                    ));
+                }
+            };
             match store.record.get_in(view, key_values) {
                 Ok(()) => Eval::Normal(Value::Boolean(true)),
                 Err(_) if stmt_position => eval_error(format!(
@@ -950,5 +961,399 @@ fn run_record_method(
             Eval::Normal(Value::Boolean(store.record.is_empty_in(view)))
         }
         other => eval_error(format!("unsupported record method: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::interpreter::dispatch::{dispatch_call, DispatchCtx};
+    use crate::interpreter::scope::Eval;
+    use crate::interpreter::value::Value;
+    use crate::test_support::MockSource as Workspace;
+
+    /// Key ("Item No.", "Line No."). `Line No.` is an Integer, so a `Get`
+    /// that gives only "Item No." looks for `Line No.` = 0.
+    const PRICE_LINE_TABLE: &str = r#"table 50110 "Price Line"
+{
+    fields
+    {
+        field(1; "Item No."; Code[20]) { }
+        field(2; "Line No."; Integer) { }
+    }
+    keys
+    {
+        key(PK; "Item No.", "Line No.") { Clustered = true; }
+    }
+}
+"#;
+
+    const PRICE_LINE_TESTS: &str = r#"codeunit 50111 "Price Line Tests"
+{
+    procedure InsertFiveThenGetPartial(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 5;
+        PriceLine.Insert();
+        exit(PriceLine.Get('A'));
+    end;
+
+    procedure InsertFiveThenGetExact(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 5;
+        PriceLine.Insert();
+        exit(PriceLine.Get('A', 5));
+    end;
+
+    procedure InsertZeroThenGetPartial(): Integer
+    var
+        PriceLine: Record "Price Line";
+        Found: Boolean;
+    begin
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 0;
+        PriceLine.Insert();
+        PriceLine.Init();
+        PriceLine."Item No." := 'A';
+        PriceLine."Line No." := 9;
+        Found := PriceLine.Get('A');
+        if not Found then
+            exit(-1);
+        exit(PriceLine."Line No.");
+    end;
+
+    procedure GetTooManyValues(): Boolean
+    var
+        PriceLine: Record "Price Line";
+    begin
+        exit(PriceLine.Get('A', 5, 1));
+    end;
+}
+"#;
+
+    const INIT_TABLE: &str = r#"table 50100 T
+{
+    fields
+    {
+        field(1; No; Code[20]) { }
+        field(2; Quantity; Integer) { InitValue = 7; }
+    }
+    keys
+    {
+        key(PK; No) { }
+    }
+}
+"#;
+
+    const INIT_TESTS: &str = r#"codeunit 50102 "Init Tests"
+{
+    procedure InitRestoresInitValue(): Integer
+    var
+        R: Record T;
+    begin
+        R.Quantity := 3;
+        R.Init();
+        exit(R.Quantity);
+    end;
+}
+"#;
+
+    const FORM_TABLE: &str = r#"table 50103 Forms
+{
+    fields
+    {
+        field(1; No; Code[20]) { }
+        field(2; Amount; Decimal) { InitValue = 1.5; }
+        field(3; Active; Boolean) { InitValue = true; }
+        field(4; Note; Text[30]) { InitValue = 'abc'; }
+    }
+    keys
+    {
+        key(PK; No) { }
+    }
+}
+"#;
+
+    const FORM_TESTS: &str = r#"codeunit 50104 "Form Tests"
+{
+    procedure InitValueForms(): Boolean
+    var
+        R: Record Forms;
+    begin
+        R.Init();
+        exit((R.Amount = 1.5) and R.Active and (R.Note = 'abc'));
+    end;
+}
+"#;
+
+    fn run_sources(sources: &[(&str, &str)], object: &str, proc: &str) -> Eval {
+        let ws = Arc::new(Workspace::new());
+        for (path, src) in sources {
+            ws.file_index
+                .add_file(std::path::PathBuf::from(path), src.to_string());
+        }
+        let mut ctx = DispatchCtx::new_with_records(ws, Default::default());
+        dispatch_call(Some(object), proc, vec![], &mut ctx)
+    }
+
+    fn run(object: &str, proc: &str) -> Eval {
+        run_sources(
+            &[
+                ("/ws/PriceLine.al", PRICE_LINE_TABLE),
+                ("/ws/PriceLineTests.al", PRICE_LINE_TESTS),
+            ],
+            object,
+            proc,
+        )
+    }
+
+    fn ok(eval: Eval) -> Value {
+        match eval {
+            Eval::Normal(v) | Eval::Exit(v) => v,
+            Eval::Error(e) => panic!("unexpected error: {}", e.message),
+            Eval::Break | Eval::Continue => panic!("unexpected break/continue"),
+        }
+    }
+
+    #[test]
+    fn get_with_omitted_trailing_key_uses_default() {
+        // Only ('A', 5) is stored, so Get('A') looks for ('A', 0) and misses.
+        assert_eq!(
+            ok(run("Price Line Tests", "InsertFiveThenGetPartial")),
+            Value::Boolean(false)
+        );
+        // The exact key finds the row, so the miss above comes from the key.
+        assert_eq!(
+            ok(run("Price Line Tests", "InsertFiveThenGetExact")),
+            Value::Boolean(true)
+        );
+        // ('A', 0) is stored, so Get('A') finds it and loads its Line No.
+        assert_eq!(
+            ok(run("Price Line Tests", "InsertZeroThenGetPartial")),
+            Value::Integer(0)
+        );
+    }
+
+    #[test]
+    fn get_with_more_values_than_key_fields_is_an_error() {
+        match run("Price Line Tests", "GetTooManyValues") {
+            Eval::Error(error) => assert!(
+                error
+                    .message
+                    .contains("3 values given for a primary key of 2 fields"),
+                "unexpected message: {}",
+                error.message
+            ),
+            other => panic!("expected an interpreter error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn init_applies_init_value() {
+        let sources = [("/ws/T.al", INIT_TABLE), ("/ws/InitTests.al", INIT_TESTS)];
+        // Init writes the InitValue over the caller's Quantity.
+        assert_eq!(
+            ok(run_sources(&sources, "Init Tests", "InitRestoresInitValue")),
+            Value::Integer(7)
+        );
+    }
+
+    #[test]
+    fn init_value_decimal_boolean_and_text_literals_apply() {
+        let sources = [
+            ("/ws/Forms.al", FORM_TABLE),
+            ("/ws/FormTests.al", FORM_TESTS),
+        ];
+        assert_eq!(
+            ok(run_sources(&sources, "Form Tests", "InitValueForms")),
+            Value::Boolean(true)
+        );
+    }
+
+    const FLOW_HDR_TABLE: &str = r#"table 50100 Hdr
+{
+    fields
+    {
+        field(1; No; Code[20]) { }
+        field(2; OpenLines; Integer)
+        {
+            FieldClass = FlowField;
+            CalcFormula = Count(Line WHERE (DocNo = FIELD(No)));
+        }
+    }
+    keys
+    {
+        key(PK; No) { }
+    }
+}
+"#;
+
+    const FLOW_LINE_TABLE: &str = r#"table 50101 Line
+{
+    fields
+    {
+        field(1; DocNo; Code[20]) { }
+        field(2; LineNo; Integer) { }
+    }
+    keys
+    {
+        key(PK; DocNo, LineNo) { }
+    }
+}
+"#;
+
+    const FLOW_TESTS: &str = r#"codeunit 50105 "Flow Tests"
+{
+    procedure OpenLinesBeforeCalc(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        exit(H.OpenLines);
+    end;
+
+    procedure OpenLinesAfterCalc(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        H.CalcFields(OpenLines);
+        exit(H.OpenLines);
+    end;
+
+    procedure OpenLinesAfterCalcThenGet(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        H.CalcFields(OpenLines);
+        H.Get('D1');
+        exit(H.OpenLines);
+    end;
+
+    procedure OpenLinesStoredThenGet(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        H.CalcFields(OpenLines);
+        H.Modify();
+        H.Get('D1');
+        exit(H.OpenLines);
+    end;
+
+    procedure OpenLinesStoredThenFindFirst(): Integer
+    var
+        H: Record Hdr;
+        L: Record Line;
+    begin
+        H.No := 'D1';
+        H.Insert();
+        L.DocNo := 'D1';
+        L.LineNo := 10;
+        L.Insert();
+        H.Get('D1');
+        H.CalcFields(OpenLines);
+        H.Modify();
+        H.FindFirst();
+        exit(H.OpenLines);
+    end;
+}
+"#;
+
+    #[test]
+    fn flowfield_is_zero_until_calcfields() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowTests.al", FLOW_TESTS),
+        ];
+        // The line exists, but the FlowField reads zero until CalcFields runs.
+        assert_eq!(
+            ok(run_sources(&sources, "Flow Tests", "OpenLinesBeforeCalc")),
+            Value::Integer(0)
+        );
+        assert_eq!(
+            ok(run_sources(&sources, "Flow Tests", "OpenLinesAfterCalc")),
+            Value::Integer(1)
+        );
+        // Get reloads the row without FlowField values, so the calculation is gone.
+        assert_eq!(
+            ok(run_sources(
+                &sources,
+                "Flow Tests",
+                "OpenLinesAfterCalcThenGet"
+            )),
+            Value::Integer(0)
+        );
+    }
+
+    // Modify writes the calculated value into the row. Get must not keep it.
+    #[test]
+    fn flowfield_is_zero_after_get_reloads_a_row_that_stores_a_value() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowTests.al", FLOW_TESTS),
+        ];
+        assert_eq!(
+            ok(run_sources(
+                &sources,
+                "Flow Tests",
+                "OpenLinesStoredThenGet"
+            )),
+            Value::Integer(0)
+        );
+    }
+
+    // FindFirst loads a row the same way, so it must drop the calculation too.
+    #[test]
+    fn flowfield_is_zero_after_find_first_loads_a_row_that_stores_a_value() {
+        let sources = [
+            ("/ws/Hdr.al", FLOW_HDR_TABLE),
+            ("/ws/Line.al", FLOW_LINE_TABLE),
+            ("/ws/FlowTests.al", FLOW_TESTS),
+        ];
+        assert_eq!(
+            ok(run_sources(
+                &sources,
+                "Flow Tests",
+                "OpenLinesStoredThenFindFirst"
+            )),
+            Value::Integer(0)
+        );
     }
 }

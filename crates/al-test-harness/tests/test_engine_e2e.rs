@@ -8,6 +8,7 @@
 //! (`tests.run_batch`, `tests.classify`, ...) live behind the daemon
 //! Unix socket which has its own harness story.
 
+use al_analysis::queries::code_lens::TestLensStatus;
 use al_test_harness::*;
 use serde_json::json;
 
@@ -92,35 +93,31 @@ fn collect_symbol_names(symbols: &[serde_json::Value]) -> Vec<String> {
     out
 }
 
-/// Negative: a malformed code-lens JSON shape (missing the inner kind
-/// field) must round-trip without claiming structure it doesn't have.
+/// Negative: a code-lens status without its `kind` tag must not deserialize
+/// as the status type the server serializes.
 #[test]
 fn test_code_lens_invalid_payload_does_not_assert_keys() {
-    // Payload omits the required inner `status.kind` and instead has a
-    // bogus field — verify our consumer code can detect this.
     let bad = json!({ "kind": "test", "status": { "bogus": "value" } });
     assert!(
-        bad["status"].get("kind").is_none(),
-        "shape assertion: malformed payload must lack a `status.kind`"
+        serde_json::from_value::<TestLensStatus>(bad["status"].clone()).is_err(),
+        "status without a `kind` tag must not deserialize as TestLensStatus"
     );
-    let inner_kind = bad["status"].get("kind").and_then(|v| v.as_str());
-    assert!(inner_kind.is_none(), "expected None for missing kind");
 }
 
-/// Smoke test that doesn't require the LSP binary: deserialize a known
-/// LSP code-lens response and check it contains the new Test lens kind.
-/// This proves the wire format has the expected structure even when
-/// running in environments where al-lsp can't be spawned.
+/// Wire format check that does not need the LSP binary. The server writes a
+/// Test lens as `{"kind": "test", "status": <TestLensStatus>}`. The wrapper is
+/// built by hand in al-lsp's code lens handler, so only the status is checked
+/// here. It must deserialize and serialize back to the same JSON.
 #[test]
 fn code_lens_test_kind_wire_format_is_recognised() {
     let sample = json!({
         "kind": "test",
         "status": { "kind": "notRun" }
     });
-    let s = serde_json::to_string(&sample).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&s).unwrap();
-    assert_eq!(parsed["kind"], "test");
-    assert_eq!(parsed["status"]["kind"], "notRun");
+    let status: TestLensStatus = serde_json::from_value(sample["status"].clone())
+        .expect("status must deserialize as TestLensStatus");
+    assert_eq!(status, TestLensStatus::NotRun);
+    assert_eq!(serde_json::to_value(&status).unwrap(), sample["status"]);
 }
 
 /// End-to-end coverage for the `textDocument/codeLens` path.

@@ -1,0 +1,16 @@
+Microsoft (R) AL Compiler version 18.1.43.24897
+Copyright (C) Microsoft Corporation. All rights reserved
+
+Compilation started for project 'Check DepMissing' containing '1' files at '10:16:10.867'.
+
+error AL1022: A package with publisher 'Nobody', name 'Not Here', and a version compatible with '1.0.0.0' could not be found in the package cache folders: /home/user/project/.alpackages
+
+Compilation ended at '10:16:16.944'.
+Microsoft (R) AL Compiler version 18.1.43.24897
+Copyright (C) Microsoft Corporation. All rights reserved
+
+Compilation started for project 'Check BadAnalyzer' containing '1' files at '10:16:17.269'.
+
+error AL1006: Metadata file '/nonexistent.dll' could not be found
+
+Compilation ended at '10:16:17.760'.

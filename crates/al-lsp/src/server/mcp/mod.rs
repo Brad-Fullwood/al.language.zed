@@ -1796,7 +1796,7 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
     if let Some(advisory) = evaluated.decision.advisory() {
         tracing::warn!("mcp: {advisory}");
     }
-    if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root) {
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path(&project_root).advisory {
         tracing::warn!("mcp: {advisory}");
     }
     let _ = workspace.trust_advisory.set(evaluated.decision.advisory());

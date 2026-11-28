@@ -123,7 +123,7 @@ fn load_project_with_settings(
     if let Some(advisory) = decision.advisory() {
         tracing::warn!("{advisory}");
     }
-    if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root) {
+    if let Some(advisory) = al_project::trust::enforce_dotnet_path(project_root).advisory {
         tracing::warn!("{advisory}");
     }
     let mut project =

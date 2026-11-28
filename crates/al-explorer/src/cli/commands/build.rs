@@ -310,14 +310,23 @@ pub fn cmd_pack_native(
     // This keeps syntax/project failures fast and makes `--validate` an
     // explicit compatibility oracle rather than the primary verifier.
     if validate {
-        if let Some(code) = validate_with_alc(&dir, &settings, analyzers, json) {
+        if let Some(code) = validate_with_alc(
+            &dir,
+            &settings,
+            analyzers,
+            dependency_packages.as_slice(),
+            json,
+        ) {
             return code;
         }
     }
 
     let out_path = match out {
         Some(o) => std::path::PathBuf::from(o),
-        None => dir.join("output").join(&built.file_name),
+        None => match implicit_output_dir(&dir) {
+            Ok(output) => output.join(&built.file_name),
+            Err(error) => return report_error(&error, json),
+        },
     };
     let parent = out_path
         .parent()
@@ -364,8 +373,39 @@ pub fn cmd_pack_native(
     ExitCode::SUCCESS
 }
 
+/// The package folder when no `--out` is given: `dir/output`, which must stay
+/// inside the project. A repository can ship `output` as a symlink, so a link
+/// is refused outright, and a real folder is refused when it resolves outside
+/// `dir`.
+fn implicit_output_dir(dir: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let output = dir.join("output");
+    if std::fs::symlink_metadata(&output).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(format!(
+            "output directory resolves outside the project: {}",
+            output.display()
+        ));
+    }
+    std::fs::create_dir_all(&output)
+        .map_err(|error| format!("creating {}: {error}", output.display()))?;
+    let root = dir
+        .canonicalize()
+        .map_err(|error| format!("resolving {}: {error}", dir.display()))?;
+    let resolved = output
+        .canonicalize()
+        .map_err(|error| format!("resolving {}: {error}", output.display()))?;
+    if !resolved.starts_with(&root) {
+        return Err(format!(
+            "output directory resolves outside the project: {}",
+            resolved.display()
+        ));
+    }
+    Ok(output)
+}
+
 /// Recursively copy a directory tree (used to validate in a throwaway copy so
-/// alc's own `.app`/temp output never lands in the user's project).
+/// alc's own `.app`/temp output never lands in the user's project). Symlinks
+/// are skipped, as native discovery skips them, so the copy never reads a file
+/// or folder outside the project.
 fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -466,12 +506,26 @@ fn validation_analyzer_entries(
 /// used to get no analyzer list, which the build service reads as every
 /// installed analyzer, so a project that plain alc compiles failed on cop
 /// errors from analyzers it never enabled.
+///
+/// `dependency_packages` is the native half's list, so both halves compile
+/// against the same symbol packages.
 fn validate_with_alc(
     dir: &std::path::Path,
     settings: &al_project::trust::TrustEvaluation,
     analyzers: Option<&str>,
+    dependency_packages: &[std::path::PathBuf],
     json: bool,
 ) -> Option<ExitCode> {
+    // The copy has its own root, so alc would judge an `AL_DOTNET_PATH` that
+    // names a file in `dir` as an ordinary host. Decide it against `dir`, then
+    // drop the variable so the copy's build falls back to `dotnet`.
+    let host = al_project::trust::enforce_dotnet_path_before_spawn(dir);
+    if let Some(advisory) = &host.advisory {
+        eprintln!("{}", terminal_lines(advisory));
+        // SAFETY: this runs before the validation runtime is built, and no other
+        // thread of this command reads the environment.
+        unsafe { std::env::remove_var(al_project::toolchain::DOTNET_PATH_ENV) };
+    }
     // An analyzer the untrusted repository ships is refused inside
     // `al_project::analyzers::discover_custom_analyzer`, which every compile
     // path shares. It runs here on the real folder, before the copy.
@@ -530,7 +584,6 @@ fn validate_with_alc(
         ));
     }
 
-    let pkg_cache = tmp_path.join(".alpackages");
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -544,8 +597,8 @@ fn validate_with_alc(
         project_root: tmp_path,
         backend: al_compile::BuildBackend::Alc,
         toolchain: Some(&toolchain),
-        dependency_packages: None,
-        package_cache: Some(&pkg_cache),
+        dependency_packages: Some(dependency_packages),
+        package_cache: None,
         analyzers: Some(&analyzers),
         config: al_compile::CompilationConfigOptions::from(&settings.config),
     }));
@@ -970,6 +1023,29 @@ mod validation_trust_tests {
 
         assert!(dst.join("pkgs").join("a.app").is_file());
         assert!(!dst.join(".git").exists());
+    }
+}
+
+#[cfg(test)]
+mod implicit_output_tests {
+    use super::implicit_output_dir;
+
+    #[test]
+    fn implicit_output_dir_is_created_inside_the_project() {
+        let project = tempfile::tempdir().unwrap();
+        let output = implicit_output_dir(project.path()).unwrap();
+        assert!(output.ends_with("output"), "{}", output.display());
+        assert!(output.is_dir(), "{}", output.display());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn implicit_output_symlink_is_refused() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), project.path().join("output")).unwrap();
+        let error = implicit_output_dir(project.path()).unwrap_err();
+        assert!(error.contains("outside the project"), "{error}");
     }
 }
 

@@ -176,9 +176,11 @@ Supported behavior:
 - BC-style comparisons, ranges, union/intersection, wildcards, and BC filter case rules:
   unprefixed Text patterns match case-sensitively, the `@` prefix makes a pattern
   case-insensitive, and Code cells always compare caselessly.
-- CalcFields and automatic reads for Sum/Average/Min/Max/Count/Exist/Lookup FlowFields with
-  CONST/FIELD/FILTER clauses (including Boolean CONST values), and CalcSums, which totals each
-  named field over the rows the current filters select.
+- CalcFields for Sum/Average/Min/Max/Count/Exist/Lookup FlowFields with CONST/FIELD/FILTER clauses
+  (including Boolean CONST values), and CalcSums, which totals each named field over the rows the
+  current filters select. A FlowField reads as its typed zero value until CalcFields calculates it
+  on that view. Init, Get, Find and Next clear the calculation. SetAutoCalcFields has no local
+  support and selects LiveBc.
 - Rename (the full new primary key, written with the rest of the buffer), TestField (empty, or a
   given value), IsTemporary. As in BC, a rename updates every field whose plain TableRelation names
   the renamed table's single-field key. A test that renames a table named by a conditional or

@@ -63,6 +63,10 @@ existing `.g.xlf`/language files stay compatible.
 - **Parsing** (`parse_xliff`): reads an existing language file (e.g. `de-DE.xlf`), preserving targets
   and states. A duplicate `trans-unit id` in the input keeps the *first* occurrence (document order)
   and logs a warning, so a malformed file cannot silently overwrite a reviewed translation.
+  An XML reader reads any well-formed XLIFF 1.2 layout, including a whole unit on one line and
+  character references such as `&#246;`. Malformed XML is refused with an error, and `xlf refresh`
+  then writes nothing. A path that is not a regular file (a FIFO or a device) is refused before it
+  is opened.
 - **Refresh** (`refresh_xliff`): merges the generated base into an existing translation, carrying over
   existing translations/state and marking changed source as `needs-review-translation`. Units no
   longer present in the base are **kept** with state `final` (they are not deleted), appended in

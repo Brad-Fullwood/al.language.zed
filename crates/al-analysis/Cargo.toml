@@ -21,6 +21,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 petgraph = { workspace = true }
+quick-xml = { workspace = true }
 tree-sitter = { workspace = true }
 url = { workspace = true }
 tower-lsp = { workspace = true, optional = true }
