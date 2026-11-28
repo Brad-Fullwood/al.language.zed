@@ -130,6 +130,47 @@ impl<'a> TypeResolver<'a> {
         result
     }
 
+    /// Whether a declaration carries the `temporary` keyword.
+    ///
+    /// Walks up from the declaration's name to the enclosing declaration and
+    /// looks for the `kw_temporary` token. Matching the token, not the text,
+    /// keeps a quoted name such as `"Temporary Sales"` from counting.
+    pub fn is_temporary(&self, decl: &VariableDecl) -> bool {
+        let point = decl.range.start_point;
+        let Some(mut node) = self
+            .tree
+            .root_node()
+            .descendant_for_point_range(point, point)
+        else {
+            return false;
+        };
+        loop {
+            if matches!(
+                node.kind(),
+                "regular_variable_declaration"
+                    | "variable_declaration"
+                    | "object_variable_declaration"
+                    | "parameter"
+            ) && has_temporary_keyword(node)
+            {
+                return true;
+            }
+            if matches!(
+                node.kind(),
+                "var_section"
+                    | "object_var_section"
+                    | "procedure_declaration"
+                    | "trigger_declaration"
+            ) {
+                return false;
+            }
+            let Some(parent) = node.parent() else {
+                return false;
+            };
+            node = parent;
+        }
+    }
+
     /// Get all variable declarations visible at a given position.
     ///
     /// Includes: local vars in current procedure, parameters,
@@ -886,6 +927,19 @@ impl<'a> TypeResolver<'a> {
     fn node_text_clean(&self, node: Node<'a>) -> Option<String> {
         super::node_text_clean(node, self.source)
     }
+}
+
+/// Whether `node` or a node under it is the `temporary` keyword token.
+fn has_temporary_keyword(node: Node<'_>) -> bool {
+    let mut stack = vec![node];
+    while let Some(current) = stack.pop() {
+        if current.kind() == "kw_temporary" {
+            return true;
+        }
+        let mut cursor = current.walk();
+        stack.extend(current.children(&mut cursor));
+    }
+    false
 }
 
 #[cfg(test)]
