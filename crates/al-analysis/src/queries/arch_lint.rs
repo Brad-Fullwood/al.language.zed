@@ -299,6 +299,27 @@ fn applies_to_kind(rule_pattern: &str, obj_kind_lower: &str) -> bool {
     rule_pattern.is_empty() || obj_kind_lower == rule_pattern.to_lowercase()
 }
 
+/// True when `needle` occurs in `haystack` without an identifier character
+/// joined to either end, so `message(` does not match inside `logmessage(`.
+/// An end of `needle` that is not an identifier character needs no boundary.
+fn contains_on_identifier_boundary(haystack: &str, needle: &str) -> bool {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    if needle.is_empty() {
+        return false;
+    }
+    let needs_start = needle.chars().next().is_some_and(is_ident);
+    let needs_end = needle.chars().next_back().is_some_and(is_ident);
+    haystack.match_indices(needle).any(|(at, _)| {
+        let before_ok = !needs_start || !haystack[..at].chars().next_back().is_some_and(is_ident);
+        let after_ok = !needs_end
+            || !haystack[at + needle.len()..]
+                .chars()
+                .next()
+                .is_some_and(is_ident);
+        before_ok && after_ok
+    })
+}
+
 fn legacy_naming_regex(pattern: &str) -> String {
     if pattern == "[A-Z]" {
         "^[A-Z]".to_string()
@@ -364,13 +385,24 @@ fn apply_rule(
                     None => None,
                 };
                 let forbidden_lower = (!rule.regex).then(|| forbidden.to_lowercase());
+                // Comments and single-quoted strings are blanked out first, so
+                // a commented call or a message text does not match.
+                let mut in_block_comment = false;
                 let line_no = object_text.lines().enumerate().find_map(|(idx, line)| {
+                    let (code, still_in_block_comment) =
+                        al_syntax::lint::mask_non_code_keep_quoted_identifiers(
+                            line,
+                            in_block_comment,
+                        );
+                    in_block_comment = still_in_block_comment;
                     let matches = regex.as_ref().map_or_else(
                         || {
-                            line.to_lowercase()
-                                .contains(forbidden_lower.as_deref().unwrap_or_default())
+                            contains_on_identifier_boundary(
+                                &code.to_lowercase(),
+                                forbidden_lower.as_deref().unwrap_or_default(),
+                            )
                         },
-                        |regex| regex.is_match(line),
+                        |regex| regex.is_match(&code),
                     );
                     matches.then_some(first_line + idx as u32 + 1)
                 });
@@ -1048,5 +1080,32 @@ page 50101 "Ship Card"
             v.is_empty(),
             "Clean, well-layered objects must not trip built-in rules: {v:?}"
         );
+    }
+
+    fn dialog_rule_hits(body: &str) -> usize {
+        let ws = workspace_with(vec![(
+            "/src/Customer.al",
+            &format!(
+                "table 50101 \"Customer\"\n{{\n    fields {{ field(1; \"No.\"; Code[20]) {{ }} }}\n    trigger OnInsert()\n    begin\n{body}\n    end;\n}}"
+            ),
+        )]);
+        arch_lint(&ws, &ArchConfig::default())
+            .unwrap()
+            .iter()
+            .filter(|x| x.rule_id == "BUILTIN-TABLE-NO-DIALOG")
+            .count()
+    }
+
+    #[test]
+    fn log_message_is_not_message() {
+        assert_eq!(dialog_rule_hits("        LogMessage('inserted');"), 0);
+        assert_eq!(dialog_rule_hits("        Message('inserted');"), 1);
+    }
+
+    #[test]
+    fn commented_call_is_ignored() {
+        assert_eq!(dialog_rule_hits("        // Message('inserted');"), 0);
+        assert_eq!(dialog_rule_hits("        /* Message('inserted'); */"), 0);
+        assert_eq!(dialog_rule_hits("        Error('Message(');"), 0);
     }
 }

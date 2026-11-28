@@ -751,7 +751,9 @@ impl AlConfig {
                 "indexThreads" => match obj.get(key) {
                     Some(serde_json::Value::Null) => self.index_threads = None,
                     Some(v) => match v.as_u64().filter(|n| *n >= 1) {
-                        Some(n) => self.index_threads = Some(n as usize),
+                        // `al_symbols::index_pool::MAX_INDEX_THREADS` is 64. The
+                        // pool clamps again, this keeps the stored value sane.
+                        Some(n) => self.index_threads = Some(n.min(MAX_INDEX_THREADS) as usize),
                         None => report.invalid_values.push(format!("indexThreads={v}")),
                     },
                     None => {}
@@ -767,6 +769,8 @@ impl AlConfig {
 }
 
 const MAX_EDITOR_SETTINGS_BYTES: u64 = 1_048_576;
+/// Largest accepted `indexThreads`. Larger values are lowered to it.
+const MAX_INDEX_THREADS: u64 = 64;
 
 fn insert_editor_setting(
     normalized: &mut serde_json::Map<String, serde_json::Value>,
@@ -1021,6 +1025,13 @@ fn merge_path_array(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_threads_are_clamped() {
+        let mut config = AlConfig::default();
+        config.merge(&serde_json::json!({ "indexThreads": 100000 }));
+        assert_eq!(config.index_threads, Some(64));
+    }
 
     #[test]
     fn default_config_matches_ms_defaults() {

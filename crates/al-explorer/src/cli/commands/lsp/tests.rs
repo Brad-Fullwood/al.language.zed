@@ -401,7 +401,7 @@ pub fn cmd_test_run_all(
         Err(e) => return report_error(&e, json),
     };
     // A full test run (live BC or interpreter) can take many minutes.
-    client.set_request_timeout(std::time::Duration::from_secs(1800));
+    set_command_timeout(&mut client, std::time::Duration::from_secs(1800));
 
     match request_checked(&mut client, "tests.run_auto", Some(params)) {
         Ok(result) => {

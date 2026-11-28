@@ -1,5 +1,7 @@
 # Round 4 security review: the final campaign diff
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Reviewer brief: the fourth and last security round. Read the whole campaign diff
 (`git diff dev..campaign/2026-09-21`) with weight on what merged after the round 3 fixes on
 2026-09-22, as an attacker who controls a repository the user clones and opens, a `.app` in its

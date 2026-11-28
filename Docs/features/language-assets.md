@@ -42,12 +42,10 @@ resolves to nothing. The smoke test
 
 Both invoke a bare `al-explorer`. Stable Zed task JSON cannot address a binary inside the extension
 work directory, so the extension's own downloaded copy is not reachable from a task. The tasks
-resolve only once `al-explorer` is on `PATH`. Install it from the release archive, or symlink the
-copy the extension already downloaded:
-
-```sh
-ln -sf "$(ls -d ~/.local/share/zed/extensions/work/al/al-lsp-*/al-explorer | tail -1)" ~/.local/bin/al-explorer
-```
+resolve only once `al-explorer` is on `PATH`. Run `make install`, which copies `al-explorer` to
+`~/.local/bin`, or extract the release archive into a directory on `PATH`. A symlink into an
+`al-lsp-*` version directory breaks on upgrade: the extension deletes other version directories when
+it installs a release (`prune_release_dirs` in `src/lib.rs`).
 
 Until that is done the task entries appear in the picker and fail with "command not found". The
 same operations are also available without `PATH` through LSP commands (`al.downloadSymbols`,
@@ -75,7 +73,7 @@ via `json.schemas`, see [`examples/zed-settings.jsonc`](../../examples/zed-setti
 | Schema | Validates | Highlights |
 | --- | --- | --- |
 | `app.json` | the app manifest | required id/name/publisher/version. Runtime, target, dependencies, features, idRanges, resourceExposurePolicy, launch, marketplace metadata |
-| `settings.json` | `al.*` LSP settings | every setting (also drives in-editor autocomplete on Zed 0.8+) |
+| `settings.json` | `al.*` LSP settings | every setting. No in-editor autocomplete in v0.5.0: the extension builds against Zed extension API 0.7 |
 | `ruleset.json` | `*.ruleset.json` | per-code severity overrides (Error/Warning/Hidden/Info/None) |
 | `alarch.json` | `.alarch.json` | native architecture lint rules, object-kind scopes, and literal/regex matching |
 | `appsourcecop.json` | `AppSourceCop.json` | AppSourceCop severity + per-rule config |

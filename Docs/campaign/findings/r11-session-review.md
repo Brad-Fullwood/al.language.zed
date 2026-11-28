@@ -1,5 +1,7 @@
 # R11 review: merges since the round 10 review
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git diff 9e3f26a1..4c429ac5 -- crates plugin` (26 files, 17 commits that are not
 merges). That covers the security round 5 fixes (merge 68f0bbe8, statuses in `r5-security.md`),
 the round 9 runtime fixes (merge 52d07278, statuses in `r9-session-review.md`), the round 9

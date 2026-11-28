@@ -196,24 +196,24 @@ pub(super) fn collect_record_from_regular_var_decl(
     source: &[u8],
     result: &mut HashMap<String, String>,
 ) {
-    let name_node = match node.child_by_field_name("name") {
-        Some(n) => n,
-        None => return,
-    };
     let type_node = match node.child_by_field_name("type") {
         Some(n) => n,
-        None => return,
-    };
-
-    let name = match name_node.utf8_text(source).ok() {
-        Some(t) => t.unquote_identifier().into_owned(),
         None => return,
     };
 
     let (type_kw, subtype) = parse_type_reference_for_record(type_node, source);
     if type_kw.eq_ignore_ascii_case("record") {
         if let Some(table_name) = subtype {
-            result.insert(name.to_lowercase(), table_name);
+            // `A, B: Record Customer` has one `type` field and one `name`
+            // field per identifier, and every identifier shares the table.
+            let mut cursor = node.walk();
+            for name_node in node.children_by_field_name("name", &mut cursor) {
+                let Ok(text) = name_node.utf8_text(source) else {
+                    continue;
+                };
+                let name = text.unquote_identifier();
+                result.insert(name.to_lowercase(), table_name.clone());
+            }
         }
     }
 }
@@ -337,13 +337,14 @@ pub(super) fn collect_object_var_from_regular_decl(
     source: &[u8],
     result: &mut HashMap<String, String>,
 ) {
-    let Some(name_node) = node.child_by_field_name("name") else {
-        return;
-    };
     let Some(type_node) = node.child_by_field_name("type") else {
         return;
     };
-    extract_object_subtype(name_node, type_node, source, result);
+    // `A, B: Codeunit X` has one `name` field per identifier.
+    let mut cursor = node.walk();
+    for name_node in node.children_by_field_name("name", &mut cursor) {
+        extract_object_subtype(name_node, type_node, source, result);
+    }
 }
 
 pub(super) fn extract_object_subtype(

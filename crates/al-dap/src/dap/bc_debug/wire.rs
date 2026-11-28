@@ -234,9 +234,37 @@ pub(super) fn redact_connection_token(body: &str) -> String {
     v.to_string()
 }
 
+/// Text for a log line or error built from a SignalR negotiate body: the
+/// connection token and auth values are redacted, then the text is cut to
+/// `max_chars` characters.
+pub(super) fn negotiate_body_excerpt(body: &str, max_chars: usize) -> String {
+    let redacted = redact_connection_token(body);
+    let sanitized = al_bc::bc_client::sanitize_error_body(&redacted);
+    match sanitized.char_indices().nth(max_chars) {
+        Some((cut, _)) => sanitized[..cut].to_string(),
+        None => sanitized,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn excerpt_cuts_on_char_boundary() {
+        let body = format!("{}{}", "a".repeat(199), "é".repeat(50));
+        let excerpt = negotiate_body_excerpt(&body, 200);
+        assert!(excerpt.chars().count() <= 200);
+    }
+
+    #[test]
+    fn excerpt_redacts_bearer_in_html() {
+        let excerpt = negotiate_body_excerpt("<p>Bearer abc.def.ghi</p>", 200);
+        assert!(
+            !excerpt.contains("abc.def.ghi"),
+            "bearer value survived: {excerpt}"
+        );
+    }
 
     #[test]
     fn invoke_timeout_for_a_step_is_the_breakpoint_budget() {

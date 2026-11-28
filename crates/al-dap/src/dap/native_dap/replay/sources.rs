@@ -52,7 +52,7 @@ pub(super) async fn write_sources(
     dir: &Path,
     archive: &SnapshotArchive,
 ) -> std::io::Result<(HashMap<(ObjectType, i32), PathBuf>, Vec<String>)> {
-    tokio::fs::create_dir_all(dir).await?;
+    create_private_dir(dir).await?;
     let mut files = HashMap::new();
     let mut warnings = Vec::new();
     for (object_type, number) in archive.source_ids() {
@@ -75,6 +75,34 @@ pub(super) async fn write_sources(
         files.insert((object_type, number), path);
     }
     Ok((files, warnings))
+}
+
+/// Creates the sources folder private to the user, because the cache can fall
+/// back to /tmp when there is no HOME.
+async fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    if let Ok(meta) = tokio::fs::symlink_metadata(dir).await {
+        if meta.file_type().is_symlink() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "{} is a symbolic link, replay sources are not written through a link",
+                    dir.display()
+                ),
+            ));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut builder = tokio::fs::DirBuilder::new();
+        builder.recursive(true);
+        builder.mode(0o700);
+        builder.create(dir).await?;
+        tokio::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).await?;
+    }
+    #[cfg(not(unix))]
+    tokio::fs::create_dir_all(dir).await?;
+    Ok(())
 }
 
 #[cfg(unix)]

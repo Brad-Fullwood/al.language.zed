@@ -1,5 +1,7 @@
 # Blog fact sheet and series plan
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Written 2026-09-21 for the blog rewrite (workstream I). The six old posts are deleted on blog
 branch `campaign/2026-09-rewrite`; this file is the source the new series is written from.
 

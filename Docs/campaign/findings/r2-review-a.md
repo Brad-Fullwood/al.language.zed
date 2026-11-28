@@ -1,5 +1,7 @@
 # R2 review A: al-analysis, al-insight, al-syntax, al-source, al-symbols, al-runtime, al-test, al-emit
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Adversarial review of `git diff dev..campaign/2026-09-21` for the eight crates above.
 Reads the finding, the commit, the current code and the test for each sampled item.
 Everything below is verified against the tree at `campaign/2026-09-21` unless tagged

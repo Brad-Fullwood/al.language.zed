@@ -4,6 +4,8 @@
 #
 #   al-bin.sh al-explorer --json search "Sales-Post"
 #   al-bin.sh al-lsp mcp --project /path/to/project
+#   al-bin.sh --resolve
+#     Prints the directory that holds both binaries, or nothing (exit 127).
 #
 # Every message this script writes goes to stderr. Stdout belongs to the binary,
 # because .mcp.json runs `al-bin.sh al-lsp mcp` and Claude Code reads JSON-RPC
@@ -19,12 +21,14 @@ log() {
 
 usage_error() {
 	log "al-bin.sh: $1"
-	log "usage: al-bin.sh <al-explorer|al-lsp> [args...]"
+	log "usage: al-bin.sh <al-explorer|al-lsp> [args...], or al-bin.sh --resolve"
 	exit 64
 }
 
 requested="${1-}"
+resolve_only=0
 case "$requested" in
+--resolve) resolve_only=1 ;;
 al-explorer | al-lsp) shift ;;
 '') usage_error "no binary named" ;;
 *) usage_error "unknown binary '$requested' (expected al-explorer or al-lsp)" ;;
@@ -84,24 +88,30 @@ if [ -z "$bin_dir" ]; then
 	fi
 fi
 
-# 4. A release archive unpacked into the plugin's persistent data directory,
-#    which survives plugin updates.
-if [ -z "$bin_dir" ] && [ -n "${CLAUDE_PLUGIN_DATA-}" ] && has_pair "${CLAUDE_PLUGIN_DATA}/bin"; then
-	bin_dir="${CLAUDE_PLUGIN_DATA}/bin"
+# 4. A release archive unpacked into the plugin's data directory, which
+#    survives plugin updates. With CLAUDE_PLUGIN_DATA unset it is the default
+#    directory that the refusal below names.
+data_bin="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/al-bc}/bin"
+if [ -z "$bin_dir" ] && has_pair "$data_bin"; then
+	bin_dir="$data_bin"
+fi
+
+if [ "$resolve_only" -eq 1 ]; then
+	[ -n "$bin_dir" ] || exit 127
+	printf '%s\n' "$bin_dir"
+	exit 0
 fi
 
 if [ -z "$bin_dir" ]; then
-	data_bin="${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/al-bc}/bin"
 	log "al-bin.sh: al-explorer and al-lsp were not found."
 	log ""
 	log "The al-bc plugin needs both binaries in one directory. Install them one of these ways."
 	log ""
-	log "1. cargo install from a checkout (needs Rust and the .NET 8 SDK):"
-	log "     git clone $REPO_URL"
+	log "1. make install from a checkout (needs Rust and the .NET 8 SDK):"
+	log "     git clone --recurse-submodules $REPO_URL"
 	log "     cd al.language.zed"
-	log "     cargo install --path crates/al-explorer"
-	log "     cargo install --path crates/al-lsp --bin al-lsp --features semantic"
-	log "   Both land in ~/.cargo/bin, which this script finds on PATH."
+	log "     make install"
+	log "   It copies both binaries and bridge/ into ~/.local/bin, which this script finds on PATH."
 	log ""
 	log "2. Download a release archive. It carries al-lsp, al-explorer and the"
 	log "   semantic bridge together:"

@@ -27,6 +27,12 @@ pub enum OpenUrlError {
     /// The opener process could not be started.
     #[error("could not start the browser opener `{program}`: {message}")]
     Spawn { program: String, message: String },
+    /// Linux with neither `DISPLAY` nor `WAYLAND_DISPLAY` set, for example an
+    /// SSH session or a CI job. `xdg-open` still starts there and exits
+    /// without showing a page, so a caller waiting for the page would wait
+    /// for nothing.
+    #[error("no graphical session: DISPLAY and WAYLAND_DISPLAY are both unset")]
+    NoDisplay,
 }
 
 /// The platforms [`opener_command`] knows how to open a URL on.
@@ -88,11 +94,30 @@ pub fn opener_command(
     }
 }
 
+/// Whether a browser opened on `platform` can show a page. On Linux that needs
+/// `DISPLAY` (X11) or `WAYLAND_DISPLAY`. `env` reads one environment variable.
+/// macOS and Windows always have a desktop for the opener.
+pub fn has_graphical_session(
+    platform: Platform,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> bool {
+    match platform {
+        Platform::Linux => ["DISPLAY", "WAYLAND_DISPLAY"]
+            .iter()
+            .any(|name| env(name).is_some_and(|value| !value.is_empty())),
+        _ => true,
+    }
+}
+
 /// Open `url` in the default browser. The opener runs detached with its
 /// standard streams discarded; success means it started, not that a page
 /// loaded.
 pub fn open_in_browser(url: &str) -> Result<(), OpenUrlError> {
-    let (program, args) = opener_command(url, Platform::current())?;
+    let platform = Platform::current();
+    let (program, args) = opener_command(url, platform)?;
+    if !has_graphical_session(platform, |name| std::env::var_os(name)) {
+        return Err(OpenUrlError::NoDisplay);
+    }
     Command::new(program)
         .args(&args)
         .stdin(Stdio::null())
@@ -121,6 +146,20 @@ mod tests {
             !args.iter().any(|arg| arg == "/c"),
             "cmd.exe splits the URL on `&`"
         );
+    }
+
+    #[test]
+    fn linux_without_display_or_wayland_has_no_graphical_session() {
+        let none = |_: &str| None;
+        assert!(!has_graphical_session(Platform::Linux, none));
+        let empty = |_: &str| Some(std::ffi::OsString::new());
+        assert!(!has_graphical_session(Platform::Linux, empty));
+        let x11 = |name: &str| (name == "DISPLAY").then(|| ":0".into());
+        assert!(has_graphical_session(Platform::Linux, x11));
+        let wayland = |name: &str| (name == "WAYLAND_DISPLAY").then(|| "wayland-1".into());
+        assert!(has_graphical_session(Platform::Linux, wayland));
+        assert!(has_graphical_session(Platform::MacOs, none));
+        assert!(has_graphical_session(Platform::Windows, none));
     }
 
     #[test]

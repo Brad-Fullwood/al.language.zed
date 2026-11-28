@@ -476,11 +476,9 @@ Examples:
     Diag,
     /// Authenticate to Business Central (browser-based OAuth).
     ///
-    /// For non-interactive environments (CI, scripting) consider using
-    /// `--password` on snapshot/profile commands instead. Note that passwords
-    /// supplied via `--password` are visible in shell history and
-    /// `/proc/<pid>/cmdline`. `BC_USERNAME` and `BC_PASSWORD` are read as a
-    /// fallback and keep the credential out of both.
+    /// For non-interactive environments (CI, scripting), `BC_USERNAME` and
+    /// `BC_PASSWORD` are read as a fallback, so the credential stays off the
+    /// command line.
     Authenticate {
         /// Subcommand: login (default), status, clear
         #[arg(value_enum, default_value_t = AuthenticateCommand::Login)]

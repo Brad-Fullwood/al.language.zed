@@ -36,8 +36,10 @@
 
 mod daemon_reaper;
 mod protocol;
+mod test_env;
 
 pub use daemon_reaper::{reap_tracked_daemons, track_project_daemon};
+pub use test_env::isolate as isolate_test_environment;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -55,6 +57,7 @@ use std::path::{Path, PathBuf};
 /// the fixture is the reason a daemon for it exists, and that daemon used to
 /// outlive the whole run.
 pub fn test_project_dir() -> PathBuf {
+    test_env::isolate();
     let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("data")
         .join("test_al_project");
@@ -229,6 +232,9 @@ fn target_dirs(workspace_root: &Path) -> Vec<(PathBuf, &'static str)> {
 }
 
 fn find_binary() -> PathBuf {
+    // Every test that starts a binary asks for its path first, so this is
+    // where the process gets its private XDG directories.
+    test_env::isolate();
     // Explicit override wins. The harness starts al-lsp as a subprocess, so a
     // coverage run must point this at its instrumented build for that process to
     // be counted; CI / Zed packaging can also pin an exact path here.
@@ -260,6 +266,7 @@ fn find_binary() -> PathBuf {
 /// `target/release`, falling back to the bare name (PATH lookup). Used by the
 /// e2e smoke tests that spawn `al-lsp mcp` and `al-explorer` as subprocesses.
 pub fn workspace_binary(name: &str) -> PathBuf {
+    test_env::isolate();
     let workspace_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()

@@ -1,5 +1,7 @@
 # R6 review: 2026-09-24 session commits
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git diff 21e2220b..HEAD` (fixes to test-affected, signature help,
 CLI completions/hints/symbols/folding, impact classification and dedupe, lint
 ranges, graph --scope, suggest-event gaps, test-classify, RunTrigger table

@@ -310,15 +310,17 @@ reads three commands and prints `pwned`.
 
 `plugin/scripts/al-fetch-release.sh`, called from the `SessionStart` hook
 (`al-session-context.sh`) right after it confirms the working directory is an
-AL project. It runs when `al-bin.sh`'s first three lookups all miss: not
-`$AL_BIN_DIR`, not a `target/release` or `target/debug` next to this
-repository, not `PATH`, and not already in `$CLAUDE_PLUGIN_DATA/bin` from an
-earlier session.
+AL project. Step 1 asks `al-bin.sh --resolve` whether a complete pair is already
+available: `$AL_BIN_DIR`, a `target/release` or `target/debug` next to this
+repository, `PATH`, or `${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/al-bc}/bin`
+from an earlier session. The download runs only when all four miss.
 
 What it does, in order:
 
-1. Resolves the platform triple (`linux`/`macos` and `x86_64`/`aarch64`) and
-   refuses on anything else, naming the manual install instead.
+1. Runs `al-bin.sh --resolve`. When it prints a directory, the script exits 0
+   and downloads nothing. When it exits 127, the script resolves the platform
+   triple (`linux`/`macos` and `x86_64`/`aarch64`) and refuses on anything
+   else, naming the manual install instead.
 2. Refuses immediately, before any network request, if the URL it would fetch
    from is not `https://`.
 3. Fetches `binary-checksums.txt` from the pinned release
@@ -387,11 +389,11 @@ and the MCP server already find them in `$CLAUDE_PLUGIN_DATA/bin` through
   request, citing the non-https URL.
 
 Not tested: a real download succeeding against this repository's own release
-process end to end, because no tagged release publishes
-`binary-checksums.txt` yet. Once one does, bump `AL_PIN_RELEASE_TAG`, fill
-`AL_PIN_CHECKSUMS_SHA256` from that release, and repeat the "forced download
-path" run above against it without `AL_RELEASE_BASE_URL` or
-`AL_ALLOW_INSECURE_RELEASE_URL` set.
+process end to end. `v0.4.0` already publishes `binary-checksums.txt` with
+bridge entries, but the pin stays `unset` by choice until a commit after the
+v0.5.0 tag. When that commit fills `AL_PIN_CHECKSUMS_SHA256` from the release
+named in `AL_PIN_RELEASE_TAG`, repeat the "forced download path" run above
+against it without `AL_RELEASE_BASE_URL` or `AL_ALLOW_INSECURE_RELEASE_URL` set.
 
 ## Validation
 
@@ -415,6 +417,6 @@ agent carries a `name` and a `description`.
   Base Application `.app` is several megabytes of Microsoft's own binary. A
   repeatable fixture for `plugin/evals/` still needs a different strategy (see
   `plugin/ROADMAP.md`).
-- No tagged release publishes `binary-checksums.txt` yet, so the download
-  hook's success path still has not run against this repository's own release
-  process end to end.
+- The pin stays `unset` by choice, so the download hook's success path has not
+  run against this repository's own release process end to end, even though
+  `v0.4.0` publishes `binary-checksums.txt`.

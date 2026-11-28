@@ -290,3 +290,42 @@ jobs:
       - name: Exercise Windows extension integration end to end
         timeout-minutes: 3
         run: cargo test -p al-test-harness --test extension_smoke --no-fail-fast
+
+  linux-glibc-floor:
+    # Same cross build as the Linux release leg, so a glibc regression fails on pull requests too.
+    name: Linux x86_64 cross build (glibc floor)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-03
+        with:
+          toolchain: stable
+
+      - name: Install .NET SDK
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Install cross
+        run: cargo install cross --version 0.2.5 --locked
+
+      - name: Pre-build semantic bridge on host (cross)
+        run: dotnet build crates/al-semantic/bridge/AlBridge.csproj -c Release --nologo -o "$GITHUB_WORKSPACE/prebuilt-bridge"
+
+      - name: Build al-lsp binary (cross)
+        env:
+          AL_BRIDGE_PREBUILT: ${{ github.workspace }}/prebuilt-bridge
+          CROSS_CONTAINER_OPTS: "-e AL_BRIDGE_PREBUILT=${{ github.workspace }}/prebuilt-bridge"
+        run: cross build -p al-lsp --bin al-lsp --release --features semantic --target x86_64-unknown-linux-gnu --locked
+
+      - name: Build al-explorer binary (cross)
+        run: cross build -p al-explorer --release --target x86_64-unknown-linux-gnu --locked
+
+      - name: Check glibc floor
+        run: ./scripts/check-glibc-floor.sh 2.31 target/x86_64-unknown-linux-gnu/release/al-lsp target/x86_64-unknown-linux-gnu/release/al-explorer

@@ -1,5 +1,7 @@
 # R13 review: merges since the round 12 review
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git diff 7b607e40..73ed8751` (82 files, about 5,100 added lines, eleven merges in
 `git log --merges 7b607e40..73ed8751`). That covers the security round 6 fixes (283b8415 SEC6-1
 and SEC6-2, a5be8edb SEC6-3 to SEC6-5, 5f74977c SEC6-6, d9225520 SEC6-7 and SEC6-8 and the

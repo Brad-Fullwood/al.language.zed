@@ -1,10 +1,10 @@
 //! Consistency guards for binary resolution, packaging, and settings.
 //!
-//! Step 4 of `find_or_download_binary` calls `latest_github_release(GITHUB_REPO, …)`.
-//! If `GITHUB_REPO` does not name the repository that actually publishes the
-//! release assets, the GitHub API returns "repository not found" and a fresh
-//! user's language server never spawns (they have no user-config path, no
-//! cache, and no `al-lsp` on `$PATH` on first install).
+//! The release step of `find_or_download_binary` calls
+//! `zed::github_release_by_tag_name(GITHUB_REPO, &tag)`. If `GITHUB_REPO` does
+//! not name the repository that publishes the release assets, the GitHub API
+//! returns "repository not found". A fresh install has no on-disk copy, so the
+//! language server never spawns.
 //!
 //! The tests pin release lookup to the manifest so code and packaging cannot
 //! drift independently.
@@ -48,7 +48,7 @@ fn github_repo_matches_extension_toml() {
     assert_eq!(
         GITHUB_REPO, slug,
         "GITHUB_REPO ({GITHUB_REPO}) must match extension.toml repository slug ({slug}); \
-         a mismatch makes latest_github_release() fail and the LSP never downloads for new users"
+         a mismatch makes github_release_by_tag_name() fail and the LSP never downloads for new users"
     );
 }
 
@@ -651,6 +651,37 @@ fn debug_snippet_fields_are_declared_by_debug_schema() {
     }
 }
 
+/// A cloud debug snippet that names a Sandbox or Production environment must
+/// also carry a tenant, or the launch configuration cannot target it.
+#[test]
+fn cloud_debug_snippets_carry_a_tenant() {
+    let snippets: serde_json::Value = serde_json::from_str(include_str!("../snippets/json.json"))
+        .expect("snippets/json.json must be valid JSON");
+    let mut checked = 0;
+    for (snippet_name, snippet) in snippets
+        .as_object()
+        .expect("snippets/json.json must contain a snippet object")
+    {
+        let body = snippet["body"]
+            .as_array()
+            .unwrap_or_else(|| panic!("snippet {snippet_name:?} must have a body array"));
+        let text = body
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        if !(text.contains("Sandbox") || text.contains("Production")) {
+            continue;
+        }
+        checked += 1;
+        assert!(
+            text.contains("\"tenant\""),
+            "cloud debug snippet {snippet_name:?} names an environment but has no tenant"
+        );
+    }
+    assert!(checked > 0, "no cloud debug snippets were checked");
+}
+
 /// README.md describes the language package's task list in prose. The tasks
 /// were removed and later restored (commit 3bc8a90e), and one of the two
 /// passages that describe them was left saying the package ships none, so a
@@ -827,6 +858,23 @@ fn binaries_are_verified_before_they_are_made_executable() {
         verify < make_executable,
         "src/lib.rs calls make_file_executable before verify_extracted_binaries, \
          so a binary whose digest does not match is made executable anyway"
+    );
+}
+
+/// The staged release moves into place only after its binaries are executable.
+/// Moving it first would install binaries that were never made executable.
+#[test]
+fn the_release_is_committed_after_it_is_made_executable() {
+    let lib = include_str!("lib.rs");
+    let make_executable = lib
+        .find("zed::make_file_executable(path)")
+        .expect("download_matching_release must make the binaries executable");
+    let commit = lib
+        .find("commit_release_dir(&")
+        .expect("download_matching_release must commit the staged release");
+    assert!(
+        make_executable < commit,
+        "src/lib.rs commits the staged release before making its binaries executable"
     );
 }
 

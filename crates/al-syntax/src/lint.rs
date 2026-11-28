@@ -103,41 +103,73 @@ pub fn lint_rules() -> &'static [LintRuleInfo] {
 /// Run all native lint rules on the parsed tree with default config.
 pub fn lint(tree: &Tree, text: &str) -> Vec<LintDiagnostic> {
     let mut diagnostics = Vec::new();
-    lint_find_in_loop(tree, text, &mut diagnostics);
-    lint_missing_data_classification(tree, text, &mut diagnostics);
-    lint_missing_set_load_fields(tree, text, &mut diagnostics);
-    lint_page_control_properties(tree, text, &mut diagnostics);
+    let lines = LineTable::new(text);
+    lint_find_in_loop(tree, &lines, &mut diagnostics);
+    lint_missing_data_classification(tree, &lines, &mut diagnostics);
+    lint_missing_set_load_fields(tree, &lines, &mut diagnostics);
+    lint_page_control_properties(tree, &lines, &mut diagnostics);
     lint_unused_local_variables(tree, text, &mut diagnostics);
     diagnostics
 }
 
-/// Build a `tree_sitter::Range` covering an entire source line, given its
-/// 0-based row index. Byte offsets remain exact for LF, CRLF, and an unterminated
-/// final line.
-fn line_range(text: &str, line_idx: usize) -> Range {
-    let start_byte = text
-        .split_inclusive('\n')
-        .take(line_idx)
-        .map(str::len)
-        .sum::<usize>()
-        .min(text.len());
-    let remainder = &text[start_byte..];
-    let physical_len = remainder.find('\n').unwrap_or(remainder.len());
-    let content_len = remainder[..physical_len]
-        .strip_suffix('\r')
-        .map_or(physical_len, str::len);
-    let end_byte = start_byte + content_len;
-    Range {
-        start_byte,
-        end_byte,
-        start_point: Point {
-            row: line_idx,
-            column: 0,
-        },
-        end_point: Point {
-            row: line_idx,
-            column: content_len,
-        },
+/// Byte offset of every line start in a file, built once per lint run.
+struct LineTable<'a> {
+    text: &'a str,
+    starts: Vec<usize>,
+}
+
+impl<'a> LineTable<'a> {
+    fn new(text: &'a str) -> Self {
+        let mut starts = vec![0];
+        starts.extend(
+            text.bytes()
+                .enumerate()
+                .filter(|(_, byte)| *byte == b'\n')
+                .map(|(idx, _)| idx + 1),
+        );
+        Self { text, starts }
+    }
+
+    /// The range covering line `line_idx` (0-based), without its line ending.
+    /// Byte offsets stay exact for LF, CRLF and an unterminated final line.
+    fn line(&self, line_idx: usize) -> Range {
+        let start_byte = self
+            .starts
+            .get(line_idx)
+            .copied()
+            .unwrap_or(self.text.len())
+            .min(self.text.len());
+        let remainder = &self.text[start_byte..];
+        let physical_len = remainder.find('\n').unwrap_or(remainder.len());
+        let content_len = remainder[..physical_len]
+            .strip_suffix('\r')
+            .map_or(physical_len, str::len);
+        let end_byte = start_byte + content_len;
+        Range {
+            start_byte,
+            end_byte,
+            start_point: Point {
+                row: line_idx,
+                column: 0,
+            },
+            end_point: Point {
+                row: line_idx,
+                column: content_len,
+            },
+        }
+    }
+
+    /// The byte columns `start..end` of line `row`, as a range.
+    fn span(&self, row: usize, start: usize, end: usize) -> Range {
+        let line = self.line(row);
+        let width = line.end_byte - line.start_byte;
+        let (start, end) = (start.min(width), end.min(width));
+        Range {
+            start_byte: line.start_byte + start,
+            end_byte: line.start_byte + end,
+            start_point: Point { row, column: start },
+            end_point: Point { row, column: end },
+        }
     }
 }
 
@@ -177,16 +209,13 @@ fn mask_line(
     (out, scanner.ends_in_block_comment())
 }
 
-/// Like [`mask_non_code`], but keeps `"…"` quoted identifiers visible.
+/// Like `mask_non_code`, but keeps `"…"` quoted identifiers visible.
 ///
 /// The label scan in `symbols.rs` needs the *name* of a declaration like
 /// `"My Lbl": Label 'text';` while still masking `'…'` string contents and
 /// comments. The lexer reports both quote forms as string spans, so this
 /// variant distinguishes them by their opening quote (offset-preserving).
-pub(crate) fn mask_non_code_keep_quoted_identifiers(
-    line: &str,
-    in_block_comment: bool,
-) -> (String, bool) {
+pub fn mask_non_code_keep_quoted_identifiers(line: &str, in_block_comment: bool) -> (String, bool) {
     mask_line(line, in_block_comment, |span| {
         span.kind == crate::lexical::SpanKind::Code
             || (span.kind == crate::lexical::SpanKind::String && span.text.starts_with('"'))
@@ -220,15 +249,31 @@ fn opens_block(lower: &str) -> bool {
 ///
 /// Scans individual procedure and trigger nodes so loop state cannot leak
 /// across declarations.
-fn lint_find_in_loop(tree: &Tree, text: &str, out: &mut Vec<LintDiagnostic>) {
-    let source = text.as_bytes();
+/// True for `end else` and `end else Foo();`: a line that closes a block and
+/// continues the statement without opening a new block. `end else begin` is
+/// net neutral and handled as an ordinary line.
+fn closes_then_continues(lower: &str) -> bool {
+    (lower.starts_with("end ") || lower.starts_with("end\t"))
+        && !lower.ends_with(" begin")
+        && !lower.ends_with("\tbegin")
+}
+
+/// True when `word` appears in `lower` as a whole identifier.
+fn has_word(lower: &str, word: &str) -> bool {
+    lower
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|token| token == word)
+}
+
+fn lint_find_in_loop(tree: &Tree, lines: &LineTable<'_>, out: &mut Vec<LintDiagnostic>) {
+    let source = lines.text.as_bytes();
     let root = tree.root_node();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
             if let Ok(proc_text) = node.utf8_text(source) {
                 let start_row = node.start_position().row;
-                scan_procedure_for_find_in_loop(text, proc_text, start_row, out);
+                scan_procedure_for_find_in_loop(lines, proc_text, start_row, out);
             }
             // Do not recurse into the procedure body: nested constructs are
             // already covered by scanning proc_text as a whole.
@@ -287,7 +332,7 @@ fn calls_method(line: &str, method: &str) -> bool {
 }
 
 fn scan_procedure_for_find_in_loop(
-    file_text: &str,
+    lines: &LineTable<'_>,
     proc_text: &str,
     proc_start_row: usize,
     out: &mut Vec<LintDiagnostic>,
@@ -309,7 +354,12 @@ fn scan_procedure_for_find_in_loop(
 
         if is_loop_start(&lower) {
             line_in_loop = true;
-            if lower == "repeat" || lower.starts_with("repeat ") {
+            if lower.starts_with("repeat ") && has_word(&lower, "until") {
+                // `repeat ... until x;` on one line opens and closes the loop.
+                if terminates_statement {
+                    drain_awaiting_bodies(&mut frames);
+                }
+            } else if lower == "repeat" || lower.starts_with("repeat ") {
                 frames.push(LoopFrame::Repeat);
             } else if lower.ends_with(" begin") || lower.ends_with("\tbegin") {
                 frames.push(LoopFrame::Body(1));
@@ -335,7 +385,9 @@ fn scan_procedure_for_find_in_loop(
                 // does not affect loop tracking (its `end` is ignored too).
                 Some(LoopFrame::Repeat) | None => {}
             }
-        } else if lower == "end;" || lower == "end" {
+        } else if lower == "end;" || lower == "end" || closes_then_continues(&lower) {
+            // `end else Foo();` runs its statement inside the open loops.
+            line_in_loop = closes_then_continues(&lower) && !frames.is_empty();
             let closes_loop_body = match frames.last_mut() {
                 Some(LoopFrame::Body(depth)) if *depth > 1 => {
                     *depth -= 1;
@@ -344,7 +396,14 @@ fn scan_procedure_for_find_in_loop(
                 Some(LoopFrame::Body(_)) => true,
                 Some(LoopFrame::AwaitingBody | LoopFrame::Repeat) | None => false,
             };
-            if closes_loop_body {
+            let continues = closes_then_continues(&lower);
+            if closes_loop_body && continues && !terminates_statement {
+                // `do if x then begin ... end else`: the `if` statement that
+                // forms the loop body goes on in its `else` branch.
+                if let Some(frame) = frames.last_mut() {
+                    *frame = LoopFrame::AwaitingBody;
+                }
+            } else if closes_loop_body {
                 // This `end` closes the loop body itself — pop the frame
                 // instead of leaving a zero-depth frame behind, which would
                 // keep the whole rest of the procedure "in a loop".
@@ -386,8 +445,8 @@ fn scan_procedure_for_find_in_loop(
                           FindSet()/repeat..until Next() = 0 instead."
                     .to_string(),
                 range: match call {
-                    Some(call) => span_range(file_text, line_idx, call.start, call.end),
-                    None => line_range(file_text, line_idx),
+                    Some(call) => lines.span(line_idx, call.start, call.end),
+                    None => lines.line(line_idx),
                 },
                 severity: LintSeverity::Warning,
             });
@@ -401,20 +460,23 @@ fn scan_procedure_for_find_in_loop(
 /// table or tableextension; a table-level default `DataClassification`
 /// (outside any `field(...) { }` block) does not suppress this per-field
 /// check.
-fn lint_missing_data_classification(tree: &Tree, text: &str, out: &mut Vec<LintDiagnostic>) {
-    let Some(obj_info) = crate::find_object_declaration(tree, text) else {
-        return;
-    };
-    if !matches!(
-        obj_info.kind.to_lowercase().as_str(),
-        "table" | "tableextension"
-    ) {
-        return;
+fn lint_missing_data_classification(
+    tree: &Tree,
+    lines: &LineTable<'_>,
+    out: &mut Vec<LintDiagnostic>,
+) {
+    let text = lines.text;
+    for object in objects_of_kind(tree, text, &["table", "tableextension"]) {
+        lint_object_data_classification(object, lines, out);
     }
+}
 
-    let Some(object) = first_object_declaration(tree.root_node()) else {
-        return;
-    };
+fn lint_object_data_classification(
+    object: tree_sitter::Node<'_>,
+    lines: &LineTable<'_>,
+    out: &mut Vec<LintDiagnostic>,
+) {
+    let text = lines.text;
     for section in collect_object_sections(object, text, &["field"]) {
         let is_calculated = section.properties.get("fieldclass").is_some_and(|value| {
             matches!(
@@ -427,7 +489,7 @@ fn lint_missing_data_classification(tree: &Tree, text: &str, out: &mut Vec<LintD
             out.push(LintDiagnostic {
                 code: "AL-NL002".to_string(),
                 message: "Table field has no DataClassification property.".to_string(),
-                range: line_range(text, row),
+                range: lines.line(row),
                 severity: LintSeverity::Warning,
             });
         }
@@ -485,26 +547,13 @@ fn method_calls(line: &str, method: &str) -> Vec<MethodCall> {
     calls
 }
 
-/// The byte columns `start..end` of line `row`, as a range.
-fn span_range(text: &str, row: usize, start: usize, end: usize) -> Range {
-    let line = line_range(text, row);
-    let width = line.end_byte - line.start_byte;
-    let (start, end) = (start.min(width), end.min(width));
-    Range {
-        start_byte: line.start_byte + start,
-        end_byte: line.start_byte + end,
-        start_point: Point { row, column: start },
-        end_point: Point { row, column: end },
-    }
-}
-
 /// AL-NL005: a record read without a preceding `SetLoadFields`.
 ///
 /// The rule is deliberately procedure-local and receiver-specific. It does not
 /// infer a call on one record variable from a call on another, and a
 /// `SetLoadFields` that appears after the read does not suppress the finding.
-fn lint_missing_set_load_fields(tree: &Tree, text: &str, out: &mut Vec<LintDiagnostic>) {
-    let source = text.as_bytes();
+fn lint_missing_set_load_fields(tree: &Tree, lines: &LineTable<'_>, out: &mut Vec<LintDiagnostic>) {
+    let source = lines.text.as_bytes();
     let root = tree.root_node();
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
@@ -546,8 +595,7 @@ fn lint_missing_set_load_fields(tree: &Tree, text: &str, out: &mut Vec<LintDiagn
                                      SetLoadFields call in this procedure.",
                                     call.receiver
                                 ),
-                                range: span_range(
-                                    text,
+                                range: lines.span(
                                     start_row + offset,
                                     column + call.start,
                                     column + call.end,
@@ -571,16 +619,28 @@ struct ObjectSection<'tree> {
     properties: BTreeMap<String, String>,
 }
 
-fn first_object_declaration(root: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
-    let mut stack = vec![root];
+/// Every `object_declaration` in the file whose object kind is one of `kinds`
+/// (lower case), in source order.
+fn objects_of_kind<'tree>(
+    tree: &'tree Tree,
+    text: &str,
+    kinds: &[&str],
+) -> Vec<tree_sitter::Node<'tree>> {
+    let mut objects = Vec::new();
+    let mut stack = vec![tree.root_node()];
     while let Some(node) = stack.pop() {
         if node.kind() == "object_declaration" {
-            return Some(node);
+            let kind = crate::navigation::object_declaration_info(node, text.as_bytes()).kind;
+            if kinds.contains(&kind.to_ascii_lowercase().as_str()) {
+                objects.push(node);
+            }
+            continue;
         }
         let mut cursor = node.walk();
         stack.extend(node.named_children(&mut cursor));
     }
-    None
+    objects.sort_by_key(tree_sitter::Node::start_byte);
+    objects
 }
 
 fn direct_properties(container: tree_sitter::Node<'_>, text: &str) -> BTreeMap<String, String> {
@@ -654,20 +714,19 @@ fn normalize_property_atom(value: &str) -> String {
 /// AL-NL006/7: page fields and actions must expose their application area and
 /// user-facing purpose. An object-level ApplicationArea satisfies AL-NL006 for
 /// all child controls, matching modern AL inheritance behavior.
-fn lint_page_control_properties(tree: &Tree, text: &str, out: &mut Vec<LintDiagnostic>) {
-    let Some(obj_info) = crate::find_object_declaration(tree, text) else {
-        return;
-    };
-    if !matches!(
-        obj_info.kind.to_ascii_lowercase().as_str(),
-        "page" | "pageextension" | "pagecustomization"
-    ) {
-        return;
+fn lint_page_control_properties(tree: &Tree, lines: &LineTable<'_>, out: &mut Vec<LintDiagnostic>) {
+    let text = lines.text;
+    for object in objects_of_kind(tree, text, &["page", "pageextension", "pagecustomization"]) {
+        lint_object_control_properties(object, lines, out);
     }
+}
 
-    let Some(object) = first_object_declaration(tree.root_node()) else {
-        return;
-    };
+fn lint_object_control_properties(
+    object: tree_sitter::Node<'_>,
+    lines: &LineTable<'_>,
+    out: &mut Vec<LintDiagnostic>,
+) {
+    let text = lines.text;
     let object_application_area = direct_properties(object, text).contains_key("applicationarea");
     for section in collect_object_sections(object, text, &["field", "action"]) {
         let row = section.node.start_position().row;
@@ -675,7 +734,7 @@ fn lint_page_control_properties(tree: &Tree, text: &str, out: &mut Vec<LintDiagn
             out.push(LintDiagnostic {
                 code: "AL-NL006".to_string(),
                 message: "Page field/action has no effective ApplicationArea.".to_string(),
-                range: line_range(text, row),
+                range: lines.line(row),
                 severity: LintSeverity::Warning,
             });
         }
@@ -683,7 +742,7 @@ fn lint_page_control_properties(tree: &Tree, text: &str, out: &mut Vec<LintDiagn
             out.push(LintDiagnostic {
                 code: "AL-NL007".to_string(),
                 message: format!("Page {} has no ToolTip.", section.keyword),
-                range: line_range(text, row),
+                range: lines.line(row),
                 severity: LintSeverity::Warning,
             });
         }
@@ -1605,7 +1664,7 @@ mod tests {
     #[test]
     fn line_ranges_are_exact_for_crlf_sources() {
         let source = "first\r\nsecond\r\nthird";
-        let range = line_range(source, 1);
+        let range = LineTable::new(source).line(1);
         assert_eq!(&source[range.start_byte..range.end_byte], "second");
         assert_eq!(range.start_point, Point { row: 1, column: 0 });
         assert_eq!(range.end_point, Point { row: 1, column: 6 });
@@ -1861,10 +1920,126 @@ mod tests {
         // `start_byte` is nonzero, so a wrong sign inflates the clamp
         // instead of shrinking it to the line's real length.
         let text = "abc\ndefgh\n";
-        let range = span_range(text, 1, 1, 100);
+        let range = LineTable::new(text).span(1, 1, 100);
         assert_eq!(
             range.end_point.column, 5,
             "end clamps to the line's own width"
         );
+    }
+
+    #[test]
+    fn end_else_statement_does_not_leak_depth() {
+        let src = r#"codeunit 50100 C
+{
+    procedure P()
+    var
+        i: Integer;
+        Rec: Record Customer;
+    begin
+        for i := 1 to 3 do begin
+            if i = 1 then begin
+                A();
+            end else
+                B();
+        end;
+        Rec.FindFirst();
+    end;
+}"#;
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert!(
+            !diags.iter().any(|d| d.code == "AL-NL001"),
+            "FindFirst after the loop is not in a loop: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn end_else_branch_of_single_statement_loop_body_stays_in_loop() {
+        let src = r#"codeunit 50100 C
+{
+    procedure P()
+    var
+        i: Integer;
+        Rec: Record Customer;
+    begin
+        for i := 1 to 3 do
+            if i = 1 then begin
+                A();
+            end else
+                Rec.FindFirst();
+        Rec.FindLast();
+    end;
+}"#;
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        let rows: Vec<usize> = diags
+            .iter()
+            .filter(|d| d.code == "AL-NL001")
+            .map(|d| d.range.start_point.row)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![11],
+            "only the else branch is in the loop: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn single_line_repeat_until_closes() {
+        let src = r#"codeunit 50100 C
+{
+    procedure P()
+    var
+        Rec: Record Customer;
+    begin
+        repeat Rec.Next() until Rec.Next() = 0;
+        Rec.FindFirst();
+    end;
+}"#;
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        assert!(
+            !diags.iter().any(|d| d.code == "AL-NL001"),
+            "FindFirst after a one-line repeat is not in a loop: {diags:?}"
+        );
+    }
+
+    #[test]
+    fn data_classification_checks_second_object() {
+        let src = r#"codeunit 50100 Helper
+{
+}
+
+table 50101 "Second Table"
+{
+    fields
+    {
+        field(1; "No."; Code[20])
+        {
+        }
+    }
+}
+
+page 50102 "Second Page"
+{
+    layout
+    {
+        area(Content)
+        {
+            field(No; Rec."No.")
+            {
+            }
+        }
+    }
+}"#;
+        let result = AlParser::parse_quick(src);
+        let diags = lint(&result.tree, src);
+        let codes: Vec<&str> = diags.iter().map(|d| d.code.as_str()).collect();
+        assert!(
+            codes.contains(&"AL-NL002"),
+            "table field checked: {diags:?}"
+        );
+        assert!(codes.contains(&"AL-NL006"), "page field checked: {diags:?}");
+        assert!(codes.contains(&"AL-NL007"), "page field checked: {diags:?}");
     }
 }

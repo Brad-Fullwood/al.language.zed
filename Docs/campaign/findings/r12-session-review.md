@@ -1,5 +1,7 @@
 # R12 review: merges since the round 11 review
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Scope: `git diff 4c429ac5..7b607e40` (56 files, about 6,500 added lines, twelve merges in
 `git log --merges 4c429ac5..7b607e40`). That covers the round 10 fixes (merges 9a364d46,
 19a7cae9, 85426311, statuses in `r10-session-review.md`), the docs re-check 3 (aaa3ca37,

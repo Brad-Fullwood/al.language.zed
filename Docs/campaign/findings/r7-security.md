@@ -1,5 +1,7 @@
 # Round 7 security review: the round 6 fixes and the open items behind them
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Reviewer brief: the seventh security round. Re-read each SEC6 fix with its test and run a scenario the test does not cover, follow SEC6-6 through every path parameter and SEC6-8 through every text renderer, settle the open items earlier rounds queued in `Docs/campaign/STATE.md`, and read the daemon socket and handshake and the plugin's SessionStart download again. Review only, no code changes.
 
 Scope: the tree at `73ed8751` on `campaign/2026-09-21`, with weight on `crates/al-project/src/trust.rs` and `analyzers.rs`, `crates/al-lsp/src/server/daemon` (`containment.rs`, the `dispatch_table!` registry, the dispatchers that read a path), `crates/al-explorer/src/cli`, `crates/al-protocol`, and `plugin/hooks` and `plugin/scripts`. The fixes read are 283b8415 (SEC6-1, SEC6-2), a5be8edb (SEC6-3 to SEC6-5), 5f74977c (SEC6-6) and d9225520 (SEC6-7, SEC6-8, the dotnet advisory file name).

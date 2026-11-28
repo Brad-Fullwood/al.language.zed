@@ -13,114 +13,6 @@ use crate::{
     App, MAX_INPUT_LEN, advance_list_selection, input_focused_style, truncate_with_ellipsis,
 };
 
-/// Aggregate per-node self time (in **microseconds**) from a profile's
-/// `samples` + `timeDeltas` arrays.
-///
-/// Canonical implementation: `al_bc::profiling::aggregate_self_time_us`
-/// (`crates/al-bc/src/profiling.rs`). This is a deliberate, behaviour-identical
-/// port — al-explorer is a pure TUI/CLI crate and pulling in `al-bc` would drag
-/// the whole reqwest + tokio networking stack in just to reuse one synchronous
-/// function, and al-bc's only public entry point (`analyze_profile`) would
-/// discard this view's TUI safeguards (node cap, BOM strip, GC filter). Keep the
-/// aggregation convention here in lock-step with al-bc.
-///
-/// Convention: the `i`-th recorded sample (`samples[i]`, a node id) is charged
-/// the `i`-th time delta (`timeDeltas[i]`, microseconds); deltas are summed per
-/// sampled node id so self time reflects on-CPU time, not sample count. The two
-/// arrays are expected to be equal length; if a malformed profile gives them
-/// different lengths we iterate the common prefix (`min(len)`) so we can't panic.
-///
-/// Returns an empty map when either array is absent or empty, in which case the
-/// caller falls back to the legacy "1 ms per hit" estimate.
-fn aggregate_self_time_us(json: &serde_json::Value) -> std::collections::HashMap<u64, f64> {
-    let mut by_node: std::collections::HashMap<u64, f64> = std::collections::HashMap::new();
-
-    let (samples, deltas) = match (
-        json.get("samples").and_then(|v| v.as_array()),
-        json.get("timeDeltas").and_then(|v| v.as_array()),
-    ) {
-        (Some(s), Some(d)) if !s.is_empty() && !d.is_empty() => (s, d),
-        _ => return by_node,
-    };
-
-    // Mismatched lengths => malformed profile; aggregate over the common prefix
-    // so we never index out of bounds (matches al-bc, which logs a warning here;
-    // this view has no tracing subscriber so we degrade silently).
-    let n = samples.len().min(deltas.len());
-    for i in 0..n {
-        let Some(node_id) = samples[i].as_u64() else {
-            continue;
-        };
-        // timeDeltas are integer microseconds in practice; read as f64 defensively.
-        let delta_us = deltas[i].as_f64().unwrap_or(0.0);
-        *by_node.entry(node_id).or_insert(0.0) += delta_us;
-    }
-
-    by_node
-}
-
-/// Roll up `total_time_ms` over the call tree: `total(node) = self(node) + Σ
-/// total(child)` via an iterative post-order DFS (cycle/dangling-safe). Ported
-/// from `al_bc::profiling::aggregate_total_time_ms` — see that canonical
-/// copy; kept here to avoid pulling the heavy al-bc (reqwest/tokio) dep into this
-/// TUI crate. `self_ms_by_node` must be in milliseconds and cover every node.
-fn aggregate_total_time_ms(
-    nodes: &[serde_json::Value],
-    self_ms_by_node: &std::collections::HashMap<u64, f64>,
-) -> std::collections::HashMap<u64, f64> {
-    use std::collections::{HashMap, HashSet};
-    let mut children: HashMap<u64, Vec<u64>> = HashMap::new();
-    let mut order: Vec<u64> = Vec::with_capacity(nodes.len());
-    for node in nodes {
-        let Some(id) = node.get("id").and_then(|v| v.as_u64()) else {
-            continue;
-        };
-        order.push(id);
-        let kids: Vec<u64> = node
-            .get("children")
-            .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|c| c.as_u64()).collect())
-            .unwrap_or_default();
-        children.entry(id).or_default().extend(kids);
-    }
-    let mut total: HashMap<u64, f64> = HashMap::new();
-    for &start in &order {
-        if total.contains_key(&start) {
-            continue;
-        }
-        let mut stack: Vec<(u64, bool)> = vec![(start, false)];
-        let mut on_path: HashSet<u64> = HashSet::new();
-        while let Some((id, expanded)) = stack.pop() {
-            if expanded {
-                on_path.remove(&id);
-                let mut sum = self_ms_by_node.get(&id).copied().unwrap_or(0.0);
-                if let Some(kids) = children.get(&id) {
-                    for k in kids {
-                        if let Some(t) = total.get(k) {
-                            sum += *t;
-                        }
-                    }
-                }
-                total.insert(id, sum);
-            } else {
-                if total.contains_key(&id) || on_path.contains(&id) {
-                    continue;
-                }
-                on_path.insert(id);
-                stack.push((id, true));
-                if let Some(kids) = children.get(&id) {
-                    for &k in kids {
-                        if !total.contains_key(&k) && !on_path.contains(&k) {
-                            stack.push((k, false));
-                        }
-                    }
-                }
-            }
-        }
-    }
-    total
-}
-
 #[derive(Debug, Clone)]
 struct HotspotRow {
     procedure: String,
@@ -228,29 +120,10 @@ impl ProfilerView {
             &nodes[..]
         };
 
-        // Accurate self time: sum each node's sampled `timeDeltas` (µs). Empty
-        // when the profile carries no `samples`/`timeDeltas`, in which case we
-        // fall back to the legacy 1 ms-per-hit estimate below. Same convention
-        // as al-bc — see `aggregate_self_time_us` above.
-        let self_time_by_node = aggregate_self_time_us(&json);
-        let have_time = !self_time_by_node.is_empty();
-
-        // Per-node self-time in ms over ALL nodes (incl. root/idle/filtered and
-        // hitCount==0), so the call-tree roll-up for total_time_ms is correct
-        // even when a child is hidden from the displayed rows.
-        let self_ms_by_node: std::collections::HashMap<u64, f64> = nodes
-            .iter()
-            .filter_map(|n| {
-                let id = n.get("id").and_then(|v| v.as_u64())?;
-                let ms = if have_time {
-                    self_time_by_node.get(&id).copied().unwrap_or(0.0) / 1000.0
-                } else {
-                    n.get("hitCount").and_then(|v| v.as_u64()).unwrap_or(0) as f64
-                };
-                Some((id, ms))
-            })
-            .collect();
-        let total_ms_by_node = aggregate_total_time_ms(nodes, &self_ms_by_node);
+        // Self and total times for every node, including the root and idle nodes
+        // the display skips, so each total rolls up its whole call tree. The CLI
+        // analyser calls the same function.
+        let times = al_types::profile_timing::node_times(&json, nodes);
 
         let mut rows: Vec<HotspotRow> = Vec::new();
         for node in nodes {
@@ -278,29 +151,12 @@ impl ProfilerView {
                 continue;
             }
 
-            // Self time: aggregate this node's sampled `timeDeltas` (µs -> ms),
-            // looked up by node id. hitCount alone is only the number of times
-            // the sampler caught this node on top of the stack — accurate as ms
-            // only when the sampling interval is exactly 1 ms. We fall back to
-            // that legacy estimate only when the profile carries no
-            // samples/timeDeltas to aggregate.
-            let self_time_ms = if have_time {
-                node_id
-                    .and_then(|id| self_time_by_node.get(&id).copied())
-                    .unwrap_or(0.0)
-                    / 1000.0
-            } else {
-                hit_count as f64
-            };
+            let node_time = node_id.and_then(|id| times.get(&id).copied());
             rows.push(HotspotRow {
                 procedure: function_name,
                 object: url,
-                self_time_ms,
-                // Total = self + Σ descendants (call-tree roll-up), falling
-                // back to self-time for id-less nodes not in the tree.
-                total_time_ms: node_id
-                    .and_then(|id| total_ms_by_node.get(&id).copied())
-                    .unwrap_or(self_time_ms),
+                self_time_ms: node_time.map_or(0.0, |t| t.self_ms),
+                total_time_ms: node_time.map_or(0.0, |t| t.total_ms),
                 hit_count,
             });
         }
@@ -550,19 +406,22 @@ mod tests {
 
     #[test]
     fn time_based_self_time_outranks_hit_count() {
-        // "Fast" is sampled often (10 hits) but each sample is cheap (100 µs =>
-        // 1 ms total). "Slow" is sampled rarely (3 hits) but each sample is
-        // expensive (5000 µs => 15 ms total). A hit-count ranking would put
-        // Fast first; an accurate timeDeltas-based ranking must put Slow first.
+        // "Fast" is sampled often (10 hits) but each sample is cheap (1000 µs
+        // inclusive => 1 ms total). "Slow" is sampled rarely (3 hits) but each
+        // sample is expensive (15000 µs => 15 ms total). A hit-count ranking
+        // would put Fast first; the sampleExecutionTimes ranking must put Slow first.
         let mut samples: Vec<u64> = Vec::new();
         let mut time_deltas: Vec<u64> = Vec::new();
+        let mut execution_times: Vec<u64> = Vec::new();
         for _ in 0..10 {
             samples.push(2);
             time_deltas.push(100);
+            execution_times.push(1000);
         }
         for _ in 0..3 {
             samples.push(3);
             time_deltas.push(5000);
+            execution_times.push(15000);
         }
 
         let profile = serde_json::json!({
@@ -575,6 +434,7 @@ mod tests {
             ],
             "samples": samples,
             "timeDeltas": time_deltas,
+            "sampleExecutionTimes": execution_times,
         });
 
         let view = load_view(&profile);
@@ -591,9 +451,9 @@ mod tests {
 
     #[test]
     fn mismatched_samples_and_time_deltas_lengths_handled() {
-        // samples has 4 entries, timeDeltas only 2 — a malformed profile. The
-        // aggregation must iterate the common prefix (min len = 2) without
-        // panicking: node 2 is charged the two 3000 µs deltas => 6 ms.
+        // samples has 4 entries, sampleExecutionTimes only 2: a malformed profile.
+        // node_times must use the common prefix (length 2) without panicking, and
+        // node 2 takes its last inclusive time, 6000 µs => 6 ms.
         let profile = serde_json::json!({
             "startTime": 0.0,
             "endTime": 1_000_000.0,
@@ -602,6 +462,7 @@ mod tests {
             ],
             "samples": [2u64, 2u64, 2u64, 2u64],
             "timeDeltas": [3000u64, 3000u64],
+            "sampleExecutionTimes": [6000u64, 6000u64],
         });
 
         let view = load_view(&profile);
@@ -644,6 +505,7 @@ mod tests {
             ],
             "samples": [2u64, 3u64],
             "timeDeltas": [1000u64, 4000u64],
+            "sampleExecutionTimes": [5000u64, 4000u64],
         });
 
         let view = load_view(&profile);
@@ -669,5 +531,37 @@ mod tests {
             "B is a leaf: {}",
             b.total_time_ms
         );
+    }
+
+    #[test]
+    fn tui_matches_cli_on_generator_profile() {
+        // The profile from al-bc's `generator_profile` fixture. A's inclusive time
+        // is 8 ms and its child B is 3 ms, so A self is 5 ms. B is a leaf, 3 ms.
+        let profile = serde_json::json!({
+            "startTime": 0,
+            "endTime": 10000,
+            "nodes": [
+                { "id": 1, "callFrame": { "functionName": "(root)", "url": "" }, "hitCount": 0, "children": [2] },
+                { "id": 2, "callFrame": { "functionName": "A", "url": "a.al" }, "hitCount": 2, "children": [3] },
+                { "id": 3, "callFrame": { "functionName": "B", "url": "b.al" }, "hitCount": 3, "children": [] }
+            ],
+            "samples": [1, 2, 3],
+            "timeDeltas": [10000, 2000, 5000],
+            "sampleExecutionTimes": [10000, 8000, 3000]
+        });
+
+        let view = load_view(&profile);
+        let a = view
+            .hotspots
+            .iter()
+            .find(|h| h.procedure == "A")
+            .expect("A");
+        let b = view
+            .hotspots
+            .iter()
+            .find(|h| h.procedure == "B")
+            .expect("B");
+        assert_eq!(a.self_time_ms, 5.0);
+        assert_eq!(b.self_time_ms, 3.0);
     }
 }

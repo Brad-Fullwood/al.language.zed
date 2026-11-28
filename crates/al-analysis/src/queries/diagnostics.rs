@@ -133,11 +133,10 @@ pub fn syntax_diagnostics_at_root(
     let mut diagnostics = collect_diagnostics_from_tree(&tree, &text, config);
     if let Ok(path) = uri.to_file_path() {
         diagnostics.extend(
-            native_workspace_diagnostics_at_root(workspace, config, project_root)
-                .into_iter()
-                .filter_map(|(finding_path, diagnostic)| {
-                    (finding_path == path).then_some(diagnostic)
-                }),
+            cached_pass(workspace, config, project_root, NativePass::Full)
+                .iter()
+                .filter(|(finding_path, _)| *finding_path == path)
+                .map(|(_, diagnostic)| diagnostic.clone()),
         );
     }
     diagnostics
@@ -160,11 +159,15 @@ pub fn syntax_diagnostics_fast_at_root(
     let mut diagnostics = collect_diagnostics_from_tree(&tree, &text, config);
     if let Ok(path) = uri.to_file_path() {
         diagnostics.extend(
-            native_workspace_diagnostics_impl(workspace, config, project_root, false)
-                .into_iter()
-                .filter_map(|(finding_path, diagnostic)| {
-                    (finding_path == path).then_some(diagnostic)
-                }),
+            cached_pass(
+                workspace,
+                config,
+                project_root,
+                NativePass::WithoutTransactions,
+            )
+            .iter()
+            .filter(|(finding_path, _)| *finding_path == path)
+            .map(|(_, diagnostic)| diagnostic.clone()),
         );
     }
     diagnostics
@@ -306,7 +309,113 @@ pub fn native_workspace_diagnostics_at_root(
     config: &AlConfig,
     project_root: Option<&std::path::Path>,
 ) -> Vec<(std::path::PathBuf, SyntaxDiagnostic)> {
-    native_workspace_diagnostics_impl(workspace, config, project_root, true)
+    cached_pass(workspace, config, project_root, NativePass::Full).to_vec()
+}
+
+/// Which workspace-wide pass a cached result holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativePass {
+    Full,
+    WithoutTransactions,
+    Transactions,
+}
+
+/// The inputs a cached pass result was computed from. The passes read the
+/// workspace, the configuration, the project root and its `.alarch.json`.
+/// The symbol index generation is left out: the call graph build inside the
+/// transaction pass rewrites the workspace entries and bumps it, while
+/// [`Workspace::generation_revision`] already moves on every package load.
+#[derive(Debug, PartialEq, Eq)]
+struct NativePassKey {
+    pass: NativePass,
+    generation: u64,
+    project_root: Option<std::path::PathBuf>,
+    arch_config_modified: Option<std::time::SystemTime>,
+    config: String,
+}
+
+type NativePassResult = std::sync::Arc<Vec<(std::path::PathBuf, SyntaxDiagnostic)>>;
+
+/// Cached pass results for one generation, stored in
+/// [`Workspace::native_diagnostics_cache`].
+#[derive(Default)]
+struct NativePassCache {
+    entries: std::sync::Mutex<Vec<(NativePassKey, NativePassResult)>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static NATIVE_PASS_RUNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Run a workspace-wide pass once per workspace generation. Publishing
+/// diagnostics for N files asks for the same pass N times, and each run walks
+/// the whole workspace.
+fn cached_pass(
+    workspace: &Workspace,
+    config: &AlConfig,
+    project_root: Option<&std::path::Path>,
+    pass: NativePass,
+) -> NativePassResult {
+    // Read the stamps before the pass runs, so an edit made during the run
+    // leaves the entry stale instead of labelling old results as new.
+    let key = NativePassKey {
+        pass,
+        generation: workspace.generation_revision(),
+        project_root: project_root.map(std::path::Path::to_path_buf),
+        arch_config_modified: project_root.and_then(|root| {
+            std::fs::metadata(root.join(".alarch.json"))
+                .and_then(|metadata| metadata.modified())
+                .ok()
+        }),
+        config: format!("{config:?}"),
+    };
+    let cache = {
+        let mut slot = workspace
+            .native_diagnostics_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let existing = slot
+            .clone()
+            .and_then(|any| any.downcast::<NativePassCache>().ok());
+        match existing {
+            Some(cache) => cache,
+            None => {
+                let cache = std::sync::Arc::new(NativePassCache::default());
+                *slot = Some(cache.clone());
+                cache
+            }
+        }
+    };
+    {
+        let mut entries = cache
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entries.retain(|(stored, _)| stored.generation == key.generation);
+        if let Some((_, result)) = entries.iter().find(|(stored, _)| *stored == key) {
+            return result.clone();
+        }
+    }
+    #[cfg(test)]
+    NATIVE_PASS_RUNS.with(|runs| runs.set(runs.get() + 1));
+    let result = std::sync::Arc::new(match pass {
+        NativePass::Full => {
+            native_workspace_diagnostics_impl(workspace, config, project_root, true)
+        }
+        NativePass::WithoutTransactions => {
+            native_workspace_diagnostics_impl(workspace, config, project_root, false)
+        }
+        NativePass::Transactions => native_transaction_diagnostics(workspace, config, project_root),
+    });
+    let mut entries = cache
+        .entries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !entries.iter().any(|(stored, _)| *stored == key) {
+        entries.push((key, result.clone()));
+    }
+    result
 }
 
 /// `AL-NL003` and `AL-NL004` from the resolved call graph.
@@ -377,9 +486,10 @@ pub fn transaction_diagnostics_for_uri(
     if !config.enable_native_lint {
         return Vec::new();
     }
-    native_transaction_diagnostics(workspace, config, project_root)
-        .into_iter()
-        .filter_map(|(finding_path, diagnostic)| (finding_path == path).then_some(diagnostic))
+    cached_pass(workspace, config, project_root, NativePass::Transactions)
+        .iter()
+        .filter(|(finding_path, _)| *finding_path == path)
+        .map(|(_, diagnostic)| diagnostic.clone())
         .collect()
 }
 
@@ -946,6 +1056,42 @@ mod tests {
         assert_eq!(
             duplicate.range.start.line, 4,
             "on codeunit \"Second\", not the table: {duplicate:?}"
+        );
+    }
+
+    #[test]
+    fn workspace_pass_runs_once_per_generation() {
+        let ws = Workspace::new();
+        let uris: Vec<Url> = ["A", "B", "C"]
+            .iter()
+            .map(|name| Url::parse(&format!("file:///proj/{name}.al")).unwrap())
+            .collect();
+        for (index, uri) in uris.iter().enumerate() {
+            ws.documents
+                .open(
+                    uri.clone(),
+                    format!("codeunit {} C{index} {{ }}", 50100 + index),
+                )
+                .unwrap();
+            let text = ws.documents.get_text(uri).unwrap();
+            al_workspace::on_document_change(&ws, uri, &text);
+        }
+        let config = AlConfig::default();
+
+        NATIVE_PASS_RUNS.with(|runs| runs.set(0));
+        for uri in &uris {
+            syntax_diagnostics_at_root(&ws, uri, &config, None);
+        }
+        assert_eq!(NATIVE_PASS_RUNS.with(std::cell::Cell::get), 1);
+
+        al_workspace::on_document_change(&ws, &uris[0], "codeunit 50100 C0 { }");
+        for uri in &uris {
+            syntax_diagnostics_at_root(&ws, uri, &config, None);
+        }
+        assert_eq!(
+            NATIVE_PASS_RUNS.with(std::cell::Cell::get),
+            2,
+            "an edit starts a new generation"
         );
     }
 

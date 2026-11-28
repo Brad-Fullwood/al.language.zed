@@ -16,6 +16,20 @@ pub fn build_debug_browser_url(
     conn_id: &str,
     onprem_web_base: Option<&str>,
 ) -> Result<String> {
+    build_debug_browser_url_with_affinity(config, conn_id, None, onprem_web_base)
+}
+
+/// [`build_debug_browser_url`] with the hub connection's
+/// `ApplicationGatewayAffinity` cookie value. Microsoft's URL carries every
+/// connection context entry: `connectioncontext`, `debuggingcontext`, `sk` and
+/// the affinity cookie when negotiate set one (HubBasedService.cs:77-93,
+/// HubBasedDebuggerService.cs:242-249, ClientStartup.cs:104-110).
+pub fn build_debug_browser_url_with_affinity(
+    config: &BcDebugConfig,
+    conn_id: &str,
+    affinity_cookie: Option<&str>,
+    onprem_web_base: Option<&str>,
+) -> Result<String> {
     let object_parameter = match config.startup_object_type.to_ascii_lowercase().as_str() {
         "table" => "table",
         "report" => "report",
@@ -60,6 +74,9 @@ pub fn build_debug_browser_url(
         query.append_pair("connectioncontext", conn_id);
         query.append_pair("debuggingcontext", conn_id);
         query.append_pair("sk", conn_id);
+        if let Some(affinity) = affinity_cookie.filter(|value| !value.is_empty()) {
+            query.append_pair("ApplicationGatewayAffinity", affinity);
+        }
     }
     Ok(url.to_string())
 }
@@ -109,6 +126,22 @@ mod tests {
             url.contains("page=22"),
             "startup object id must be present: {url}"
         );
+    }
+
+    #[test]
+    fn browser_url_carries_the_affinity_cookie_like_microsofts_connection_context() {
+        let config = BcDebugConfig {
+            environment_type: "Sandbox".to_string(),
+            tenant: "1b7a9471-d313-4aa4-99e8-7a6c762c8e7d".to_string(),
+            environment_name: Some("Sandbox".to_string()),
+            startup_object_id: 21,
+            ..Default::default()
+        };
+        let url = build_debug_browser_url_with_affinity(&config, "conn", Some("a1b2c3"), None)
+            .expect("valid cloud URL");
+        assert!(url.ends_with("&ApplicationGatewayAffinity=a1b2c3"), "{url}");
+        let without = build_debug_browser_url(&config, "conn", None).expect("valid cloud URL");
+        assert!(!without.contains("ApplicationGatewayAffinity"), "{without}");
     }
 
     #[test]

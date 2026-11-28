@@ -12,6 +12,11 @@
 #   pin, nothing is downloaded past the listing.
 #   A missing or mismatched al-lsp skips an eval case by name, with the
 #   reason al-explorer gave.
+#   al-bin.sh --resolve prints the default data directory when
+#   CLAUDE_PLUGIN_DATA is unset, and nothing (exit 127) when no install exists.
+#   An install in AL_BIN_DIR is found, so the fetch script makes no request.
+#   An archive whose al-lsp and al-explorer are mode 0644 installs both
+#   executable.
 #
 # Serves small archives over a local python3 -m http.server: curl in
 # al-fetch-release.sh restricts --proto to https/http, so a file:// URL
@@ -23,6 +28,7 @@ set -eu
 
 root="$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)"
 fetch_script="$root/plugin/scripts/al-fetch-release.sh"
+bin_script="$root/plugin/scripts/al-bin.sh"
 eval_runner="$root/plugin/evals/run.sh"
 
 fail() {
@@ -127,6 +133,11 @@ run_fetch() {
 # How many times the server has been asked for the archive so far.
 archive_requests() {
 	grep -cF "\"GET /$asset_name " "$work/server.log" || true
+}
+
+# How many requests the server has logged so far, for any path.
+request_count() {
+	grep -c '"GET /' "$work/server.log" || true
 }
 
 # $1 = directory to write al-explorer and al-lsp into, $2 = text that sets
@@ -430,6 +441,83 @@ JSON
 	pass "a mismatched al-lsp on PATH skips the eval case instead of reporting a wrong answer"
 }
 
+# ── al-bin.sh --resolve finds the default data directory ────────────
+# CLAUDE_PLUGIN_DATA unset: step 4 of al-bin.sh uses $HOME's default directory.
+# --resolve prints it, and prints nothing with exit 127 when no install exists.
+scenario_resolve_default_data_dir() {
+	local home="$work/home-default" bin_dir="$work/home-default/.claude/plugins/data/al-bc/bin" out rc
+	rm -rf "$home"
+	mkdir -p "$bin_dir"
+	printf '#!/bin/sh\nexit 0\n' >"$bin_dir/al-explorer"
+	printf '#!/bin/sh\nexit 0\n' >"$bin_dir/al-lsp"
+	chmod +x "$bin_dir/al-explorer" "$bin_dir/al-lsp"
+
+	out="$(env -u CLAUDE_PLUGIN_DATA -u AL_BIN_DIR -u CLAUDE_PLUGIN_ROOT \
+		HOME="$home" PATH="$test_path" bash "$bin_script" --resolve 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] || fail "resolve default: al-bin.sh --resolve exited $rc, expected 0. Output: $out"
+	[ "$out" = "$bin_dir" ] || fail "resolve default: al-bin.sh --resolve printed '$out', expected '$bin_dir'"
+
+	out="$(env -u CLAUDE_PLUGIN_DATA -u AL_BIN_DIR -u CLAUDE_PLUGIN_ROOT \
+		HOME="$work/home-empty" PATH="$test_path" bash "$bin_script" --resolve 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 127 ] || fail "resolve none: al-bin.sh --resolve exited $rc with nothing installed, expected 127. Output: $out"
+	[ -z "$out" ] || fail "resolve none: al-bin.sh --resolve printed output with nothing installed: $out"
+	pass "al-bin.sh --resolve prints the default data directory, and nothing when none exists"
+}
+
+# ── an install in AL_BIN_DIR needs no download ──────────────────────
+# al-bin.sh --resolve finds the install in AL_BIN_DIR, so al-fetch-release.sh
+# exits at step 1 with nothing on stdout and no request to the server. The
+# listing is pinned, so a script that did not stop there would make a request.
+scenario_resolved_by_bin_dir() {
+	local stubs="$work/stubs-bin-dir" data="$work/data-bin-dir" pin out err rc before
+	rm -rf "$stubs" "$data"
+	mkdir -p "$stubs"
+	printf '#!/bin/sh\nexit 0\n' >"$stubs/al-explorer"
+	printf '#!/bin/sh\nexit 0\n' >"$stubs/al-lsp"
+	chmod +x "$stubs/al-explorer" "$stubs/al-lsp"
+	serve_release "$work/stage-bin-dir" resolved
+	pin="$(sha256_of "$serve_dir/binary-checksums.txt")"
+	before="$(request_count)"
+
+	out="$(env PATH="$test_path" AL_BIN_DIR="$stubs" CLAUDE_PLUGIN_DATA="$data" \
+		AL_RELEASE_BASE_URL="$base_url" AL_ALLOW_INSECURE_RELEASE_URL=1 \
+		AL_PIN_CHECKSUMS_SHA256="$pin" bash "$fetch_script" 2>"$work/bin-dir.err")" && rc=0 || rc=$?
+	err="$(cat "$work/bin-dir.err")"
+	[ "$rc" -eq 0 ] || fail "AL_BIN_DIR: al-fetch-release.sh exited $rc, its contract is always 0. Stderr: $err"
+	[ -z "$out" ] || fail "AL_BIN_DIR: a complete install was reported on stdout: $out"
+	[ "$(request_count)" = "$before" ] ||
+		fail "AL_BIN_DIR: the server was asked for a file although AL_BIN_DIR holds both binaries"
+	[ ! -d "$data/bin" ] || fail "AL_BIN_DIR: something was installed into $data/bin"
+	pass "a complete install in AL_BIN_DIR is found by al-bin.sh, so nothing is downloaded"
+}
+
+# ── an archive with mode 0644 binaries installs them executable ─────
+# have_pair tests -x, so the chmod has to run before it. A verified archive
+# whose al-explorer and al-lsp are mode 0644 must still be installed.
+scenario_archive_mode_0644() {
+	local stage="$work/stage-mode" data="$work/data-mode" out rc
+	rm -rf "$stage" "$data"
+	mkdir -p "$stage"
+	printf '#!/bin/sh\necho "explorer mode"\n' >"$stage/al-explorer"
+	printf '#!/bin/sh\necho "lsp mode"\n' >"$stage/al-lsp"
+	chmod 0644 "$stage/al-explorer" "$stage/al-lsp"
+	(cd "$stage" && tar -czf "$serve_dir/$asset_name" al-explorer al-lsp)
+	{
+		printf '%s  %s/al-explorer\n' "$(sha256_of "$stage/al-explorer")" "$asset_name"
+		printf '%s  %s/al-lsp\n' "$(sha256_of "$stage/al-lsp")" "$asset_name"
+	} >"$serve_dir/binary-checksums.txt"
+
+	out="$(run_fetch "$data" 2>&1)" && rc=0 || rc=$?
+	[ "$rc" -eq 0 ] || fail "mode 0644: al-fetch-release.sh exited $rc, its contract is always 0. Output: $out"
+	printf '%s\n' "$out" | grep -qF "installed al-lsp and al-explorer" ||
+		fail "mode 0644: expected the install to be reported. Output: $out"
+	[ -x "$data/bin/al-explorer" ] && [ -x "$data/bin/al-lsp" ] ||
+		fail "mode 0644: al-explorer or al-lsp is not executable in $data/bin. Output: $out"
+	[ "$("$data/bin/al-lsp")" = "lsp mode" ] ||
+		fail "mode 0644: the installed al-lsp did not run. Output: $out"
+	pass "an archive whose al-lsp and al-explorer are mode 0644 installs both executable"
+}
+
 scenario_symlink_member
 scenario_directory_member
 scenario_failed_install_step
@@ -438,5 +526,8 @@ scenario_unpinned_listing
 scenario_replaced_release
 scenario_missing_al_lsp_eval
 scenario_mismatched_al_lsp_eval
+scenario_resolve_default_data_dir
+scenario_resolved_by_bin_dir
+scenario_archive_mode_0644
 
 printf 'al-fetch-release-test: all scenarios passed\n'

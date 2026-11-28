@@ -88,9 +88,23 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
 
     match cmd {
         "status" => {
+            // An optional `tenant` names one tenant. The match ignores case. A
+            // tenant the project does not configure gets one unconfigured entry.
+            let filter = params
+                .get("tenant")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
             let tenants = get_project_tenants(workspace);
+            let selected: Vec<String> = match filter {
+                Some(wanted) => tenants
+                    .into_iter()
+                    .filter(|t| t.eq_ignore_ascii_case(wanted))
+                    .collect(),
+                None => tenants,
+            };
             let mut statuses = Vec::new();
-            for tenant in &tenants {
+            for tenant in &selected {
                 // Keyring-aware: cached_token_expiry checks the OS keyring first,
                 // then the legacy file, so status is correct after a token has
                 // migrated off plaintext disk.
@@ -102,6 +116,7 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
                             .unwrap_or(0);
                         statuses.push(serde_json::json!({
                             "tenant": tenant,
+                            "configured": true,
                             "authenticated": expires_at > now + 60,
                             "expiresAt": expires_at,
                             "expired": expires_at <= now + 60,
@@ -110,10 +125,18 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
                     None => {
                         statuses.push(serde_json::json!({
                             "tenant": tenant,
+                            "configured": true,
                             "authenticated": false,
                         }));
                     }
                 }
+            }
+            if let (Some(wanted), true) = (filter, selected.is_empty()) {
+                statuses.push(serde_json::json!({
+                    "tenant": wanted,
+                    "authenticated": false,
+                    "configured": false,
+                }));
             }
             Response {
                 id,
@@ -145,23 +168,51 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
             }
         }
         _ => {
-            let tenant = params
+            let requested = params
                 .get("tenant")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| get_project_tenants(workspace).into_iter().next());
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
 
-            let Some(tenant) = tenant else {
+            let Some(requested) = requested else {
                 return Response {
                     id,
                     result: None,
                     error: Some(RpcError {
                         code: error_codes::INVALID_PARAMS,
-                        message: "No tenant found. Specify --tenant or configure a launch config with a tenant.".to_string(),
+                        message: al_bc::tenant_guard::missing_tenant_message("authenticate login"),
                     }),
                     ..Default::default()
                 };
             };
+
+            let Some((tenant, purpose)) = launch_tenant_for(workspace, requested).await else {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: format!(
+                            "no launch configuration in this project names tenant {requested}"
+                        ),
+                    }),
+                    ..Default::default()
+                };
+            };
+            if let Err(refusal) = al_bc::tenant_guard::guard_cloud_connection(
+                Some(tenant.as_str()),
+                purpose.as_deref(),
+            ) {
+                return Response {
+                    id,
+                    result: None,
+                    error: Some(RpcError {
+                        code: error_codes::INVALID_PARAMS,
+                        message: refusal.0,
+                    }),
+                    ..Default::default()
+                };
+            }
 
             let client = reqwest::Client::new();
             // SAFETY (concurrency): `std::sync::Mutex` is correct here only
@@ -178,7 +229,11 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
                 Ok(guard) => guard
                     .as_ref()
                     .map(|p| {
-                        al_symbols::oauth::AuthSettings::for_tenant(&p.server_configs, &tenant)
+                        al_symbols::oauth::AuthSettings::for_tenant(
+                            Some(&p.root),
+                            &p.server_configs,
+                            &tenant,
+                        )
                     })
                     .unwrap_or_else(|| Ok(Default::default())),
                 Err(_) => Ok(Default::default()),
@@ -278,6 +333,32 @@ fn server_failure(message: impl Into<String>) -> serde_json::Value {
     serde_json::json!({ "name": "launch configuration", "status": "error", "error": message.into() })
 }
 
+/// The configured tenant that `requested` names, ignoring case, with its
+/// purpose. None when no launch configuration names it.
+async fn launch_tenant_for(
+    workspace: &Workspace,
+    requested: &str,
+) -> Option<(String, Option<String>)> {
+    let guard = workspace.project.read().await;
+    let project = guard.as_ref()?;
+    project.server_configs.iter().find_map(|cfg| {
+        let tenant = cfg.tenant.as_deref()?;
+        tenant.eq_ignore_ascii_case(requested).then(|| {
+            let purpose = al_project::trust::BcTarget::from_launch(cfg).tenant_purpose;
+            (tenant.to_string(), purpose)
+        })
+    })
+}
+
+/// The insecure-TLS flag a download may use. The launch file's flag counts only
+/// when the credential check allows it, which it never does for a cloud tenant.
+pub(crate) fn effective_insecure_tls(
+    cfg: &al_bc::launch::BcServerConfig,
+    authorization: &al_project::trust::CredentialAuthorization,
+) -> bool {
+    cfg.accept_invalid_certs && authorization.may_accept_invalid_certs
+}
+
 /// Download one wave of dependencies, returning a per-dependency result entry.
 ///
 /// Extracted so the dispatcher can run it repeatedly: after each wave the
@@ -307,11 +388,11 @@ async fn download_dependency_wave(
         // The launch configuration ships in the repository, and the download
         // presents the user's Business Central credential to whatever server
         // it names.
-        if let Err(error) =
-            crate::server::daemon::debug_dispatch::authorize_launch_target(workspace, cfg)
-        {
-            return vec![server_failure(error)];
-        }
+        let authorization =
+            match crate::server::daemon::debug_dispatch::authorize_launch_target(workspace, cfg) {
+                Ok(authorization) => authorization,
+                Err(error) => return vec![server_failure(error)],
+            };
         let auth = match cfg.authentication {
             al_bc::launch::AuthMethod::Windows => al_symbols::bc_server::AuthMethod::Windows,
             al_bc::launch::AuthMethod::UserPassword => {
@@ -323,15 +404,21 @@ async fn download_dependency_wave(
             auth,
             cfg.tenant.clone(),
             std::sync::Arc::new(|msg| tracing::info!("{msg}")),
-            cfg.accept_invalid_certs,
+            effective_insecure_tls(cfg, &authorization),
         ) {
             Ok(c) => c,
             Err(e) => return vec![server_failure(e.to_string())],
         };
-        let client = match al_symbols::oauth::AuthSettings::from_launch_value(&cfg.debug_args) {
-            Ok(settings) => client.with_auth_settings(settings),
-            Err(e) => return vec![server_failure(e.to_string())],
-        };
+        let root = workspace
+            .project
+            .try_read()
+            .ok()
+            .and_then(|guard| guard.as_ref().map(|p| p.root.clone()));
+        let client =
+            match al_symbols::oauth::AuthSettings::for_launch(root.as_deref(), &cfg.debug_args) {
+                Ok(settings) => client.with_auth_settings(settings),
+                Err(e) => return vec![server_failure(e.to_string())],
+            };
         // A dependency with no dev-packages URL is a failure, not a skip:
         // dropping it printed "0 failed" for a cloud launch.json with no
         // `tenant` (publish-symbols-02).
@@ -856,6 +943,7 @@ fn refresh_workspace_after_download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use al_bc::tenant_guard::{scope_declaration, Declaration, TEST_DEMO_TENANT};
     use al_workspace::Workspace;
 
     // fixture source: audit run publish-symbols/nuget-run.json (Sandbox project,
@@ -1101,6 +1189,147 @@ mod tests {
         assert!(
             r.get("deleted").and_then(|v| v.as_bool()).is_some(),
             "`deleted` must be a bool"
+        );
+    }
+
+    /// One launch configuration naming `tenant`, with the launch file's flag.
+    fn launch_config(
+        environment_type: al_bc::launch::EnvironmentType,
+        tenant: &str,
+        accept_invalid_certs: bool,
+    ) -> al_bc::launch::BcServerConfig {
+        al_bc::launch::BcServerConfig {
+            name: "Sandbox".to_string(),
+            environment_type,
+            server: None,
+            server_instance: None,
+            port: None,
+            environment_name: Some("Sandbox".to_string()),
+            tenant: Some(tenant.to_string()),
+            authentication: al_bc::launch::AuthMethod::AAD,
+            accept_invalid_certs,
+            debug_args: serde_json::Value::Null,
+        }
+    }
+
+    /// A workspace whose project has one launch configuration, for `tenant`.
+    async fn workspace_with_tenant(root: &std::path::Path, tenant: &str) -> Workspace {
+        let ws = empty_ws();
+        let manifest = al_project::project::AppManifest {
+            id: "root-id".to_string(),
+            name: "Root App".to_string(),
+            publisher: "Tests".to_string(),
+            version: "1.0.0.0".to_string(),
+            dependencies: Vec::new(),
+            application: None,
+            platform: None,
+            runtime: None,
+        };
+        *ws.project.write().await = Some(al_project::project::AlProject {
+            root: root.to_path_buf(),
+            app_json: manifest,
+            packages_dir: root.join(".alpackages"),
+            packages: Vec::new(),
+            server_configs: vec![launch_config(
+                al_bc::launch::EnvironmentType::Sandbox,
+                tenant,
+                false,
+            )],
+            launch_config_error: None,
+        });
+        ws
+    }
+
+    #[test]
+    fn effective_insecure_tls_needs_both_flags() {
+        use al_bc::launch::EnvironmentType::{OnPrem, Sandbox};
+        let allowed = al_project::trust::CredentialAuthorization {
+            may_accept_invalid_certs: true,
+        };
+        let refused = al_project::trust::CredentialAuthorization {
+            may_accept_invalid_certs: false,
+        };
+        // A cloud tenant gets no credential permission, so its launch flag has no effect.
+        assert!(!effective_insecure_tls(
+            &launch_config(Sandbox, TEST_DEMO_TENANT, true),
+            &refused
+        ));
+        assert!(effective_insecure_tls(
+            &launch_config(OnPrem, TEST_DEMO_TENANT, true),
+            &allowed
+        ));
+        assert!(!effective_insecure_tls(
+            &launch_config(OnPrem, TEST_DEMO_TENANT, false),
+            &allowed
+        ));
+    }
+
+    #[tokio::test]
+    async fn status_with_tenant_lists_only_that_tenant() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = workspace_with_tenant(tmp.path(), TEST_DEMO_TENANT).await;
+
+        // Case and surrounding spaces do not stop the match.
+        let typed = format!("  {}  ", TEST_DEMO_TENANT.to_ascii_uppercase());
+        let resp = dispatch_authenticate(
+            &ws,
+            1,
+            &serde_json::json!({ "cmd": "status", "tenant": typed }),
+        )
+        .await;
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        let body = resp.result.expect("result");
+        let tenants = body["tenants"].as_array().expect("tenants array");
+        assert_eq!(tenants.len(), 1, "{tenants:?}");
+        assert_eq!(tenants[0]["tenant"], TEST_DEMO_TENANT);
+        assert_eq!(tenants[0]["configured"], true);
+
+        // A tenant the project does not configure gets one unconfigured entry.
+        let other = "00000000-0000-0000-0000-000000000000";
+        let resp = dispatch_authenticate(
+            &ws,
+            2,
+            &serde_json::json!({ "cmd": "status", "tenant": other }),
+        )
+        .await;
+        let body = resp.result.expect("result");
+        let tenants = body["tenants"].as_array().expect("tenants array");
+        assert_eq!(tenants.len(), 1, "{tenants:?}");
+        assert_eq!(tenants[0]["tenant"], other);
+        assert_eq!(tenants[0]["authenticated"], false);
+        assert_eq!(tenants[0]["configured"], false);
+    }
+
+    #[tokio::test]
+    async fn login_without_declared_tenant_is_refused() {
+        // The launch configuration names the tenant, but the CLI scope declares
+        // none, so the guard refuses before any token request.
+        al_bc::tenant_guard::install_test_registry();
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = workspace_with_tenant(tmp.path(), TEST_DEMO_TENANT).await;
+        let params = serde_json::json!({ "cmd": "login", "tenant": TEST_DEMO_TENANT });
+        let resp = scope_declaration(
+            Declaration::default(),
+            dispatch_authenticate(&ws, 3, &params),
+        )
+        .await;
+        let error = resp
+            .error
+            .expect("login with no declared tenant must be refused");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS);
+        assert!(error.message.contains("--tenant"), "{}", error.message);
+    }
+
+    #[tokio::test]
+    async fn login_without_tenant_is_refused() {
+        let ws = empty_ws();
+        let resp = dispatch_authenticate(&ws, 4, &serde_json::json!({ "cmd": "login" })).await;
+        let error = resp.error.expect("login with no tenant must be refused");
+        assert_eq!(error.code, error_codes::INVALID_PARAMS);
+        assert!(
+            error.message.contains("has no `tenant`"),
+            "{}",
+            error.message
         );
     }
 }

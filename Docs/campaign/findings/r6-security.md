@@ -1,5 +1,7 @@
 # Round 6 security review: surfaces the earlier rounds did not reach
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Reviewer brief: the sixth security round. Look at the surfaces that rounds 2 to 5 did not cover, or that changed since: the links inside trust inputs after the SEC5 fixes, the legacy proxy's key check, the persisted dependency source index, the local test runtime, daemon methods added since round 4, the Claude Code plugin scripts, and the text of refusal and error messages. Review only, no code changes. Round 11 (`campaign/r11-review`) re-checks the round 5 fixes, so this round does not repeat that.
 
 Scope: the tree at `14381c32` on `campaign/2026-09-21`, with weight on `crates/al-project`, `crates/al-lsp/src/server/dap_mode`, `crates/al-workspace`, `crates/al-analysis`, `crates/al-runtime`, `crates/al-test`, `crates/al-lsp/src/server/daemon` and `plugin/scripts`.

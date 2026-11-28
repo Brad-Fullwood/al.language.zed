@@ -1,5 +1,7 @@
 # Checkpoint: close of the campaign window, 2026-09-28
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 This adds to `CHECKPOINT-2026-09-27-close.md`. It records the last day of the window and where
 everything stands for a session that resumes after the watchdog timer has stopped. `STATE.md`
 holds the same facts in its working form and is the file to update from here on.

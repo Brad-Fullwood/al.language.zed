@@ -44,6 +44,26 @@ fn no_session(id: u64) -> Response {
     )
 }
 
+/// Runs the tenant guard on a cloud session before a follow-up reaches it.
+/// `start` checks the tenant once, but a later request can name another
+/// tenant, so each follow-up checks the session's own tenant again.
+fn guard_retained(config: &al_dap::dap::bc_debug::BcDebugConfig) -> Result<(), String> {
+    if config.environment_type.eq_ignore_ascii_case("OnPrem") {
+        return Ok(());
+    }
+    al_bc::tenant_guard::guard_cloud_connection(
+        Some(&config.tenant),
+        config.tenant_purpose.as_deref(),
+    )
+    .map(|_| ())
+    .map_err(|refusal| {
+        format!(
+            "{} This debug session is on tenant {}.",
+            refusal.0, config.tenant
+        )
+    })
+}
+
 fn missing_cmd(id: u64, msg: &str) -> Response {
     Response::error(id, al_protocol::jsonrpc::error_codes::INVALID_PARAMS, msg)
 }
@@ -235,18 +255,22 @@ pub(super) fn authorize_debug_target(
             "No active project, so no Business Central target can be authorised".to_string(),
         );
     };
-    let target = al_project::trust::BcTarget::from_debug(
-        &config.environment_type,
-        config.server.as_deref(),
-        config.port,
-    )
-    .with_tenant(Some(&config.tenant), config.tenant_purpose.as_deref());
+    let target = debug_target(config);
     al_project::trust::authorize_cached_credential(
         &project_root,
         &target,
         al_project::trust::CredentialKind::Bearer,
         source,
     )
+}
+
+fn debug_target(config: &al_dap::dap::bc_debug::BcDebugConfig) -> al_project::trust::BcTarget {
+    al_project::trust::BcTarget::from_debug(
+        &config.environment_type,
+        config.server.as_deref(),
+        config.port,
+    )
+    .with_tenant(Some(&config.tenant), config.tenant_purpose.as_deref())
 }
 
 /// The same decision for a launch configuration used outside the debugger:
@@ -344,6 +368,14 @@ pub(super) async fn acquire_bc_token(
             ));
         }
     }
+    // The cached path reaches the same check through authorize_debug_target above.
+    if !supplied.is_empty() && config.environment_type.eq_ignore_ascii_case("OnPrem") {
+        al_project::trust::check_transport(
+            &debug_target(config),
+            al_project::trust::CredentialKind::Bearer,
+        )
+        .map_err(|message| (error_codes::INVALID_PARAMS, message))?;
+    }
     if !spends_cached_credential {
         return Ok(supplied.to_string());
     }
@@ -355,12 +387,13 @@ pub(super) async fn acquire_bc_token(
     match al_bc::http_auth::access_token_from_env() {
         Ok(Some(token)) => Ok(token),
         Ok(None) => {
-            // A daemon request that carried no credentials has nobody to answer
+            // A daemon request that carried no access token (none at all, or
+            // only a username and password) has nobody to answer
             // a browser or device code prompt: it waited out the CLI's 30 s
             // deadline. Standard route checked: the OAuth cache
             // with Auto sign-in. It is kept for the cached token and its
             // refresh, and sign-in is switched off for this case.
-            let sign_in = if al_bc::http_auth::daemon_request_lacks_credentials() {
+            let sign_in = if al_bc::http_auth::daemon_request_lacks_access_token() {
                 al_symbols::oauth::SignInMode::CachedOnly
             } else {
                 al_symbols::oauth::SignInMode::Auto
@@ -371,6 +404,7 @@ pub(super) async fn acquire_bc_token(
                     || Ok(Default::default()),
                     |p| {
                         al_symbols::oauth::AuthSettings::for_tenant(
+                            Some(&p.root),
                             &p.server_configs,
                             &config.tenant,
                         )
@@ -481,7 +515,12 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
 
     let onprem_web_base =
         if config.launch_browser && config.environment_type.eq_ignore_ascii_case("OnPrem") {
+            if config.accept_invalid_certs {
+                al_bc::http_auth::warn_insecure_tls("debug web endpoint");
+            }
             let http = match reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(300))
                 .danger_accept_invalid_certs(config.accept_invalid_certs)
                 .build()
             {
@@ -513,9 +552,10 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
         Ok(session) => {
             let session_id = session.session_id().to_string();
             let browser_url = if launch_browser {
-                match al_dap::dap::native_dap::build_debug_browser_url(
+                match al_dap::dap::native_dap::build_debug_browser_url_with_affinity(
                     &session.config,
                     &session_id,
+                    session.session.affinity_cookie.as_deref(),
                     onprem_web_base.as_deref(),
                 ) {
                     Ok(url) => Some(url),
@@ -531,6 +571,7 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
                 None
             };
             *workspace.debug_session.lock().await = Some(session);
+            spawn_bind_pump(workspace.debug_session.clone(), session_id.clone());
             Response {
                 id,
                 result: Some(serde_json::json!({
@@ -553,6 +594,28 @@ async fn debug_start(workspace: &Workspace, id: u64, params: &serde_json::Value)
             ..Default::default()
         },
     }
+}
+
+/// Poll the session every 100 ms until BC's bind callback has been handled.
+/// The DAP adapter does the same from its event forwarder
+/// (`native_dap/events.rs`). The task ends when the session is stopped or
+/// replaced.
+fn spawn_bind_pump(
+    slot: std::sync::Arc<tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>>,
+    session_id: String,
+) {
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            let mut guard = slot.lock().await;
+            let Some(session) = guard.as_mut() else {
+                return;
+            };
+            if session.session_id() != session_id || session.bind_pending().await {
+                return;
+            }
+        }
+    });
 }
 
 async fn debug_breakpoint(workspace: &Workspace, id: u64, params: &serde_json::Value) -> Response {
@@ -652,6 +715,11 @@ async fn debug_breakpoint(workspace: &Workspace, id: u64, params: &serde_json::V
     };
 
     let mut guard = workspace.debug_session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        if let Err(message) = guard_retained(&session.config) {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    }
     match guard.as_mut() {
         None => no_session(id),
         Some(session) => {
@@ -690,6 +758,11 @@ async fn debug_state(workspace: &Workspace, id: u64, _params: &serde_json::Value
     use al_protocol::jsonrpc::error_codes;
 
     let mut guard = workspace.debug_session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        if let Err(message) = guard_retained(&session.config) {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    }
     match guard.as_mut() {
         None => no_session(id),
         Some(session) => match session.state().await {
@@ -711,6 +784,11 @@ async fn debug_stack(workspace: &Workspace, id: u64, _params: &serde_json::Value
     use al_protocol::jsonrpc::error_codes;
 
     let mut guard = workspace.debug_session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        if let Err(message) = guard_retained(&session.config) {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    }
     match guard.as_mut() {
         None => no_session(id),
         Some(session) => match session.stack().await {
@@ -747,6 +825,11 @@ async fn debug_variables(
         }
     };
     let mut guard = workspace.debug_session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        if let Err(message) = guard_retained(&session.config) {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    }
     match guard.as_mut() {
         None => no_session(id),
         Some(session) => {
@@ -796,6 +879,11 @@ async fn debug_expand(workspace: &Workspace, id: u64, params: &serde_json::Value
         }
     };
     let mut guard = workspace.debug_session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        if let Err(message) = guard_retained(&session.config) {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    }
     match guard.as_mut() {
         None => no_session(id),
         Some(session) => match session.expand(frame_id, path).await {
@@ -842,6 +930,11 @@ async fn debug_eval(workspace: &Workspace, id: u64, params: &serde_json::Value) 
     };
 
     let mut guard = workspace.debug_session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        if let Err(message) = guard_retained(&session.config) {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    }
     match guard.as_mut() {
         None => no_session(id),
         Some(session) => match session.eval_at(frame_id, &expr).await {
@@ -873,6 +966,11 @@ async fn debug_continue(workspace: &Workspace, id: u64, _params: &serde_json::Va
     use al_protocol::jsonrpc::error_codes;
 
     let mut guard = workspace.debug_session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        if let Err(message) = guard_retained(&session.config) {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    }
     match guard.as_mut() {
         None => no_session(id),
         Some(session) => match session.continue_exec().await {
@@ -910,6 +1008,11 @@ async fn debug_step(workspace: &Workspace, id: u64, params: &serde_json::Value) 
     };
 
     let mut guard = workspace.debug_session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        if let Err(message) = guard_retained(&session.config) {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    }
     match guard.as_mut() {
         None => no_session(id),
         Some(session) => match session.step(step_type).await {
@@ -962,6 +1065,11 @@ async fn debug_stop(workspace: &Workspace, id: u64, _params: &serde_json::Value)
     use al_protocol::jsonrpc::error_codes;
 
     let mut guard = workspace.debug_session.lock().await;
+    if let Some(session) = guard.as_ref() {
+        if let Err(message) = guard_retained(&session.config) {
+            return Response::error(id, error_codes::INVALID_PARAMS, message);
+        }
+    }
     match guard.as_mut() {
         // No active session: say so instead of claiming a stop
         // happened (`debug stop` printed
@@ -1893,6 +2001,80 @@ mod dispatch_debug_tests {
             "{}",
             err_msg(&response)
         );
+    }
+
+    #[tokio::test]
+    async fn supplied_token_over_cleartext_remote_is_refused() {
+        let ws = Workspace::new();
+        let response = dispatch_debug(
+            &ws,
+            76,
+            &json!({
+                "cmd": "start",
+                "server": "http://bc.example.com",
+                "serverInstance": "BC",
+                "environmentType": "OnPrem",
+                "authentication": "AAD",
+                "tenant": "contoso.onmicrosoft.com",
+                "accessToken": "t",
+            }),
+        )
+        .await;
+        assert_eq!(err_code(&response), error_codes::INVALID_PARAMS);
+        assert!(
+            err_msg(&response).contains("cleartext"),
+            "{}",
+            err_msg(&response)
+        );
+    }
+
+    #[tokio::test]
+    async fn retained_session_refuses_other_declared_tenant() {
+        use super::guard_retained;
+        use al_bc::tenant_guard::{
+            install_test_registry, scope_declaration, Declaration, TEST_DEMO_TENANT,
+        };
+        use al_dap::dap::bc_debug::BcDebugConfig;
+
+        install_test_registry();
+        let cloud = BcDebugConfig {
+            environment_type: "Sandbox".into(),
+            tenant: TEST_DEMO_TENANT.into(),
+            ..BcDebugConfig::default()
+        };
+        let onprem = BcDebugConfig {
+            environment_type: "OnPrem".into(),
+            ..BcDebugConfig::default()
+        };
+
+        let other = scope_declaration(
+            Declaration {
+                tenant: Some("00000000-0000-0000-0000-000000000001".into()),
+                purpose: None,
+            },
+            async { guard_retained(&cloud) },
+        )
+        .await;
+        let other = other.expect_err("a different declared tenant must be refused");
+        assert!(other.contains("does not match"), "{other}");
+        assert!(other.contains(TEST_DEMO_TENANT), "{other}");
+
+        let same = scope_declaration(
+            Declaration {
+                tenant: Some(TEST_DEMO_TENANT.into()),
+                purpose: None,
+            },
+            async { guard_retained(&cloud) },
+        )
+        .await;
+        assert!(same.is_ok(), "{same:?}");
+
+        let undeclared =
+            scope_declaration(Declaration::default(), async { guard_retained(&cloud) }).await;
+        assert!(undeclared.is_err(), "{undeclared:?}");
+
+        let on_prem = guard_retained(&onprem);
+        assert!(on_prem.is_ok(), "{on_prem:?}");
     }
 
     #[tokio::test]

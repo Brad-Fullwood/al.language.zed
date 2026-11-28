@@ -1,5 +1,7 @@
 # R5 dogfood: `al-explorer` on a Base Application 26 project
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 What was run: the `al-explorer` CLI (and, for `codeActions`, which has no CLI command, the daemon
 socket directly) built from commit `fea0d721`, against a small per-tenant extension project:
 `app.json` (runtime 15.0, target Cloud, idRanges 50100-50149), `src/` with a tableextension of

@@ -1,5 +1,7 @@
 # Grammar: an attributed member with a modifier loses its attribute after a var section
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Found 2026-09-26 while testing event subscribers in the local interpreter.
 Status: **fixed** by grammar commit 290ef3c (`fix(scanner): keep the attribute
 of a modified member after a var section`), pinned here from cc31863. The

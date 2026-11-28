@@ -1,5 +1,7 @@
 # R1 review: extension, CI, security, docs
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Reviewer pass over `src/` (Zed WASM extension), `extension.toml`, `build.rs`, `Makefile`,
 `scripts/`, `.github/workflows/`, `deny.toml`, `schemas/`, `snippets/`,
 `debug_adapter_schemas/`, `themes/`, `languages/al/`, and top-level docs.

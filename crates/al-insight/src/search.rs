@@ -57,6 +57,10 @@ pub struct TraceStep {
 /// happened to also contain subscribers. It also shared one `visited` set
 /// across all same-named root events, which truncated every root's chain after
 /// the first.
+///
+/// The trace holds at most `MAX_CHAIN_NODES` steps across all roots. When the
+/// budget drops a step, the last entry is a marker step with `edge_type`
+/// `"truncated"`.
 pub fn trace_event(
     graph: &InsightGraph,
     call_graph: Option<&CallGraph>,
@@ -65,6 +69,7 @@ pub fn trace_event(
 ) -> Vec<TraceStep> {
     let event_lower = event_name.to_lowercase();
     let mut steps = Vec::new();
+    let mut truncated = false;
 
     // Find all Event nodes matching the name. Sort by NodeIndex so the
     // emitted trace order is deterministic across runs — `graph.index`
@@ -90,6 +95,10 @@ pub fn trace_event(
             _ => continue,
         };
 
+        if steps.len() >= MAX_CHAIN_NODES {
+            truncated = true;
+            break;
+        }
         steps.push(TraceStep {
             depth: 0,
             edge_type: "origin".to_string(),
@@ -102,7 +111,7 @@ pub fn trace_event(
         // event are independent chains, and a shared set silently dropped all
         // but the first.
         let mut visited = HashSet::new();
-        trace_from_node(
+        if !trace_from_node(
             graph,
             call_graph,
             idx,
@@ -110,9 +119,21 @@ pub fn trace_event(
             max_depth,
             &mut visited,
             &mut steps,
-        );
+        ) {
+            truncated = true;
+            break;
+        }
     }
 
+    if truncated {
+        steps.push(TraceStep {
+            depth: 0,
+            edge_type: "truncated".to_string(),
+            node_type: String::new(),
+            name: format!("trace stopped at {MAX_CHAIN_NODES} steps"),
+            object: String::new(),
+        });
+    }
     steps
 }
 
@@ -145,6 +166,7 @@ fn events_raised_by(
     raised
 }
 
+/// Returns `false` when the step budget stopped the walk.
 fn trace_from_node(
     graph: &InsightGraph,
     call_graph: Option<&CallGraph>,
@@ -153,9 +175,9 @@ fn trace_from_node(
     max_depth: usize,
     visited: &mut std::collections::HashSet<petgraph::graph::NodeIndex>,
     steps: &mut Vec<TraceStep>,
-) {
+) -> bool {
     if depth > max_depth || visited.contains(&node_idx) {
-        return;
+        return true;
     }
     visited.insert(node_idx);
 
@@ -176,6 +198,9 @@ fn trace_from_node(
             object_name, name, ..
         } = sub_node
         {
+            if steps.len() >= MAX_CHAIN_NODES {
+                return false;
+            }
             steps.push(TraceStep {
                 depth,
                 edge_type: "subscribes_to".to_string(),
@@ -193,6 +218,9 @@ fn trace_from_node(
                 else {
                     continue;
                 };
+                if steps.len() >= MAX_CHAIN_NODES {
+                    return false;
+                }
                 steps.push(TraceStep {
                     depth: depth + 1,
                     edge_type: "publishes".to_string(),
@@ -200,7 +228,7 @@ fn trace_from_node(
                     name: ename.clone(),
                     object: eobject.clone(),
                 });
-                trace_from_node(
+                if !trace_from_node(
                     graph,
                     call_graph,
                     evt_idx,
@@ -208,10 +236,13 @@ fn trace_from_node(
                     max_depth,
                     visited,
                     steps,
-                );
+                ) {
+                    return false;
+                }
             }
         }
     }
+    true
 }
 
 // Full event chain tracing via CallGraph
@@ -240,7 +271,10 @@ pub struct EventChain {
     /// Empty when unresolved.
     pub publisher_object: String,
     pub chains: Vec<ChainNode>,
+    /// Count of nodes in `chains`, origins included.
     pub nodes_visited: usize,
+    /// `true` when the node budget dropped at least one node the walk reached.
+    pub truncated: bool,
 }
 
 /// Trace the full event propagation chain starting from a named event.
@@ -303,48 +337,62 @@ pub fn trace_event_chain(
         .unwrap_or_default();
 
     let mut global_visited: HashSet<NodeId> = HashSet::new();
-    let mut total_nodes = 0usize;
+    let mut budget = ChainBudget {
+        emitted: 0,
+        truncated: false,
+    };
+    let mut chains: Vec<ChainNode> = Vec::new();
 
-    let chains: Vec<ChainNode> = roots
-        .into_iter()
-        .map(|(event_id, pub_obj)| {
-            // Mark the root event as visited before recursing so that
-            // subscribers whose outgoing EventSubscription edge points back
-            // to this root event are detected as a cycle immediately rather
-            // than consuming extra depth levels on each re-entry.
-            global_visited.insert(event_id);
-            let root_info = call_graph.node_info(event_id);
-            let chain = ChainNode {
-                edge_kind: "origin".to_string(),
-                node_type: node_kind::EVENT.to_string(),
-                name: root_info
-                    .map(|i| i.name.as_str())
-                    .unwrap_or(event_name)
-                    .to_string(),
-                object: pub_obj,
-                depth: 0,
-                cycle: false,
-                children: recurse_event(
-                    insight,
-                    call_graph,
-                    event_id,
-                    1,
-                    max_depth,
-                    &mut global_visited,
-                    &mut total_nodes,
-                ),
-            };
-            total_nodes += 1;
-            chain
-        })
-        .collect();
+    for (event_id, pub_obj) in roots {
+        if budget.emitted >= MAX_CHAIN_NODES {
+            budget.truncated = true;
+            break;
+        }
+        budget.emitted += 1;
+        // Mark the root event as visited before recursing so that
+        // subscribers whose outgoing EventSubscription edge points back
+        // to this root event are detected as a cycle immediately rather
+        // than consuming extra depth levels on each re-entry.
+        global_visited.insert(event_id);
+        let root_info = call_graph.node_info(event_id);
+        let children = recurse_event(
+            insight,
+            call_graph,
+            event_id,
+            1,
+            max_depth,
+            &mut global_visited,
+            &mut budget,
+        );
+        chains.push(ChainNode {
+            edge_kind: "origin".to_string(),
+            node_type: node_kind::EVENT.to_string(),
+            name: root_info
+                .map(|i| i.name.as_str())
+                .unwrap_or(event_name)
+                .to_string(),
+            object: pub_obj,
+            depth: 0,
+            cycle: false,
+            children,
+        });
+    }
 
     EventChain {
         event_name: event_name.to_string(),
         publisher_object,
         chains,
-        nodes_visited: total_nodes,
+        nodes_visited: budget.emitted,
+        truncated: budget.truncated,
     }
+}
+
+/// Node count for one `trace_event_chain` call, shared by every root.
+struct ChainBudget {
+    /// Nodes pushed into the chain tree so far.
+    emitted: usize,
+    /// Set when the walk reached a node it could not emit.
+    truncated: bool,
 }
 
 fn recurse_event(
@@ -354,9 +402,9 @@ fn recurse_event(
     depth: usize,
     max_depth: usize,
     visited: &mut HashSet<NodeId>,
-    total: &mut usize,
+    budget: &mut ChainBudget,
 ) -> Vec<ChainNode> {
-    if depth > max_depth || *total >= MAX_CHAIN_NODES {
+    if depth > max_depth {
         return vec![];
     }
 
@@ -369,14 +417,18 @@ fn recurse_event(
     let mut children = Vec::new();
 
     for sub_id in subscribers {
+        if budget.emitted >= MAX_CHAIN_NODES {
+            budget.truncated = true;
+            break;
+        }
+        budget.emitted += 1;
         let is_cycle = visited.contains(&sub_id);
         let info = cg.node_info(sub_id);
         let sub_children = if is_cycle || depth >= max_depth {
             vec![]
         } else {
             visited.insert(sub_id);
-            *total += 1;
-            recurse_subscriber(insight, cg, sub_id, depth + 1, max_depth, visited, total)
+            recurse_subscriber(insight, cg, sub_id, depth + 1, max_depth, visited, budget)
         };
 
         children.push(ChainNode {
@@ -400,9 +452,9 @@ fn recurse_subscriber(
     depth: usize,
     max_depth: usize,
     visited: &mut HashSet<NodeId>,
-    total: &mut usize,
+    budget: &mut ChainBudget,
 ) -> Vec<ChainNode> {
-    if depth > max_depth || *total >= MAX_CHAIN_NODES {
+    if depth > max_depth {
         return vec![];
     }
 
@@ -441,13 +493,25 @@ fn recurse_subscriber(
 
         match node_type {
             t if t == node_kind::EVENT => {
+                if budget.emitted >= MAX_CHAIN_NODES {
+                    budget.truncated = true;
+                    break;
+                }
+                budget.emitted += 1;
                 let is_cycle = visited.contains(&callee_id);
                 let grandchildren = if is_cycle || depth >= max_depth {
                     vec![]
                 } else {
                     visited.insert(callee_id);
-                    *total += 1;
-                    recurse_event(insight, cg, callee_id, depth + 1, max_depth, visited, total)
+                    recurse_event(
+                        insight,
+                        cg,
+                        callee_id,
+                        depth + 1,
+                        max_depth,
+                        visited,
+                        budget,
+                    )
                 };
                 children.push(ChainNode {
                     edge_kind: edge.kind.to_string(),
@@ -460,15 +524,30 @@ fn recurse_subscriber(
                 });
             }
             t if t == node_kind::PROCEDURE => {
+                if budget.emitted >= MAX_CHAIN_NODES {
+                    budget.truncated = true;
+                    break;
+                }
+                budget.emitted += 1;
                 let is_cycle = visited.contains(&callee_id);
                 let grandchildren = if is_cycle || depth >= max_depth {
                     vec![]
                 } else {
                     visited.insert(callee_id);
-                    *total += 1;
-                    recurse_subscriber(insight, cg, callee_id, depth + 1, max_depth, visited, total)
+                    recurse_subscriber(
+                        insight,
+                        cg,
+                        callee_id,
+                        depth + 1,
+                        max_depth,
+                        visited,
+                        budget,
+                    )
                 };
-                if !grandchildren.is_empty() {
+                if grandchildren.is_empty() {
+                    // Not emitted, so give back the slot reserved above.
+                    budget.emitted -= 1;
+                } else {
                     children.push(ChainNode {
                         edge_kind: edge.kind.to_string(),
                         node_type: node_kind::PROCEDURE.to_string(),
@@ -788,6 +867,7 @@ mod tests {
             id,
             name: name.to_string(),
             extends: None,
+            extends_app_id: None,
             implements: Vec::new(),
             namespace: String::new(),
             package: "TestPkg".to_string(),
@@ -1555,6 +1635,74 @@ mod tests {
         assert!(
             steps.iter().any(|s| s.name == "HandleB"),
             "the second root's chain must not be truncated: {steps:?}"
+        );
+    }
+
+    /// The budget covers the whole trace. The 200 roots here emit 20,000
+    /// subscriber nodes between them, which is more than the budget allows.
+    #[test]
+    fn trace_respects_global_node_budget() {
+        fn count_nodes(nodes: &[ChainNode]) -> usize {
+            nodes.iter().map(|n| 1 + count_nodes(&n.children)).sum()
+        }
+
+        let mut entries = Vec::new();
+        for pub_id in 1..=200 {
+            entries.push(make_cu(
+                pub_id,
+                &format!("Pub{pub_id}"),
+                vec![("OnPost", "IntegrationEvent")],
+                vec![],
+            ));
+        }
+        // Each subscriber codeunit has one handler for each publisher.
+        for sub in 0..100 {
+            let handlers: Vec<(String, String, String, String)> = (0..200)
+                .map(|j| {
+                    (
+                        format!("H{j}"),
+                        "Codeunit".to_string(),
+                        format!("Pub{}", j + 1),
+                        "OnPost".to_string(),
+                    )
+                })
+                .collect();
+            let subscribers: Vec<(&str, &str, &str, &str)> = handlers
+                .iter()
+                .map(|(m, k, o, e)| (m.as_str(), k.as_str(), o.as_str(), e.as_str()))
+                .collect();
+            entries.push(make_cu(
+                1000 + sub,
+                &format!("Sub{sub}"),
+                vec![],
+                subscribers,
+            ));
+        }
+
+        let index = SymbolIndex::new();
+        index.add_entries(&entries);
+        let mut insight = InsightGraph::new();
+        insight.build_from_index(&index);
+        let cg = CallGraph::build_from_insight(&insight);
+
+        let chain = trace_event_chain(&insight, &cg, "OnPost", 10);
+        let emitted = count_nodes(&chain.chains);
+        assert!(
+            emitted <= MAX_CHAIN_NODES,
+            "{emitted} nodes emitted, budget is {MAX_CHAIN_NODES}"
+        );
+        assert!(
+            chain.truncated,
+            "the budget dropped nodes, so truncated must be set"
+        );
+
+        let steps = trace_event(&insight, None, "OnPost", 10);
+        let last = steps.last().expect("flat trace has steps");
+        assert_eq!(last.edge_type, "truncated", "flat trace marks the cut");
+        assert!(
+            steps.len() <= MAX_CHAIN_NODES + 1,
+            "{} flat steps, budget is {MAX_CHAIN_NODES} plus the marker",
+            steps.len()
         );
     }
 }

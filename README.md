@@ -81,7 +81,7 @@ Symbol acquisition is native and parallel where it is safe:
 
 ### Less memory churn
 
-The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, on-demand member loading in the TUI, and `Arc<String>` document text keep editor workflows from making repeated copies or growing state without bound. Default completion results also have a small cache for the common "blank completion at top level" path.
+The indexing path is built around shared ownership and bounded caches. Large file limits, archive payload limits, parse-tree LRU limits, on-demand member loading in the TUI, and `Arc<String>` document text keep editor workflows from making repeated copies or growing state without bound.
 
 ### Native Compile And Deterministic Build Loop
 
@@ -115,9 +115,9 @@ Current MCP tools:
 
 - `al_call` - invoke any method in the shared daemon tool catalog, so every daemon method is reachable from MCP.
 - `al_snapshot` - snapshot debugging: start (with optional snappoints), status, finish, list, show.
-- `al_debug` - retain and drive a Business Central debug session across agent calls (start/attach,
-  conditional breakpoints, state, stack, locals/globals/expansion, evaluate, step, continue,
-  history, stop).
+- `al_debug` - retain and drive a Business Central debug session across agent calls (`start` launches
+  the session in launch style. There is no `attach` command. The session supports conditional
+  breakpoints, state, stack, locals/globals/expansion, evaluate, step, continue, history and stop).
 - `al_build` - compile the project and return success, diagnostics, and `.app` path.
 - `al_downloadsymbols` - download dependency symbol packages into `.alpackages`.
 - `al_symbolsearch` - fuzzy-search symbols across workspace and packages.
@@ -164,15 +164,21 @@ repository, `PATH`, then `$CLAUDE_PLUGIN_DATA/bin`. The two binaries have to
 sit in the same directory, because `al-explorer` starts the daemon by looking
 next to itself first.
 
-If none of those has both binaries, the `SessionStart` hook tries one more
-thing before `al-bin.sh` has to print installation instructions: it downloads
-the pinned release's `binary-checksums.txt`, checks its SHA-256 against the
-digest pinned in the script beside the tag, downloads the release archive for
-the current platform, checks every file it contains against that listing, and
-only on a match extracts it into `$CLAUDE_PLUGIN_DATA/bin`. It fetches over https only, never
-makes anything executable before its digest matches, and never touches the
-network at all once both binaries are found. See `plugin/TESTING.md` for what
-it does on a refusal and how it was tested.
+If none of those has both binaries, the `SessionStart` hook
+(`plugin/scripts/al-session-context.sh`) runs `plugin/scripts/al-fetch-release.sh`
+before `al-bin.sh` has to print installation instructions. That script first
+runs `al-bin.sh --resolve`, which checks the same four places as above, with
+`~/.claude/plugins/data/al-bc/bin` when `CLAUDE_PLUGIN_DATA` is unset. When it
+finds both binaries, the script stops and downloads nothing. Otherwise it needs a SHA-256 digest of the release's
+`binary-checksums.txt` in `AL_PIN_CHECKSUMS_SHA256`. That default is `unset`, so
+automatic download is off for v0.5.0 and the script reports that nothing was
+downloaded. Once a digest is pinned, the script downloads the release's
+`binary-checksums.txt` and checks it against the pin, downloads the release
+archive for the current platform, checks every file in it against that listing,
+and only on a match extracts it into `$CLAUDE_PLUGIN_DATA/bin`. It fetches over
+https only, makes nothing executable before its digest matches, and makes no
+network request once both binaries are found. See `plugin/TESTING.md` for
+what it does on a refusal and how it was tested.
 
 To try it without installing:
 
@@ -296,14 +302,16 @@ The extension manifest registers:
 
 The Zed extension resolves `al-lsp` in this order:
 
-1. The managed copy `dev/al-lsp` in the extension's work directory
-   (`~/.local/share/zed/extensions/work/al` on Linux,
-   `~/Library/Application Support/Zed/extensions/work/al` on macOS). `make install`
-   writes it, together with `dev/al-explorer`, `dev/bridge` and `dev/BUILD`, which
+1. The managed copy `dev/al-lsp` in the extension's work directory. On Linux
+   that is `$XDG_DATA_HOME/zed/extensions/work/al`, default
+   `~/.local/share/zed/extensions/work/al`. On macOS it is
+   `~/Library/Application Support/Zed/extensions/work/al`. `make install`
+   writes to the default path, so set `ZED_WORK_DIR` when `XDG_DATA_HOME` is
+   set. It builds with the optimised `editor` cargo profile (`target/editor`) and
+   writes `dev/al-lsp` together with `dev/al-explorer`, `dev/bridge` and `dev/BUILD`, which
    holds the `al-lsp --version` line of the copy.
 2. The GitHub release tagged with the extension's own version (`v` plus the
-   version in `extension.toml`, never the latest release). This is the route for
-   an extension installed from Zed's extension list. The extension uses the
+   version in `extension.toml`, never the latest release). The extension uses the
    download already on disk if there is one, deletes the directories of other
    versions, and otherwise downloads the asset for the current platform. When the
    release is missing or the download fails it reports one error that names the
@@ -449,7 +457,11 @@ Release-critical invariants:
 
 ## Installation
 
-Install the published extension from Zed's extension UI when using a release.
+Install from source. The extension is not listed in Zed's extension gallery yet.
+
+1. Run `git clone --recurse-submodules https://github.com/Brad-Fullwood/al.language.zed`.
+2. In the clone, run `make install`. It copies `al-lsp` and `al-explorer` to `~/.local/bin` and into `dev/` in the extension's work directory.
+3. In Zed, run `zed: install dev extension` from the command palette and choose the clone's directory.
 
 Auto-download release assets are published for Linux x86_64/aarch64, macOS x86_64/aarch64, and Windows x86_64. No 32-bit x86 build is published.
 
@@ -490,7 +502,8 @@ expectation. LSP commands and the **AL Tools** MCP server cover the same operati
 ## Zed Settings
 
 To run a build of your own, run `make install` in the extension repository. It
-copies the build to `dev/` in the extension's work directory. The extension ignores
+builds `al-lsp` and `al-explorer` with the `editor` cargo profile (optimised, no LTO)
+and copies them to `dev/` in the extension's work directory. The extension ignores
 `lsp.al-lsp.binary.path` and `lsp.al-lsp.binary.arguments`.
 
 Common AL settings:
@@ -519,7 +532,7 @@ description, and [examples/zed-settings.jsonc](examples/zed-settings.jsonc) is a
 architecture rules (`AL-NL*`/`AL-NC*`) and the name and member binding errors `AL0118` and `AL0132`, which need no .NET bridge. Type checking and undeclared procedure calls still need `alc` or the bridge. For example, set `"AL-NL005": false` to disable the
 SetLoadFields rule. Microsoft's CodeAnalysis bridge is optional and adds to the native diagnostics.
 
-On Zed Dev/Nightly (extension API >= 0.8) the `lsp.al-lsp.settings` keys autocomplete and validate as you type. On Stable Zed the settings apply without in-editor autocomplete (use the template above). The registration code is compiled in by the `zed_api_0_8` cfg, so Stable gets autocomplete once the 0.8 extension API reaches the registry.
+In v0.5.0 no `lsp.al-lsp.settings` key autocompletes or validates as you type. The extension builds against Zed extension API 0.7.0 (`Cargo.toml`), so its settings-schema methods are compiled out. They sit behind the `zed_api_0_8` cfg in `src/lib.rs`, which `build.rs` sets only when `Cargo.lock` resolves the API to 0.8.0 or later. The settings still apply. Copy keys from the template above.
 
 ### Settings that need project trust
 
@@ -578,8 +591,8 @@ Common commands:
 
 ```bash
 make build
-make install
-make install-lsp
+make install       # optimised al-lsp and al-explorer for Zed (cargo profile `editor`)
+make install-lsp   # rebuild and copy only al-lsp
 make grammar
 make language
 scripts/check-repo-consistency.sh

@@ -96,6 +96,7 @@ dependencies = [
  "url",
  "urlencoding",
  "wiremock",
+ "zeroize",
  "zip 9.0.5",
 ]
 
@@ -156,7 +157,7 @@ dependencies = [
 
 [[package]]
 name = "al-explorer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "al-bc",
  "al-compile",
@@ -196,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "al-lsp"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "al-analysis",
  "al-bc",
@@ -6122,7 +6123,7 @@ dependencies = [
 
 [[package]]
 name = "zed-al"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "serde_json",
  "sha2 0.10.9",

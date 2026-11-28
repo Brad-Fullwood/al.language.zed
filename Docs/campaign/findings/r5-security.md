@@ -1,5 +1,7 @@
 # Round 5 security review: the round 7 fixes
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Reviewer brief: the fifth security round. Read the round 7 fixes adversarially, as an attacker
 who controls a repository the user clones and opens (its settings files, its launch files, the
 DLLs and programs it ships, and later commits to it after the user trusted it), and look for ways

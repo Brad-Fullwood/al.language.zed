@@ -32,7 +32,7 @@ pub mod variables;
 #[cfg(test)]
 mod test_support;
 
-pub use browser::build_debug_browser_url;
+pub use browser::{build_debug_browser_url, build_debug_browser_url_with_affinity};
 pub use capture::{CaptureSnappoint, SnappointResolver};
 pub use replay::PackageSourceResolver;
 
@@ -445,6 +445,14 @@ fn json_array(value: serde_json::Value) -> Vec<serde_json::Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stop_failure_output_names_the_error() {
+        let error = crate::dap::DapError::ConnectionFailed("hub closed".into());
+        let text = super::session::stop_failure_text(&error);
+        assert!(text.contains("StopDebugging"), "{text}");
+        assert!(text.contains("hub closed"), "{text}");
+    }
+
     use super::*;
 
     #[test]

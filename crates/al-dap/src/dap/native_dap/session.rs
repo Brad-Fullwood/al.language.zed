@@ -15,7 +15,7 @@ use crate::dap::bc_debug::{get_web_endpoint, publish_app, BcDebugConfig, BcDebug
 use crate::dap::DapError;
 use crate::dap::Result;
 
-use super::browser::{build_debug_browser_url, open_browser};
+use super::browser::{build_debug_browser_url_with_affinity, open_browser};
 use super::{make_event, make_response, write_dap, NativeDapState, ResolvedObject};
 
 impl<F, Fut, R, P, C, CompileFut, A> NativeDapState<F, R, P, C, A>
@@ -229,6 +229,9 @@ where
 
             let http = reqwest::Client::builder()
                 .danger_accept_invalid_certs(config.accept_invalid_certs)
+                .connect_timeout(std::time::Duration::from_secs(30))
+                .timeout(std::time::Duration::from_secs(600))
+                .redirect(reqwest::redirect::Policy::none())
                 .build()
                 .map_err(|e| DapError::PublishFailed(e.to_string()))?;
 
@@ -330,8 +333,14 @@ where
 
                 // Capture connection ID before moving session into Arc+mutex
                 let conn_id = debug_session.connection_id.clone();
+                let affinity = debug_session.affinity_cookie.clone();
                 let web_url = if command == "launch" && config.launch_browser {
-                    match build_debug_browser_url(&config, &conn_id, onprem_web_base.as_deref()) {
+                    match build_debug_browser_url_with_affinity(
+                        &config,
+                        &conn_id,
+                        affinity.as_deref(),
+                        onprem_web_base.as_deref(),
+                    ) {
                         Ok(url) => Some(url),
                         Err(error) => {
                             self.reply_failure(
@@ -412,7 +421,12 @@ where
         // Clone Arc, drop guard, then stop (don't hold mutex across await).
         let session_arc = self.session.lock().await.clone();
         if let Some(s) = session_arc {
-            let _ = s.stop_debugging().await;
+            // The adapter exits after `disconnect`, so a retry is not possible.
+            // The user is told instead.
+            if let Err(error) = s.stop_debugging().await {
+                self.emit_output(out, "stderr", stop_failure_text(&error))
+                    .await?;
+            }
         }
         *self.session.lock().await = None;
         self.variable_handles.lock().await.reset();
@@ -444,6 +458,11 @@ pub(super) async fn run_configuration_done(
     *configured.lock().await = true;
     info!("DAP configurationDone accepted");
     Ok(())
+}
+
+/// The `output` text for a `StopDebugging` call that Business Central did not confirm.
+pub(super) fn stop_failure_text(error: &DapError) -> String {
+    format!("Business Central did not confirm StopDebugging: {error}\n")
 }
 
 #[cfg(test)]

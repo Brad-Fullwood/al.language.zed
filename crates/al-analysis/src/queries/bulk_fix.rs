@@ -71,10 +71,7 @@ impl BulkFixPlan {
 
 pub fn plan_application_area(project_dir: &Path, value: &str) -> Result<BulkFixPlan, BulkFixError> {
     validate_property_value(value, "ApplicationArea")?;
-    build_plan(project_dir, |source, tree, object_kind| {
-        if !is_page_kind(object_kind) {
-            return Ok((source.to_string(), 0));
-        }
+    build_plan(project_dir, |source, tree| {
         inject_application_area(source, tree, value)
     })
 }
@@ -103,10 +100,7 @@ pub fn plan_tooltips(
             )));
         }
     }
-    build_plan(project_dir, |source, tree, object_kind| {
-        if !is_page_kind(object_kind) {
-            return Ok((source.to_string(), 0));
-        }
+    build_plan(project_dir, |source, tree| {
         inject_tooltips(source, tree, &normalized)
     })
 }
@@ -116,10 +110,7 @@ pub fn plan_data_classification(
     value: &str,
 ) -> Result<BulkFixPlan, BulkFixError> {
     validate_property_value(value, "DataClassification")?;
-    build_plan(project_dir, |source, tree, object_kind| {
-        if !is_table_kind(object_kind) {
-            return Ok((source.to_string(), 0));
-        }
+    build_plan(project_dir, |source, tree| {
         inject_data_classification(source, tree, value)
     })
 }
@@ -166,17 +157,20 @@ fn validate_property_value(value: &str, property: &str) -> Result<(), BulkFixErr
 
 fn build_plan<F>(project_dir: &Path, transform: F) -> Result<BulkFixPlan, BulkFixError>
 where
-    F: Fn(&str, &tree_sitter::Tree, &str) -> Result<(String, usize), String>,
+    F: Fn(&str, &tree_sitter::Tree) -> Result<(String, usize), String>,
 {
     // Discovery goes through the source index's walker so a bulk fix cannot
     // disagree with the workspace about which paths belong to the project.
     let files = al_source::file_index::collect_al_files(project_dir)?;
+    // Only used to look up each file's `preprocessorSymbols` from its app.json.
+    let apps = al_source::file_index::FileIndex::new();
     let mut changes = Vec::new();
     for path in files {
         let source = al_source::file_index::read_source_file(&path)?.ok_or_else(|| {
             BulkFixError::Refused(format!("Workspace source disappeared: {}", path.display()))
         })?;
-        let parsed = al_syntax::AlParser::parse_quick(&source);
+        let symbols = apps.preprocessor_symbols_for(&path);
+        let parsed = al_syntax::AlParser::parse_quick_with_symbols(&source, &symbols);
         if parsed.tree.root_node().has_error() {
             let details = parsed
                 .errors
@@ -202,14 +196,13 @@ where
                 }
             )));
         }
-        let object =
-            al_syntax::find_object_declaration(&parsed.tree, &source).ok_or_else(|| {
-                BulkFixError::Refused(format!(
-                    "Bulk fix refused '{}': no complete AL object declaration was found",
-                    path.display()
-                ))
-            })?;
-        let (updated, changes_count) = transform(&source, &parsed.tree, &object.kind)
+        if al_syntax::find_object_declaration(&parsed.tree, &source).is_none() {
+            return Err(BulkFixError::Refused(format!(
+                "Bulk fix refused '{}': no complete AL object declaration was found",
+                path.display()
+            )));
+        }
+        let (updated, changes_count) = transform(&source, &parsed.tree)
             .map_err(|error| BulkFixError::Refused(format!("{}: {error}", path.display())))?;
         if (changes_count == 0) != (updated == source) {
             return Err(BulkFixError::Refused(format!(
@@ -218,7 +211,7 @@ where
             )));
         }
         if changes_count > 0 {
-            let verification = al_syntax::AlParser::parse_quick(&updated);
+            let verification = al_syntax::AlParser::parse_quick_with_symbols(&updated, &symbols);
             if verification.tree.root_node().has_error()
                 || al_syntax::find_object_declaration(&verification.tree, &updated).is_none()
             {
@@ -248,23 +241,34 @@ pub(crate) struct AstObjectSection {
     child_indent_suffix: String,
 }
 
-pub(crate) fn collect_ast_sections(
+/// The sections named by `target_keywords` in every object of the file whose
+/// kind passes `object_kind`. A file can declare a table and its page, and a
+/// table fix must not touch the page's fields.
+fn collect_sections_in_objects(
     tree: &tree_sitter::Tree,
     source: &str,
+    object_kind: fn(&str) -> bool,
     target_keywords: &[&str],
 ) -> Result<Vec<AstObjectSection>, String> {
     if tree.root_node().has_error() {
         return Err("cannot inspect sections in malformed AL source".to_string());
     }
+    let root = tree.root_node();
     let mut sections = Vec::new();
-    collect_ast_sections_from_node(tree.root_node(), source, target_keywords, &mut sections)?;
+    for object in al_syntax::find_object_declarations(tree, source) {
+        if !object_kind(&object.kind) {
+            continue;
+        }
+        let node = root
+            .descendant_for_byte_range(object.range.start_byte, object.range.end_byte)
+            .ok_or_else(|| format!("object '{}' has no syntax node", object.name))?;
+        sections.extend(collect_ast_sections_in(node, source, target_keywords)?);
+    }
     Ok(sections)
 }
 
-/// [`collect_ast_sections`] restricted to one subtree.
-///
-/// A file declaring two tables would otherwise hand both tables' fields to a
-/// caller asking about one of them.
+/// The sections named by `target_keywords` inside one subtree, so a caller
+/// asking about one of two tables in a file gets only that table's fields.
 pub(crate) fn collect_ast_sections_in(
     node: tree_sitter::Node<'_>,
     source: &str,
@@ -566,7 +570,7 @@ fn inject_application_area(
     tree: &tree_sitter::Tree,
     value: &str,
 ) -> Result<(String, usize), String> {
-    let sections = collect_ast_sections(tree, source, &["field", "action"])?;
+    let sections = collect_sections_in_objects(tree, source, is_page_kind, &["field", "action"])?;
     let mut insertions = Vec::new();
     for section in sections {
         if !section.properties.contains_key("applicationarea") {
@@ -586,7 +590,7 @@ fn inject_tooltips(
     tree: &tree_sitter::Tree,
     tooltips: &std::collections::BTreeMap<String, String>,
 ) -> Result<(String, usize), String> {
-    let sections = collect_ast_sections(tree, source, &["field"])?;
+    let sections = collect_sections_in_objects(tree, source, is_page_kind, &["field"])?;
     let mut insertions = Vec::new();
     for section in sections {
         if section.properties.contains_key("tooltip") {
@@ -618,7 +622,7 @@ fn inject_data_classification(
     tree: &tree_sitter::Tree,
     value: &str,
 ) -> Result<(String, usize), String> {
-    let sections = collect_ast_sections(tree, source, &["field"])?;
+    let sections = collect_sections_in_objects(tree, source, is_table_kind, &["field"])?;
     let mut insertions = Vec::new();
     for section in sections {
         if section.properties.contains_key("dataclassification") {
@@ -649,6 +653,47 @@ fn inject_data_classification(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bulk_fix_applies_per_object() {
+        let source = "table 50100 T { fields { field(1; Id; Integer) { } } }\n\
+page 50100 P { layout { area(Content) { field(Id; Rec.Id) { } } } }\n";
+        let tree = parse(source);
+
+        let (classified, count) =
+            inject_data_classification(source, &tree, "CustomerContent").unwrap();
+        assert_eq!(count, 1, "{classified}");
+        let page_start = classified.find("page 50100").unwrap();
+        assert!(classified[..page_start].contains("DataClassification = CustomerContent;"));
+        assert!(!classified[page_start..].contains("DataClassification"));
+
+        let (with_area, count) = inject_application_area(source, &tree, "All").unwrap();
+        assert_eq!(count, 1, "{with_area}");
+        let page_start = with_area.find("page 50100").unwrap();
+        assert!(!with_area[..page_start].contains("ApplicationArea"));
+        assert!(with_area[page_start..].contains("ApplicationArea = All;"));
+    }
+
+    /// A file whose active branch depends on the app's `preprocessorSymbols`
+    /// parses with those symbols, so the plan does not refuse it.
+    #[test]
+    fn plan_parses_files_with_the_app_preprocessor_symbols() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":["CLEAN24"]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("T.Table.al"),
+            "table 50100 T\n{\n    fields\n    {\n#if CLEAN24\n        field(1; Id; Integer) { }\n#else\n        field(1; Id; Integer) { ((( }\n#endif\n    }\n}\n",
+        )
+        .unwrap();
+
+        let plan = plan_data_classification(dir.path(), "CustomerContent").unwrap();
+
+        assert_eq!(plan.changes.len(), 1);
+    }
 
     fn parse(source: &str) -> tree_sitter::Tree {
         let parsed = al_syntax::AlParser::parse_quick(source);
@@ -736,7 +781,7 @@ mod tests {
         let (result, changes) = inject_application_area(source, &parse(source), "All").unwrap();
         assert_eq!(changes, 1);
         let result_tree = parse(&result);
-        let fields = collect_ast_sections(&result_tree, &result, &["field"]).unwrap();
+        let fields = collect_ast_sections_in(result_tree.root_node(), &result, &["field"]).unwrap();
         assert_eq!(fields.len(), 1);
         assert_eq!(
             fields[0].properties.get("applicationarea"),

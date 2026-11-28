@@ -52,6 +52,12 @@ fn obj_schema(props: serde_json::Value, required: &[&str]) -> serde_json::Value 
     })
 }
 
+/// The daemon tenant guard reads `cliTenant` and `cliPurpose` from the request of these methods.
+fn connects_to_bc(method: &str) -> bool {
+    al_protocol::methods::CREDENTIAL_METHODS.contains(&method)
+        || matches!(method, "debug" | "snapshot" | "profiling")
+}
+
 /// A tool's declared schema plus the parameters the dispatch boundary adds.
 ///
 /// `projection` and `scope` are applied to every method that lists, so each
@@ -83,6 +89,20 @@ fn tool_schema(tool: &ToolDef) -> serde_json::Value {
     else {
         return schema;
     };
+    if connects_to_bc(tool.method) {
+        properties.entry("cliTenant").or_insert_with(|| {
+            serde_json::json!({
+                "type": "string",
+                "description": "Tenant GUID the caller declares, required for a cloud target.",
+            })
+        });
+        properties.entry("cliPurpose").or_insert_with(|| {
+            serde_json::json!({
+                "type": "string",
+                "description": "Customer issue, required for a customer tenant.",
+            })
+        });
+    }
     if reads_document {
         properties.entry("uri").or_insert_with(|| {
             serde_json::json!({

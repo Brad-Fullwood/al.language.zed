@@ -53,11 +53,13 @@ hide implementation or verification work this project can do.
   LSP, daemon, CLI/TUI, and MCP.
 - The generic MCP `al_call` exposes the complete daemon catalog. Named aliases
   make common methods easier to find and do not limit what `al_call` reaches.
-- Gallery-installed LSP, DAP, and MCP processes run `al-lsp` from `PATH` or
-  from the release archive the extension downloads and verifies. The language
-  package ships 55 tasks and inline runnables that run `al-explorer`, which has
-  to be on `PATH` because stable Zed task definitions cannot address a binary in
-  the extension's work directory.
+- The processes the extension starts (LSP, DAP, and MCP) run `al-lsp` from the
+  first match in this order: `dev/al-lsp` in the extension's work directory
+  (written by `make install`), the session cache, then the GitHub release tagged
+  with the extension's version. `PATH` is not consulted. The language package
+  ships 42 tasks and inline runnables that run `al-explorer`, which has to be on
+  `PATH` because stable Zed task definitions cannot address a binary in the
+  extension's work directory.
 
 ### Debugging and test execution
 

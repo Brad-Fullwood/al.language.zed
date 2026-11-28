@@ -257,11 +257,14 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                 Ok(client) => client,
                 Err(error) => return report_error(&error, json),
             };
-            client.set_request_timeout(std::time::Duration::from_secs(
-                timeout_ms
-                    .map(|timeout| timeout.div_ceil(1000).saturating_add(30))
-                    .unwrap_or(330),
-            ));
+            set_command_timeout(
+                &mut client,
+                std::time::Duration::from_secs(
+                    timeout_ms
+                        .map(|timeout| timeout.div_ceil(1000).saturating_add(30))
+                        .unwrap_or(330),
+                ),
+            );
             match request_checked(&mut client, "tests.snapshot_capture", Some(params)) {
                 Ok(result) => {
                     let failed = captured_test_failures(&result);
@@ -302,7 +305,7 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                 Ok(client) => client,
                 Err(error) => return report_error(&error, json),
             };
-            client.set_request_timeout(std::time::Duration::from_secs(120));
+            set_command_timeout(&mut client, std::time::Duration::from_secs(120));
             let params = serde_json::json!({
                 "snapshotPath": abs_path.display().to_string(),
             });
@@ -344,11 +347,14 @@ pub fn cmd_test_snapshot(subcmd: &crate::cli::TestSnapshotCommands, json: bool) 
                 Ok(client) => client,
                 Err(error) => return report_error(&error, json),
             };
-            client.set_request_timeout(std::time::Duration::from_secs(
-                timeout_ms
-                    .map(|timeout| timeout.div_ceil(1000).saturating_add(30))
-                    .unwrap_or(330),
-            ));
+            set_command_timeout(
+                &mut client,
+                std::time::Duration::from_secs(
+                    timeout_ms
+                        .map(|timeout| timeout.div_ceil(1000).saturating_add(30))
+                        .unwrap_or(330),
+                ),
+            );
             match request_checked(&mut client, "tests.snapshot_replay", Some(params)) {
                 Ok(result) => report_snapshot_comparison(
                     &result,
@@ -412,7 +418,7 @@ pub fn cmd_test_mutate(
 
     // Mutation testing re-runs the suite once per mutant — the longest
     // operation the daemon offers.
-    client.set_request_timeout(std::time::Duration::from_secs(3600));
+    set_command_timeout(&mut client, std::time::Duration::from_secs(3600));
 
     match request_checked(&mut client, "tests.mutate", Some(params)) {
         Ok(result) => {

@@ -36,6 +36,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 /// the daemon when one is already running, so a daemon that later stops
 /// answering can still be killed.
 pub fn track_project_daemon(project_dir: &Path) {
+    // Before the reaper is armed, so its exit handler runs first (atexit is
+    // last in, first out) and the private runtime directory still exists.
+    crate::test_env::isolate();
     let project = project_dir
         .canonicalize()
         .unwrap_or_else(|_| project_dir.to_path_buf());

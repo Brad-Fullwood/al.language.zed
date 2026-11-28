@@ -1,5 +1,7 @@
 # Checkpoint: close-out of the runtime session, 2026-09-27
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 This adds to `CHECKPOINT-2026-09-27.md`, which records the campaign as a whole at the pause. It
 covers the long-running interactive session that worked the dogfood findings, the native
 compiler fixes and the local interpreter (144 commits carry its `Claude-Session` trailer:

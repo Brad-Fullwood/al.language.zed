@@ -252,7 +252,7 @@ fn node_decl_loc(
 /// AL identifies a subscriber's target by object *and* name, so matching on
 /// the name alone would rewrite a same-named event published by an unrelated
 /// object.
-struct SubscriberTarget {
+pub(crate) struct SubscriberTarget {
     /// The argument position: the event name, the publisher object, or the
     /// element (table field) the event belongs to.
     argument: SubscriberArgumentKind,
@@ -265,7 +265,7 @@ struct SubscriberTarget {
 }
 
 #[derive(PartialEq)]
-enum SubscriberArgumentKind {
+pub(crate) enum SubscriberArgumentKind {
     Object,
     Event,
     Element,
@@ -433,6 +433,72 @@ fn merge_subscriber_edits(edits: &mut Vec<TextEdit>, from_subscribers: Vec<TextE
     }
 }
 
+/// Whether the `[EventSubscriber]` `attribute` subscribes to the publisher
+/// that `target` names. The publisher is matched by object type and object
+/// name, so a publisher named by id (`Codeunit::50101`) does not match.
+pub(crate) fn subscriber_matches_publisher(
+    attribute: &al_syntax::EventSubscriberAttribute,
+    target: &SubscriberTarget,
+) -> bool {
+    let Some(object_type) = subscriber_object_type(&target.object_keyword) else {
+        return false;
+    };
+    // The 1st argument is optional in practice (an unparsed or abbreviated
+    // attribute), so only a *mismatch* disqualifies the subscriber.
+    if !attribute.object_type.is_empty() && !attribute.object_type.eq_ignore_ascii_case(object_type)
+    {
+        return false;
+    }
+    attribute
+        .object
+        .as_ref()
+        .is_some_and(|object| object.name.eq_ignore_ascii_case(&target.object_name))
+}
+
+/// The publisher of the event declared at `decl`, a `decl_loc` key, as the
+/// `SubscriberTarget` that names it. `None` when that declaration is not an
+/// event.
+///
+/// A subscriber's own event literal is not a declaration, so the object its
+/// `[EventSubscriber]` names is the publisher.
+pub(crate) fn event_publisher(
+    workspace: &Workspace,
+    decl: &BindKey,
+    clean_name: &str,
+) -> Option<SubscriberTarget> {
+    let uri = Url::parse(&decl.0).ok()?;
+    let (text, tree) =
+        al_source::parsing::get_or_parse(&workspace.documents, &uri).or_else(|| {
+            uri.to_file_path()
+                .ok()
+                .and_then(|path| workspace.file_index.get_cached_parse(&path))
+                .map(|(text, tree)| (text.into(), tree))
+        })?;
+    let position = Position {
+        line: decl.1,
+        character: decl.2,
+    };
+    let node = al_syntax::find_node_at_position(&tree, &text, position.into())?;
+    if let Some(target) = subscriber_target_at(node, &text, clean_name) {
+        return (target.argument == SubscriberArgumentKind::Event).then_some(target);
+    }
+    let attribute = al_syntax::find_event_subscriber_attributes(&tree, &text)
+        .into_iter()
+        .find(|attribute| {
+            attribute.event.as_ref().is_some_and(|event| {
+                // The literal node includes its quotes, the event range may not.
+                node.start_byte() <= event.range.end_byte
+                    && event.range.start_byte <= node.end_byte()
+            })
+        })?;
+    Some(SubscriberTarget {
+        argument: SubscriberArgumentKind::Event,
+        object_keyword: attribute.object_type.to_ascii_lowercase(),
+        object_name: attribute.object?.name,
+        current_name: clean_name.to_string(),
+    })
+}
+
 /// The edits that rewrite `target` in every `[EventSubscriber]` of one file.
 fn subscriber_edits(
     target: &SubscriberTarget,
@@ -440,36 +506,24 @@ fn subscriber_edits(
     text: &str,
     new_name: &RenameName,
 ) -> Vec<TextEdit> {
-    let Some(object_type) = subscriber_object_type(&target.object_keyword) else {
-        return Vec::new();
-    };
     let source = text.as_bytes();
     let mut edits = Vec::new();
     for attribute in al_syntax::find_event_subscriber_attributes(tree, text) {
-        // The 1st argument is optional in practice (an unparsed or abbreviated
-        // attribute), so only a *mismatch* disqualifies the subscriber.
-        if !attribute.object_type.is_empty()
-            && !attribute.object_type.eq_ignore_ascii_case(object_type)
-        {
+        if !subscriber_matches_publisher(&attribute, target) {
             continue;
         }
-        let names_the_object = attribute
-            .object
-            .as_ref()
-            .is_some_and(|object| object.name.eq_ignore_ascii_case(&target.object_name));
         let (argument, replacement) = match target.argument {
             SubscriberArgumentKind::Object => (
                 attribute.object.as_ref(),
                 None, // spelled from the argument's own text below
             ),
-            SubscriberArgumentKind::Event if names_the_object => {
+            SubscriberArgumentKind::Event => {
                 (attribute.event.as_ref(), Some(new_name.as_string_literal()))
             }
-            SubscriberArgumentKind::Element if names_the_object => (
+            SubscriberArgumentKind::Element => (
                 attribute.element.as_ref(),
                 Some(new_name.as_string_literal()),
             ),
-            _ => continue,
         };
         let Some(argument) = argument else { continue };
         if !argument.name.eq_ignore_ascii_case(&target.current_name) {

@@ -21,9 +21,9 @@ fn parse_debug_task_config(raw: &str) -> zed::Result<Value> {
 
 /// Build the DAP binary configuration for the AL debug adapter.
 ///
-/// `al_lsp_path` is the resolved binary path from the full resolution chain
-/// (user config → in-memory session cache → PATH → on-disk cached download →
-/// GitHub release download) performed by the caller.
+/// `al_lsp_path` is the resolved binary path from the resolution chain
+/// (managed `dev/` copy → in-memory session cache → GitHub release, which reuses
+/// an on-disk copy of this version) performed by the caller.
 /// al-lsp's `--dap` mode runs the native DAP server over stdio. Zed
 /// communicates with it using the DAP protocol for breakpoints, stepping, etc.
 ///
@@ -85,7 +85,9 @@ pub fn build_dap_binary(
                 .map_err(|error| format!("AL DAP: cannot serialize compile settings: {error}"))?,
         ));
     }
-    if let Some(path) = crate::settings::resolve_dotnet_path(user_settings) {
+    if let Some(path) = crate::settings::resolve_dotnet_path(user_settings)
+        .filter(|path| !crate::settings::is_worktree_resident_program(path, &workspace_path))
+    {
         envs.push(("AL_DOTNET_PATH".to_string(), path));
     }
 

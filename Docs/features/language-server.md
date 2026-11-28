@@ -172,12 +172,17 @@ give the same answers.
 
 The Zed extension resolves `al-lsp` in this order:
 
-1. `dev/al-lsp` in the extension's work directory (`~/.local/share/zed/extensions/work/al`
-   on Linux). `make install` copies `al-lsp`, `al-explorer` and the bridge there and writes
-   `dev/BUILD`, the `al-lsp --version` line of the copy, after checking that the copy reports it.
-2. The GitHub release tagged `v<extension version>`, for an extension installed from Zed's
-   extension list. It is never "latest". Directories of other versions are deleted. A missing
-   release or a failed download gives one error naming the version and both routes.
+1. `dev/al-lsp` in the extension's work directory (`$XDG_DATA_HOME/zed/extensions/work/al`
+   on Linux, default `~/.local/share/zed/extensions/work/al`). `make install` builds `al-lsp`
+   and `al-explorer` with the `editor` cargo profile (release optimisation without LTO, in
+   `target/editor`), copies them and the bridge there and writes `dev/BUILD`, the
+   `al-lsp --version` line of the copy, after checking that the copy reports it. The debug build
+   is not installed: on a 146 file project its native pass took 11 to 40 s against 1.2 to 2 s,
+   so the edited file got no diagnostics until typing stopped, and it used up to 2.8 times the
+   CPU of a release build.
+2. The GitHub release tagged `v<extension version>`. It is never "latest". Directories of other versions
+   are deleted. A missing release or a failed download gives one error naming the version and both
+   routes.
 
 `al-lsp` on `PATH` is not consulted. The extension passes `--extension-build
 <version>+git.<commit>[.dirty]` on every launch. `al-lsp` (`crates/al-lsp/src/extension_build.rs`)
@@ -185,6 +190,16 @@ compares version and commit with its own build. On a mismatch it logs one line a
 one `window/showMessage` warning after `initialize` that names its build, its path and the
 extension build, and says to run `make install`. Same build, or no flag, is silent. Unknown flags
 are ignored by `al-lsp`, so an older binary still starts.
+
+## Log and project state
+
+Every `al-lsp` process (editor server, daemons, MCP) appends to
+`$XDG_DATA_HOME/al-lsp/logs/al-lsp.log` (`~/.local/share/al-lsp/logs` by default). Each line
+carries `pid=<id>` after the timestamp, so the lines of one process can be picked out. State that
+belongs to one project, such as `test-results.json`, lives in `$XDG_DATA_HOME/al-lsp/<hash of the
+project root>/` with a `project-root` file naming the project. At start `al-lsp` removes those
+directories whose project no longer exists. Directories written before the `project-root` file
+existed are kept, because nothing records which project they belong to.
 
 ## How to use
 
@@ -207,5 +222,5 @@ From MCP, `al_call` exposes the daemon equivalents (`hover`, `definition`, `refe
   instead of issuing one serialized CLR compilation for every unopened file.
 - References and subscribers inside `.app` dependencies come from the AL source a package embeds.
   A package without embedded source carries public API metadata and no call-site bodies.
-- Settings-schema autocomplete only lights up on Zed 0.8+ extension API (see the
-  [settings reference](../reference/settings.md)).
+- No settings-schema autocomplete in v0.5.0: the extension builds against Zed extension API 0.7 (see
+  the [settings reference](../reference/settings.md)).

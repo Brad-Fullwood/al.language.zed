@@ -9,6 +9,7 @@ use crate::dap::bc_debug::position::{
     client_line_to_debugger, debugger_column_to_client, debugger_line_to_client,
 };
 use crate::dap::bc_debug::{BcDebugConfig, BcDebugSession};
+use crate::dap::native_dap::breakpoints::ids_to_keep;
 use crate::dap::types::*;
 use crate::dap::Result;
 use tracing::{info, warn};
@@ -42,7 +43,28 @@ pub struct NativeDebugSession {
     /// Set when the one configurationDone call was rejected. Every later
     /// command reports it. Microsoft's adapter has no retry either.
     configure_error: Option<String>,
+    /// Breakpoints asked for before BC bound a client session, by file. BC
+    /// answers AddBreakpoint with null until then (recorded on the CDX
+    /// Sandbox, 2026-11-27). Microsoft's adapter sends setBreakpoints only
+    /// after its `initialized` event, which follows HubConnected or
+    /// OnAttachedToConnection (HubBasedDebuggerService.cs:117-120,148), so
+    /// these are sent at that point, before configurationDone.
+    queued: HashMap<String, QueuedBreakpoints>,
 }
+
+/// What `set_breakpoints` was called with while no client session was bound.
+struct QueuedBreakpoints {
+    lines: Vec<(u32, Option<String>)>,
+    object_type: i32,
+    object_id: i32,
+    line_shift: i64,
+}
+
+/// The reason a breakpoint set before the web client session binds is not
+/// verified yet.
+pub const QUEUED_BREAKPOINT_MESSAGE: &str = "queued: BC accepts breakpoints only after a web \
+client session binds to this debug session. It is sent when the session opened from browserUrl \
+connects";
 
 /// Append a Break event to history with the configured cap. Pure (no `self`
 /// dependency) so it unit-tests without standing up a `BcDebugSession`.
@@ -76,6 +98,7 @@ impl NativeDebugSession {
             last_object: None,
             configured: false,
             configure_error: None,
+            queued: HashMap::new(),
         })
     }
 
@@ -89,6 +112,9 @@ impl NativeDebugSession {
     /// `object_type` and `object_id` come from the workspace file index — the caller
     /// resolves the AL file path to its BC object type + ID. `line_shift` is the
     /// object's [`crate::dap::bc_debug::object_line_shift`], 0 for a file with one object.
+    ///
+    /// Before BC binds a client session the breakpoints are queued and
+    /// reported unverified with [`QUEUED_BREAKPOINT_MESSAGE`].
     pub async fn set_breakpoints(
         &mut self,
         file: &str,
@@ -97,14 +123,58 @@ impl NativeDebugSession {
         object_id: i32,
         line_shift: i64,
     ) -> Result<Vec<BreakpointInfo>> {
-        if let Some(old_ids) = self.breakpoints.remove(file) {
-            for bp_id in &old_ids {
-                if let Err(e) = self.session.remove_breakpoint(*bp_id).await {
-                    warn!(bp_id, error = %e, "Failed to remove old breakpoint");
-                }
-            }
-            self.armed.retain(|_, id| !old_ids.contains(id));
+        self.drain_events().await?;
+        if !self.session.is_attached().await {
+            self.queued.insert(
+                file.to_string(),
+                QueuedBreakpoints {
+                    lines: lines
+                        .iter()
+                        .map(|&(line, condition)| (line, condition.map(str::to_string)))
+                        .collect(),
+                    object_type,
+                    object_id,
+                    line_shift,
+                },
+            );
+            return Ok(lines
+                .iter()
+                .map(|&(line, condition)| {
+                    make_bp_info(
+                        file,
+                        line,
+                        condition.unwrap_or(""),
+                        0,
+                        false,
+                        Some(QUEUED_BREAKPOINT_MESSAGE.to_string()),
+                    )
+                })
+                .collect());
         }
+        self.queued.remove(file);
+        self.arm_breakpoints(file, lines, object_type, object_id, line_shift)
+            .await
+    }
+
+    /// Send AddBreakpoint for each line once a client session is bound.
+    async fn arm_breakpoints(
+        &mut self,
+        file: &str,
+        lines: &[(u32, Option<&str>)],
+        object_type: i32,
+        object_id: i32,
+        line_shift: i64,
+    ) -> Result<Vec<BreakpointInfo>> {
+        let old_ids = self.breakpoints.remove(file).unwrap_or_default();
+        let mut failed = Vec::new();
+        for bp_id in &old_ids {
+            if let Err(e) = self.session.remove_breakpoint(*bp_id).await {
+                warn!(bp_id, error = %e, "Failed to remove old breakpoint");
+                failed.push(*bp_id);
+            }
+        }
+        self.armed
+            .retain(|_, id| !old_ids.contains(id) || failed.contains(id));
 
         let mut results = Vec::new();
         let mut new_ids = Vec::new();
@@ -186,8 +256,9 @@ impl NativeDebugSession {
             }
         }
 
-        if !new_ids.is_empty() {
-            self.breakpoints.insert(file.to_string(), new_ids);
+        let kept = ids_to_keep(&old_ids, &failed, &new_ids);
+        if !kept.is_empty() {
+            self.breakpoints.insert(file.to_string(), kept);
         }
 
         Ok(results)
@@ -270,6 +341,29 @@ impl NativeDebugSession {
         // configurationDone once after that callback, as Microsoft's adapter
         // does after its `initialized` event. A rejection is final.
         if !self.configured && self.configure_error.is_none() && self.session.is_attached().await {
+            for (file, queued) in std::mem::take(&mut self.queued) {
+                let lines: Vec<(u32, Option<&str>)> = queued
+                    .lines
+                    .iter()
+                    .map(|(line, condition)| (*line, condition.as_deref()))
+                    .collect();
+                let armed = self
+                    .arm_breakpoints(
+                        &file,
+                        &lines,
+                        queued.object_type,
+                        queued.object_id,
+                        queued.line_shift,
+                    )
+                    .await?;
+                for info in armed {
+                    if info.verified {
+                        info!(file = %info.file, line = info.line, id = info.id, "queued breakpoint armed");
+                    } else {
+                        warn!(file = %info.file, line = info.line, message = ?info.message, "queued breakpoint not armed");
+                    }
+                }
+            }
             match self.session.configuration_done(&self.config).await {
                 Ok(()) => {
                     self.configured = true;
@@ -288,6 +382,19 @@ impl NativeDebugSession {
             });
         }
         Ok(())
+    }
+
+    /// Handle BC callbacks that arrived since the last call, which arms the
+    /// queued breakpoints and sends configurationDone once BC binds a client
+    /// session. Returns true once that is done or was rejected, so a caller
+    /// polling this can stop. BC runs the bound session's code without
+    /// waiting for configurationDone (CDX Sandbox, 2026-11-27), so the CLI
+    /// daemon calls this on a timer instead of waiting for the next command.
+    pub async fn bind_pending(&mut self) -> bool {
+        if let Err(error) = self.drain_events().await {
+            tracing::debug!(%error, "debug session bind failed");
+        }
+        self.configured || self.configure_error.is_some()
     }
 
     pub async fn state(&mut self) -> Result<DebugState> {
@@ -483,6 +590,7 @@ impl NativeDebugSession {
             last_object: None,
             configured: false,
             configure_error: None,
+            queued: HashMap::new(),
         }
     }
 
@@ -1027,6 +1135,65 @@ mod native_session_tests {
         )
     }
 
+    /// A session whose client session is bound and configured, as after
+    /// HubConnected on a cloud launch.
+    async fn attached_session(conn: &str) -> (NativeDebugSession, FakeBc) {
+        let (mut nds, fake) = session(conn);
+        fake.push_callback("HubConnected", json!(null));
+        nds.state().await.unwrap();
+        (nds, fake)
+    }
+
+    /// Frames sent to BC apart from the configurationDone that attaching sends.
+    fn bp_frames(fake: &FakeBc) -> Vec<serde_json::Value> {
+        fake.sent_frames()
+            .into_iter()
+            .filter(|frame| frame["target"] != "DebugAdapterConfigurationDone")
+            .collect()
+    }
+
+    /// Recorded on the CDX Sandbox (2026-11-27): AddBreakpoint before a client
+    /// session binds answers null. The breakpoint is queued, then sent when
+    /// HubConnected arrives, before configurationDone, as Microsoft does.
+    #[tokio::test]
+    async fn breakpoints_set_before_the_client_binds_are_queued_then_sent_before_configuration_done(
+    ) {
+        let (mut nds, fake) = session("c1");
+        let infos = nds
+            .set_breakpoints("src/Foo.al", &[(10, Some("x > 1"))], 5, 50100, 0)
+            .await
+            .unwrap();
+        assert!(!infos[0].verified);
+        assert_eq!(infos[0].message.as_deref(), Some(QUEUED_BREAKPOINT_MESSAGE));
+        assert!(
+            fake.sent_frames().is_empty(),
+            "nothing is sent before the bind"
+        );
+
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(77));
+        fake.push_callback("HubConnected", json!(null));
+        nds.state().await.unwrap();
+
+        let targets: Vec<String> = fake
+            .sent_frames()
+            .iter()
+            .map(|f| f["target"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(
+            targets,
+            vec!["AddBreakpoint", "DebugAdapterConfigurationDone"]
+        );
+        let frames = fake.sent_frames();
+        assert_eq!(frames[0]["arguments"][0]["ObjectNumber"], 50100);
+        assert_eq!(frames[0]["arguments"][1]["Line"], 9);
+        assert_eq!(frames[0]["arguments"][2], "x > 1");
+
+        fake.push_callback("Break", break_at("OnRun", 9, 0));
+        fake.reply_ok("GetVariables", json!([]));
+        nds.state().await.unwrap();
+        assert_eq!(nds.history(None)[0].breakpoint_id, 77);
+    }
+
     fn hit_with_var(seq: u32, var: &str) -> BreakpointHit {
         BreakpointHit {
             seq,
@@ -1049,7 +1216,7 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn set_breakpoints_adds_and_parses_breakpoint_definition() {
-        let (mut nds, fake) = session("c1");
+        let (mut nds, fake) = attached_session("c1").await;
         fake.reply_ok("AddBreakpoint", breakpoint_definition(77));
 
         let infos = nds
@@ -1064,7 +1231,7 @@ mod native_session_tests {
         assert_eq!(infos[0].file, "src/Foo.al");
         assert_eq!(infos[0].condition, None);
 
-        let frames = fake.sent_frames();
+        let frames = bp_frames(&fake);
         assert_eq!(frames.len(), 1, "exactly one AddBreakpoint invoke");
         assert_eq!(frames[0]["target"], "AddBreakpoint");
         assert_eq!(frames[0]["arguments"][0]["ObjectType"], 5);
@@ -1076,18 +1243,18 @@ mod native_session_tests {
     async fn set_breakpoints_sends_the_line_inside_the_object() {
         // DocumentHelper.cs:25-66: file line 10 (row 9) of an object whose
         // unit starts 4 rows up is row 5.
-        let (mut nds, fake) = session("c1");
+        let (mut nds, fake) = attached_session("c1").await;
         fake.reply_ok("AddBreakpoint", breakpoint_definition(77));
         nds.set_breakpoints("src/Foo.al", &[(10, None)], 5, 50100, -4)
             .await
             .unwrap();
-        assert_eq!(fake.sent_frames()[0]["arguments"][1]["Line"], 5);
+        assert_eq!(bp_frames(&fake)[0]["arguments"][1]["Line"], 5);
     }
 
     #[tokio::test]
     async fn set_breakpoints_reports_unverified_when_bc_returns_no_breakpoint_id() {
         // BreakpointDefinition.cs:9: BreakpointId 0 is not a usable handle.
-        let (mut nds, fake) = session("c1");
+        let (mut nds, fake) = attached_session("c1").await;
         fake.reply_ok("AddBreakpoint", breakpoint_definition(0));
 
         let infos = nds
@@ -1101,7 +1268,7 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn set_breakpoints_rejects_silently_coerced_object_id() {
-        let (mut nds, fake) = session("c1");
+        let (mut nds, fake) = attached_session("c1").await;
         fake.reply_ok("AddBreakpoint", {
             // A reply for the wrong object: BreakpointDefinition.ObjectId is 0/0.
             let mut def = breakpoint_definition(5);
@@ -1120,7 +1287,7 @@ mod native_session_tests {
         // The id is live on the server. Leaving it armed stops execution at a
         // place the client believes has no breakpoint, and in snapshot capture
         // that stop matches nothing and fails the whole run.
-        let frames = fake.sent_frames();
+        let frames = bp_frames(&fake);
         assert_eq!(
             frames
                 .iter()
@@ -1135,7 +1302,7 @@ mod native_session_tests {
     /// can group history by breakpoint. The field was a hard-coded 0.
     #[tokio::test]
     async fn break_history_names_the_breakpoint_it_came_from() {
-        let (mut nds, fake) = session("c1");
+        let (mut nds, fake) = attached_session("c1").await;
         fake.reply_ok("AddBreakpoint", breakpoint_definition(91));
         nds.set_breakpoints("src/Foo.al", &[(42, None)], 5, 50100, 0)
             .await
@@ -1155,7 +1322,7 @@ mod native_session_tests {
     async fn set_breakpoints_normalizes_conditions_and_forwards_them() {
         // A real condition is preserved; an empty condition normalises to None
         // but is still forwarded verbatim ("") to BC as the third arg.
-        let (mut nds, fake) = session("c1");
+        let (mut nds, fake) = attached_session("c1").await;
         fake.reply_ok("AddBreakpoint", breakpoint_definition(1));
         fake.reply_ok("AddBreakpoint", breakpoint_definition(2));
 
@@ -1173,14 +1340,14 @@ mod native_session_tests {
         assert_eq!(infos[0].condition.as_deref(), Some("x > 5"));
         assert_eq!(infos[1].condition, None, "empty condition → None");
 
-        let frames = fake.sent_frames();
+        let frames = bp_frames(&fake);
         assert_eq!(frames[0]["arguments"][2], "x > 5");
         assert_eq!(frames[1]["arguments"][2], "");
     }
 
     #[tokio::test]
     async fn set_breakpoints_removes_prior_ids_for_same_file() {
-        let (mut nds, fake) = session("c1");
+        let (mut nds, fake) = attached_session("c1").await;
         fake.reply_ok("AddBreakpoint", breakpoint_definition(100));
         fake.reply_ok("AddBreakpoint", breakpoint_definition(101));
         nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50100, 0)
@@ -1209,7 +1376,7 @@ mod native_session_tests {
 
     #[tokio::test]
     async fn set_breakpoints_partial_failure_marks_failed_unverified() {
-        let (mut nds, fake) = session("c1");
+        let (mut nds, fake) = attached_session("c1").await;
         fake.reply_ok("AddBreakpoint", breakpoint_definition(11));
         fake.reply_err("AddBreakpoint", "compilation error");
 
@@ -1223,6 +1390,32 @@ mod native_session_tests {
         assert!(infos[0].verified);
         assert_eq!(infos[1].id, 0, "failed add → id 0");
         assert!(!infos[1].verified, "failed add → unverified");
+    }
+
+    #[tokio::test]
+    async fn set_breakpoints_keeps_id_when_remove_fails() {
+        let (mut nds, fake) = attached_session("c1").await;
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(100));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(101));
+        nds.set_breakpoints("src/C.al", &[(1, None), (2, None)], 5, 50100, 0)
+            .await
+            .unwrap();
+
+        fake.reply_err("RemoveBreakpoint", "refused");
+        fake.reply_ok("RemoveBreakpoint", json!(null));
+        fake.reply_ok("AddBreakpoint", breakpoint_definition(200));
+        nds.set_breakpoints("src/C.al", &[(9, None)], 5, 50100, 0)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            nds.breakpoints.get("src/C.al"),
+            Some(&vec![200, 100]),
+            "the refused removal keeps 100 next to the new 200"
+        );
+        let mut armed: Vec<i64> = nds.armed.values().copied().collect();
+        armed.sort_unstable();
+        assert_eq!(armed, vec![100, 200], "armed keeps 100, drops removed 101");
     }
 
     #[tokio::test]

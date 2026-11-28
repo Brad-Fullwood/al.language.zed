@@ -21,7 +21,10 @@ pub use semantic_lifecycle::{
 };
 pub use semantic_project::{project_open_documents, semantic_project_context};
 pub use source_cache::{PackageKey, SourceSummaryCache};
-pub use test_results::{project_data_dir, TestResultStore};
+pub use test_results::{
+    project_data_dir, prune_project_data_dirs, prune_project_data_dirs_under, PruneReport,
+    TestResultStore,
+};
 
 use al_project::project::AlProject;
 use al_project::toolchain::AlToolchain;
@@ -456,8 +459,10 @@ pub struct Workspace {
     /// The daemon's native debug session. Its methods take `&mut self`, so each
     /// debug command holds this lock across its Business Central call. Each such
     /// call ends at the SignalR invoke timeout, and nothing it awaits takes this
-    /// lock.
-    pub debug_session: tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>,
+    /// lock. It is shared so `debug start` can run a task that handles BC's
+    /// bind callback as it arrives.
+    pub debug_session:
+        std::sync::Arc<tokio::sync::Mutex<Option<al_dap::native_debug::NativeDebugSession>>>,
     /// Optional callback for user-visible notifications (bridge failures, etc.).
     ///
     /// Set by al-lsp after workspace construction. In the LSP path the closure
@@ -554,6 +559,12 @@ pub struct Workspace {
     /// on every document open. The entry is reusable only while both its
     /// generation and its document match.
     pub code_lens_reference_counts: std::sync::RwLock<Option<CodeLensReferenceCounts>>,
+    /// Results of the workspace-wide native diagnostic passes, read and
+    /// written by `al-analysis` (its `queries::diagnostics` module), which
+    /// keys them to the generation. Type erased because `al-analysis` depends
+    /// on this crate.
+    pub native_diagnostics_cache:
+        std::sync::Mutex<Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
 /// The stamps of the project files a long running process keeps in memory,
@@ -606,7 +617,7 @@ impl Workspace {
             semantic_init_failure_reported: std::sync::atomic::AtomicBool::new(false),
             package_info: std::sync::RwLock::new(Vec::new()),
             semantic_cache: std::sync::RwLock::new(SemanticCache::new()),
-            debug_session: tokio::sync::Mutex::new(None),
+            debug_session: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
             notify_sink: std::sync::OnceLock::new(),
             trust_advisory: std::sync::OnceLock::new(),
             insight_graph: std::sync::RwLock::new(None),
@@ -626,6 +637,7 @@ impl Workspace {
             test_results: std::sync::RwLock::new(None),
             last_compile_affected: tokio::sync::Mutex::new(std::collections::HashSet::new()),
             code_lens_reference_counts: std::sync::RwLock::new(None),
+            native_diagnostics_cache: std::sync::Mutex::new(None),
         }
     }
 
@@ -1608,7 +1620,14 @@ fn file_object_identities(
 /// If `uri` is not a `file://` URI, the full composed symbol cache is invalidated
 /// as a safe fallback.
 pub fn on_document_change(workspace: &Workspace, uri: &url::Url, text: &str) {
-    let result = al_syntax::AlParser::parse_quick(text);
+    let symbols = uri
+        .to_file_path()
+        .map(|path| workspace.file_index.preprocessor_symbols_for(&path))
+        .unwrap_or_default();
+    workspace
+        .documents
+        .set_preprocessor_symbols(uri, symbols.clone());
+    let result = al_syntax::AlParser::parse_quick_with_symbols(text, &symbols);
 
     let version = workspace.documents.get_version(uri).unwrap_or(0);
     workspace

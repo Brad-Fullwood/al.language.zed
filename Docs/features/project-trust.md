@@ -393,15 +393,7 @@ the target is authorised and the refusal says "Business Central credentials" rat
 naming a cached token. The Run Test code lens in the language server runs the same check
 before it starts a live test.
 
-`profiling` takes `serverUrl`, `username` and `password` from the request. `snapshot` takes its
-server, tenant and sign-in from a launch configuration of the project (`config`, or the first one) and an
-optional `accessToken`, and has no inline server. The rest of this paragraph applies to `profiling`.
-The credential is the caller's, but the server is a string an agent can choose through
-`al_call`, so an inline `serverUrl` must match a launch configuration of a trusted project,
-compared on scheme, host and the port the client connects to (the URL's own, or 443 or 80 by
-scheme). Their `acceptInvalidCerts` is refused unless that launch configuration sets it for
-the same server. A request with no `serverUrl` gets the daemon's loopback default, which no
-caller chose, and `acceptInvalidCerts` is dropped for it.
+`profiling` uses a launch configuration, OAuth and the snapshot debugger API, and cloud profiling passes the tenant guard. `snapshot` takes its server, tenant and sign-in from a launch configuration of the project (`config`, or the first one) and an optional `accessToken`, and has no inline server.
 
 ### Where the caller brings its own credential
 
@@ -448,8 +440,7 @@ configuration is the declaration. The first connection per session logs the tena
 and kind. A customer tenant is refused unless the configuration carries `tenantPurpose`. A
 tenant that is not in the registry is refused in the editor too.
 
-Profiling takes an on-premises `serverUrl` with Basic authentication and has no cloud path, so
-the guard does not apply to it.
+Profiling uses a launch configuration, OAuth and the snapshot debugger API, and cloud profiling passes the tenant guard.
 
 ## Limits
 
@@ -461,8 +452,8 @@ with no filesystem and no process.
 `binary.path` and `binary.arguments` name a program and its command line, and `binary.path`
 decides whether al-lsp runs at all, so al-lsp cannot refuse them on the extension's behalf.
 The extension ignores both, and the debug adapter path with them. Which `al-lsp` runs is the
-extension's own decision: the session cache, then `al-lsp` on `PATH`, then the cached or
-downloaded release. Put a specific build on `PATH` to use it.
+extension's own decision: `dev/al-lsp` from `make install`, then the session cache, then the
+GitHub release tagged with the extension's version. `PATH` is not consulted.
 
 `binary.arguments`, `binary.env` and `lsp.al-lsp.initialization_options` are in the digest
 even so. A project trusted while `binary.path` said `/bin/sh` went stale only when the path

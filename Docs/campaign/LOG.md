@@ -1,5 +1,7 @@
 # Campaign log
 
+> Archive: this file records the September 2026 improvement campaign and work filed under it. Current state is in `ROADMAP.md` at the repository root.
+
 Append-only. Newest entry last.
 
 ## 2026-09-21 01:30 BST: setup

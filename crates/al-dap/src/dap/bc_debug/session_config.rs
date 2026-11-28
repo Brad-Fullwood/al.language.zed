@@ -468,18 +468,14 @@ impl BcDebugConfig {
     }
 
     fn onprem_base_on_port(&self, port: u16) -> String {
-        // A bare host gets the scheme the credential authorisation judged it
-        // by, through the same function.
-        let server = self
-            .server
-            .as_deref()
-            .map(|server| {
-                al_bc::launch::server_with_scheme(server).unwrap_or_else(|| server.to_string())
-            })
-            .unwrap_or_else(|| "http://localhost".to_string());
+        // `port` replaces any port written in `server`, because the snapshot
+        // debugger listens on its own port. onprem_origin applies the scheme
+        // rule the credential authorisation uses.
+        let server = self.server.as_deref().unwrap_or("http://localhost");
+        let origin = al_bc::launch::onprem_origin(server, Some(port), port)
+            .unwrap_or_else(|| al_bc::bc_client::REJECTED_SERVER_BASE_URL.to_string());
         let instance = self.server_instance.as_deref().unwrap_or("BC");
-        let host = format!("{}:{}", server.trim_end_matches('/'), port);
-        format!("{host}/{instance}")
+        format!("{origin}/{instance}")
     }
 
     pub fn base_url(&self) -> String {
@@ -1150,6 +1146,15 @@ mod tests {
     fn onprem_base_trims_trailing_slash_on_server() {
         let cfg = onprem_config("http://bc.local/", "BC", 7049);
         assert_eq!(cfg.base_url(), "http://bc.local:7049/BC/dev");
+    }
+
+    #[test]
+    fn snapshot_base_uses_snapshot_port_not_server_port() {
+        let mut cfg = onprem_config("https://bc.corp.local:7049", "BC", 7049);
+        cfg.snapshot_port = Some(7083);
+        let base = cfg.snapshot_base_url();
+        assert!(base.starts_with("https://bc.corp.local:7083/"), "{base}");
+        assert!(!base.contains("7049"), "{base}");
     }
 
     #[test]

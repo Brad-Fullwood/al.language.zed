@@ -997,7 +997,7 @@ async fn download_symbols_from_server(
     };
     // The launch configuration ships in the repository, and this download
     // presents the user's Business Central credential to the server it names.
-    if let Err(error) = al_project::trust::authorize_cached_credential(
+    let authorization = match al_project::trust::authorize_cached_credential(
         &project.root,
         &al_project::trust::BcTarget::from_launch(config),
         match config.authentication {
@@ -1006,11 +1006,14 @@ async fn download_symbols_from_server(
         },
         al_project::trust::TargetSource::Repository,
     ) {
-        return DownloadBatch {
-            paths: Vec::new(),
-            failures: vec![error],
-        };
-    }
+        Ok(authorization) => authorization,
+        Err(error) => {
+            return DownloadBatch {
+                paths: Vec::new(),
+                failures: vec![error],
+            };
+        }
+    };
     info!(
         config = %config.name,
         server = %config.display_name(),
@@ -1039,7 +1042,9 @@ async fn download_symbols_from_server(
         al_bc::launch::AuthMethod::UserPassword => al_symbols::bc_server::AuthMethod::UserPassword,
         al_bc::launch::AuthMethod::AAD => al_symbols::bc_server::AuthMethod::AAD,
     };
-    let insecure_tls = config.accept_invalid_certs;
+    // Same rule as symbols_auth::effective_insecure_tls. That helper is private
+    // to the daemon module, so the rule is written out here.
+    let insecure_tls = config.accept_invalid_certs && authorization.may_accept_invalid_certs;
     let client = match al_symbols::bc_server::BcServerClient::new(
         auth,
         config.tenant.clone(),
@@ -1047,8 +1052,9 @@ async fn download_symbols_from_server(
         insecure_tls,
     )
     .and_then(|c| {
-        let settings = al_symbols::oauth::AuthSettings::from_launch_value(&config.debug_args)
-            .map_err(al_symbols::bc_server::BcServerError::OAuth)?;
+        let settings =
+            al_symbols::oauth::AuthSettings::for_launch(Some(&project.root), &config.debug_args)
+                .map_err(al_symbols::bc_server::BcServerError::OAuth)?;
         Ok(c.with_auth_settings(settings))
     }) {
         Ok(c) => c,
