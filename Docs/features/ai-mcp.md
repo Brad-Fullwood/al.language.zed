@@ -24,6 +24,14 @@ a daemon `Request`, calls `dispatch_request()`, and serializes the result.
 answered while a long call (a live-BC `al_testsnapshot`, a full `al_build`) runs, and a client can
 tell a busy server from a dead one. Responses are written under a single stdout lock and may
 therefore arrive out of request order, which JSON-RPC allows.
+At most 8 `tools/call` requests run at once. Later calls wait in arrival order for a free slot,
+with no limit on how many wait. `ping` and `notifications/cancelled` are answered while they wait,
+and a call cancelled while it waits does not start. A `tools/call` that reuses the `id` of a call
+that is still running is refused with error code `-32600`, and the running call goes on and can
+still be cancelled.
+The tools that write files (format, the fix methods and `sortMembers`) write nothing when the file
+changed on disk after the daemon read it, and answer an error that says to run the command again.
+See "Files changed on disk" under [Transport](daemon-protocol.md#transport-al-protocol).
 `notifications/cancelled` aborts the matching in-flight `tools/call` by `requestId`. Cancellation
 aborts the MCP task but does not roll back work already handed to an external process: a running
 `alc` build or a live BC test run continues to completion. Everything other than `tools/call` is
