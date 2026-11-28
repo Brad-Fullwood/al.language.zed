@@ -261,6 +261,39 @@ async fn tools_call_freeids_returns_the_next_free_id_for_a_kind() {
     );
 }
 
+/// `structured_content_matches_output_schema` checks hand-written payloads. This
+/// checks what the dispatcher returns for a real call.
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_call_getdiagnostics_matches_output_schema() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../al-test-harness/data/test_al_project");
+    let workspace = ws();
+    al_workspace::initialize_core_workspace(&workspace, &root)
+        .await
+        .expect("fixture project must initialize");
+
+    let resp = handle_mcp_message(
+        &workspace,
+        &Notify::new(),
+        serde_json::json!({
+            "jsonrpc":"2.0","id":32,"method":"tools/call",
+            "params": {
+                "name": "al_getdiagnostics",
+                "arguments": {"file": root.join("src/HelloWorld.al").display().to_string()}
+            }
+        }),
+    )
+    .await
+    .expect("response");
+    assert_eq!(resp["result"]["isError"], false, "resp: {resp}");
+    validate_schema_value(
+        &resp["result"]["structuredContent"],
+        &output_schema("al_getdiagnostics"),
+        "structuredContent",
+    )
+    .expect("al_getdiagnostics output must match its advertised output schema");
+}
+
 #[tokio::test]
 async fn tools_call_freeids_rejects_an_unknown_kind_at_the_schema() {
     let resp = handle_mcp_message(
@@ -906,6 +939,26 @@ fn cancellation_keys_distinguish_string_and_numeric_ids() {
         cancellation_key(&serde_json::json!(7)),
         cancellation_key(&serde_json::json!("7"))
     );
+}
+
+#[tokio::test]
+async fn a_running_call_id_is_refused() {
+    let mut in_flight: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
+    in_flight.insert("7".to_string(), tokio::spawn(std::future::pending::<()>()));
+
+    let refusal = duplicate_call_error(&in_flight, "7", &serde_json::json!(7))
+        .expect("a second call with a running id must be refused");
+    assert_eq!(refusal["error"]["code"], -32600);
+    assert_eq!(refusal["id"], 7);
+    assert_eq!(
+        refusal["error"]["message"],
+        "request id 7 is already in use by a running call"
+    );
+    assert!(duplicate_call_error(&in_flight, "8", &serde_json::json!(8)).is_none());
+
+    if let Some(handle) = in_flight.remove("7") {
+        handle.abort();
+    }
 }
 
 #[tokio::test]

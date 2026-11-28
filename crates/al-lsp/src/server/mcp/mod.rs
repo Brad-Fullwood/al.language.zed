@@ -13,6 +13,7 @@
 //! daemon-dispatch parameters; validation happens in the dispatchers, which
 //! already return structured JSON-RPC errors.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1789,6 +1790,30 @@ fn cancellation_key(id: &serde_json::Value) -> String {
     id.to_string()
 }
 
+/// Refusal for a `tools/call` whose id matches a call still running. The
+/// running call keeps its handle, so cancelling it still works. Replacing the
+/// handle would drop the old one without aborting it, and both calls would
+/// answer with the same id.
+fn duplicate_call_error(
+    in_flight: &HashMap<String, tokio::task::JoinHandle<()>>,
+    key: &str,
+    id: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let running = in_flight
+        .get(key)
+        .is_some_and(|handle| !handle.is_finished());
+    running.then(|| {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32600,
+                "message": format!("request id {id} is already in use by a running call"),
+            }
+        })
+    })
+}
+
 /// Whether a message is a well-formed `tools/call` request — the only method
 /// that can run long enough to justify concurrent dispatch.
 fn is_long_running_call(msg: &serde_json::Value) -> bool {
@@ -1850,8 +1875,7 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
     // every frame is written under one lock — MCP frames must not interleave.
     let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
     let mut lifecycle = McpLifecycle::default();
-    let mut in_flight: std::collections::HashMap<String, tokio::task::JoinHandle<()>> =
-        std::collections::HashMap::new();
+    let mut in_flight: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
     let call_permits = Arc::new(tokio::sync::Semaphore::new(MAX_MCP_CALLS_IN_FLIGHT));
     loop {
         // Bounded read: an unbounded `read_line` lets one huge client line
@@ -1911,6 +1935,13 @@ pub async fn run_mcp(project_root: PathBuf) -> Result<(), Box<dyn std::error::Er
                 .get("id")
                 .map(cancellation_key)
                 .unwrap_or_else(|| "null".to_string());
+            if let Some(frame) = msg
+                .get("id")
+                .and_then(|id| duplicate_call_error(&in_flight, &key, id))
+            {
+                write_mcp_frame(&stdout, &frame).await?;
+                continue;
+            }
             let task_workspace = Arc::clone(&workspace);
             let task_shutdown = Arc::clone(&shutdown);
             let task_stdout = Arc::clone(&stdout);
