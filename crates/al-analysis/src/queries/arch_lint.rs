@@ -268,11 +268,13 @@ pub fn arch_lint(
         // apply to the later objects' kinds.
         for (object, node) in source.object_nodes() {
             let obj_kind_lower = object.info.kind.to_lowercase();
+            // Disabled `#if` branches are blanked so a rule never matches code the build drops.
+            let object_text = al_syntax::lint::text_without_inactive_code(node, &source.text);
             for rule in config.rules.iter().chain(builtin.iter()) {
                 apply_rule(
                     &file_path,
                     &source.text,
-                    object.text(&source.text),
+                    &object_text,
                     object.first_line(),
                     node,
                     &object.info,
@@ -963,6 +965,28 @@ page 50101 "Ship Card"
         assert!(
             v.iter().any(|x| x.rule_id == "BUILTIN-TABLE-NO-PAGE-RUN"),
             "Table running a page must be flagged: {v:?}"
+        );
+    }
+
+    #[test]
+    fn inactive_branch_is_not_matched() {
+        let ws = workspace_with(vec![(
+            "/src/Order.al",
+            r#"table 50100 "Order"
+{
+    fields { field(1; "No."; Code[20]) { } }
+    trigger OnInsert()
+    begin
+#if NOTDEFINED
+        Page.Run(Page::"Order List");
+#endif
+    end;
+}"#,
+        )]);
+        let v = arch_lint(&ws, &ArchConfig::default()).unwrap();
+        assert!(
+            !v.iter().any(|x| x.rule_id == "BUILTIN-TABLE-NO-PAGE-RUN"),
+            "a Page.Run in a disabled branch is not built: {v:?}"
         );
     }
 

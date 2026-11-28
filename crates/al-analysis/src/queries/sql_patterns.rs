@@ -40,7 +40,7 @@ pub fn detect_sql_patterns(
         for (object, node) in source.object_nodes() {
             scan_procedures(
                 node,
-                source.text.as_bytes(),
+                &source.text,
                 &file_path,
                 &object.info.name,
                 &mut violations,
@@ -53,7 +53,7 @@ pub fn detect_sql_patterns(
 
 fn scan_procedures(
     root: tree_sitter::Node,
-    source: &[u8],
+    source: &str,
     file_path: &str,
     object_name: &str,
     violations: &mut Vec<SqlPatternViolation>,
@@ -61,19 +61,19 @@ fn scan_procedures(
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         if matches!(node.kind(), "procedure_declaration" | "trigger_declaration") {
-            let proc_name = al_syntax::node_name_or(node, source, "(unknown)");
+            let proc_name = al_syntax::node_name_or(node, source.as_bytes(), "(unknown)");
 
-            if let Ok(proc_text) = node.utf8_text(source) {
-                let start_line = node.start_position().row as u32 + 1;
-                analyze_proc_text(
-                    proc_text,
-                    start_line,
-                    file_path,
-                    object_name,
-                    &proc_name,
-                    violations,
-                );
-            }
+            // Disabled `#if` branches are blanked, so their calls are not analysed.
+            let proc_text = al_syntax::lint::text_without_inactive_code(node, source);
+            let start_line = node.start_position().row as u32 + 1;
+            analyze_proc_text(
+                &proc_text,
+                start_line,
+                file_path,
+                object_name,
+                &proc_name,
+                violations,
+            );
             // Do not recurse into procedure body
             continue;
         }
@@ -106,10 +106,13 @@ fn analyze_proc_text(
     violations: &mut Vec<SqlPatternViolation>,
 ) {
     let mut stack: Vec<Frame> = Vec::new();
-    // Filters are tracked *per record variable*: a single procedure-wide flag
-    // meant `Customer.SetRange(...); Vendor.FindSet();` suppressed the warning
-    // for the unrelated `Vendor`.
-    let mut filtered_records: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // Filters are tracked *per record variable* and per field: a single
+    // procedure-wide flag meant `Customer.SetRange(...); Vendor.FindSet();`
+    // suppressed the warning for the unrelated `Vendor`. A record stays
+    // filtered while its field set is non-empty, so a one-argument
+    // `SetRange("No.")` clears only `No.`.
+    let mut filtered_records: std::collections::HashMap<String, std::collections::HashSet<String>> =
+        std::collections::HashMap::new();
     // A `var` Record parameter keeps the filters its caller set, so an
     // unfiltered-looking `FindSet` on it is not evidence of a full scan.
     // Only `Reset` on the parameter ends that assumption.
@@ -172,10 +175,16 @@ fn analyze_proc_text(
             )
         });
 
-        for (receiver, method) in record_method_calls(&lower) {
+        for (receiver, method, method_end) in record_method_sites(&lower) {
             match method {
                 "setrange" | "setfilter" => {
-                    filtered_records.insert(receiver.to_string());
+                    let (field, sets) = filter_call_effect(&lower, method_end);
+                    let fields = filtered_records.entry(receiver.to_string()).or_default();
+                    if sets {
+                        fields.insert(field);
+                    } else {
+                        fields.remove(&field);
+                    }
                 }
                 // `Reset` clears every filter on the record variable.
                 "reset" => {
@@ -232,7 +241,10 @@ fn analyze_proc_text(
             if method != "findset" {
                 continue;
             }
-            if !filtered_records.contains(receiver) && !caller_filtered.contains(receiver) {
+            let filtered = filtered_records
+                .get(receiver)
+                .is_some_and(|fields| !fields.is_empty());
+            if !filtered && !caller_filtered.contains(receiver) {
                 violations.push(make_violation(
                     SqlAntiPattern::FindSetWithoutFilters,
                     "FindSet() without filters causes full table scan",
@@ -328,6 +340,12 @@ fn contains_record_method(lower: &str, method: &str) -> bool {
 /// Iterate `(receiver, method)` pairs for every `<receiver>.<method>` in
 /// `lower`, where `lower` is an already-lowercased, literal-stripped line.
 fn record_method_calls(lower: &str) -> impl Iterator<Item = (&str, &str)> + '_ {
+    record_method_sites(lower).map(|(receiver, method, _)| (receiver, method))
+}
+
+/// Like `record_method_calls`, and also yields the byte index just past the
+/// method name, where the argument list starts.
+fn record_method_sites(lower: &str) -> impl Iterator<Item = (&str, &str, usize)> + '_ {
     let bytes = lower.as_bytes();
     let mut index = 0usize;
     std::iter::from_fn(move || {
@@ -348,10 +366,60 @@ fn record_method_calls(lower: &str) -> impl Iterator<Item = (&str, &str)> + '_ {
             if receiver.is_empty() {
                 continue;
             }
-            return Some((receiver, &lower[method_start..method_end]));
+            return Some((receiver, &lower[method_start..method_end], method_end));
         }
         None
     })
+}
+
+/// Reads the first argument of a `SetRange` or `SetFilter` call on one line.
+/// Returns `(field, sets)`. A one-argument call clears the field, so `sets` is
+/// false. A call with two or more arguments sets it, and so does a call whose
+/// closing paren is on a later line.
+///
+/// `method_end` is the byte index just past the method name. The field key drops
+/// surrounding double quotes, so `"No."` and `No.` name the same field. `lower`
+/// is one lowercased line with its text literals blanked, so only double quotes
+/// need tracking.
+fn filter_call_effect(lower: &str, method_end: usize) -> (String, bool) {
+    let rest = &lower[method_end..];
+    let argument_list = rest.trim_start();
+    if !argument_list.starts_with('(') {
+        return (String::new(), true);
+    }
+    let open = lower.len() - argument_list.len();
+    let bytes = lower.as_bytes();
+    let mut depth = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut first_separator = None;
+    let mut commas = 0usize;
+    let mut close = None;
+    for (index, &byte) in bytes.iter().enumerate().skip(open + 1) {
+        match byte {
+            b'\'' if !in_double => in_single = !in_single,
+            b'"' if !in_single => in_double = !in_double,
+            _ if in_single || in_double => {}
+            b'(' => depth += 1,
+            b')' if depth > 0 => depth -= 1,
+            b')' => {
+                close = Some(index);
+                break;
+            }
+            b',' if depth == 0 => {
+                commas += 1;
+                first_separator.get_or_insert(index);
+            }
+            _ => {}
+        }
+    }
+    let field_end = first_separator.or(close).unwrap_or(bytes.len());
+    let field = lower[open + 1..field_end].trim();
+    let field = field
+        .strip_prefix('"')
+        .and_then(|name| name.strip_suffix('"'))
+        .unwrap_or(field);
+    (field.to_string(), close.is_none() || commas > 0)
 }
 
 /// The identifier chain immediately preceding the `.` at `dot`.
@@ -956,5 +1024,87 @@ codeunit 50101 "Second CU"
             .filter(|v| v.kind == SqlAntiPattern::CalcFieldsInLoop)
             .collect();
         assert_eq!(calc.len(), 1, "only Other is reported: {violations:?}");
+    }
+
+    #[test]
+    fn inactive_setrange_does_not_count() {
+        let source = r#"codeunit 50100 "T"
+{
+    procedure Run()
+    var
+        Customer: Record Customer;
+    begin
+#if NOTDEFINED
+        Customer.SetRange("No.", 'X');
+#endif
+        if Customer.FindSet() then;
+    end;
+}
+"#;
+        let without_symbols =
+            detect_sql_patterns(&workspace_with(vec![("/src/T.al", source)])).unwrap();
+        assert!(
+            without_symbols
+                .iter()
+                .any(|v| v.kind == SqlAntiPattern::FindSetWithoutFilters),
+            "NOTDEFINED is off, so the SetRange is not run: {without_symbols:?}"
+        );
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("app.json"),
+            r#"{"id":"00000000-0000-0000-0000-000000000001","name":"a","preprocessorSymbols":["NOTDEFINED"]}"#,
+        )
+        .unwrap();
+        let file = dir.path().join("T.Codeunit.al");
+        let with_symbol =
+            detect_sql_patterns(&workspace_with(vec![(file.to_str().unwrap(), source)])).unwrap();
+        assert!(
+            !with_symbol
+                .iter()
+                .any(|v| v.kind == SqlAntiPattern::FindSetWithoutFilters),
+            "NOTDEFINED is defined, so the SetRange filters the record: {with_symbol:?}"
+        );
+    }
+
+    #[test]
+    fn clearing_the_last_filter_reports_findset() {
+        let violations = violations_for(
+            r#"    procedure Run()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.SetRange("No.", 'X');
+        Customer.SetRange("No.");
+        if Customer.FindSet() then;
+    end;"#,
+        );
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.kind == SqlAntiPattern::FindSetWithoutFilters),
+            "clearing the only filter leaves the FindSet unfiltered: {violations:?}"
+        );
+    }
+
+    #[test]
+    fn clearing_one_of_two_filters_keeps_the_record_filtered() {
+        let violations = violations_for(
+            r#"    procedure Run()
+    var
+        Customer: Record Customer;
+    begin
+        Customer.SetRange("No.", 'X');
+        Customer.SetRange(Name, 'Y');
+        Customer.SetRange("No.");
+        if Customer.FindSet() then;
+    end;"#,
+        );
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.kind == SqlAntiPattern::FindSetWithoutFilters),
+            "Name is still filtered: {violations:?}"
+        );
     }
 }
