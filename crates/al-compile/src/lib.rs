@@ -931,6 +931,12 @@ fn find_app_file_from_manifest(project_root: &Path) -> Result<Option<PathBuf>, A
 mod tests {
     use super::*;
 
+    /// Held by every test that sets or removes `AL_COMPILE_TIMEOUT_SECS`,
+    /// `AL_DOTNET_PATH` or `XDG_CONFIG_HOME`, or runs `compile_project` while
+    /// one of them is changed. The environment is process-wide, so these tests
+    /// must not overlap on any of the three variables.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn analyzer_test_toolchain(root: &Path) -> AlToolchain {
         AlToolchain {
             version: "1.0.0".to_string(),
@@ -952,16 +958,9 @@ mod tests {
     /// A name the user wrote resolves to the project's own `.netpackages` copy
     /// only once the project is trusted. Before, a clone that shipped a DLL of
     /// that name had it passed to alc as `/analyzer:` on every build.
-    ///
-    /// Held by the tests that point `XDG_CONFIG_HOME` somewhere else. Every
-    /// other test reads an untrusted store either way.
-    static TRUST_STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn named_custom_analyzer_in_the_project_needs_trust() {
-        let _lock = TRUST_STORE_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let config = tempfile::tempdir().unwrap();
         let previous = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", config.path());
@@ -1008,9 +1007,7 @@ mod tests {
     #[test]
     fn a_build_does_not_run_a_project_dotnet_whose_runtime_changed() {
         use std::os::unix::fs::PermissionsExt;
-        let _lock = TRUST_STORE_LOCK
-            .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+        let _lock = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let config = tempfile::tempdir().unwrap();
         let previous_config = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", config.path());
@@ -1506,17 +1503,10 @@ Build failed.";
         );
     }
 
-    /// Serialize env-var access to avoid races between concurrent #[test] threads.
-    /// (cargo test runs tests in parallel; AL_COMPILE_TIMEOUT_SECS is a process-
-    /// global.)
-    static COMPILE_TIMEOUT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn compile_timeout_default_when_env_unset() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1586,20 +1576,18 @@ Build failed.";
 
     #[test]
     fn compile_timeout_zero_disables_cap() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "0");
         }
         assert_eq!(compile_timeout().unwrap(), None);
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "-1");
         }
         assert_eq!(compile_timeout().unwrap(), None);
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1607,10 +1595,8 @@ Build failed.";
 
     #[test]
     fn compile_timeout_valid_number_used() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "30");
         }
@@ -1618,7 +1604,7 @@ Build failed.";
             compile_timeout().unwrap(),
             Some(std::time::Duration::from_secs(30))
         );
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
@@ -1626,15 +1612,13 @@ Build failed.";
 
     #[test]
     fn compile_timeout_rejects_invalid_value() {
-        let _g = COMPILE_TIMEOUT_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        let _g = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::set_var("AL_COMPILE_TIMEOUT_SECS", "not-a-number");
         }
         assert!(compile_timeout().is_err());
-        // SAFETY: synchronised via COMPILE_TIMEOUT_ENV_LOCK above.
+        // SAFETY: synchronised via ENV_LOCK above.
         unsafe {
             std::env::remove_var("AL_COMPILE_TIMEOUT_SECS");
         }
