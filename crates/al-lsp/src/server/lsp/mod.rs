@@ -1723,11 +1723,9 @@ impl LanguageServer for AlLsp {
 
             // A transient URI is no longer part of the workspace, and even a
             // saved file may have become clean after discarding its overlay.
-            // The clear is sent under the write guard so that no
-            // `publish_if_current` can land after it.
-            self.client
-                .publish_diagnostics(uri.clone(), vec![], None)
-                .await;
+            // `publish_clear` takes `diagnostic_publication`, so no
+            // `publish_if_current` or project pass report lands after it.
+            diagnostics::publish_clear(&self.workspace, &self.client, uri.clone()).await;
             drop(generation);
             if let Some(message) = error_message {
                 self.client.show_message(MessageType::ERROR, message).await;
@@ -1741,7 +1739,7 @@ impl LanguageServer for AlLsp {
             }
         } else {
             drop(generation);
-            self.client.publish_diagnostics(uri, vec![], None).await;
+            diagnostics::publish_clear(&self.workspace, &self.client, uri).await;
         }
     }
 

@@ -431,6 +431,11 @@ pub struct Workspace {
     /// generation. LSP request handlers hold a read guard while querying; a
     /// reindex holds the write guard only for the final in-memory swap.
     pub generation_lock: tokio::sync::RwLock<()>,
+    /// Held by every diagnostics publish around its "is the input still
+    /// current" check and its send, and by the clear a document close sends.
+    /// So a report checked before a close reaches the client before the
+    /// close's clear, without holding edits behind client I/O.
+    pub diagnostic_publication: tokio::sync::Mutex<()>,
     /// Monotonic publication revision used by operations that stage work under
     /// a read guard and then upgrade by reacquiring the write lock.
     pub generation_revision: std::sync::atomic::AtomicU64,
@@ -602,6 +607,7 @@ impl Workspace {
             semantic_lifecycle_lock: tokio::sync::Mutex::new(()),
             file_index: Arc::new(FileIndex::new()),
             generation_lock: tokio::sync::RwLock::new(()),
+            diagnostic_publication: tokio::sync::Mutex::new(()),
             generation_revision: std::sync::atomic::AtomicU64::new(0),
             package_revision: std::sync::atomic::AtomicU64::new(0),
             config: RwLock::new(AlConfig::default()),
