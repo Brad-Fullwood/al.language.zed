@@ -60,7 +60,8 @@ plausible empty results.
   symbols load once: about 8 s on the first request for a Base Application project, then tens of
   milliseconds. Diagnostics are returned for the analyzed file only. Analyzers run through the per-file
   helper Microsoft's language server uses for its `File` analysis scope. A file outside the project
-  folder, such as a rendered symbol file, is compiled alone.
+  folder, such as a rendered symbol file, is compiled alone. A project file over 16 MiB is left out
+  of the compilation with a message on stderr, so it gets no diagnostics.
 - **Project context:** hover and completion forward `al.packageCachePath`, or the discovered project's
   package directory, and the project root. Inside the project they use the same project compilation
   as diagnostics, so they see objects declared in other project files.

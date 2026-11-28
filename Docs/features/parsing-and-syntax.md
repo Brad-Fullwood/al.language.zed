@@ -67,7 +67,8 @@ Position-aware helpers used by go-to-definition, references, and rename:
 - `find_variable_references`, `find_call_references`, `find_event_subscriber_references`,
   `collect_call_site_names`: reference collection with exact-span dedup.
 
-Because object names are not a named field in the grammar, `extract_object_name` scans children for
+`extract_object_name` reads the `name` field of the object header (`tree-sitter-al/grammar.js`). When
+that field is missing, as in a partly parsed header, it scans the children for
 identifier/quoted-identifier/string/name nodes.
 
 ### Type resolution (`type_resolver.rs`)
@@ -98,6 +99,13 @@ All `FormatOptions` are honored: `tab_size`, `insert_spaces`, `keyword_casing`
 `al.formatting.*` editor settings. Line wrapping intentionally targets supported single-line object
 properties rather than attempting general expression reflow.
 
+A whole document format applies every option. A range format (`format_range`) formats the whole
+document for context and returns one edit for the selected lines. It applies indentation, keyword
+casing and `blank_lines_between_procedures`, so a gap between two procedures inside the selection
+gets the policy's count of blank lines, the same as a whole document format. It skips the options
+that move or split lines: `brace_style`, `sort_properties` and the `max_line_length` wrap. A
+document with CRLF line endings keeps them in the edit.
+
 ### Sort (`sort.rs`)
 
 `sort_members` finds each object body with the syntax tree and sorts every object in the file on
@@ -123,14 +131,14 @@ keyword/type/builtin lists from a single source of truth.
 | Aspect | This project | Microsoft AL extension |
 | --- | --- | --- |
 | Grammar | tree-sitter AL grammar (generated), used natively in Rust | TextMate grammar for highlighting + the .NET compiler for structure |
-| Tokenization | 43-class semantic tokenizer, AL-aware | TextMate scopes + server semantic tokens |
+| Tokenization | 47-class semantic tokenizer, AL-aware | TextMate scopes + server semantic tokens |
 | Reusability | tokens/nav/complexity available to LSP, CLI, MCP, and analysis | coupled to the VS Code extension/server |
 | Complexity metrics | built-in (`metrics`) | not provided |
 | Formatter | native, fast, all documented native options wired | compiler/extension formatter (broader compatibility surface) |
 
 ## Why this approach
 
-A tree-sitter front end gives error-resilient, incremental parsing that runs in-process in Rust on
+A tree-sitter front end gives error-resilient parsing that runs in-process in Rust on
 every surface (the editor, the CLI, CI, and MCP tools) instead of only inside a .NET
 language server. Driving the vocabulary from generated JSON data (rather than hard-coded lists) keeps
 the parser and the analysis layer in sync with the grammar and avoids the classic "the highlighter

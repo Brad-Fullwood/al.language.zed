@@ -209,7 +209,7 @@ with the right filename but the wrong identity/version does not count as satisfi
   an object's signatures, fields, keys, enum values and properties, but procedure *bodies* are
   compiled away. A symbol package does not carry them. Consequences:
   - When a package has no embedded source, navigation opens a **reconstructed outline** (see
-    `virtual_file::render_outline`): valid AL with full signatures but no `begin…end` bodies.
+    `virtual_file::render_outline`): valid AL with full signatures, and an empty `begin end;` wherever AL needs a body.
     Name-scoped kinds (interface, profile, controladdin, …) render without a numeric object ID, and
     any name that is not a plain identifier is quoted (embedded quotes doubled). That
     virtual file is now prefixed with an explicit header (`virtual_file::OUTLINE_NOTE`) stating it is
