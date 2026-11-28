@@ -147,16 +147,28 @@ pub(in crate::server::daemon) async fn dispatch_authenticate(
         }
         "clear" => {
             let tenants = get_project_tenants(workspace);
-            let tenant_filter = params.get("tenant").and_then(|v| v.as_str());
+            let tenant_filter = params
+                .get("tenant")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|t| !t.is_empty());
             let mut cleared = 0;
+            let mut matched = false;
             for tenant in &tenants {
                 if let Some(filter) = tenant_filter {
-                    if tenant != filter {
+                    if !tenant.eq_ignore_ascii_case(filter) {
                         continue;
                     }
                 }
+                matched = true;
                 // Clears both the OS keyring entry and any legacy plaintext file.
                 if al_symbols::oauth::invalidate_cached_token(tenant) {
+                    cleared += 1;
+                }
+            }
+            // A token for a tenant the project no longer lists can still be cleared.
+            if let (Some(filter), false) = (tenant_filter, matched) {
+                if al_symbols::oauth::invalidate_cached_token(filter) {
                     cleared += 1;
                 }
             }
@@ -1298,6 +1310,48 @@ mod tests {
         assert_eq!(tenants[0]["tenant"], other);
         assert_eq!(tenants[0]["authenticated"], false);
         assert_eq!(tenants[0]["configured"], false);
+    }
+
+    #[tokio::test]
+    async fn clear_matches_tenant_case_insensitively() {
+        // A tenant no real account uses, so the keyring has no entry for it.
+        const TENANT: &str = "a3a3a3a3-0000-4000-8000-00000000c1ea";
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = workspace_with_tenant(tmp.path(), TENANT).await;
+        let file = al_symbols::oauth::token_cache_path(TENANT);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"{}").unwrap();
+
+        let typed = format!(" {} ", TENANT.to_ascii_uppercase());
+        let resp = dispatch_authenticate(
+            &ws,
+            1,
+            &serde_json::json!({ "cmd": "clear", "tenant": typed }),
+        )
+        .await;
+        assert!(resp.error.is_none(), "{:?}", resp.error);
+        assert_eq!(resp.result.expect("result")["cleared"], 1);
+        assert!(!file.exists());
+    }
+
+    #[tokio::test]
+    async fn clear_removes_a_token_for_a_tenant_the_project_does_not_list() {
+        const LISTED: &str = "a3a3a3a3-0000-4000-8000-00000000c1eb";
+        const UNLISTED: &str = "a3a3a3a3-0000-4000-8000-00000000c1ec";
+        let tmp = tempfile::tempdir().unwrap();
+        let ws = workspace_with_tenant(tmp.path(), LISTED).await;
+        let file = al_symbols::oauth::token_cache_path(UNLISTED);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"{}").unwrap();
+
+        let resp = dispatch_authenticate(
+            &ws,
+            1,
+            &serde_json::json!({ "cmd": "clear", "tenant": UNLISTED }),
+        )
+        .await;
+        assert_eq!(resp.result.expect("result")["cleared"], 1);
+        assert!(!file.exists());
     }
 
     #[tokio::test]
