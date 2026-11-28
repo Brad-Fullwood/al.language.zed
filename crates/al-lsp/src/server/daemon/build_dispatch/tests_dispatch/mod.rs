@@ -1354,12 +1354,31 @@ async fn ensure_result_store(
             return Ok(());
         }
     }
+    #[cfg(not(test))]
     let store = al_test::TestResultStore::open_for_project(project_root).await?;
+    #[cfg(test)]
+    let store = al_test::TestResultStore::open(unit_test_result_path(project_root)).await?;
     let mut guard = workspace.test_results.write().map_err(|_| {
         al_test::PersistenceError::Io(std::io::Error::other("test_results lock poisoned"))
     })?;
     *guard = Some(std::sync::Arc::new(store));
     Ok(())
+}
+
+/// The results file the al-lsp unit tests use in place of the per-user data
+/// directory, which `open_for_project` would write a state directory into on
+/// every run. One directory per test process under the system temp dir, one
+/// file per project root. The integration tests get the same isolation from
+/// `al_test_harness::isolate_test_environment`, which this crate cannot use.
+#[cfg(test)]
+fn unit_test_result_path(project_root: &std::path::Path) -> std::path::PathBuf {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    project_root.hash(&mut hasher);
+    std::env::temp_dir()
+        .join(format!("al-lsp-unit-{}", std::process::id()))
+        .join(format!("{:016x}", hasher.finish()))
+        .join("test-results.json")
 }
 async fn write_junit_to_path(
     summaries: &[al_test::result::TestCodeunitResult],
