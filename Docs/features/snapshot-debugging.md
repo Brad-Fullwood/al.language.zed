@@ -81,6 +81,8 @@ Before it asks the server to finish, `finish` creates a staging file `.<context>
 3. When the output folder fails, the staging file is renamed to `<store dir>/<context>.zip`.
 4. When the staging write failed as well (for example a full disk that holds both the store and the project), a private folder on the runtime filesystem: `$XDG_RUNTIME_DIR/al-lsp/snapshot-recovery`, or a new `al-lsp-snapshot-<pid>-<n>` folder under the temp dir when there is no runtime dir.
 
+If a staging file from an earlier finish already holds a complete zip, finish moves it to `<store dir>/<context>.zip`, stops without asking the server, and names that path.
+
 The message names the path where the zip was kept. The zip is lost only when the store, the output folder and the recovery folder all cannot be written. The message then names the three places and gives the byte count. When the adapter creates the output folder it also writes
 a `.gitignore` with `*` into it. An existing folder is left alone. `al-explorer snapshot finish` does the same from a
 terminal.
