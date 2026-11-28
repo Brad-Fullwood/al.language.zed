@@ -920,7 +920,11 @@ async fn write_frame<W: tokio::io::AsyncWrite + Unpin>(
 /// inline on the async connection task stalls the tokio worker that drives I/O
 /// for *every* connection, so they get the same treatment `deadCode` already
 /// had.
-async fn offload<F>(id: u64, method: &'static str, work: F) -> Response
+pub(in crate::server::daemon) async fn offload<F>(
+    id: u64,
+    method: &'static str,
+    work: F,
+) -> Response
 where
     F: FnOnce() -> Response + Send + 'static,
 {
@@ -1446,13 +1450,30 @@ dispatch_table! {
         "deps" [] => lsp_dispatch::dispatch_deps(workspace, id),
         "lint" [read] => build_dispatch::dispatch_lint(workspace, id, &params).await,
         "format" [write] => build_dispatch::dispatch_format(workspace, id, &params).await,
-        "fix" [write] => build_dispatch::dispatch_fix(workspace, id, &params),
-        "fix.applicationArea" [] => {
-            build_dispatch::dispatch_fix_application_area(workspace, id, &params)
+        "fix" [write] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix", move || build_dispatch::dispatch_fix(&ws, id, &args)).await
         },
-        "fix.tooltips" [] => build_dispatch::dispatch_fix_tooltips(workspace, id, &params),
+        "fix.applicationArea" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix.applicationArea", move || {
+                build_dispatch::dispatch_fix_application_area(&ws, id, &args)
+            })
+            .await
+        },
+        "fix.tooltips" [] => {
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix.tooltips", move || {
+                build_dispatch::dispatch_fix_tooltips(&ws, id, &args)
+            })
+            .await
+        },
         "fix.dataClassification" [] => {
-            build_dispatch::dispatch_fix_data_classification(workspace, id, &params)
+            let (ws, args) = (Arc::clone(workspace), params.clone());
+            offload(id, "fix.dataClassification", move || {
+                build_dispatch::dispatch_fix_data_classification(&ws, id, &args)
+            })
+            .await
         },
         "rules" [] => build_dispatch::dispatch_rules(id),
         "parse" [read] => build_dispatch::dispatch_parse(workspace, id, &params),

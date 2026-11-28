@@ -2365,6 +2365,65 @@ mod dispatch_tests {
         }
     }
 
+    /// `lint` with `all: true` reaches `cached_project_pass`, which takes the
+    /// `build_lock` shared by every project pass key. Here another pass holds
+    /// that lock. The lint call must wait on the blocking pool, so the runtime
+    /// thread stays free to run the task that releases the lock.
+    #[tokio::test]
+    async fn lint_does_not_block_the_runtime_while_a_project_pass_runs() {
+        let ws = std::sync::Arc::new(al_workspace::Workspace::new());
+        ws.file_index.add_file(
+            PathBuf::from("/proj/src/Hello.al"),
+            "codeunit 50100 \"Hello\"\n{\n}\n".to_string(),
+        );
+
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder_ws = std::sync::Arc::clone(&ws);
+        let holder = std::thread::spawn(move || {
+            holder_ws
+                .cached_project_pass("verify_r2_hold", || {
+                    held_tx.send(()).unwrap();
+                    release_rx.recv_timeout(Duration::from_secs(5)).ok();
+                    Ok::<u8, ()>(0)
+                })
+                .unwrap();
+        });
+        held_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the held project pass did not start");
+
+        let ran_while_held = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lint_ws = std::sync::Arc::clone(&ws);
+        let lint_flag = std::sync::Arc::clone(&ran_while_held);
+        let lint = tokio::spawn(async move {
+            let shutdown = Notify::new();
+            let req = Request::new(1, "lint", Some(serde_json::json!({ "all": true })));
+            let resp = dispatch_request(&lint_ws, req, &shutdown).await;
+            // Read the flag as the answer arrives. Reading it later in the
+            // test would see the release task's write on the old code too.
+            let flag_at_answer = lint_flag.load(std::sync::atomic::Ordering::SeqCst);
+            (resp, flag_at_answer)
+        });
+
+        tokio::spawn(async move {
+            ran_while_held.store(true, std::sync::atomic::Ordering::SeqCst);
+            let _ = release_tx.send(());
+        });
+
+        let (resp, flag_at_answer) = tokio::time::timeout(Duration::from_secs(10), lint)
+            .await
+            .expect("lint did not answer within 10 seconds")
+            .expect("lint task panicked");
+        holder.join().unwrap();
+
+        assert!(
+            flag_at_answer,
+            "lint answered before the other task ran, so lint held the runtime thread"
+        );
+        assert!(resp.error.is_none(), "lint failed: {:?}", resp.error);
+    }
+
     /// `object` requires a `kind` param; an unknown kind string must route
     /// through `parse_object_kind` and surface INVALID_PARAMS naming the input.
     #[tokio::test]
