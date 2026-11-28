@@ -35,12 +35,14 @@ pub fn dotnet_program() -> OsString {
 /// net8.0 tool runs on .NET 10+. (Same fix as the bridge's csproj RollForward,
 /// but applied to Microsoft's binaries we cannot edit — via the environment.)
 ///
-/// `dotnet_command()` returns a `std::process::Command`; `dotnet_command_async`
-/// the tokio equivalent. Both seed the first arg with the `alc` dll path. The
-/// `dotnet` host program is resolved via `dotnet_program` (overridable with
-/// `$AL_DOTNET_PATH`, see [`DOTNET_PATH_ENV`]).
-pub fn dotnet_command(alc: &Path) -> std::process::Command {
-    let mut cmd = std::process::Command::new(dotnet_program());
+/// `dotnet_command()` returns a `std::process::Command`. `dotnet_command_async`
+/// is the tokio equivalent. Both seed the first arg with the `alc` dll path and
+/// spawn the `program` the caller passes. Callers get that program from
+/// [`crate::trust::enforce_dotnet_path_before_spawn`] (`DotnetHost::program`),
+/// which uses `$AL_DOTNET_PATH` (see [`DOTNET_PATH_ENV`]) only when the trust
+/// check allows it.
+pub fn dotnet_command(program: &std::ffi::OsStr, alc: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
     cmd.arg(alc);
     cmd.env("DOTNET_ROLL_FORWARD", "Major");
     cmd
@@ -629,11 +631,8 @@ mod tests {
 
     #[test]
     fn dotnet_command_sets_roll_forward_and_alc_arg() {
-        // Pin AL_DOTNET_PATH unset so the program assertion is deterministic
-        // regardless of the developer's ambient environment.
-        let _g = DotnetEnvGuard::set(None);
         let alc = std::path::Path::new("/some/tools/net8.0/any/alc.dll");
-        let cmd = dotnet_command(alc);
+        let cmd = dotnet_command(std::ffi::OsStr::new("dotnet"), alc);
         assert_eq!(cmd.get_program(), "dotnet");
         let args: Vec<_> = cmd
             .get_args()
@@ -1134,13 +1133,14 @@ mod tests {
     }
 
     #[test]
-    fn dotnet_command_uses_custom_program_override() {
+    fn dotnet_command_uses_the_given_program() {
         let tmp = tempfile::tempdir().unwrap();
         let exe = write_executable(tmp.path(), "custom-dotnet");
-        let _g = DotnetEnvGuard::set(Some(exe.as_os_str()));
-        let cmd = dotnet_command(std::path::Path::new("/x/alc.dll"));
+        // AL_DOTNET_PATH names another host. dotnet_command must not read it.
+        let _g = DotnetEnvGuard::set(Some(std::ffi::OsStr::new("/env/override/dotnet")));
+        let cmd = dotnet_command(exe.as_os_str(), std::path::Path::new("/x/alc.dll"));
         assert_eq!(cmd.get_program(), exe.as_os_str());
-        // The override must not disturb the roll-forward env or the alc arg.
+        // The program must not disturb the roll-forward env or the alc arg.
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
