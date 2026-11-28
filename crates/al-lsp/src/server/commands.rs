@@ -12,7 +12,7 @@ use tower_lsp::lsp_types::{
     Position, Range, Url, WorkspaceEdit,
 };
 
-use super::lsp::{AlServer, LspSessionState};
+use super::lsp::AlServer;
 use super::{diagnostics, formatting, workspace};
 
 /// `al.clearSymbolCache` — remove the on-disk virtual-file cache.
@@ -649,6 +649,18 @@ fn report_file_name(report: &str, object: &str) -> String {
 /// `al.showReport` — run the `al-explorer` report the old editor task ran,
 /// for the object the code action was offered on, save the output under the
 /// cache folder and open it in the editor.
+/// The `al-explorer` report process. It is killed when the future that waits
+/// for it is dropped, which is what the timeout in [`show_report`] does.
+fn report_command(
+    explorer: &std::path::Path,
+    args: &[String],
+    cwd: &std::path::Path,
+) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(explorer);
+    command.args(args).current_dir(cwd).kill_on_drop(true);
+    command
+}
+
 pub(super) async fn show_report(
     server: &AlServer,
     arguments: &[serde_json::Value],
@@ -682,10 +694,7 @@ pub(super) async fn show_report(
             .map(std::path::Path::to_path_buf)
             .unwrap_or_default(),
     };
-    let run = tokio::process::Command::new(&explorer)
-        .args(&args)
-        .current_dir(&cwd)
-        .output();
+    let run = report_command(&explorer, &args, &cwd).output();
     let output = tokio::time::timeout(REPORT_TIMEOUT, run)
         .await
         .map_err(|_| {
@@ -823,18 +832,16 @@ pub(super) fn show_profiler(
     })
 }
 
-/// `al.runTest` — run the `[Test]` procedure the lens targets against the
-/// configured BC server.
+/// `al.runTest`: run one `[Test]` method from its CodeLens.
 ///
-/// The lens passes a [`al_analysis::queries::code_lens::TestTarget`] (codeunit id +
-/// method). Running BC tests requires a launch configuration (`.zed/debug.json`
-/// or `.vscode/launch.json`); when one is present we kick off the run in the
-/// background (mirroring the daemon's `tests.run` flow) and report pass/fail via
-/// a client message, persisting the result so the lens refreshes. When no server
-/// is configured we tell the user how to set one up instead of doing nothing.
+/// The run goes through the daemon's `tests.run_batch` path, the one
+/// `tests.run_auto` uses: a test the router classifies as local runs in the
+/// interpreter, and a test that needs live Business Central is reported as
+/// skipped with [`al_test::test_runner::LIVE_BC_SKIP_MESSAGE`]. That path
+/// stores the results, so the lens shows the outcome on its next refresh. No
+/// launch configuration is read, because no test runs against a server yet.
 ///
-/// Returns a small status object so callers/automation can observe the routing:
-/// `{ "status": "started" | "noServer" | "invalidArgs", "target"?: {..} }`.
+/// Returns `{ "status": "completed" | "failed" | "invalidArgs", "target"?, "totals"? }`.
 pub(super) async fn run_test(
     server: &AlServer,
     arguments: &[serde_json::Value],
@@ -852,204 +859,70 @@ pub(super) async fn run_test(
         return serde_json::json!({ "status": "invalidArgs" });
     };
 
-    let project_root = server
-        .workspace
-        .project
-        .read()
-        .await
-        .as_ref()
-        .map(|p| p.root.clone());
-    // An optional `config` argument names the launch configuration to run
-    // against, following the convention `al_debug` already established. With
-    // no name the project's first entry is used, and the reply names it.
-    let requested_config = arguments
-        .first()
-        .and_then(|value| value.get("config"))
-        .and_then(|value| value.as_str());
-    let config = match project_root.as_deref() {
-        Some(root) => match al_bc::launch::find_launch_config(root) {
-            Ok(file) => match file {
-                Some(df) => match al_bc::launch::pick_config(&df.configs, requested_config) {
-                    Ok(config) => Some(config.clone()),
-                    Err(error) if requested_config.is_some() => {
-                        server
-                            .client
-                            .show_message(MessageType::ERROR, format!("Cannot run test: {error}"))
-                            .await;
-                        return serde_json::json!({
-                            "status": "configurationError",
-                            "target": target,
-                            "error": error,
-                        });
-                    }
-                    Err(_) => None,
-                },
-                None => None,
-            },
-            Err(error) => {
-                server
-                    .client
-                    .show_message(MessageType::ERROR, format!("Cannot run test: {error}"))
-                    .await;
-                return serde_json::json!({
-                    "status": "configurationError",
-                    "target": target,
-                    "error": error.to_string(),
-                });
-            }
-        },
-        None => None,
-    };
-
-    let Some(mut config) = config else {
+    let params = serde_json::json!({
+        "codeunitIds": [target.codeunit_id],
+        "methodNames": [target.method_name],
+    });
+    let response =
+        crate::server::daemon::dispatch_tests_run_batch(&server.workspace, 0, &params).await;
+    if let Some(error) = response.error {
         server
             .client
             .show_message(
-                MessageType::WARNING,
+                MessageType::ERROR,
                 format!(
-                    "Cannot run test '{}' (codeunit {}): no BC server configured in \
-                     .zed/debug.json or .vscode/launch.json.",
-                    target.method_name, target.codeunit_id
+                    "Test '{}' failed to run: {}",
+                    target.method_name, error.message
                 ),
             )
             .await;
-        return serde_json::json!({ "status": "noServer", "target": target });
-    };
-    // The server comes from the repository's launch file, and the run sends
-    // the user's own credentials to it, so it is authorised the way
-    // `tests.run` and `publish` are.
-    if let Some(root) = project_root.as_deref() {
-        if let Err(error) = crate::server::daemon::authorize_live_test_target(root, &mut config) {
-            server
-                .client
-                .show_message(MessageType::ERROR, format!("Cannot run test: {error}"))
-                .await;
-            return serde_json::json!({
-                "status": "unauthorized",
-                "target": target,
-                "error": error,
-            });
-        }
+        return serde_json::json!({
+            "status": "failed",
+            "target": target,
+            "error": error.message,
+        });
     }
-
-    let config_name = config.name.clone();
-    server
-        .client
-        .show_message(
-            MessageType::INFO,
-            format!(
-                "Running test '{}' (codeunit {}) against {} [{}]…",
-                target.method_name,
-                target.codeunit_id,
-                config.display_name(),
-                config_name
-            ),
-        )
-        .await;
-
-    // Run off the request path: the BC round-trip can take several seconds.
-    let workspace = Arc::clone(&server.workspace);
-    let client = server.client.clone();
-    let session = server.session.clone();
-    let target_for_task = target.clone();
-    tokio::spawn(async move {
-        run_test_background(workspace, client, session, target_for_task).await;
-    });
-
-    serde_json::json!({ "status": "started", "target": target, "config": config_name })
+    let result = response.result.unwrap_or_default();
+    let totals = result.get("totals").cloned().unwrap_or_default();
+    let (level, message) = run_test_message(&target.method_name, &totals);
+    if !server.session.is_cancelled() {
+        server.client.show_message(level, message).await;
+    }
+    serde_json::json!({ "status": "completed", "target": target, "totals": totals })
 }
 
-/// Background worker for [`run_test`]: executes the codeunit/method against the
-/// BC dev test API, reports the outcome, and persists per-method records so the
-/// CodeLens status updates on the next refresh.
-async fn run_test_background(
-    workspace: Arc<al_workspace::Workspace>,
-    client: tower_lsp::Client,
-    session: LspSessionState,
-    target: al_analysis::queries::code_lens::TestTarget,
-) {
-    if session.is_cancelled() {
-        return;
-    }
-    let codeunit_name = format!("Codeunit {}", target.codeunit_id);
-    let runner = al_test::test_runner::TestRunnerClient;
-    let result = runner
-        .run_codeunit(
-            target.codeunit_id,
-            &codeunit_name,
-            Some(&target.method_name),
-        )
-        .await;
-    if session.is_cancelled() {
-        return;
-    }
-
-    let result = match result {
-        Ok(r) => r,
-        Err(e) => {
-            if !session.is_cancelled() {
-                client
-                    .show_message(
-                        MessageType::ERROR,
-                        format!("Test '{}' failed to run: {e}", target.method_name),
-                    )
-                    .await;
-            }
-            return;
-        }
+/// The message for one lens run, from the `totals` of `tests.run_batch`.
+fn run_test_message(method: &str, totals: &serde_json::Value) -> (MessageType, String) {
+    let count = |key: &str| {
+        totals
+            .get(key)
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0)
     };
-
-    // Persist so CodeLens / tests.last_results / the TUI agree, but only if a
-    // results store is already initialised — we don't create one here.
-    if let Some(store) = workspace.test_results.read().ok().and_then(|g| g.clone()) {
-        let timestamp = match al_test::persistence::now_secs() {
-            Ok(timestamp) => timestamp,
-            Err(error) => {
-                if !session.is_cancelled() {
-                    client
-                        .show_message(
-                            MessageType::ERROR,
-                            format!("Could not timestamp test results: {error}"),
-                        )
-                        .await;
-                }
-                return;
-            }
-        };
-        for m in &result.methods {
-            let rec = al_test::persistence::TestRunRecord {
-                timestamp,
-                codeunit_id: result.id,
-                codeunit_name: result.name.clone(),
-                method_name: m.name.clone(),
-                status: m.status.clone(),
-                duration_ms: m.duration_ms,
-                error: m.error.clone(),
-            };
-            if let Err(e) = store.append(rec).await {
-                tracing::warn!(error = %e, "failed to persist test result");
-            }
-        }
-    }
-
-    if session.is_cancelled() {
-        return;
-    }
-    let level = if result.failed > 0 {
-        MessageType::ERROR
+    let (passed, failed, skipped) = (count("passed"), count("failed"), count("skipped"));
+    if failed > 0 {
+        (MessageType::ERROR, format!("Test '{method}' failed"))
+    } else if passed > 0 {
+        (MessageType::INFO, format!("Test '{method}' passed"))
+    } else if skipped > 0 {
+        (
+            MessageType::WARNING,
+            format!(
+                "Test '{method}': {}",
+                al_test::test_runner::LIVE_BC_SKIP_MESSAGE
+            ),
+        )
     } else {
-        MessageType::INFO
-    };
-    client
-        .show_message(
-            level,
-            format!(
-                "Test run complete: {} passed, {} failed, {} skipped",
-                result.passed, result.failed, result.skipped
-            ),
+        (
+            MessageType::WARNING,
+            format!("Test '{method}' was not found"),
         )
-        .await;
+    }
 }
+
+#[cfg(test)]
+#[path = "commands_review_tests.rs"]
+mod commands_review_tests;
 
 #[cfg(test)]
 mod tests {

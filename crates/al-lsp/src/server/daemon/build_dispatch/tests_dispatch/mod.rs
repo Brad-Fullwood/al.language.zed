@@ -468,7 +468,7 @@ pub(in crate::server::daemon) async fn dispatch_tests_run(
 ///   coverage on interp-routed tests. Adds a `coverage` object to the result
 ///   (per-file executed lines + branch decisions) and, when `coberturaOut` is
 ///   set, writes a dynamic-mode Cobertura doc instead of the static one.
-pub(in crate::server::daemon) async fn dispatch_tests_run_batch(
+pub(crate) async fn dispatch_tests_run_batch(
     workspace: &std::sync::Arc<Workspace>,
     id: u64,
     params: &serde_json::Value,

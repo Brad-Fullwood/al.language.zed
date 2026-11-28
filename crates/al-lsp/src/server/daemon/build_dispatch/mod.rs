@@ -16,6 +16,7 @@ pub(super) use codegen::*;
 pub(super) use fixes::*;
 pub(super) use free_ids::*;
 pub(super) use symbols_auth::*;
+pub(crate) use tests_dispatch::dispatch_tests_run_batch;
 pub(super) use tests_dispatch::*;
 pub(super) use xliff::*;
 

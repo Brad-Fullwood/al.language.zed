@@ -308,7 +308,10 @@ pub(in crate::server) fn authorize_launch_target(
 /// The test runner sends `BC_ACCESS_TOKEN`, or `BC_USERNAME` and `BC_PASSWORD`,
 /// from the environment. The environment is the user's, but the server comes
 /// from a launch file the repository carries, which is the case `publish` is
-/// authorised for. `tests.run*` and the Run Test code lens both call this.
+/// authorised for. Nothing calls this yet: `tests.run*` and the Run Test code
+/// lens report live tests as skipped until a TestRunnerHub client exists, and
+/// that client calls this before it connects.
+#[allow(dead_code)]
 pub(crate) fn authorize_live_test_target(
     project_root: &std::path::Path,
     config: &mut al_bc::launch::BcServerConfig,

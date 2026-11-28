@@ -26,7 +26,7 @@ mod snapshot_dispatch;
 #[cfg(test)]
 pub(crate) use snapshot_dispatch::use_test_store;
 
-pub(crate) use debug_dispatch::authorize_live_test_target;
+pub(crate) use build_dispatch::dispatch_tests_run_batch;
 pub(crate) use projection::list_target;
 pub(crate) use scope::accepts_scope;
 

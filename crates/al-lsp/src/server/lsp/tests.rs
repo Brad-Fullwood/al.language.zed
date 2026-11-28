@@ -1392,11 +1392,11 @@ mod code_lens_command_wiring_tests {
     }
 
     #[tokio::test]
-    async fn run_test_without_server_reports_no_server() {
+    async fn run_test_without_a_project_reports_failed() {
         let (service, _uri) = build_server();
         let server = service.inner();
-        // No project / launch config loaded → routing must report `noServer`
-        // (not a silent no-op) and never attempt a BC round-trip.
+        // With no project loaded the lens run reports `failed` with its
+        // target and makes no Business Central call.
         let params = ExecuteCommandParams {
             command: "al.runTest".to_string(),
             arguments: vec![serde_json::json!({
@@ -1410,7 +1410,7 @@ mod code_lens_command_wiring_tests {
             .await
             .expect("ok")
             .expect("runTest returns a value");
-        assert_eq!(result["status"], serde_json::json!("noServer"));
+        assert_eq!(result["status"], serde_json::json!("failed"), "{result}");
         assert_eq!(
             result["target"]["methodName"],
             serde_json::json!("TestAlpha")
