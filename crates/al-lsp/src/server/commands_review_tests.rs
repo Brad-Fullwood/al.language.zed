@@ -72,12 +72,9 @@ async fn a_timed_out_report_process_is_killed() {
     .spawn()
     .expect("sleep starts");
     let pid = child.id().expect("pid");
-    let waited = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        child.wait_with_output(),
-    )
-    .await;
-    assert!(waited.is_err(), "sleep 30 outlives the timeout");
+    let waited = wait_for_report(child, std::time::Duration::from_millis(100), "sleep 30").await;
+    let error = waited.expect_err("sleep 30 outlives the timeout");
+    assert!(error.contains("did not finish"), "{error}");
 
     let mut gone = false;
     for _ in 0..50 {
